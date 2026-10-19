@@ -8,12 +8,14 @@ import { ModelRegistry, ModelRuntime, ProjectTrustStore } from "@earendil-works/
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { registerControlledProvider, scriptReplies } from "./helpers/controlled-provider.ts";
+import { scriptReview } from "./helpers/interpreter-reply.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
-import { uuidv7, repositoryDatabase, withDatabase } from "../src/core/storage/database.ts";
+import { UUID_V7_PATTERN, uuidv7, repositoryDatabase, withDatabase } from "../src/core/storage/database.ts";
 import { HostAuthorizationError, HostAuthorizationManager } from "../src/modules/requirement/host-authorization.ts";
 import { MainRequirementInteraction } from "../src/modules/interaction/main-requirement-interaction.ts";
 import { UserInteractionCore } from "../src/modules/interaction/user-interaction.ts";
 import { RequirementOperations } from "../src/modules/requirement/requirement-operations.ts";
+import { REQUIREMENT_OPERATION_NAMESPACE } from "../src/modules/requirement/requirement-coordination.ts";
 import type { MainRequirementInteractionOptions } from "../src/modules/interaction/main-requirement-interaction.ts";
 import { createRequirementManageTool } from "../src/modules/interaction/requirement-manage-tool.ts";
 import { createUserInteractTool } from "../src/modules/interaction/user-interact-tool.ts";
@@ -72,14 +74,12 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "m
   const service = await RequirementService.open({ dataRoot, repositoryRoot, repoId, authorize: () => true });
   const create = async (body = BODY) => {
     capture(); scriptReplies(provider, [{ type: "text", text: '{"allow":true}' }]);
-    const created = await call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body });
+    const created = await call({ action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body });
     mentioned.push(String(created.requirementId));
     return created;
   };
-  const request = async (created: Record<string, unknown>, operationId = uuidv7()) => {
-    const input = { requirementId: String(created.requirementId), savedOperationId: String(created.operationId), operationId, version: Number(created.version) };
-    return { input, loaded: await service.loadConfirmationContext({ requirementId: input.requirementId, savedOperationId: input.savedOperationId, operationId }) };
-  };
+  const request = async (created: Record<string, unknown>) =>
+    ({ input: { requirementId: String(created.requirementId), savedOperationId: String(created.operationId), version: Number(created.version) } });
   const setReachable = (value: boolean) => { reachable = value; };
   return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage, setReachable,
     windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; }, beforeAnswer: (hook: () => Promise<void>) => { beforeAnswer = hook; } };
@@ -97,6 +97,12 @@ function phoneReview(c: Pick<ConfirmationContext, "candidate" | "partition">, ac
     { ...entry("action", "本轮授权动作"), unitIds: ["A"] }, { ...entry("future", "微信仅为未来想法", "uncertain"), candidateId: null }] };
 }
 
+const modifyReview = (c: Pick<ConfirmationContext, "candidate" | "partition">) => {
+  const review = phoneReview(c);
+  review.faithful = false; review.entries[1]!.resolution = "modify"; review.entries.splice(5, 1);
+  return review;
+};
+
 /** 任意正文的整份确认：targetId 是目标，其余单位按格式与约束确认，授权只分析。 */
 function wholeReview(c: Pick<ConfirmationContext, "candidate" | "partition">, targetId = "A"): Static<typeof ModelInterpretation> {
   const base = (kind: "constraint" | "target" | "action", conclusion: string, unitIds: string[]) => ({ kind, conclusion, scope: kind === "action" ? "只分析，不修改代码" : "当前登录需求",
@@ -108,7 +114,7 @@ function wholeReview(c: Pick<ConfirmationContext, "candidate" | "partition">, ta
 
 describe("主窗口共享控制器的真实服务路径", () => {
   test("M8D-AC3：这句话 @ 到的需求直接按原话登记，不弹窗；没 @ 到时弹出批准窗口，显示需求名、版本与简介，取消即不登记不生效", async () => {
-    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
     const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
     w.capture("同意", "interactive", false); w.answerWindows(false);
     await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toMatchObject({ code: "decision_declined" });
@@ -118,28 +124,28 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(w.windows[0]!.text).toContain(`编号：${input.requirementId}`);
     expect(w.windows[0]!.text).toContain("简介：手机号登录，保留邮箱登录");
     expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
-    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
     expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ targetRecorded: true, prdActivated: true });
     expect(w.windows).toHaveLength(1);
   });
 
   test("解释器按用户层设定的思考等级调用；草稿核验器设定的模型不存在时写明原因，不改用主窗口的模型", async () => {
-    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
     await writeFile(join(w.root, "settings.json"), JSON.stringify({ "one-company": { interpreter: { model: `${w.provider.providerId}/${w.provider.modelId}`, thinking: "low" } } }));
-    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
     const before = w.provider.reasoning.length;
     await w.call({ action: "confirmUpdate", ...input });
     expect(w.provider.reasoning.slice(before)).toEqual(["low"]);
     await writeFile(join(w.root, "settings.json"), JSON.stringify({ "one-company": { "draft-verifier": { model: "nowhere/missing", thinking: null } } }));
     w.capture("再建一个需求"); const calls = w.provider.requests.length;
-    await expect(w.call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "简介", title: "另一个", body: BODY }))
+    await expect(w.call({ action: "create", summary: "简介", title: "另一个", body: BODY }))
       .rejects.toMatchObject({ code: "internal_model_unavailable", message: expect.stringContaining("草稿核验器配置的模型 nowhere/missing 不可用：本机的模型配置里找不到模型 nowhere/missing") });
     expect(w.provider.requests.length).toBe(calls);
   });
 
   test("设定没写思考等级时，解释器用主窗口当前的思考等级", async () => {
-    const w = await world({ mainThinking: () => "high" }), created = await w.create(), { input, loaded } = await w.request(created);
-    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    const w = await world({ mainThinking: () => "high" }), created = await w.create(), { input } = await w.request(created);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
     const before = w.provider.reasoning.length;
     await w.call({ action: "confirmUpdate", ...input });
     expect(w.provider.reasoning.slice(before)).toEqual(["high"]);
@@ -158,7 +164,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     for (const created of [first, second]) {
       expect(await w.call({ action: "read", requirementId: created.requirementId, source: "saved" })).toMatchObject({ requirementId: created.requirementId });
       w.capture("补一句"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-      expect(await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version, operationId: uuidv7(),
+      expect(await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version,
         summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补一句。\n" })).toMatchObject({ action: "updateDraft", requirementId: created.requirementId });
     }
   });
@@ -168,7 +174,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const sentPayload = () => { const content = w.provider.requests.at(-1)!.messages[0]!.content; return JSON.parse(typeof content === "string" ? content : (content as Array<{ text: string }>).map((block) => block.text).join("")); };
     expect(sentPayload()).not.toHaveProperty("previous");
     w.capture("选第 1 项"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-    await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version, operationId: uuidv7(),
+    await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version,
       summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "验证码 5 分钟有效。\n" });
     expect(sentPayload()).toMatchObject({ text: expect.stringContaining("选第 1 项"), action: "updateDraft", previous: { title: "登录", body: BODY }, candidate: { title: "登录", body: BODY + "验证码 5 分钟有效。\n" } });
     expect(w.provider.requests.at(-1)!.systemPrompt).toContain("previous是程序保存的上一版草稿");
@@ -178,7 +184,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const w = await world(), created = await w.create();
     expect(await w.interaction.mentionCandidates(w.ctx)).toEqual([{ repoId: w.repoId, requirementId: created.requirementId, title: "登录", lifecycle: "draft" }]);
     w.capture("标题改一下"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-    await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version, operationId: uuidv7(),
+    await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version,
       summary: "手机号登录，保留邮箱登录", title: "手机号登录", body: BODY });
     expect((await w.interaction.mentionCandidates(w.ctx)).map((item) => item.title)).toEqual(["手机号登录"]);
   });
@@ -206,14 +212,14 @@ describe("主窗口共享控制器的真实服务路径", () => {
   test("M8D-AC7：新建和修改草稿都要写简介，程序按当前草稿版本记下简介；缺简介时拒绝并写明缺哪个字段", async () => {
     const w = await world();
     w.capture();
-    await expect(w.call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), title: "登录", body: BODY }))
+    await expect(w.call({ action: "create", title: "登录", body: BODY }))
       .rejects.toMatchObject({ code: "invalid_shape", message: expect.stringContaining("缺少字段：summary") });
     const created = await w.create();
     const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
     const first = state.read(String(created.requirementId)).data.saved!.hash;
     expect(requirementSummary(w.dataRoot, w.repoId, String(created.requirementId), first)).toBe("手机号登录，保留邮箱登录");
     w.capture("再加一句"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-    await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version, operationId: uuidv7(), summary: "手机号验证码登录，邮箱登录照旧",
+    await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version, summary: "手机号验证码登录，邮箱登录照旧",
       title: "登录", body: BODY + "补充一句。\n" });
     const second = state.read(String(created.requirementId)).data.saved!.hash;
     expect(requirementSummary(w.dataRoot, w.repoId, String(created.requirementId), second)).toBe("手机号验证码登录，邮箱登录照旧");
@@ -221,7 +227,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
 
   test("普通问答、未来闲聊、伪来源、无输入均不能create；只读metadata不建空库", async () => {
-    const w = await world(), input = { action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY };
+    const w = await world(), input = { action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY };
     await expect(w.call(input)).rejects.toMatchObject({ code: "current_input_required" });
     for (const source of ["extension", "tool", "user", "rpc"]) { w.capture("想做登录", source); await expect(w.call(input)).rejects.toMatchObject({ code: "current_input_required" }); }
     for (const text of ["这个函数为什么这样写？", "也许明年做个登录吧"]) {
@@ -239,8 +245,8 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
 
   test("M8C：草稿核验器与解释器的提示词不写死五大板块，改说需求文档规范规定的板块与格式占位内容", async () => {
-    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
-    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    scriptReview(w.provider, phoneReview);
     await w.call({ action: "confirmUpdate", ...input });
     const prompts = w.provider.requests.map((request) => request.systemPrompt ?? "");
     const verifier = prompts.find((prompt) => prompt.includes("草拟意图核验器"))!, interpreter = prompts.find((prompt) => prompt.includes("需求解释器"))!;
@@ -251,13 +257,13 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
 
   test("M9：用户按主代理的推荐作答后更新草稿，草稿核验器能看到本需求上提过的问题，提示词说明被采纳的那项才算用户决定", async () => {
-    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
     w.capture(); w.answerWindows(false);
-    await w.call({ action: "ask", ...input, operationId: uuidv7(), question: "短信验证码有效期选哪种？", rootCheck: "要定的是验证码多久失效，而不是另加重发限制",
+    await w.call({ action: "ask", ...input, question: "短信验证码有效期选哪种？", rootCheck: "要定的是验证码多久失效，而不是另加重发限制",
       choices: [{ label: "5 分钟", reason: "更安全", recommended: true, recommendedReason: "常见做法，够用户收短信" }, { label: "10 分钟", reason: "信号差也来得及，但更容易被盗用" }], scope: "仅短信验证码期限",
-      unitIds: [loaded.partition.units[1]!.id], actions: ["analyze"] }, true);
+      unitIds: ["background"], actions: ["analyze"] }, true);
     w.capture("按你推荐的定，写进草稿"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
+    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
     const verifier = w.provider.requests.filter((request) => request.systemPrompt?.includes("草拟意图核验器")).at(-1)!;
     const payload = JSON.parse(String((verifier.messages[0] as { content: string }).content));
     expect(payload.questions).toEqual([{ question: "短信验证码有效期选哪种？\n选项：1. 5 分钟（推荐）；2. 10 分钟", scope: "仅短信验证码期限" }]);
@@ -266,19 +272,19 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
 
   test("M8M-AC2：本需求的历史问题多到放不进核验器输入时，改草稿照常成功，核验器拿到的是从最新往旧放得下的那些问题", async () => {
-    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
     const older = Array.from({ length: 60 }, () => uuidv7());
     w.capture(); w.answerWindows(false);
-    await w.call({ action: "ask", ...input, operationId: uuidv7(), question: "短信验证码有效期选哪种？", rootCheck: "要定的是验证码多久失效，而不是另加重发限制",
+    await w.call({ action: "ask", ...input, question: "短信验证码有效期选哪种？", rootCheck: "要定的是验证码多久失效，而不是另加重发限制",
       choices: [{ label: "5 分钟", reason: "更安全", recommended: true, recommendedReason: "常见做法，够用户收短信" }, { label: "10 分钟", reason: "信号差也来得及，但更容易被盗用" }], scope: "仅短信验证码期限",
-      unitIds: [loaded.partition.units[1]!.id], actions: ["analyze"] }, true);
+      unitIds: ["background"], actions: ["analyze"] }, true);
     withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => {
       for (const [i, requestId] of older.entries()) db.create("interaction_questions_v1", requestId, { format: "interaction-question/v1", requestId, repoId: w.repoId,
         basis: { requirementId: input.requirementId, version: 1, epoch: 1, prd: null }, candidate: null,
         proposal: { conclusion: `旧问题 ${i}：${"很久以前问过的细节".repeat(40)}`, scope: "旧范围", references: [], supersedes: [] }, actions: [], createdAt: 1 }, requestId);
     });
     w.capture("按你推荐的定，写进草稿"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
+    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
     const verifier = w.provider.requests.filter((request) => request.systemPrompt?.includes("草拟意图核验器")).at(-1)!;
     const content = String((verifier.messages[0] as { content: string }).content), payload = JSON.parse(content) as { questions: Array<{ question: string }> };
     expect(Buffer.byteLength(content)).toBeLessThanOrEqual(65_536);
@@ -291,7 +297,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
 
   test("M9：草稿核验器拒绝时带回一句原因，标明是模型说法；原因只作参考，未知字段或类型不对仍按格式错误拒绝", async () => {
-    const w = await world(), input = { action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY };
+    const w = await world(), input = { action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY };
     w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":false,"reason":"需求里「不接入渲染循环」是用户没说过的限制"}' }]);
     const error = await w.call(input).catch((caught: Error) => caught);
     expect(error).toMatchObject({ code: "draft_interpretation_denied" });
@@ -307,18 +313,21 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(await w.call(input)).toMatchObject({ action: "create" });
   });
 
-  test("create自动真实Git首提、UUID/hash一致、同operation幂等；新增无关需求不复用输入", async () => {
+  test("create自动真实Git首提、UUID/hash一致；不带编号的再次create是另一个需求；新增无关需求不复用输入", async () => {
     const w = await world(); w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-    const p = { action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY };
-    const first = await w.call(p), second = await w.call(p); expect(second).toEqual(first);
+    const p = { action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY };
+    const first = await w.call(p);
+    w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    const second = await w.call(p);
+    expect(second.requirementId).not.toBe(first.requirementId);
     const directory = join(w.dataRoot, "repos", w.repoId, "requirements", String(first.requirementId));
     const prd = await readFile(join(directory, "prd.md"));
     expect(prd.toString()).toContain(`requirementId: ${first.requirementId}`);
     expect(await git(directory, ["rev-list", "--count", "HEAD"])).toBe("1");
     expect(await git(directory, ["show", "--pretty=format:", "--name-only", "HEAD"])).toBe("prd.md");
     expect(await git(directory, ["show", "-s", "--format=%an <%ae>", "HEAD"])).toBe("pi PRD storage <pi-prd-storage@localhost>");
-    scriptReplies(w.provider, [{ type: "text", text: '{"allow":false}' }]);
-    await expect(w.call({ ...p, operationId: uuidv7(), requestId: uuidv7(), title: "无关付款" })).rejects.toMatchObject({ code: "draft_interpretation_denied" });
+    w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":false}' }]);
+    await expect(w.call({ ...p, title: "无关付款" })).rejects.toMatchObject({ code: "draft_interpretation_denied" });
   });
   test("M8A-AC9：正文顶层标题不符合需求文档规范规定的板块时批准被拒，不调用模型、不激活，并写明期望与实际", async () => {
     const w = await world();
@@ -340,7 +349,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     await expect(w.call({ action: "confirmUpdate", ...first.input })).rejects.toThrow("当前为 goal、build、check");
     expect(w.provider.requests).toHaveLength(before);
     new ProjectTrustStore(w.root).set(w.repositoryRoot, true);
-    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(wholeReview(first.loaded, "goal.A")) }]);
+    scriptReview(w.provider, (c) => wholeReview(c, "goal.A"));
     expect(await w.call({ action: "confirmUpdate", ...first.input })).toMatchObject({ prdActivated: true });
     const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
     const snapshot = (await resolveRepositoryRequirementDoc(w.dataRoot, w.repositoryRoot)).spec;
@@ -350,7 +359,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect((await resolveRepositoryRequirementDoc(w.dataRoot, w.repositoryRoot)).spec.sections.map((section) => section.id)).toEqual(["aim", "make", "verify"]);
     const updated = await w.service.updateDraft({ requirementId: first.input.requirementId, version: state.read(first.input.requirementId).version, operationId: uuidv7(), title: "登录", body: body + "补充邮箱约束。\n" });
     const next = await w.request(updated);
-    w.capture("批准这版。"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(wholeReview(next.loaded, "goal.A")) }]);
+    w.capture("批准这版。"); scriptReview(w.provider, (c) => wholeReview(c, "goal.A"));
     expect(await w.call({ action: "confirmUpdate", ...next.input })).toMatchObject({ prdActivated: true });
     expect(state.read(first.input.requirementId).data.docSpec).toEqual(snapshot);
   });
@@ -382,8 +391,8 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const w = await world(), sent: Array<{ messages: unknown[] }> = [];
     const original = w.ctx.modelRegistry.complete.bind(w.ctx.modelRegistry);
     vi.spyOn(w.ctx.modelRegistry, "complete").mockImplementation((model, context, options) => { sent.push(context); return original(model, context, options); });
-    const created = await w.create(), { input, loaded } = await w.request(created);
-    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    const created = await w.create(), { input } = await w.request(created);
+    scriptReview(w.provider, phoneReview);
     const result = await w.call({ action: "confirmUpdate", ...input });
     expect(result).toMatchObject({ targetRecorded: true, prdActivated: true });
     expect(result).not.toHaveProperty("blockedBy");
@@ -409,19 +418,18 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const bound = await state.bindWorkspace({ requirementId: String(created.requirementId), version: Number(created.version), path: worktree,
       baseCommit: await git(w.repositoryRoot, ["rev-parse", "HEAD"]), prepareOperationId: uuidv7() });
     w.capture("现在直接实施手机号登录并保留邮箱。微信排除。短信期限暂时只列待定。");
-    const { input, loaded } = await w.request({ ...created, version: bound.version });
-    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded, "implement")) }]);
-    const params = { action: "confirmUpdate", ...input }, result = await w.call(params);
+    const { input } = await w.request({ ...created, version: bound.version });
+    scriptReview(w.provider, (c) => phoneReview(c, "implement"));
+    const result = await w.call({ action: "confirmUpdate", ...input });
     expect(result).toMatchObject({ targetRecorded: true, prdActivated: true, lifecycle: "active" });
     expect(result).not.toHaveProperty("blockedBy");
     expect(result).not.toHaveProperty("unimplemented");
-    expect(await w.call(params)).toEqual(result);
     expect(state.events(String(created.requirementId)).filter((e) => e.data.kind === "prd.approved")).toHaveLength(1);
     expect(await git(join(w.dataRoot, "repos", w.repoId, "requirements", String(created.requirementId)), ["rev-list", "--count", "HEAD"])).toBe("1");
   });
   test("模型异步期间撤权，迟到输出脱敏、没有短记录或manifest", async () => {
-    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
-    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)), chunkDelayMs: 30 }]);
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    scriptReview(w.provider, phoneReview, { chunkDelayMs: 30 });
     const result = w.call({ action: "confirmUpdate", ...input });
     const rejected = expect(result).rejects.toThrow();
     const deadline = Date.now() + 3000;
@@ -452,16 +460,18 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(metadata.lifecycle).toBe("closing");
   });
   test("修改建议不批准旧hash，外部服务重新保存不能重放旧ticket", async () => {
-    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
-    const review = phoneReview(loaded); review.faithful = false;
-    review.entries[1]!.resolution = "modify"; review.entries[1]!.conclusion = "手机号登录需修改后保留邮箱";
-    review.entries.splice(5, 1);
-    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }]);
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    scriptReview(w.provider, (c) => {
+      const review = phoneReview(c); review.faithful = false;
+      review.entries[1]!.resolution = "modify"; review.entries[1]!.conclusion = "手机号登录需修改后保留邮箱";
+      review.entries.splice(5, 1);
+      return review;
+    });
     const result = await w.call({ action: "confirmUpdate", ...input });
     expect(result).toMatchObject({ targetRecorded: true, prdActivated: false, blockedBy: "candidate_requires_revision_or_clarification" });
     expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("approval_manifests_v1"))).toEqual([]);
     const updated = await w.service.updateDraft({ requirementId: input.requirementId, version: input.version, operationId: uuidv7(), title: "登录", body: BODY + "明确保留邮箱登录。\n" });
-    await expect(w.call({ action: "confirmUpdate", requirementId: input.requirementId, version: updated.version, savedOperationId: updated.operationId, operationId: uuidv7() })).rejects.toThrow();
+    await expect(w.call({ action: "confirmUpdate", requirementId: input.requirementId, version: updated.version, savedOperationId: updated.operationId })).rejects.toThrow();
     expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.events(`requirement_events:${input.requirementId}`).filter((e) => (e.data as { kind: string }).kind === "prd.approved"))).toEqual([]);
   });
   test("一次真实输入完成modify-resave-reinterpret；旧capability立即失效，三次上限保留", async () => {
@@ -470,9 +480,9 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const created = await w.create(), captured: unknown[] = [], texts: string[] = [];
     const capture = vi.spyOn(UserInteractionCore.prototype, "captureInput");
     const original = w.ctx.modelRegistry.complete.bind(w.ctx.modelRegistry);
-    let expectedInput: { requirementId: string; savedOperationId: string; operationId: string; version: number };
+    let expectedInput: { requirementId: string; savedOperationId: string; version: number };
     let reviewedDocuments = 0;
-    const inputFor = (saved: Record<string, unknown>) => ({ requirementId: String(saved.requirementId), savedOperationId: String(saved.operationId), operationId: uuidv7(), version: Number(saved.version) });
+    const inputFor = (saved: Record<string, unknown>) => ({ requirementId: String(saved.requirementId), savedOperationId: String(saved.operationId), version: Number(saved.version) });
     const complete = vi.spyOn(w.ctx.modelRegistry, "complete").mockImplementation((model, context, options) => {
       if (context.messages[0]?.role === "user" && typeof context.messages[0].content === "string") {
         const payload = JSON.parse(context.messages[0].content);
@@ -504,11 +514,10 @@ describe("主窗口共享控制器的真实服务路径", () => {
         const result = await w.call({ action: "confirmUpdate", ...input });
         expect(result.prdActivated).toBe(false);
         oldCapabilities.push((await interpreted.mock.results.at(-1)!.value).capability);
-        const update = { action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + `补充${i}：明确保留邮箱登录。\n` };
+        const update = { action: "updateDraft", requirementId: input.requirementId, version: input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + `补充${i}：明确保留邮箱登录。\n` };
         scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
         if (i === 3) { await expect(w.call(update)).rejects.toThrow(); break; }
         saved = await w.call(update);
-        expect(await w.call(update)).toEqual(saved);
         now += 1000;
       }
       expect(reviewedDocuments).toBe(4);
@@ -521,13 +530,12 @@ describe("主窗口共享控制器的真实服务路径", () => {
   });
   for (const change of ["revoke", "input", "resave"] as const) test(`受控重解释在模型等待期间${change}拒绝迟到结果`, async () => {
     let now = 1000;
-    const w = await world({ now: () => now }), created = await w.create(), first = await w.request(created), review = phoneReview(first.loaded);
-    review.faithful = false; review.entries[1]!.resolution = "modify"; review.entries.splice(5, 1);
-    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }]); await w.call({ action: "confirmUpdate", ...first.input });
+    const w = await world({ now: () => now }), created = await w.create(), first = await w.request(created);
+    scriptReview(w.provider, modifyReview); await w.call({ action: "confirmUpdate", ...first.input });
     scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-    const updated = await w.call({ action: "updateDraft", requirementId: first.input.requirementId, version: first.input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充邮箱约束。\n" });
+    const updated = await w.call({ action: "updateDraft", requirementId: first.input.requirementId, version: first.input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充邮箱约束。\n" });
     const next = await w.request(updated), before = withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"));
-    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(next.loaded)), chunkDelayMs: 500 }]);
+    scriptReview(w.provider, phoneReview, { chunkDelayMs: 500 });
     const count = w.provider.requests.length, pending = w.call({ action: "confirmUpdate", ...next.input }), rejected = expect(pending).rejects.toThrow();
     const deadline = Date.now() + 3000;
     while (w.provider.requests.length === count && Date.now() < deadline) await new Promise((r) => setTimeout(r, 1));
@@ -544,7 +552,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
       const fail = vi.spyOn(RequirementOperations.prototype, "finalize").mockImplementation(() => { throw thrown; });
       try {
         w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-        const error = await w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version), operationId: uuidv7(),
+        const error = await w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version),
           summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充。\n" }).catch((caught: unknown) => caught);
         expect(error).toMatchObject({ code });
         expect((error as Error).message).toContain(code === "stale_version" ? "原因：需求在读取后已被改动，提交用的版本号过期了：详细说明" : "原因：需求操作被拒绝，底层没有给出可说明的原因");
@@ -568,7 +576,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const fail = vi.spyOn(RequirementOperations.prototype, "finalize").mockImplementation(() => { throw busy; });
     try {
       w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-      await expect(w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version), operationId: uuidv7(),
+      await expect(w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version),
         summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充。\n" })).rejects.toMatchObject({ code: "interaction_denied" });
     } finally { fail.mockRestore(); }
     const lines = readFileSync(log, "utf8").trim().split("\n");
@@ -578,19 +586,20 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(lines.join("\n")).not.toContain("需求正文");
   });
   test("受控重存finalize失败保留实际数据但取消重解释permit", async () => {
-    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created), review = phoneReview(loaded);
-    review.faithful = false; review.entries[1]!.resolution = "modify";
-    review.entries.splice(5, 1);
-    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }]); await w.call({ action: "confirmUpdate", ...input });
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    scriptReview(w.provider, modifyReview); await w.call({ action: "confirmUpdate", ...input });
     const fail = vi.spyOn(RequirementOperations.prototype, "finalize").mockImplementation(() => { throw new Error("fixture_finalize_failure"); });
-    const operationId = uuidv7();
     try {
       scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-      await expect(w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充。\n" })).rejects.toThrow();
+      await expect(w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充。\n" })).rejects.toThrow();
     } finally { fail.mockRestore(); }
     const current = w.authorization.snapshot(w.repoId, input.requirementId, w.sessionId);
     expect(current.version).toBeGreaterThan(input.version);
-    await expect(w.call({ action: "confirmUpdate", requirementId: input.requirementId, version: current.version, savedOperationId: operationId, operationId: uuidv7() })).rejects.toThrow();
+    const unfinished = withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list(REQUIREMENT_OPERATION_NAMESPACE))
+      .map((row) => row.data as { action: string; operationId: string; finalVersion: number | null })
+      .filter((row) => row.action === "updateDraft" && row.finalVersion === null);
+    expect(unfinished).toHaveLength(1);
+    await expect(w.call({ action: "confirmUpdate", requirementId: input.requirementId, version: current.version, savedOperationId: unfinished[0]!.operationId })).rejects.toThrow();
   });
   test("分页保留中文、范围与未决标记，封装≤50KiB，翻页用 next，游标只能用一次、跨新输入失效，首次读取不收游标", async () => {
     const w = await world(), created = await w.create("# 说明 {#A}\n" + "中文边界\\\"".repeat(2000)), requirementId = String(created.requirementId);
@@ -622,11 +631,11 @@ test("别的进程短暂占住数据库时，宿主读取需求记录等锁释�
   await new Promise((resolve) => holder.once("exit", resolve));
 });
 test("批准时生成批准范围这一步出错，如实报错，不说成草稿要修改或澄清", async () => {
-  const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+  const w = await world(), created = await w.create(), { input } = await w.request(created);
   const busy = Object.assign(new Error("database is locked"), { code: "ERR_SQLITE_ERROR", errcode: 5 });
   const read = vi.spyOn(UserInteractionCore.prototype, "readDecision").mockImplementation(() => { throw busy; });
   try {
-    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
     const outcome = await w.call({ action: "confirmUpdate", ...input }).then((result) => result, (error: unknown) => error);
     expect(outcome).not.toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
     expect(outcome).toMatchObject({ code: "interaction_denied" });
@@ -637,12 +646,12 @@ const SMS_ASK = { question: "短信验证码有效期选哪种？", rootCheck: "
   choices: [{ label: "5 分钟", reason: "更安全", recommended: true, recommendedReason: "常见做法，够用户收短信" }, { label: "10 分钟", reason: "信号差也来得及，但更容易被盗用" }],
   scope: "仅短信验证码期限", actions: ["analyze"] };
 async function askedWorld(options: Parameters<typeof world>[0] = {}) {
-  const w = await world(options), created = await w.create(), { input, loaded } = await w.request(created);
+  const w = await world(options), created = await w.create(), { input } = await w.request(created);
   const ask = (answer: WindowDecision, extra: Record<string, unknown> = {}) => {
     w.capture(); w.answerWindows(answer);
-    return w.call({ action: "ask", ...input, operationId: uuidv7(), ...SMS_ASK, unitIds: [loaded.partition.units[1]!.id], ...extra }, true);
+    return w.call({ action: "ask", ...input, ...SMS_ASK, unitIds: ["background"], ...extra }, true);
   };
-  return { w, input, loaded, ask };
+  return { w, input, ask };
 }
 const verifierText = (w: Awaited<ReturnType<typeof world>>) =>
   JSON.parse(String((w.provider.requests.filter((r) => r.systemPrompt?.includes("草拟意图核验器")).at(-1)!.messages[0] as { content: string }).content)).text;
@@ -656,7 +665,7 @@ test("M8D-AC9：登记问题后弹出提问窗口，用户选推荐项，主代�
   expect(shown.choices).toEqual(["5 分钟", "10 分钟", "其他（自己输入）"]);
   expect(result).toMatchObject({ status: "answered", answer: { text: "5 分钟\n更安全", choice: 1 } });
   scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-  await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
+  await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
   expect(verifierText(w)).toBe("5 分钟\n更安全");
   expect(verifierText(w)).toBe((result as { answer: { text: string } }).answer.text);
 });
@@ -668,7 +677,7 @@ test("窗口里点选非首项的推荐项，交给核验器的原话就是该�
   const result = await ask("负责人维护项目清单，BOT 匹配项目并核对信息完整性", { choices });
   expect(result).toMatchObject({ status: "answered", answer: { text: "负责人维护项目清单，BOT 匹配项目并核对信息完整性\n按清单确认项目归属；交付可行性仍由负责人判断。", choice: 2 } });
   scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-  await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "交付可行性由需求负责人判断。\n" });
+  await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "交付可行性由需求负责人判断。\n" });
   expect(verifierText(w)).toBe("负责人维护项目清单，BOT 匹配项目并核对信息完整性\n按清单确认项目归属；交付可行性仍由负责人判断。");
 });
 
@@ -677,24 +686,13 @@ test("原话没有时间期限：截获两小时后（时钟与计时器都推�
   let now = 1000;
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
-    const w = await world({ now: () => now }), created = await w.create(), { input, loaded } = await w.request(created);
+    const w = await world({ now: () => now }), created = await w.create(), { input } = await w.request(created);
     w.capture("同意");
     now += TWO_HOURS; await vi.advanceTimersByTimeAsync(TWO_HOURS);
     vi.useRealTimers();
-    scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    scriptReview(w.provider, phoneReview);
     expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ targetRecorded: true, prdActivated: true });
   } finally { vi.useRealTimers(); }
-});
-test("工具结果凭证不按时间失效：同一 operationId 隔两小时重调，仍原样返回缓存结果而不是 stale_result", async () => {
-  let now = 1000;
-  const w = await world({ now: () => now }), created = await w.create();
-  w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-  const update = { action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version), operationId: uuidv7(),
-    summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充邮箱约束。\n" };
-  const first = await w.call(update);
-  now += TWO_HOURS;
-  const replay = await w.manage.execute(uuidv7(), { request: { repoId: w.repoId, ...update } } as never, undefined, undefined, w.ctx);
-  expect(replay.details).toEqual(first);
 });
 test("提问窗口开着两小时后才回答：ask 返回 answered，不报 stale_host，送达核对通过", async () => {
   let now = 1000;
@@ -714,7 +712,7 @@ test("提问窗口两小时后回答的话成为新的原话，之后立即可�
     w.beforeAnswer(async () => { now += TWO_HOURS; await vi.advanceTimersByTimeAsync(TWO_HOURS); vi.useRealTimers(); });
     await ask("5 分钟");
     scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
+    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
     expect(verifierText(w)).toBe("5 分钟\n更安全");
   } finally { vi.useRealTimers(); }
 });
@@ -723,7 +721,7 @@ test("M8D-AC9：在其他里自己输入的文字原样当作用户原话；Esc 
   const other = await askedWorld();
   expect(await other.ask({ other: "7 分钟" })).toMatchObject({ status: "answered", answer: { text: "7 分钟", other: true } });
   scriptReplies(other.w.provider, [{ type: "text", text: '{"allow":true}' }]);
-  await other.w.call({ action: "updateDraft", requirementId: other.input.requirementId, version: other.input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 7 分钟有效。\n" });
+  await other.w.call({ action: "updateDraft", requirementId: other.input.requirementId, version: other.input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 7 分钟有效。\n" });
   expect(verifierText(other.w)).toBe("7 分钟");
   const skipped = await askedWorld();
   const result = await skipped.ask(false);
@@ -755,18 +753,21 @@ test("提问文字不含人称字：照常弹窗；用户在其他里输入含�
 });
 
 test("M8D-AC9：窗口里的回答只算回答：拿它批准时不弹批准窗口、不生效，拿它裁决时被拒并写明原因", async () => {
-  const { w, input, loaded, ask } = await askedWorld();
+  const { w, input, ask } = await askedWorld();
   const asked = await ask("批准这一版并实施", { choices: [{ label: "批准这一版并实施", reason: "马上开始", recommended: true, recommendedReason: "草稿已写全" }, { label: "先不批准", reason: "再看看" }], unitIds: ["SMS"] });
-  const before = w.windows.length, review = phoneReview(loaded);
-  review.referenceResolution = "explicit";
-  Object.assign(review.entries.find((entry) => entry.kind === "unresolved")!, { requestId: asked.requestId, resolution: "defer" });
-  scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }, { type: "text", text: JSON.stringify(review) }]);
+  const before = w.windows.length;
+  scriptReview(w.provider, (c) => {
+    const review = phoneReview(c);
+    review.referenceResolution = "explicit";
+    Object.assign(review.entries.find((entry) => entry.kind === "unresolved")!, { requestId: asked.requestId, resolution: "defer" });
+    return review;
+  });
   const outcome = await w.call({ action: "reply", ...input }, true).then((r) => r, (e: unknown) => e);
   expect(outcome).toMatchObject({ prdActivated: false, blockedBy: "window_answer_not_decision" });
   expect(w.windows.length).toBe(before);
   const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
   expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
-  const adjudicated = await w.call({ purpose: "adjudicate", action: "reply", requirementId: input.requirementId, operationId: uuidv7(),
+  const adjudicated = await w.call({ purpose: "adjudicate", action: "reply", requirementId: input.requirementId,
     itemId: `requirement:${input.requirementId}`, itemVersion: `requirement:${input.requirementId}:1` }, true).catch((e: unknown) => e);
   expect(adjudicated).toMatchObject({ code: "window_answer_not_decision" });
   expect((adjudicated as Error).message).toContain("原因：用户是在提问窗口里选的，这只算回答，不能当作批准或裁决");
@@ -784,14 +785,12 @@ const interpreterContext = (w: Awaited<ReturnType<typeof world>>) =>
 
 test("M8D-AC9：批准被挡时写明原因：以前登记的决定挡住了哪些段落、这次解读里还有哪些段落待定，用段落标题说，待定段落附上解读模型写的理由", async () => {
   const w = await world(), created = await w.create(), first = await w.request(created);
-  const modify = phoneReview(first.loaded);
-  modify.faithful = false; modify.entries[1]!.resolution = "modify"; modify.entries.splice(5, 1);
-  w.capture("手机号登录要改一下"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(modify) }]);
+  w.capture("手机号登录要改一下"); scriptReview(w.provider, modifyReview);
   expect(await w.call({ action: "reply", ...first.input }, true)).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
   const resaveOperation = uuidv7();
   const resaved = await w.service.updateDraft({ requirementId: first.input.requirementId, version: first.input.version, operationId: resaveOperation, title: "登录", body: BODY + "补充一句。\n" });
   const next = await w.request({ ...created, operationId: resaveOperation, version: resaved.version });
-  w.capture("内容正确，批准这一版"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(allPending(next.loaded)) }, { type: "text", text: JSON.stringify(allPending(next.loaded)) }]);
+  w.capture("内容正确，批准这一版"); scriptReview(w.provider, allPending);
   const again = await w.call({ action: "confirmUpdate", ...next.input }).then((r) => r, (e: unknown) => e);
   expect(again).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
   const reason = (again as { blockedReason: string }).blockedReason;
@@ -802,27 +801,27 @@ test("M8D-AC9：批准被挡时写明原因：以前登记的决定挡住了哪�
 
 test("M9-AC12：某段被记为要修改后，草稿改了这一段再请批准，这条旧的修改记录不再算连续性问题、不交给解读模型，没改的段落仍照旧；一次明确批准即生效", async () => {
   const w = await world(), created = await w.create(), first = await w.request(created);
-  const modify = phoneReview(first.loaded);
-  modify.faithful = false; modify.entries[1]!.resolution = "modify"; modify.entries.splice(5, 1);
-  w.capture("手机号登录要改一下"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(modify) }]);
+  w.capture("手机号登录要改一下"); scriptReview(w.provider, modifyReview);
   expect(await w.call({ action: "reply", ...first.input }, true)).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
   const resaveOperation = uuidv7();
   const resaved = await w.service.updateDraft({ requirementId: first.input.requirementId, version: first.input.version, operationId: resaveOperation, title: "登录",
     body: BODY.replace("增加手机号登录，保留邮箱登录。", "增加手机号登录，保留邮箱登录，手机号须先验证。") });
   const next = await w.request({ ...created, operationId: resaveOperation, version: resaved.version });
-  w.capture("内容正确，批准这一版"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(next.loaded)) }]);
+  w.capture("内容正确，批准这一版"); scriptReview(w.provider, phoneReview);
   expect(await w.call({ action: "confirmUpdate", ...next.input })).toMatchObject({ prdActivated: true });
   expect((interpreterContext(w).continuityIssues as Array<{ unitId: string }>).map((issue) => issue.unitId)).toEqual(["SMS"]);
 });
 
 test("M9-AC12：解读模型对某段拿不准留下的待定记录只在当次有效：同一份草稿再请批准时不算以前的决定、不交给解读模型，一次明确批准即生效", async () => {
-  const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
-  const unsure = phoneReview(loaded);
-  unsure.faithful = false; Object.assign(unsure.entries[1]!, { kind: "unresolved", basis: "uncertain", resolution: "unclear" }); unsure.entries.splice(5, 1);
-  w.capture("两处我都批准"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(unsure) }]);
+  const w = await world(), created = await w.create(), { input } = await w.request(created);
+  w.capture("两处我都批准"); scriptReview(w.provider, (c) => {
+    const unsure = phoneReview(c);
+    unsure.faithful = false; Object.assign(unsure.entries[1]!, { kind: "unresolved", basis: "uncertain", resolution: "unclear" }); unsure.entries.splice(5, 1);
+    return unsure;
+  });
   expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ prdActivated: false, blockedBy: "candidate_requires_revision_or_clarification" });
-  w.capture("我批准登录这个需求的这一版"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
-  expect(await w.call({ action: "confirmUpdate", ...input, operationId: input.operationId })).toMatchObject({ prdActivated: true });
+  w.capture("我批准登录这个需求的这一版"); scriptReview(w.provider, phoneReview);
+  expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ prdActivated: true });
   expect((interpreterContext(w).continuityIssues as Array<{ unitId: string }>).map((issue) => issue.unitId)).toEqual(["SMS"]);
 });
 
@@ -830,10 +829,10 @@ test("M8D-AC6：解释器的对象说明里带有本窗口其他还没批准的�
   const w = await world(), a = await w.create(), b = await w.create();
   await w.create();
   const first = await w.request(a), second = await w.request(b);
-  w.capture("两处我都批准", "interactive", false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
+  w.capture("两处我都批准", "interactive", false); scriptReview(w.provider, phoneReview);
   expect(await w.call({ action: "confirmUpdate", ...first.input })).toMatchObject({ prdActivated: true });
   expect(interpreterContext(w).addressed).toEqual({ how: "window", otherDrafts: [{ title: "登录", version: 1 }, { title: "登录", version: 1 }] });
-  w.capture("两处我都批准", "interactive", false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
+  w.capture("两处我都批准", "interactive", false); scriptReview(w.provider, phoneReview);
   await w.call({ action: "confirmUpdate", ...second.input });
   expect(interpreterContext(w).addressed).toEqual({ how: "window", otherDrafts: [{ title: "登录", version: 1 }] });
 });
@@ -844,45 +843,45 @@ test("M9：用户说第一句话时守护进程还没连上，原话照样记下
   expect(() => w.capture(PHONE, "interactive", false)).not.toThrow();
   w.setReachable(true);
   scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-  expect(await w.call({ action: "create", requestId: uuidv7(), operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY })).toMatchObject({ status: "created" });
+  expect(await w.call({ action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY })).toMatchObject({ status: "created" });
 });
 
 test("M8D-AC3：没有确认任何正文段落的解读不留下决定记录，随后一次明确的批准照常生效", async () => {
-  const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+  const w = await world(), created = await w.create(), { input } = await w.request(created);
   const decisions = () => withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"));
-  w.capture("两处我都批准"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(allPending(loaded)) }]);
+  w.capture("两处我都批准"); scriptReview(w.provider, allPending);
   const blocked = await w.call({ action: "confirmUpdate", ...input });
   expect(blocked).toMatchObject({ prdActivated: false, blockedBy: "candidate_requires_revision_or_clarification", decisionIds: [] });
   expect((blocked as { blockedReason: string }).blockedReason).toMatch(/这次的解读里仍待定的段落：[^；]*手机号与邮箱/u);
   expect(decisions()).toEqual([]);
-  w.capture("我批准登录这个需求的这一版"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
-  expect(await w.call({ action: "confirmUpdate", ...input, operationId: input.operationId })).toMatchObject({ prdActivated: true });
+  w.capture("我批准登录这个需求的这一版"); scriptReview(w.provider, phoneReview);
+  expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ prdActivated: true });
 });
 
 test("M8D-AC3：解释器的上下文里带有程序认定的对象事实：@ 到的写 mention 与同一句话针对的其他需求数，批准窗口确认的写 window", async () => {
   const w = await world(), a = await w.create(), b = await w.create();
   const first = await w.request(a), second = await w.request(b);
-  w.capture("两处我都批准"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
+  w.capture("两处我都批准"); scriptReview(w.provider, phoneReview);
   await w.call({ action: "confirmUpdate", ...first.input });
   expect(interpreterContext(w).addressed).toEqual({ how: "mention", others: 1, otherDrafts: [{ title: "登录", version: 1 }] });
-  w.capture("批准登录", "interactive", false); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
+  w.capture("批准登录", "interactive", false); scriptReview(w.provider, phoneReview);
   await w.call({ action: "confirmUpdate", ...second.input });
   expect(interpreterContext(w).addressed).toEqual({ how: "window" });
   expect(w.provider.requests.filter((r) => r.systemPrompt?.includes("需求解释器")).at(-1)!.systemPrompt).toContain("context.addressed");
 });
 
 test("批准登记到一半失败后又登记了新问题，草稿仍能继续保存，不会卡死在这一版", async () => {
-  const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+  const w = await world(), created = await w.create(), { input } = await w.request(created);
   const storage = vi.spyOn(RequirementService.prototype, "confirmUpdate").mockRejectedValueOnce(new RequirementServiceError("stale_version", "模拟存储出错"));
   try {
-    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
     await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toMatchObject({ code: "stale_version" });
   } finally { storage.mockRestore(); }
   expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("approval_manifests_v1"))).toHaveLength(1);
   w.capture("再问我一下短信期限"); w.answerWindows(false);
-  await w.call({ action: "ask", ...input, operationId: uuidv7(), ...SMS_ASK, unitIds: ["SMS"] }, true);
+  await w.call({ action: "ask", ...input, ...SMS_ASK, unitIds: ["SMS"] }, true);
   w.capture("短信验证码 5 分钟有效，写进草稿"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-  const saved = await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(),
+  const saved = await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version,
     summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" }).then((r) => r, (e: unknown) => e);
   expect(saved).toMatchObject({ status: "saved" });
 });
@@ -891,9 +890,9 @@ test("M8D-AC3：一句话 @ 两个需求并批准，两个需求按各自的版�
   const w = await world(), a = await w.create(), b = await w.create();
   const first = await w.request(a), second = await w.request(b);
   w.capture("两处我都批准");
-  scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
+  scriptReview(w.provider, phoneReview);
   expect(await w.call({ action: "confirmUpdate", ...first.input })).toMatchObject({ prdActivated: true });
-  scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(second.loaded)) }]);
+  scriptReview(w.provider, phoneReview);
   const other = await w.call({ action: "confirmUpdate", ...second.input }).then((r) => r, (e: unknown) => e);
   expect(other).toMatchObject({ prdActivated: true });
   expect(w.windows).toHaveLength(0);
@@ -901,20 +900,20 @@ test("M8D-AC3：一句话 @ 两个需求并批准，两个需求按各自的版�
 
 test("M8D-AC3：已批准的需求只改一段后再批准，解释器只确认改动的那段、把没改的段落列为待定，程序沿用原批准，更新照常生效", async () => {
   const w = await world(), created = await w.create(), first = await w.request(created);
-  w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(first.loaded)) }]);
+  w.capture("同意"); scriptReview(w.provider, phoneReview);
   expect(await w.call({ action: "confirmUpdate", ...first.input })).toMatchObject({ prdActivated: true });
   w.capture("验收补一条：手机号连续失败三次后锁定十分钟"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-  const updateOperation = uuidv7();
   const updated = await w.call({ action: "updateDraft", requirementId: first.input.requirementId, version: Number((await w.call({ action: "metadata", requirementId: first.input.requirementId })).version),
-    operationId: updateOperation, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "手机号连续失败三次后锁定十分钟。\n" });
-  const next = await w.request({ ...created, operationId: updateOperation, version: updated.version });
-  const base = phoneReview(next.loaded), entry = base.entries[0]!;
-  const sms = base.entries.find((e) => e.kind === "unresolved")!, delegation = base.entries.find((e) => e.kind === "delegation")!;
-  const untouched = next.loaded.partition.units.map((unit) => unit.id).filter((id) => !["acceptance", "SMS", "D"].includes(id));
-  const review = { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: false, entries: [
-    { ...entry, kind: "constraint", conclusion: "验收补充失败锁定", unitIds: ["acceptance"] }, sms, delegation,
-    { ...entry, kind: "unresolved", basis: "uncertain", resolution: "unclear", conclusion: "其余段落这次没有重新确认", unitIds: untouched }] };
-  w.capture("更新我确认，批准"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(review) }, { type: "text", text: JSON.stringify(review) }]);
+    summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "手机号连续失败三次后锁定十分钟。\n" });
+  const next = await w.request(updated);
+  w.capture("更新我确认，批准"); scriptReview(w.provider, (c) => {
+    const base = phoneReview(c), entry = base.entries[0]!;
+    const sms = base.entries.find((e) => e.kind === "unresolved")!, delegation = base.entries.find((e) => e.kind === "delegation")!;
+    const untouched = c.partition.units.map((unit) => unit.id).filter((id) => !["acceptance", "SMS", "D"].includes(id));
+    return { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: false, entries: [
+      { ...entry, kind: "constraint", conclusion: "验收补充失败锁定", unitIds: ["acceptance"] }, sms, delegation,
+      { ...entry, kind: "unresolved", basis: "uncertain", resolution: "unclear", conclusion: "其余段落这次没有重新确认", unitIds: untouched }] };
+  });
   const outcome = await w.call({ action: "confirmUpdate", ...next.input }).then((r) => r, (e: unknown) => e);
   expect(outcome).toMatchObject({ prdActivated: true });
 });
@@ -950,7 +949,7 @@ describe("草稿核验模型没有 60 秒时限", () => {
     try {
       w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}', chunkDelayMs: 120_000 }]);
       const count = w.provider.requests.length;
-      const pending = w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version), operationId: uuidv7(),
+      const pending = w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version),
         summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充邮箱约束。\n" });
       const settled = expect(pending).resolves.toMatchObject({ requirementId: created.requirementId });
       while (w.provider.requests.length === count) await new Promise((r) => setImmediate(r));
@@ -963,7 +962,7 @@ describe("草稿核验模型没有 60 秒时限", () => {
     const w = await world(), created = await w.create(), abort = new AbortController();
     w.capture(); (w.ctx as { signal?: AbortSignal }).signal = abort.signal; scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}', chunkDelayMs: 120_000 }]);
     const count = w.provider.requests.length;
-    const pending = w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version), operationId: uuidv7(),
+    const pending = w.call({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(created.version),
       summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充邮箱约束。\n" });
     const rejected = expect(pending).rejects.toThrow();
     while (w.provider.requests.length === count) await new Promise((r) => setTimeout(r, 1));
@@ -989,15 +988,15 @@ async function designed(w: World, requirementId: string, name: string, reworks =
 
 async function updatedBody(w: World, requirementId: string, body: string) {
   w.capture("补一句"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
-  const meta = await w.call({ action: "metadata", requirementId }), operationId = uuidv7();
-  const updated = await w.call({ action: "updateDraft", requirementId, version: Number(meta.version), operationId,
+  const meta = await w.call({ action: "metadata", requirementId });
+  const updated = await w.call({ action: "updateDraft", requirementId, version: Number(meta.version),
     summary: "手机号登录，保留邮箱登录", title: "登录", body });
-  return { operationId, version: Number(updated.version) };
+  return { operationId: String(updated.operationId), version: Number(updated.version) };
 }
 
 async function approvedSaved(w: World, requirementId: string, saved: { operationId: string; version: number }) {
-  const { input, loaded } = await w.request({ requirementId, operationId: saved.operationId, version: saved.version });
-  w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+  const { input } = await w.request({ requirementId, operationId: saved.operationId, version: saved.version });
+  w.capture("同意"); scriptReview(w.provider, phoneReview);
   return w.call({ action: "confirmUpdate", ...input });
 }
 
@@ -1114,12 +1113,12 @@ describe("批准时连同草稿里的原型一起批准", () => {
   });
 
   test("没有任何原型的需求，带 @ 批准不弹窗，不带 @ 弹的窗口没有原型清单", async () => {
-    const w = await world(), created = await w.create(), { input, loaded } = await w.request(created);
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
     w.capture("同意", "interactive", false); w.answerWindows(false);
     await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toMatchObject({ code: "decision_declined" });
     expect(w.windows).toHaveLength(1);
     expect(w.windows[0]!.text).not.toContain("这一版一起批准的原型");
-    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
     expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ prdActivated: true });
     expect(w.windows).toHaveLength(1);
   });
@@ -1128,8 +1127,8 @@ describe("批准时连同草稿里的原型一起批准", () => {
     const w = await world(), created = await w.create(), id = String(created.requirementId);
     await designed(w, id, "设置页");
     w.beforeAnswer(async () => { await designed(w, id, "另一份"); });
-    const { input, loaded } = await w.request(created);
-    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    const { input } = await w.request(created);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
     await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toThrow("原型在批准过程中变了");
     const entries = (await readPrototypeBoard(boardRef(w), id)).entries;
     expect(entries.map((item) => item.approved)).toEqual([null, null]);
@@ -1215,8 +1214,8 @@ describe("批准时核对原型文件和在途原型", () => {
       const w = await world(), created = await w.create(), id = String(created.requirementId);
       await designed(w, id, "设置页");
       w.beforeAnswer(async () => { damage(filePath(w, id, "设置页", 1)); });
-      const { input, loaded } = await w.request(created);
-      w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+      const { input } = await w.request(created);
+      w.capture("同意"); scriptReview(w.provider, phoneReview);
       const error = await rejected(w.call({ action: "confirmUpdate", ...input }));
       expect(error.message).toContain("设置页");
       expect(error.message).toContain("第 1 版");
@@ -1243,8 +1242,8 @@ describe("批准时核对原型文件和在途原型", () => {
     const w = await world(), created = await w.create(), id = String(created.requirementId);
     await designed(w, id, "设置页");
     w.beforeAnswer(async () => { await beginDesign(boardRef(w), { requirementId: id, name: "另一份", runId: uuidv7(), agent: "designer" }); });
-    const { input, loaded } = await w.request(created);
-    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    const { input } = await w.request(created);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
     const error = await rejected(w.call({ action: "confirmUpdate", ...input }));
     expect(error.message).toContain("原型「另一份」设计师还在做");
     expect(error.message).toMatch(/通过|返工|放弃/);
@@ -1260,11 +1259,112 @@ describe("批准时核对原型文件和在途原型", () => {
       await beginDesign(boardRef(w), { requirementId: id, name: "另一份", runId, agent: "designer" });
       await submitDesign(boardRef(w), { requirementId: id, name: "另一份", runId, html: PROTOTYPE_HTML, note: "说明" });
     });
-    const { input, loaded } = await w.request(created);
-    w.capture("同意"); scriptReplies(w.provider, [{ type: "text", text: JSON.stringify(phoneReview(loaded)) }]);
+    const { input } = await w.request(created);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
     const error = await rejected(w.call({ action: "confirmUpdate", ...input }));
     expect(error.message).toContain("原型「另一份」第 1 版还在等你确认");
     expect(error.message).not.toContain("在批准过程中变了");
     expect(await prototypesAtRevision(boardRef(w), id, 1)).toEqual([]);
   });
+});
+
+describe("编号由程序生成", () => {
+  const allowDrafts = (w: World) => { w.provider.awaitReply = async () => ({ type: "text", text: '{"allow":true}' }); };
+  const draft = (created: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ action: "updateDraft", requirementId: String(created.requirementId),
+    version: Number(created.version), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充一句。\n", ...extra });
+  const stateOf = async (w: World) => RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+
+  /** 让第一次登记保存版本失败，留下一次没做完的保存，返回它的操作编号。 */
+  async function leaveUnfinishedUpdate(w: World, created: Record<string, unknown>) {
+    const original = RequirementOperations.prototype.recordSavedVersion;
+    const spy = vi.spyOn(RequirementOperations.prototype, "recordSavedVersion").mockImplementationOnce(() => { throw new Error("injected saved-version log failure"); }).mockImplementation(original);
+    try { w.capture(); await expect(w.call(draft(created))).rejects.toThrow(); } finally { spy.mockRestore(); }
+    const unfinished = withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list(REQUIREMENT_OPERATION_NAMESPACE))
+      .filter((row) => (row.data as { action: string; finalVersion: number | null }).action === "updateDraft" && (row.data as { finalVersion: number | null }).finalVersion === null);
+    expect(unfinished).toHaveLength(1);
+    return (unfinished[0]!.data as { operationId: string }).operationId;
+  }
+
+  test("create不带requestId与operationId也成功，结果带需求编号和合规的操作编号；带requestId被拒", async () => {
+    const w = await world(), created = await w.create();
+    expect(created.requirementId).toMatch(UUID_V7_PATTERN);
+    expect(created.operationId).toMatch(UUID_V7_PATTERN);
+    w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await expect(w.call({ action: "create", requestId: uuidv7(), summary: "简介", title: "另一个", body: BODY })).rejects.toMatchObject({ code: "invalid_shape" });
+  });
+
+  test("同一需求连续两次不带编号updateDraft：操作编号不同，版本号依次加一", async () => {
+    const w = await world(), created = await w.create();
+    allowDrafts(w);
+    w.capture("补一句"); const first = await w.call(draft(created, { body: BODY + "第一句。\n" }));
+    w.capture("再补一句"); const second = await w.call(draft(created, { version: Number(first.version), body: BODY + "第二句。\n" }));
+    expect(first.operationId).toMatch(UUID_V7_PATTERN);
+    expect(second.operationId).toMatch(UUID_V7_PATTERN);
+    expect(second.operationId).not.toBe(first.operationId);
+    expect(Number(first.version)).toBe(Number(created.version) + 1);
+    expect(Number(second.version)).toBe(Number(first.version) + 1);
+  });
+
+  test("confirmUpdate与reply不带编号：结果带程序生成的操作编号", async () => {
+    const w = await world(), first = await w.request(await w.create()), second = await w.request(await w.create());
+    scriptReview(w.provider, phoneReview);
+    w.capture("两处我都批准"); const confirmed = await w.call({ action: "confirmUpdate", ...first.input });
+    expect(confirmed.operationId).toMatch(UUID_V7_PATTERN);
+    expect(confirmed.operationId).not.toBe(first.input.savedOperationId);
+    w.capture("两处我都批准"); const replied = await w.call({ action: "reply", ...second.input }, true);
+    expect(replied.operationId).toMatch(UUID_V7_PATTERN);
+  });
+
+  test("没做完的保存留着时，再发起新保存的报错原因里带原操作编号；照抄原编号、带原内容再调，保存完成", async () => {
+    const w = await world(), created = await w.create(), state = await stateOf(w);
+    allowDrafts(w);
+    const unfinished = await leaveUnfinishedUpdate(w, created);
+    w.capture(); const error = await w.call(draft(created, { version: state.read(String(created.requirementId)).version, body: BODY + "别的内容。\n" })).catch((caught: unknown) => caught as Error);
+    expect(error.message).toContain(unfinished);
+    w.capture(); const resumed = await w.call(draft(created, { operationId: unfinished }));
+    expect(resumed).toMatchObject({ status: "saved", operationId: unfinished });
+    expect(Number(resumed.version)).toBeGreaterThan(Number(created.version));
+  });
+
+  const rejections: Array<[string, string]> = [
+    ["编号不存在", "找不到这个操作编号对应的保存"],
+    ["编号对应的保存已完成", "已经完成"],
+    ["编号属于别的需求", "属于别的需求或别的动作"],
+    ["内容与原操作不同", "续做的内容与原操作不同"],
+  ];
+  for (const [reason, phrase] of rejections) test(`续做时${reason}：被拒并写明原因，需求状态不变`, async () => {
+    const w = await world(), created = await w.create(), other = await w.create(), state = await stateOf(w);
+    allowDrafts(w);
+    const cases: Record<string, () => Promise<Record<string, unknown>>> = {
+      "编号不存在": async () => draft(created, { operationId: uuidv7() }),
+      "编号对应的保存已完成": async () => {
+        w.capture(); const done = await w.call(draft(created));
+        return draft(created, { version: Number(done.version), operationId: String(done.operationId), body: BODY + "再来一句。\n" });
+      },
+      "编号属于别的需求": async () => {
+        const unfinished = await leaveUnfinishedUpdate(w, created);
+        return draft(other, { operationId: unfinished });
+      },
+      "内容与原操作不同": async () => {
+        const unfinished = await leaveUnfinishedUpdate(w, created);
+        return draft(created, { operationId: unfinished, title: "登录改名" });
+      },
+    };
+    const attempt = await cases[reason]!();
+    const before = [state.read(String(created.requirementId)), state.read(String(other.requirementId))];
+    w.capture();
+    const error = await w.call(attempt).catch((caught: unknown) => caught as Error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(phrase);
+    expect([state.read(String(created.requirementId)), state.read(String(other.requirementId))]).toEqual(before);
+  });
+});
+
+test("续做时填了不属于本窗口的仓库编号：先按仓库鉴权拒绝，不在本机建出这个仓库的库", async () => {
+  const w = await world();
+  w.capture("改一下需求");
+  const foreign = "f".repeat(64);
+  await expect(w.call({ repoId: foreign, action: "updateDraft", requirementId: uuidv7(), operationId: uuidv7(), version: 1, summary: "手机号登录", title: "登录", body: BODY })).rejects.toThrow();
+  await expect(w.call({ repoId: foreign, action: "confirmUpdate", requirementId: uuidv7(), savedOperationId: uuidv7(), operationId: uuidv7(), version: 1 })).rejects.toThrow();
+  await expect(stat(repositoryDatabase(w.dataRoot, foreign))).rejects.toMatchObject({ code: "ENOENT" });
 });

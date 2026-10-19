@@ -216,7 +216,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   question_view_mismatch: { why: "问题剩余的章节与原问题不一致", next: "重新读取需求后按最新版本再试" },
   reconsideration_denied: { why: "不能再次复核：文档复核已判定一致、复核次数已用完（最多 3 次），或正在保存", next: "按当前复核结果继续，不要再次复核" },
   request_limit: { why: "请求内容超出大小上限", next: "精简内容后重试" },
-  resave_not_finalized: { why: "重新保存还没完成", next: "用原来的操作编号重试，让它续完" },
+  resave_not_finalized: { why: "重新保存还没完成", next: "在 operationId 填原因里给出的原操作编号再调一次，让它续完" },
   resave_origin_mismatch: { why: "重新保存的起点与原复核不一致", next: "重新读取需求后按最新版本再试" },
   resave_state_mismatch: { why: "重新保存前后需求状态不一致", next: "重新读取需求后按最新版本再试" },
   retained_source_mismatch: { why: "保留的来源章节在待批准版本里不存在", next: "重新读取需求后按最新版本再试" },

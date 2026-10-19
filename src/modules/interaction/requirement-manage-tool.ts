@@ -3,6 +3,7 @@ import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
+import { uuidv7 } from "../../core/storage/database.ts";
 import { HostAuthorizationError } from "../requirement/host-authorization.ts";
 import { MainRequirementInteraction } from "./main-requirement-interaction.ts";
 import { PRD_SECTION_ID_PATTERN } from "../requirement/prd-view.ts";
@@ -16,9 +17,9 @@ const version = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
 const summary = Type.String({ minLength: 1, maxLength: SUMMARY_MAX_CHARS });
 const paging = { maxBytes: Type.Optional(Type.Integer({ minimum: 4, maximum: 16_384 })) };
 const actions = {
-  create: Type.Object({ action: Type.Literal("create"), repoId, requestId: id, operationId: id, summary, title: Type.String({ maxLength: 1024 }), body: Type.String({ maxLength: 65_536 }) }, { additionalProperties: false }),
-  updateDraft: Type.Object({ action: Type.Literal("updateDraft"), repoId, requirementId: id, operationId: id, version, summary, title: Type.String({ maxLength: 1024 }), body: Type.String({ maxLength: 65_536 }) }, { additionalProperties: false }),
-  confirmUpdate: Type.Object({ action: Type.Literal("confirmUpdate"), repoId, requirementId: id, savedOperationId: id, operationId: id, version }, { additionalProperties: false }),
+  create: Type.Object({ action: Type.Literal("create"), repoId, operationId: Type.Optional(id), summary, title: Type.String({ maxLength: 1024 }), body: Type.String({ maxLength: 65_536 }) }, { additionalProperties: false }),
+  updateDraft: Type.Object({ action: Type.Literal("updateDraft"), repoId, requirementId: id, operationId: Type.Optional(id), version, summary, title: Type.String({ maxLength: 1024 }), body: Type.String({ maxLength: 65_536 }) }, { additionalProperties: false }),
+  confirmUpdate: Type.Object({ action: Type.Literal("confirmUpdate"), repoId, requirementId: id, savedOperationId: id, operationId: Type.Optional(id), version }, { additionalProperties: false }),
   read: Type.Object({ action: Type.Literal("read"), repoId, requirementId: id, source: Type.Optional(StringEnum(["saved", "approved"] as const)), sectionId: Type.Optional(Type.String({ pattern: PRD_SECTION_ID_PATTERN, maxLength: 96 })), ...paging }, { additionalProperties: false }),
   diff: Type.Object({ action: Type.Literal("diff"), repoId, requirementId: id, fromRevision: version, toRevision: Type.Optional(version), ...paging }, { additionalProperties: false }),
   next: Type.Object({ action: Type.Literal("next"), repoId, requirementId: id, cursor: Type.String({ pattern: "^[0-9a-f]{64}$", maxLength: 64 }) }, { additionalProperties: false }),
@@ -29,7 +30,7 @@ export const REQUIREMENT_MANAGE_PARAMETERS = requestParameters(Object.values(act
 export function createRequirementManageTool(options: { interaction: MainRequirementInteraction }): ToolDefinition<typeof REQUIREMENT_MANAGE_PARAMETERS, Record<string, unknown>> {
   const interaction = options.interaction;
   return { name: "one_company_requirement_manage", label: "管理活动需求",
-    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requestId、operationId 每次新生成 UUIDv7，requirementId、version、savedOperationId 取自此前工具结果，不要自编。保存需求草稿，create 与 updateDraft 都要写 summary：一段话（最多 200 字）说明这个功能是什么，用户批准时的确认窗口会显示它；正文板块按系统提示里的需求文档规范写，每个标题（含各级小节标题）末尾都写唯一编号（字母开头，只含字母数字._-，不重复），缺编号或重复时批准被拒；confirmUpdate只接真实saved操作ID，不接正文或批准声明。只消费当前真实用户输入。list 列出本窗口各仓库草稿与进行中需求的编号、标题与状态（不含正文，不列已关闭的），给 repoId 时只列该仓库；不知道需求编号时先 list。read默认当前approved，草稿可指定saved，章节及UTF8分页逐次核权，完整封装不超过50KiB；结果的coverage.nextCursor不为空时，用next带上它读下一页。无当前输入或模型不可用明确拒绝。",
+    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requirementId、version、savedOperationId 取自此前工具结果，不要自编；operationId 由程序生成，平时不填；只有报错或结果给出原操作编号、要续做那次没完成的保存时，才照抄那个编号填进来，并带上原来的内容。保存需求草稿，create 与 updateDraft 都要写 summary：一段话（最多 200 字）说明这个功能是什么，用户批准时的确认窗口会显示它；正文板块按系统提示里的需求文档规范写，每个标题（含各级小节标题）末尾都写唯一编号（字母开头，只含字母数字._-，不重复），缺编号或重复时批准被拒；confirmUpdate只接真实saved操作ID，不接正文或批准声明。只消费当前真实用户输入。list 列出本窗口各仓库草稿与进行中需求的编号、标题与状态（不含正文，不列已关闭的），给 repoId 时只列该仓库；不知道需求编号时先 list。read默认当前approved，草稿可指定saved，章节及UTF8分页逐次核权，完整封装不超过50KiB；结果的coverage.nextCursor不为空时，用next带上它读下一页。无当前输入或模型不可用明确拒绝。",
     promptSnippet: "整理当前需求、按范围记录决定，读取当前获准目标", parameters: REQUIREMENT_MANAGE_PARAMETERS, executionMode: "sequential",
     async execute(toolCallId, raw, signal, _update, ctx) {
       try { return await run(toolCallId, raw, signal, ctx); }
@@ -46,12 +47,15 @@ export function createRequirementManageTool(options: { interaction: MainRequirem
     if (Buffer.byteLength(JSON.stringify(request)) > 65_536) throw new HostAuthorizationError("invalid_shape", "参数超过 64KiB");
     const p = structuredClone(request) as Static<(typeof actions)[keyof typeof actions]>;
     if (p.action === "list") return interaction.list(toolCallId, ctx, p.repoId);
+    const saves = p.action === "create" || p.action === "updateDraft" || p.action === "confirmUpdate";
+    const resume = saves && p.operationId !== undefined;
+    if (saves && !resume) p.operationId = uuidv7();
     return interaction.execute(toolCallId, ctx, p.repoId, p, async () => {
       signal?.throwIfAborted();
       switch (p.action) {
-        case "create": return interaction.draft(ctx, p.repoId, "create", { requestId: p.requestId!, operationId: p.operationId!, title: p.title!, body: p.body! }, p.summary!);
-        case "updateDraft": return interaction.draft(ctx, p.repoId, "updateDraft", { requirementId: p.requirementId!, operationId: p.operationId!, version: p.version!, title: p.title!, body: p.body! }, p.summary!);
-        case "confirmUpdate": return interaction.confirm(ctx, { repoId: p.repoId, requirementId: p.requirementId!, savedOperationId: p.savedOperationId!, operationId: p.operationId!, version: p.version! });
+        case "create": return interaction.draft(ctx, p.repoId, "create", { requestId: uuidv7(), operationId: p.operationId!, title: p.title!, body: p.body! }, p.summary!, resume);
+        case "updateDraft": return interaction.draft(ctx, p.repoId, "updateDraft", { requirementId: p.requirementId!, operationId: p.operationId!, version: p.version!, title: p.title!, body: p.body! }, p.summary!, resume);
+        case "confirmUpdate": return interaction.confirm(ctx, { repoId: p.repoId, requirementId: p.requirementId!, savedOperationId: p.savedOperationId!, operationId: p.operationId!, version: p.version! }, resume);
         case "read": case "diff": return interaction.read(ctx, { ...p, action: p.action, requirementId: p.requirementId! });
         case "next": return interaction.read(ctx, { action: "next", repoId: p.repoId, requirementId: p.requirementId!, cursor: p.cursor! });
         case "metadata": return interaction.metadata(ctx, p.repoId, p.requirementId!);

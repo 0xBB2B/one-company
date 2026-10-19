@@ -8,6 +8,7 @@ import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../src/modules/int
 import { askQuestionIssues } from "../src/modules/interaction/ask-question.ts";
 import { createUserInteractTool, USER_INTERACT_PARAMETERS } from "../src/modules/interaction/user-interact-tool.ts";
 const base = { action: "reply", repoId: "a".repeat(64), requirementId: uuidv7(), operationId: uuidv7(), savedOperationId: uuidv7(), version: 2 };
+const { operationId: _operationId, ...askBase } = base;
 test("user_interact不接受转述、请求选择、角色或回执", async () => {
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: base })).toBe(true);
   const tool = createUserInteractTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
@@ -27,7 +28,7 @@ test("user_interact不接受转述、请求选择、角色或回执", async () =
 });
 const CHOICES = [{ label: "实施 A", reason: "马上能用", recommended: true, recommendedReason: "A 已写清楚" }, { label: "先不实施", reason: "等 B 一起做" }];
 test("ask问题、范围、action限额严格，章节数不设单独上限，且不接正文附件", async () => {
-  const ask = { ...base, action: "ask", question: "A可以实施吗？", rootCheck: "要定的是 A 何时实施", choices: CHOICES, scope: "仅A", actions: ["implement"], unitIds: ["A"] };
+  const ask = { ...askBase, action: "ask", question: "A可以实施吗？", rootCheck: "要定的是 A 何时实施", choices: CHOICES, scope: "仅A", actions: ["implement"], unitIds: ["A"] };
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: ask })).toBe(true);
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...ask, purpose: "user-confirmation" } })).toBe(true);
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...ask, unitIds: Array.from({ length: 25 }, (_, i) => `A${i}`) } })).toBe(true);
@@ -36,8 +37,37 @@ test("ask问题、范围、action限额严格，章节数不设单独上限，�
   }
 });
 
+test("编号由程序生成：user-confirmation的reply可不带operationId，ask、panel-item、adjudicate与pm-intake的ask和reply带operationId被拒", async () => {
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: askBase })).toBe(true);
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...askBase, purpose: "user-confirmation" } })).toBe(true);
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...base, operationId: "不是编号" } })).toBe(false);
+  const repoId = "a".repeat(64), requirementId = uuidv7(), operationId = uuidv7();
+  const askFields = { question: "A可以实施吗？", rootCheck: "要定的是 A 何时实施", choices: CHOICES, scope: "仅A", actions: ["implement"], unitIds: ["A"] };
+  const withoutId: Array<[string, Record<string, unknown>]> = [
+    ["user-confirmation ask", { action: "ask", repoId, requirementId, savedOperationId: uuidv7(), version: 2, ...askFields }],
+    ["panel-item ask", { purpose: "panel-item", action: "ask", repoId, requirementId, itemId: `task:${uuidv7()}`, itemVersion: "3", question: askFields.question, rootCheck: askFields.rootCheck, choices: CHOICES }],
+    ["adjudicate reply", { purpose: "adjudicate", action: "reply", repoId, requirementId, itemId: `requirement:${requirementId}`, itemVersion: `requirement:${requirementId}:1` }],
+    ["pm-intake ask", { purpose: "pm-intake", action: "ask", repoId, requirementId }],
+    ["pm-intake reply", { purpose: "pm-intake", action: "reply", repoId, requirementId, requestId: uuidv7(), result: "passed", shortIssues: [] }],
+  ];
+  const tool = createUserInteractTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
+  for (const [name, request] of withoutId) {
+    expect(Value.Check(USER_INTERACT_PARAMETERS, { request }), name).toBe(true);
+    expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...request, operationId } }), name).toBe(false);
+    await expect(tool.execute("call", { request: { ...request, operationId } } as never, undefined, undefined, {} as never), name).rejects.toMatchObject({ code: "invalid_shape" });
+  }
+});
+
+test("工具说明不提新生成与UUIDv7，写明operationId平时不填、只在续做时照抄报错或结果给出的编号", () => {
+  const { description } = createUserInteractTool({ interaction: {} as never });
+  expect(description).not.toContain("新生成");
+  expect(description).not.toContain("UUIDv7");
+  expect(description).toMatch(/operationId[^。；]*不填/u);
+  expect(description).toMatch(/(报错|结果)[^。；]*续做[^。；]*照抄/u);
+});
+
 test("pm-intake runtime对白名单副本做严格action分派", () => {
-  const valid = { purpose: "pm-intake", action: "ask", repoId: "b".repeat(64), requirementId: uuidv7(), operationId: uuidv7() };
+  const valid = { purpose: "pm-intake", action: "ask", repoId: "b".repeat(64), requirementId: uuidv7() };
   expect(checkPmIntakeToolInput(valid)).toEqual(valid);
   for (const action of [...Object.getOwnPropertyNames(Object.prototype), "unknown"]) {
     const input = { ...valid, action };
@@ -51,7 +81,7 @@ test("pm-intake runtime对白名单副本做严格action分派", () => {
 
 test("pm-intake schema按400个Unicode码点和8条问题限制", () => {
   const pm = { purpose: "pm-intake", action: "reply", repoId: "b".repeat(64), requirementId: uuidv7(),
-    requestId: uuidv7(), operationId: uuidv7(), result: "pm_correction_required" };
+    requestId: uuidv7(), result: "pm_correction_required" };
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...pm, shortIssues: ["😀".repeat(400)] } })).toBe(true);
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...pm, shortIssues: ["😀".repeat(401)] } })).toBe(false);
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...pm, shortIssues: Array.from({ length: 9 }, () => "问题") } })).toBe(false);
@@ -80,8 +110,8 @@ test("真实Anthropic序列化在onPayload前让content中的中文理解和requ
 });
 
 test("pm-intake严格分支只转给intake，默认及显式user-confirmation保持原路径", async () => {
-  const requirementId = uuidv7(), repoId = "b".repeat(64), operationId = uuidv7();
-  const pm = { purpose: "pm-intake", action: "ask", repoId, requirementId, operationId };
+  const requirementId = uuidv7(), repoId = "b".repeat(64);
+  const pm = { purpose: "pm-intake", action: "ask", repoId, requirementId };
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: pm })).toBe(true);
   for (const patch of [{ actor: "user" }, { role: "main" }, { reviewer: "forged" }, { trusted: true },
     { receipt: uuidv7() }, { understanding: {} }, { binding: {} }, { sourceDirectory: {} }, { submissionHash: "c".repeat(64) }]) {
@@ -104,7 +134,7 @@ test("pm-intake严格分支只转给intake，默认及显式user-confirmation保
 
 test("M8D-AC9：登记问题缺根源自检、选项数量不对、没有推荐或推荐了多个、推荐项缺理由、拼起来超长，都被拒绝并写明缺了什么", async () => {
   const tool = createUserInteractTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
-  const ask = { ...base, action: "ask", question: "A可以实施吗？", rootCheck: "要定的是 A 何时实施", choices: CHOICES, scope: "仅A", actions: ["implement"], unitIds: ["A"] };
+  const ask = { ...askBase, action: "ask", question: "A可以实施吗？", rootCheck: "要定的是 A 何时实施", choices: CHOICES, scope: "仅A", actions: ["implement"], unitIds: ["A"] };
   const cases: Array<[Record<string, unknown>, string]> = [
     [{ rootCheck: undefined }, "缺少根源自检（rootCheck）"],
     [{ rootCheck: " " }, "缺少根源自检（rootCheck）"],
@@ -169,7 +199,7 @@ test("user-confirmation 提问的选项理由含人称字：失败，原因含�
 const renderTheme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bold: (text: string) => `<b>${text}</b>` };
 function rendered(result: { details?: unknown; content?: Array<{ type: "text"; text: string }> } | undefined, isError = false) {
   const tool = createUserInteractTool({ interaction: {} as never });
-  const args = { request: { ...base, action: "ask", question: "起跳时机怎么定？", rootCheck: "根源", choices: [
+  const args = { request: { ...askBase, action: "ask", question: "起跳时机怎么定？", rootCheck: "根源", choices: [
     { label: "松开空格时起跳", reason: "符合描述", recommended: true, recommendedReason: "初速度才由按住时长决定" }, { label: "按下立即起跳", reason: "手感即时" }], scope: "仅起跳", actions: [], unitIds: ["A"] } };
   const state: Record<string, unknown> = {};
   const context = { args, state, isError, invalidate: () => {} } as never;
@@ -203,7 +233,7 @@ test("M8D-AC9：提问以外的动作不改显示，交给 pi 的默认样式", 
 test("提问记录块在 pi 的工具显示组件里只画一份问题和回答，标题换成需求名", () => {
   initTheme("dark");
   const tool = createUserInteractTool({ interaction: {} as never });
-  const args = { request: { ...base, action: "ask", question: "起跳时机怎么定？", rootCheck: "根源", choices: CHOICES, scope: "仅起跳", actions: [], unitIds: ["A"] } };
+  const args = { request: { ...askBase, action: "ask", question: "起跳时机怎么定？", rootCheck: "根源", choices: CHOICES, scope: "仅起跳", actions: [], unitIds: ["A"] } };
   const component = new ToolExecutionComponent(tool.name, "call", args, undefined, tool, { requestRender: () => {} } as never, "/");
   const caption = "按住空格时长控制跳跃高度（第 2 版）";
   component.updateResult({ content: [], details: { caption, question: "起跳时机怎么定？", status: "answered", answer: { text: "实施 A\n实施 A 的理由", choice: 1 } }, isError: false } as never);

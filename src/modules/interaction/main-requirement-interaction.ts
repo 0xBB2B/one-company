@@ -9,6 +9,8 @@ import type { Context } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostAuthorizationError, HostAuthorizationManager } from "../requirement/host-authorization.ts";
 import { RequirementService } from "../requirement/requirement-service.ts";
+import { RequirementOperations } from "../requirement/requirement-operations.ts";
+import type { RequirementOperationAction } from "../requirement/requirement-operations.ts";
 import type { RequirementServiceOptions } from "../requirement/requirement-service.ts";
 import type { ConfirmationContext, CreateRequirementInput, UpdateDraftInput, LoadConfirmationInput, ServiceAuthorizationRequest } from "../requirement/requirement-manage-contracts.ts";
 import { requirementIntentHash } from "../requirement/requirement-manage-contracts.ts";
@@ -137,9 +139,7 @@ export class MainRequirementInteraction {
   #ctx: ExtensionContext | undefined;
   readonly #deliveries = new Map<string, Delivery>();
   readonly #cursors = new Map<string, Cursor>();
-  readonly #failedOperations = new Set<string>();
   readonly #proofs = new WeakMap<object, HostResultProof>();
-  readonly #completed = new Map<string, { requestHash: string; result: Record<string, unknown>; repoId: string }>();
   constructor(options: MainRequirementInteractionOptions) {
     this.#options = { ...options }; this.#authorization = options.authorization;
     this.#unsubscribeHost = this.#authorization.onRevoke(() => this.revoke());
@@ -156,7 +156,7 @@ export class MainRequirementInteraction {
     const input = this.#input; this.#input = undefined;
     if (input) { input.event.text = ""; input.abort.abort(); }
     this.#unsubscribeState?.(); this.#unsubscribeState = undefined;
-    this.#cursors.clear(); this.#deliveries.clear(); this.#completed.clear(); this.#failedOperations.clear();
+    this.#cursors.clear(); this.#deliveries.clear();
   }
   shutdown(): void { this.revoke(); this.#ctx = undefined; }
   dispose(): void { this.shutdown(); this.#unsubscribeHost(); }
@@ -331,7 +331,6 @@ export class MainRequirementInteraction {
     } catch (error) {
       this.#proofs.delete(result); this.#cursors.clear();
       for (const [id, delivery] of this.#deliveries) if (delivery.result === result) this.#deliveries.delete(id);
-      for (const [id, cached] of this.#completed) if (cached.result === result) this.#invalidateOperation(id);
       throw error;
     }
   }
@@ -420,7 +419,7 @@ export class MainRequirementInteraction {
       this.#live(ctx, host, generation);
       if (input !== this.#input) denied("input_changed");
       this.#unsubscribeState = state.onAccessInvalidated(requirementId, (change) => {
-        this.#capability = undefined; this.#interpretation = undefined; this.#cursors.clear(); this.#deliveries.clear(); this.#completed.clear();
+        this.#capability = undefined; this.#interpretation = undefined; this.#cursors.clear(); this.#deliveries.clear();
         const pending = this.#resave;
         if (pending && !pending.complete && change.origin === pending.origin && change.operationId === pending.operationId) {
           try { core.observeCandidateResave(pending.permit, change); return; }
@@ -477,7 +476,11 @@ export class MainRequirementInteraction {
     // 原因是模型说法，只帮主代理改草稿，不改变拒绝本身
     if (refusal !== undefined) throw new HostAuthorizationError("draft_interpretation_denied", refusal ? `核验器说明，模型撰写，仅供参考：${refusal}` : undefined);
   }
-  async draft(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", input: CreateRequirementInput | UpdateDraftInput, summary: string) {
+  async draft(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", input: CreateRequirementInput | UpdateDraftInput, summary: string, resume = false) {
+    if (resume) {
+      const operation = this.#resumable(ctx, repoId, input.operationId, action === "create" ? null : (input as UpdateDraftInput).requirementId, action);
+      if (action === "create") input = { ...input, requestId: operation.requestId! } as CreateRequirementInput;
+    }
     const host = this.#host(ctx), generation = this.#generation;
     const questions = action === "updateDraft" ? (this.#snapshot(host, repoId, (input as UpdateDraftInput).requirementId),
       this.#authorization.interactionRecords(repoId, (input as UpdateDraftInput).requirementId, host.sessionId).questions
@@ -568,7 +571,8 @@ export class MainRequirementInteraction {
         maxTurns: task.userDecision!.maxTurns, taskStatus: task.status }, undefined, proofs);
     } finally { this.#adjudication = undefined; }
   }
-  async confirm(ctx: ExtensionContext, request: ConfirmationRequest): Promise<Record<string, unknown>> {
+  async confirm(ctx: ExtensionContext, request: ConfirmationRequest, resume = false): Promise<Record<string, unknown>> {
+    if (resume) this.#resumable(ctx, request.repoId, request.operationId, request.requirementId, "confirmUpdate");
     const input = this.#currentInput(ctx); this.#candidate = { ...request };
     const loaded = await this.#load(ctx, request), core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
     const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);
@@ -815,6 +819,10 @@ export class MainRequirementInteraction {
     }
     return this.#prove(ctx, request.repoId, wrapped);
   }
+  #resumable(ctx: ExtensionContext, repoId: string, operationId: string, requirementId: string | null, action: RequirementOperationAction) {
+    this.#authorization.assertRepository(repoId, this.#host(ctx).sessionId);
+    return new RequirementOperations({ dataRoot: this.#options.dataRoot, repoId }).resumable(operationId, requirementId, action);
+  }
   /** SDK execute与tool_result之间只保留来源元数据，最终交付仍读实际DB。 */
   async execute(toolCallId: string, ctx: ExtensionContext, repoId: string, params: Record<string, unknown>, run: () => Promise<unknown>, signal?: AbortSignal) {
     if (this.#busy) return denied("interaction_busy");
@@ -824,15 +832,7 @@ export class MainRequirementInteraction {
     try {
       signal?.throwIfAborted();
       const host = this.#host(ctx), generation = this.#generation;
-      const key = typeof params.operationId === "string" ? params.operationId : undefined;
-      if (key && this.#failedOperations.has(key)) denied("stale_operation_result");
-      const existing = key ? this.#completed.get(key) : undefined;
-      let value: unknown;
-      if (existing) {
-        if (existing.requestHash !== decisionDigest(params) || existing.repoId !== repoId) denied("operation_conflict");
-        this.assertResultCurrent(existing.result, ctx);
-        value = existing.result;
-      } else value = await run();
+      const value = await run();
       signal?.throwIfAborted();
       this.#live(ctx, host, generation);
       const result = value as Record<string, unknown>, requirementId = String(result.requirementId);
@@ -840,10 +840,6 @@ export class MainRequirementInteraction {
       if (current.version !== result.version || current.data.epoch !== result.epoch) denied("stale_result");
       const content = [{ type: "text" as const, text: JSON.stringify(result) }], response = { content, details: result };
       if (Buffer.byteLength(JSON.stringify(response)) > TRANSPORT_BYTES) denied("response_limit");
-      if (key && !existing && ["create", "updateDraft", "confirmUpdate", "reply"].includes(String(params.action))) {
-        while (this.#completed.size >= 16) this.#completed.delete(this.#completed.keys().next().value!);
-        this.#completed.set(key, { requestHash: decisionDigest(params), result, repoId });
-      }
       while (this.#deliveries.size >= 32) this.#deliveries.delete(this.#deliveries.keys().next().value!);
       this.#deliveries.set(toolCallId, { sessionId: host.sessionId, windowId: host.windowId, generation, repoId, requirementId,
         result });
@@ -851,7 +847,6 @@ export class MainRequirementInteraction {
       return response;
     } catch (error) {
       this.#cursors.clear(); this.#deliveries.delete(toolCallId);
-      if (typeof params.operationId === "string" && this.#completed.has(params.operationId)) this.#invalidateOperation(params.operationId);
       if (error instanceof HostAuthorizationError || adviceOf(error)) throw error;
       // 没有原因说明的下层错误只回传错误代码，不回传可能带正文的错误消息
       const code = (error as { code?: unknown } | null)?.code;
@@ -859,11 +854,6 @@ export class MainRequirementInteraction {
       recordUnexplained(this.#options.dataRoot, repoId, params.action, error);
       throw new HostAuthorizationError("interaction_denied");
     } finally { signal?.removeEventListener("abort", abort); this.#busy = false; }
-  }
-  #invalidateOperation(key: string): void {
-    this.#completed.delete(key);
-    if (this.#failedOperations.size >= 16) { this.revoke(); return; }
-    this.#failedOperations.add(key);
   }
   assertDelivery(toolCallId: string, ctx: ExtensionContext): void {
     const delivery = this.#deliveries.get(toolCallId); this.#deliveries.delete(toolCallId);
@@ -874,7 +864,6 @@ export class MainRequirementInteraction {
     try { this.assertResultCurrent(delivery.result, ctx); }
     catch (error) {
       this.#cursors.clear();
-      for (const [key, cached] of this.#completed) if (cached.result === delivery.result) this.#invalidateOperation(key);
       throw error;
     }
   }

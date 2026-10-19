@@ -46,7 +46,7 @@ const PM_INTAKE_STORE_ADVICE: Record<string, FailureAdvice> = {
   invalid_source_directory: { why: "接手出处目录不合规", next: "停止操作，不要重试；把这段原因告诉用户" },
   invalid_time: { why: "系统时间不可用", next: "停止操作，不要重试；把这段原因告诉用户" },
   manifest_binding_changed: { why: "批准清单绑定已变化", next: "重新读取需求后按最新版本再试" },
-  operation_conflict: { why: "同一操作编号已用于内容不同的请求", next: "换一个新生成的操作编号重试" },
+  operation_conflict: { why: "同一操作编号已用于内容不同的请求", next: "重新读取当前复核请求后再操作" },
   pm_missing: { why: "这个需求当前没有 PM", next: "先派出 PM" },
   pm_run_claim_changed: { why: "PM 运行的绑定已变化", next: "停止操作，不要重试；把这段原因告诉用户" },
   question_changed: { why: "相关问题记录已被改动", next: "重新读取需求后按最新版本再试" },

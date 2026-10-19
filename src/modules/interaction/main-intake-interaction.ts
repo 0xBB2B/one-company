@@ -9,7 +9,7 @@ import type {
 import { Type } from "typebox";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
+import { UUID_V7_PATTERN, uuidv7 } from "../../core/storage/database.ts";
 import { HostAuthorizationManager } from "../requirement/host-authorization.ts";
 import type { RequirementManageHostContext } from "./main-requirement-interaction.ts";
 import { pmDecisionNotes } from "../pm/pm-intake-runtime.ts";
@@ -41,7 +41,6 @@ export const PM_INTAKE_ASK_PARAMETERS = object({
   action: Type.Literal("ask"),
   repoId,
   requirementId: uuid,
-  operationId: uuid,
 });
 export const PM_INTAKE_FORWARD_PARAMETERS = object({
   purpose,
@@ -56,7 +55,6 @@ export const PM_INTAKE_REPLY_PARAMETERS = object({
   repoId,
   requirementId: uuid,
   requestId: uuid,
-  operationId: uuid,
   result: Type.Union([
     Type.Literal("passed"),
     Type.Literal("pm_correction_required"),
@@ -160,11 +158,12 @@ export function createPmIntakeToolResponse(
   action: PmIntakeToolInput["action"],
   view: IntakeRequestView | IntakeReviewView,
   decisions?: PmDecisionNote[],
+  operationId?: string,
 ): {
   response: { content: [{ type: "text"; text: string }]; details: { format: "pm-intake-transport/v1"; action: PmIntakeToolInput["action"] } };
   responseBytes: string;
 } {
-  const viewText = json(decisions ? { ...view, decisions } : view);
+  const viewText = json({ ...view, ...(decisions ? { decisions } : {}), ...(operationId ? { operationId } : {}) });
   if (Buffer.byteLength(viewText, "utf8") > INNER_BYTES) deny("response_budget_exceeded");
   const response = {
     content: [{ type: "text" as const, text: viewText }] as [{ type: "text"; text: string }],
@@ -405,18 +404,19 @@ export class MainIntakeInteraction {
       windowId: current.session.windowId, sessionId: current.session.sessionId, toolCallId });
     this.#calls.set(call, Object.freeze({ identity, guard: intake.guard }));
     let view: IntakeRequestView | IntakeReviewView;
+    const operationId = uuidv7();
     switch (input.action) {
-      case "ask": view = await service.openRequest(call, input.operationId, operationSignal); break;
+      case "ask": view = await service.openRequest(call, operationId, operationSignal); break;
       case "forward": view = await service.readRequest(call, input.requestId, operationSignal); break;
       case "reply": {
         const decision: IntakeReviewDecision = { result: input.result, shortIssues: [...input.shortIssues] };
-        view = await service.recordReview(call, input.requestId, input.operationId, decision, operationSignal);
+        view = await service.recordReview(call, input.requestId, operationId, decision, operationSignal);
         break;
       }
       default: return deny("invalid_shape");
     }
     const decisions = input.action === "reply" ? undefined : pmDecisionNotes({ dataRoot: this.#options.dataRoot, repoId: input.repoId }, input.requirementId);
-    const built = createPmIntakeToolResponse(input.action, view, decisions), response = built.response;
+    const built = createPmIntakeToolResponse(input.action, view, decisions, input.action === "forward" ? undefined : operationId), response = built.response;
     const delivery: Delivery = { inputHash: observed.inputHash, responseBytes: built.responseBytes, session: observed.session,
       manager: observed.manager, signal: observed.signal, operationSignal, hostGeneration: observed.hostGeneration,
       service, call, view };

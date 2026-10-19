@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { ToolCallEvent } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import { uuidv7 } from "../src/core/storage/database.ts";
+import { UUID_V7_PATTERN, uuidv7 } from "../src/core/storage/database.ts";
 import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../src/modules/interaction/main-intake-interaction.ts";
 import type { IntakeRequestView } from "../src/modules/pm/pm-intake-service.ts";
 import { PM_INTAKE_NAMESPACES } from "../src/modules/pm/pm-intake-store.ts";
@@ -12,6 +12,11 @@ import { ask, bridgeFor, contentView, ctxFor, executeObserved, forward, observe,
 vi.setConfig({ testTimeout: 30_000 });
 const cleanup: PmIntakeFixture[] = [];
 afterEach(async () => { for (const fixture of cleanup.splice(0).reverse()) await fixture.cleanup(); });
+
+function operationIdOf(response: Awaited<ReturnType<typeof executeObserved>>["response"]): unknown {
+  const view = contentView(response) as unknown as { operationId?: unknown; record?: { operationId?: unknown } };
+  return (response.details as { operationId?: unknown }).operationId ?? view.operationId ?? view.record?.operationId;
+}
 
 async function world() {
   const fixture = await createPmIntakeFixture();
@@ -30,6 +35,8 @@ test("严格PM参数只允许ask/forward/reply各自白名单", async () => {
   }
   expect(Value.Check(PM_INTAKE_PARAMETERS, { ...ask(fixture), requestId: uuidv7() })).toBe(false);
   expect(Value.Check(PM_INTAKE_PARAMETERS, { ...forward(fixture, uuidv7()), operationId: uuidv7() })).toBe(false);
+  expect(Value.Check(PM_INTAKE_PARAMETERS, { ...ask(fixture), operationId: uuidv7() })).toBe(false);
+  expect(Value.Check(PM_INTAKE_PARAMETERS, { ...reply(fixture, uuidv7()), operationId: uuidv7() })).toBe(false);
   expect(Value.Check(PM_INTAKE_PARAMETERS, { ...reply(fixture, uuidv7()), shortIssues: ["😀".repeat(400)] })).toBe(true);
   expect(Value.Check(PM_INTAKE_PARAMETERS, { ...reply(fixture, uuidv7()), shortIssues: ["😀".repeat(401)] })).toBe(false);
   expect(() => checkPmIntakeToolInput({ ...reply(fixture, uuidv7()), shortIssues: ["x".repeat(401)] })).toThrow(/invalid_shape/);
@@ -50,7 +57,8 @@ test("原始SDK上下文完成ask、forward、reply，完整理解只在模型�
   expect(openedView).toMatchObject({ understandingStatus: "accepted", userAuthorizationCreated: false });
   expect(openedView).not.toHaveProperty("executionEnabled");
   expect(openedView).not.toHaveProperty("scheduling");
-  expect(opened.response.details).toEqual({ format: "pm-intake-transport/v1", action: "ask" });
+  expect(opened.response.details).toMatchObject({ format: "pm-intake-transport/v1", action: "ask" });
+  expect(operationIdOf(opened.response)).toMatch(UUID_V7_PATTERN);
   expect(opened.response.content[0]!.text).toContain("实现手机号登录");
   const notes = (openedView as IntakeRequestView & { decisions: Array<{ id: string; status: string; unitIds: string[]; conclusion: string }> }).decisions;
   expect(notes.map((note) => note.id)).toEqual(openedView.sourceDirectory.decisionIds);
@@ -67,7 +75,8 @@ test("原始SDK上下文完成ask、forward、reply，完整理解只在模型�
   const replyInput = reply(fixture, requestId), reviewed = await executeObserved(bridge, ctx, signal, replyInput, "call-reply");
   expect(contentView(reviewed.response)).toMatchObject({ record: { requestId, result: "passed" },
     userAuthorizationCreated: false });
-  expect(reviewed.response.details).toEqual({ format: "pm-intake-transport/v1", action: "reply" });
+  expect(reviewed.response.details).toMatchObject({ format: "pm-intake-transport/v1", action: "reply" });
+  expect(operationIdOf(reviewed.response)).toMatch(UUID_V7_PATTERN);
   bridge.assertDelivery(resultEvent(reviewed.id, replyInput, reviewed.response), ctx);
   expect(fixture.db((db) => db.list(PM_INTAKE_NAMESPACES.requests))).toHaveLength(1);
   expect(fixture.db((db) => db.list(PM_INTAKE_NAMESPACES.reviews))).toHaveLength(1);
@@ -82,7 +91,7 @@ test("没有tool_call、另一manager、参数后改和另一bridge都不能直�
   await expect(first.bridge.execute("direct", input, first.ctx, first.signal)).rejects.toMatchObject({ code: "unobserved_tool_call" });
 
   observe(first.bridge, first.ctx, "mutated", input);
-  await expect(first.bridge.execute("mutated", { ...input, operationId: uuidv7() }, first.ctx, first.signal))
+  await expect(first.bridge.execute("mutated", { ...input, requirementId: uuidv7() }, first.ctx, first.signal))
     .rejects.toMatchObject({ code: "unobserved_tool_call" });
 
   const nextInput = ask(fixture);

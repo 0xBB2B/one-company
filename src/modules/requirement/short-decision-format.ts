@@ -52,7 +52,7 @@ const SHORT_DECISION_ADVICE: Record<string, FailureAdvice> = {
   invalid_reference: { why: "决定引用的格式不对", next: "按待裁决事项给出的引用原样登记" },
   invalid_shape: { why: "决定内容的格式不合规", next: "按原因改正后重试" },
   lifecycle_denied: { why: "需求不在草稿或活动状态，或需要先恢复核对", next: "重新读取需求后按最新版本再试" },
-  operation_conflict: { why: "同一操作编号已用于内容不同的请求", next: "换一个新生成的操作编号重试" },
+  operation_conflict: { why: "同一操作编号已用于内容不同的请求", next: "同一批决定的内容不一致，把这段原因告诉用户" },
   prd_reference_changed: { why: "决定所基于的需求版本已变化", next: "重新读取需求后按最新版本再试" },
   request_limit: { why: "请求内容超出大小上限", next: "精简内容后重试" },
   supersede_denied: { why: "这个决定不能被取代（状态不允许）", next: "重新读取需求后按最新版本再试" },

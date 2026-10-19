@@ -37,7 +37,7 @@ export function bridgeFor(fixture: PmIntakeFixture) {
 
 export function ask(fixture: PmIntakeFixture): PmIntakeToolInput {
   return { purpose: "pm-intake", action: "ask", repoId: fixture.repoId,
-    requirementId: fixture.requirementId, operationId: uuidv7() };
+    requirementId: fixture.requirementId };
 }
 export function forward(fixture: PmIntakeFixture, requestId: string): PmIntakeToolInput {
   return { purpose: "pm-intake", action: "forward", repoId: fixture.repoId,
@@ -45,7 +45,7 @@ export function forward(fixture: PmIntakeFixture, requestId: string): PmIntakeTo
 }
 export function reply(fixture: PmIntakeFixture, requestId: string, result: "passed" | "pm_correction_required" = "passed"): PmIntakeToolInput {
   return { purpose: "pm-intake", action: "reply", repoId: fixture.repoId,
-    requirementId: fixture.requirementId, requestId, operationId: uuidv7(), result,
+    requirementId: fixture.requirementId, requestId, result,
     shortIssues: result === "passed" ? [] : ["目标A理解有偏差"] };
 }
 export function observe(bridge: MainIntakeInteraction, ctx: ExtensionContext, id: string, input: PmIntakeToolInput) {
