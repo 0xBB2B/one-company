@@ -8,7 +8,7 @@
 | 02 | 02-interaction-tools | done | 2026-10-19 |
 | 06 | 06-approval-atomic | done | 2026-10-19 |
 | 07 | 07-requirement-auto-resume | pending | — |
-| 09 | 09-change-apply-auto-resume | pending | — |
+| 09 | 09-change-apply-auto-resume | done | 2026-10-19 |
 | 08 | 08-close-workspace-backup | pending | — |
 | 收尾 | 全量纯代码测试 + 真实模型验收（P1–P13、M9-AC12、M9-AC2/AC3/AC11） | pending | — |
 ## 当前

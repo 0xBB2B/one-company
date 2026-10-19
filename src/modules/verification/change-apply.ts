@@ -40,8 +40,8 @@ const applyFile = object({ path: relativePath, baseHash: Type.Optional(fileHash)
 const scratchFile = object({ path: relativePath, baseHash: fileHash, sourcePath: relativePath, targetHash: hash });
 export const CHANGE_APPLY_PARAMETERS = Type.Union([
   object({ action: Type.Literal("prepare"), files: Type.Array(prepareFile, { minItems: 1, maxItems: 64 }) }),
-  object({ action: Type.Literal("apply"), operationId: Type.Optional(id), files: Type.Array(applyFile, { minItems: 1, maxItems: 64 }) }),
-  object({ action: Type.Literal("import"), operationId: Type.Optional(id), files: Type.Array(scratchFile, { minItems: 1, maxItems: 64 }) }),
+  object({ action: Type.Literal("apply"), files: Type.Array(applyFile, { minItems: 1, maxItems: 64 }) }),
+  object({ action: Type.Literal("import"), files: Type.Array(scratchFile, { minItems: 1, maxItems: 64 }) }),
   object({ action: Type.Literal("status"), operationId: id }),
 ]);
 export type ChangeApplyParameters = Static<typeof CHANGE_APPLY_PARAMETERS>;
@@ -69,9 +69,7 @@ const CHANGE_APPLY_ADVICE = {
   path_escape: { why: "路径经过链接或 .. 指到了工作区以外", next: "改用工作区内的真实路径" },
   out_of_scope: { why: "路径不在本任务的授权写入范围内", next: "只改授权范围内的文件；确实需要时在结果里说明，由 PM 调整任务" },
   stale_base: { why: "文件或分支在预检后已被改动", next: "重新 prepare 取得最新 baseHash 后再写入" },
-  operation_conflict: { why: "续写的文件或内容与原来那批不同", next: "带上原来那批文件续写；不是续写就不填 operationId" },
-  resume_not_found: { why: "找不到这个操作编号对应的、属于本运行的写入", next: "不是续写就不填 operationId，重新发起" },
-  resume_finished: { why: "这个操作编号对应的那批文件已经全部写完", next: "不填 operationId 发起新的写入；要看结果用 status" },
+  operation_conflict: { why: "本运行还有一批没写完的文件", next: "先带同样的文件再调一次把它写完，再写新的" },
   import_mismatch: { why: "要导入的生成文件与声明不一致，或不是 UTF-8 文本文件", next: "重新生成文件并按实际内容填写 targetHash" },
   resource_limit: { why: "请求或文件超出大小上限", next: "拆成更小的改动后分次写入" },
   not_found: { why: "找不到这次写入记录，或它不属于本运行", next: "核对操作编号" },
@@ -106,6 +104,9 @@ async function currentHash(absolute: string): Promise<string> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent"; throw error; }
   if (!stats.isFile()) throw new ChangeApplyError("forbidden_path", "目标不是普通文件");
   return sha256(await readFile(absolute));
+}
+function batchKey(files: ReadonlyArray<{ path: string; targetHash: string }>): string {
+  return JSON.stringify(files.map((file) => [file.path, file.targetHash]).sort((a, b) => a[0]! < b[0]! ? -1 : a[0]! > b[0]! ? 1 : 0));
 }
 function intentHashOf(files: ReadonlyArray<{ path: string; baseHash: string; targetHash: string }>): string {
   return sha256(JSON.stringify([...files].sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
@@ -215,6 +216,15 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
       return row ? { version: row.version, data: checked(ChangeSet, row.data) } : null;
     });
   }
+  function unfinishedSet() {
+    return withDatabase(database, (db) => {
+      for (const row of db.list<unknown>(CHANGE_SETS)) {
+        const data = checked(ChangeSet, row.data);
+        if (ownSet(data) && (data.status === "applying" || data.status === "partial_failure")) return { version: row.version, data };
+      }
+      return null;
+    });
+  }
   function ownSet(set: ChangeSet) {
     return set.runId === grant.runId && set.requirementId === grant.requirementId && set.repoId === grant.repoId &&
       set.workspaceId === grant.workspaceId && set.branch === grant.branch && set.epoch === grant.epoch;
@@ -227,17 +237,14 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
     await mkdir(dirname(file.absolute), { recursive: true });
     await writeFileAtomic(file.absolute, file.content.toString("utf8"));
   }
-  async function run(action: "apply" | "import", params: { operationId?: string; files: ReadonlyArray<Static<typeof inlineFile> | Static<typeof scratchFile>> }) {
+  async function run(action: "apply" | "import", params: { files: ReadonlyArray<Static<typeof inlineFile> | Static<typeof scratchFile>> }) {
     const { root } = await bindWorkspace(action);
-    const planned = await plan(root, params);
+    const existing = unfinishedSet();
+    const fresh = await plan(root, params);
+    if (existing && batchKey(existing.data.files) !== batchKey(fresh)) throw new ChangeApplyError("operation_conflict");
+    const planned = existing ? fresh.map((file) => ({ ...file, baseHash: existing.data.files.find((entry) => entry.path === file.path)!.baseHash })) : fresh;
     const intentHash = intentHashOf(planned);
-    const operationId = params.operationId ?? uuidv7();
-    const existing = params.operationId === undefined ? null : readSet(operationId);
-    if (params.operationId !== undefined) {
-      if (!existing || !ownSet(existing.data)) throw new ChangeApplyError("resume_not_found");
-      if (existing.data.status === "applied") throw new ChangeApplyError("resume_finished");
-      if (existing.data.intentHash !== intentHash) throw new ChangeApplyError("operation_conflict");
-    }
+    const operationId = existing ? existing.data.operationId : uuidv7();
     withDatabase(database, (db) => modificationAllowed(db));
     const head = (await snapshotBranchState({ repoRoot: root })).head;
     const observed = await observe(planned);
@@ -298,7 +305,8 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
       host(action); activeWorkspace();
       return freeze({ status: set.status, operationId: set.operationId, baseHead: set.baseHead, files: set.files });
     } catch (error) {
-      const note = `本次操作编号 ${operationId}，照抄它、带同样的文件再调一次可以续写`;
+      if (error instanceof ChangeApplyError && error.code === "stale_base") throw error;
+      const note = "带同样的文件再调一次可以续写";
       const advice = adviceOf(error);
       if (advice) throw Object.assign(error as Error, { advice: withDetail(advice, note) });
       if (error instanceof Error) { error.message = `${error.message}；${note}`; throw error; }
@@ -335,7 +343,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
       if (baseHash === undefined) throw new ChangeApplyError("invalid_shape", `${file.path} 没有预检过，先 prepare 或填 baseHash`);
       return { ...file, baseHash };
     });
-    return run("apply", { operationId: params.operationId, files });
+    return run("apply", { files });
   }
   return { execute, dispose() { disposed = true; } };
 }

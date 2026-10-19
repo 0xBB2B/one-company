@@ -100,7 +100,7 @@ test("M5-AC1：无效批量补丁预检整批拒绝、不写任何文件、不�
   await expect(w.read("src/b.ts")).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-test("M5-AC1/AC8：中途写入失败精确记录已写/失败/未动，照抄结果编号重试补齐", async () => {
+test("M5-AC1/AC8：中途写入失败精确记录已写/失败/未动，不带编号、带同样的文件重试补齐", async () => {
   const w = await world(); const tool = await w.tool();
   const files = [
     { path: "src/a.ts", baseHash: w.base, content: "export const a = 2;\n" },
@@ -122,15 +122,15 @@ test("M5-AC1/AC8：中途写入失败精确记录已写/失败/未动，照抄�
   await expect(w.read("src/c.ts")).rejects.toMatchObject({ code: "ENOENT" });
   expect(((await tool.execute({ action: "status", operationId })) as Result).status).toBe("partial_failure");
   vi.restoreAllMocks();
-  const altered = files.map((file, index) => index === 2 ? { ...file, content: "别的内容" } : file);
-  await expect(tool.execute({ action: "apply", operationId, files: altered })).rejects.toMatchObject({ code: "operation_conflict" });
+  const altered = [{ ...files[2]!, content: "别的内容" }];
+  await expect(tool.execute({ action: "apply", files: altered })).rejects.toMatchObject({ code: "operation_conflict", advice: { why: expect.stringContaining("本运行还有一批没写完的文件") } });
   const reordered = [files[2]!, files[0]!, files[1]!];
-  const second = await tool.execute({ action: "apply", operationId, files: reordered }) as Result;
+  const second = await tool.execute({ action: "apply", files: reordered }) as Result;
+  expect(second.operationId).toBe(operationId);
   expect(second.status).toBe("applied");
   expect(second.files.map((file) => [file.path, file.status])).toEqual([["src/a.ts", "written"], ["src/nested/b.ts", "written"], ["src/c.ts", "written"]]);
   await expect(w.read("src/nested/b.ts")).resolves.toBe("export const b = 2;\n");
   await expect(w.read("src/c.ts")).resolves.toBe("export const c = 3;\n");
-  await expect(tool.execute({ action: "apply", operationId, files })).rejects.toMatchObject({ code: "resume_finished" });
 
   const logFiles = [{ path: "src/d.ts", baseHash: "absent", content: "d\n" }, { path: "src/e.ts", baseHash: "absent", content: "e\n" }];
   const update = LocalDatabase.prototype.update;
@@ -142,13 +142,12 @@ test("M5-AC1/AC8：中途写入失败精确记录已写/失败/未动，照抄�
   const failure = await tool.execute({ action: "apply", files: logFiles }).then(() => undefined, (error: Error) => error);
   expect(failure?.message).toContain("模拟日志提交失败");
   expect(failure).toMatchObject({ code: "EIO" });
-  expect(failure?.message).toContain("照抄它、带同样的文件再调一次可以续写");
-  const logOperation = failure?.message.match(/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/)?.[0];
-  expect(logOperation).toBeDefined();
+  expect(failure?.message).toContain("带同样的文件再调一次可以续写");
+  expect(failure?.message).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/);
   await expect(w.read("src/d.ts")).resolves.toBe("d\n");
   await expect(w.read("src/e.ts")).rejects.toMatchObject({ code: "ENOENT" });
   vi.restoreAllMocks();
-  const recovered = await tool.execute({ action: "apply", operationId: logOperation, files: logFiles }) as Result;
+  const recovered = await tool.execute({ action: "apply", files: logFiles }) as Result;
   expect(recovered.status).toBe("applied");
   await expect(w.read("src/e.ts")).resolves.toBe("e\n");
 });
@@ -171,7 +170,8 @@ test("M5-AC2：外部编辑或 pull 之后旧基础补丁拒绝，不覆盖用�
   const operationId = partial.operationId;
   vi.restoreAllMocks();
   await writeFile(join(w.worktree.root, "src", "g.ts"), "用户抢先写入\n");
-  const resumed = await tool.execute({ action: "apply", operationId, files }) as Result;
+  const resumed = await tool.execute({ action: "apply", files }) as Result;
+  expect(resumed.operationId).toBe(operationId);
   expect(resumed.status).toBe("stale");
   expect(resumed.files[1]).toMatchObject({ status: "stale" });
   await expect(w.read("src/g.ts")).resolves.toBe("用户抢先写入\n");
@@ -181,12 +181,14 @@ test("M5-AC2：外部编辑或 pull 之后旧基础补丁拒绝，不覆盖用�
     if (path.endsWith("i.ts")) throw new Error("模拟故障");
     return original(path, content);
   });
+  const afterStale = await tool.execute({ action: "apply", files: [{ path: "src/after-stale.ts", baseHash: "absent", content: "s\n" }] }) as Result;
+  expect(afterStale.status).toBe("applied");
   const pulledFirst = await tool.execute({ action: "apply", files: pulledFiles }) as Result;
   expect(pulledFirst.status).toBe("partial_failure");
   const pulled = pulledFirst.operationId;
   vi.restoreAllMocks();
   await runGit(["add", "src/h.ts"], w.worktree.root); await runGit(["commit", "-qm", "外部提交"], w.worktree.root);
-  await expect(tool.execute({ action: "apply", operationId: pulled, files: pulledFiles })).rejects.toMatchObject({ code: "stale_base" });
+  await expect(tool.execute({ action: "apply", files: pulledFiles })).rejects.toMatchObject({ code: "stale_base" });
   expect(((await tool.execute({ action: "status", operationId: pulled })) as Result).status).toBe("stale");
   await expect(w.read("src/i.ts")).rejects.toMatchObject({ code: "ENOENT" });
 });
@@ -283,7 +285,7 @@ test("写项目设置文件被拒并写明是哪个文件、为什么不能改�
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-test("apply、import 不填 operationId 也成功，结果带 UUIDv7 编号且每次不同", async () => {
+test("apply、import 不带 operationId 成功，结果带本次操作编号且每次不同", async () => {
   const w = await world();
   const scratch = await mkdtemp(join(w.root, "scratch-"));
   await mkdir(join(scratch, "gen"), { recursive: true });
@@ -296,11 +298,14 @@ test("apply、import 不填 operationId 也成功，结果带 UUIDv7 编号且�
     expect(result.status).toBe("applied");
     expect(result.operationId).toMatch(UUID_V7);
   }
+  await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/three.ts", baseHash: "absent", content: "3\n" }] })).rejects.toMatchObject({ code: "invalid_shape" });
+  await expect(tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "src/out3.ts", baseHash: "absent", sourcePath: "gen/out.ts", targetHash: sha("generated\n") }] })).rejects.toMatchObject({ code: "invalid_shape" });
+  await expect(w.read("src/three.ts")).rejects.toMatchObject({ code: "ENOENT" });
   expect(new Set([one.operationId, two.operationId, imported.operationId]).size).toBe(3);
   await expect(w.read("src/one.ts")).resolves.toBe("1\n");
 });
 
-test("写到一半失败后照抄结果里的编号、带同样的文件再调，续写完成且结果与一次写完相同", async () => {
+test("写到一半失败后不带编号、带同样的文件再调，续写完成且结果与一次写完相同", async () => {
   const w = await world(); const tool = await w.tool();
   const files = [{ path: "src/p.ts", baseHash: "absent", content: "p\n" }, { path: "src/q.ts", baseHash: "absent", content: "q\n" }];
   const original = store.writeFileAtomic;
@@ -312,7 +317,7 @@ test("写到一半失败后照抄结果里的编号、带同样的文件再调�
   expect(["applying", "partial_failure"]).toContain(first.status);
   expect(first.operationId).toMatch(UUID_V7);
   vi.restoreAllMocks();
-  const resumed = await tool.execute({ action: "apply", operationId: first.operationId, files }) as Result;
+  const resumed = await tool.execute({ action: "apply", files }) as Result;
   expect(resumed.status).toBe("applied");
   expect(resumed.operationId).toBe(first.operationId);
   expect(resumed.files.map((file) => [file.path, file.status])).toEqual([["src/p.ts", "written"], ["src/q.ts", "written"]]);
@@ -322,12 +327,9 @@ test("写到一半失败后照抄结果里的编号、带同样的文件再调�
   expect(direct.files.map((file) => file.status)).toEqual(resumed.files.map((file) => file.status));
 });
 
-test("填了对不上的 operationId 时拒绝：编号不存在、已写完、内容不同", async () => {
+test("没写完的写入还在时，另一批文件被拒；写完或 stale 的记录不挡新写入", async () => {
   const w = await world(); const tool = await w.tool();
   const files = [{ path: "src/p.ts", baseHash: "absent", content: "p\n" }, { path: "src/q.ts", baseHash: "absent", content: "q\n" }];
-  await expect(tool.execute({ action: "apply", operationId: uuidv7(), files })).rejects.toMatchObject({ code: "resume_not_found" });
-  await expect(w.read("src/p.ts")).rejects.toMatchObject({ code: "ENOENT" });
-
   const original = store.writeFileAtomic;
   vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
     if (path.endsWith("q.ts")) throw new Error("模拟磁盘故障");
@@ -335,17 +337,44 @@ test("填了对不上的 operationId 时拒绝：编号不存在、已写完、�
   });
   const partial = await tool.execute({ action: "apply", files }) as Result;
   vi.restoreAllMocks();
-  const changed = [files[0]!, { ...files[1]!, content: "别的内容" }];
-  await expect(tool.execute({ action: "apply", operationId: partial.operationId, files: changed })).rejects.toMatchObject({ code: "operation_conflict" });
-  const fewer = [files[0]!];
-  await expect(tool.execute({ action: "apply", operationId: partial.operationId, files: fewer })).rejects.toMatchObject({ code: "operation_conflict" });
+  const conflict = { code: "operation_conflict", advice: { why: expect.stringContaining("本运行还有一批没写完的文件") } };
+  const changed = [{ ...files[1]!, content: "别的内容" }];
+  await expect(tool.execute({ action: "apply", files: changed })).rejects.toMatchObject(conflict);
+  await expect(tool.execute({ action: "apply", files: [{ path: "src/other.ts", baseHash: "absent", content: "o\n" }] })).rejects.toMatchObject(conflict);
+  await expect(w.read("src/other.ts")).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(w.read("src/q.ts")).rejects.toMatchObject({ code: "ENOENT" });
 
-  const done = await tool.execute({ action: "apply", operationId: partial.operationId, files }) as Result;
+  const done = await tool.execute({ action: "apply", files }) as Result;
   expect(done.status).toBe("applied");
-  await expect(tool.execute({ action: "apply", operationId: partial.operationId, files })).rejects.toMatchObject({ code: "resume_finished" });
+  expect(done.operationId).toBe(partial.operationId);
+  const next = await tool.execute({ action: "apply", files: [{ path: "src/other.ts", baseHash: "absent", content: "o\n" }] }) as Result;
+  expect(next.status).toBe("applied");
+  expect(next.operationId).not.toBe(partial.operationId);
+});
 
-  const other = await w.tool();
-  await expect(other.execute({ action: "apply", operationId: partial.operationId, files })).rejects.toMatchObject({ code: "resume_not_found" });
+test("导入没写完时，带同样的生成文件再调 import 续写，编号不变", async () => {
+  const w = await world();
+  const scratch = await mkdtemp(join(w.root, "scratch-"));
+  await mkdir(join(scratch, "gen"), { recursive: true });
+  await writeFile(join(scratch, "gen", "x.ts"), "x\n");
+  await writeFile(join(scratch, "gen", "y.ts"), "y\n");
+  const tool = await w.tool(w.grant({ scratchRoot: scratch }));
+  const files = [
+    { path: "src/x.ts", baseHash: "absent", sourcePath: "gen/x.ts", targetHash: sha("x\n") },
+    { path: "src/y.ts", baseHash: "absent", sourcePath: "gen/y.ts", targetHash: sha("y\n") },
+  ];
+  const original = store.writeFileAtomic;
+  vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
+    if (path.endsWith("y.ts")) throw new Error("模拟磁盘故障");
+    return original(path, content);
+  });
+  const first = await tool.execute({ action: "import", files }) as Result;
+  expect(first.status).toBe("partial_failure");
+  vi.restoreAllMocks();
+  const resumed = await tool.execute({ action: "import", files }) as Result;
+  expect(resumed.status).toBe("applied");
+  expect(resumed.operationId).toBe(first.operationId);
+  await expect(w.read("src/y.ts")).resolves.toBe("y\n");
 });
 
 test("status 仍要求 operationId，填了能查到本运行的写入", async () => {
@@ -362,11 +391,46 @@ test("change_apply 的工具说明与报错文字不含“新生成”“UUIDv7�
   const tools = await readFile(join(import.meta.dirname, "..", "src", "modules", "pm", "subagent-tools.ts"), "utf8");
   const description = tools.split("\n").find((line) => line.includes('toPiTool("change_apply"'))!;
   expect(description).toBeDefined();
-  expect(description).toContain("报错里给出本次操作编号时");
+  expect(description).not.toContain("报错里给出本次操作编号");
+  expect(description).not.toMatch(/apply、import 的 operationId/);
   expect(source).not.toContain('if (db.read(CHANGE_SETS, set.operationId)) throw new ChangeApplyError("operation_conflict")');
   for (const text of [source, description]) {
     expect(text.replace(/重新生成/g, "")).not.toContain("新生成");
     expect(text).not.toContain("UUIDv7");
   }
   expect(source).toContain("重新生成文件");
+  expect(source).not.toContain("resume_not_found");
+  expect(source).not.toContain("resume_finished");
+});
+
+test("写到一半失败后又重新预检，不填 baseHash 带同样的文件再调，仍按同一批续写完成", async () => {
+  const w = await world(); const tool = await w.tool();
+  const files = [{ path: "src/p.ts", content: "p\n" }, { path: "src/q.ts", content: "q\n" }];
+  await tool.execute({ action: "prepare", files });
+  const original = store.writeFileAtomic;
+  vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
+    if (path.endsWith("q.ts")) throw new Error("模拟磁盘故障");
+    return original(path, content);
+  });
+  const first = await tool.execute({ action: "apply", files }) as Result;
+  expect(["applying", "partial_failure"]).toContain(first.status);
+  vi.restoreAllMocks();
+  await tool.execute({ action: "prepare", files });
+  const resumed = await tool.execute({ action: "apply", files }) as Result;
+  expect(resumed).toMatchObject({ status: "applied", operationId: first.operationId });
+  await expect(w.read("src/q.ts")).resolves.toBe("q\n");
+});
+
+test("写完后最后核对时发现文件被外部改过：报 stale_base，不附续写提示", async () => {
+  const w = await world(); const tool = await w.tool();
+  const files = [{ path: "src/p.ts", baseHash: "absent", content: "p\n" }, { path: "src/q.ts", baseHash: "absent", content: "q\n" }];
+  const original = store.writeFileAtomic;
+  vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
+    await original(path, content);
+    if (path.endsWith("q.ts")) await writeFile(join(w.worktree.root, "src/p.ts"), "外部改动\n");
+  });
+  const error = await tool.execute({ action: "apply", files }).then(() => undefined, (caught: Error) => caught);
+  expect(error).toMatchObject({ code: "stale_base" });
+  expect(error!.message).not.toContain("续写");
+  expect(JSON.stringify((error as { advice?: unknown }).advice ?? "")).not.toContain("续写");
 });

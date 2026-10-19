@@ -114,10 +114,9 @@ test("M6-AC12/AC13：本轮 worker、未完成写入或写占用未收尾不能�
   const applier = await w.changeApply();
   const partialResult = await applier.execute({ action: "apply", files: [{ path: "src/b.ts", baseHash: "absent", content: "b\n" }] }) as { status: string; operationId: string };
   expect(partialResult.status).toBe("partial_failure");
-  const partial = partialResult.operationId;
   vi.restoreAllMocks();
   await expect(w.open()).rejects.toMatchObject({ code: "writes_pending" });
-  expect(((await applier.execute({ action: "apply", operationId: partial, files: [{ path: "src/b.ts", baseHash: "absent", content: "b\n" }] })) as { status: string }).status).toBe("applied");
+  expect(((await applier.execute({ action: "apply", files: [{ path: "src/b.ts", baseHash: "absent", content: "b\n" }] })) as { status: string }).status).toBe("applied");
   const owner = { ownerToken: uuidv7(), pid: process.pid };
   withDatabase(w.database, (db) => db.transaction(() => { claimRequirementWriteIn(db, { ...owner, repoId: w.repoId, requirementId: w.created.requirementId, operationId: uuidv7(), acquiredAt: 1 }, { allowDeadOriginalOperationRecovery: false }); }));
   await expect(w.open()).rejects.toMatchObject({ code: "requirement_write_busy" });
