@@ -10,6 +10,7 @@ import { DATABASE_APPLICATION_IDS, DATABASE_MAINTENANCE_FILE, DATABASE_SNAPSHOT_
 import { createDatabaseSnapshot, withDatabaseMaintenance } from "../src/core/storage/database-maintenance.ts";
 import type { DatabaseMaintenancePermit } from "../src/core/storage/database-maintenance.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { STALE_LSTART, aliveChild, exitedPid, killChild, writeMarker } from "./helpers/maintenance-marker.ts";
 import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { repoDataDir, repositoryIdentity } from "../src/core/storage/identity.ts";
 
@@ -219,7 +220,7 @@ test("备份中发现外部写入则拒绝完成，不覆盖外部新内容", as
   } finally { vi.restoreAllMocks(); writer.close(); }
 });
 
-test("业务根及其别名不得作为维护数据目录，已有维护标记不自动回收", async () => {
+test("业务根及其别名不得作为维护数据目录，读不出的维护标记不自动清", async () => {
   const w = await world();
   await expect(withDatabaseMaintenance({ directory: w.workspace, worktreeRoots: [w.workspace] }, () => null)).rejects.toThrow(/storage_overlaps_worktree/);
   const alias = join(w.root, "alias"); await symlink(w.workspace, alias);
@@ -267,7 +268,7 @@ test("未知版本只记录备份失败，不伪报完成或替换源库", async
   expect(meta.state).toBe("failed"); expect(meta.executable).toBe(false);
 });
 
-test("维护进程强杀后保留阻塞标记，不自动恢复运行", async () => {
+test("维护进程被强杀后，下次打开数据库自动清掉残留标记并照常打开", async () => {
   const w = await world();
   const script = join(w.root, "hold.mjs");
   await writeFile(script, `import {withDatabaseMaintenance} from ${JSON.stringify(new URL("../src/core/storage/database-maintenance.ts", import.meta.url).href)};
@@ -284,7 +285,128 @@ await withDatabaseMaintenance(${JSON.stringify(w.scope)}, async () => { console.
       child.stdout.once("data", (data) => { clearTimeout(timer); data.toString().includes("LOCKED") ? resolve() : reject(new Error("维护标记未确认")); });
     });
     child.kill("SIGKILL"); await closed;
-    expect(() => databaseFile(w.directory, "data")).toThrow(/maintenance_required/);
-    await expect(withDatabaseMaintenance(w.scope, () => null)).rejects.toThrow(/maintenance_already_exists/);
+    expect(() => databaseFile(w.directory, "data")).not.toThrow();
+    expect(existsSync(join(w.directory, DATABASE_MAINTENANCE_FILE))).toBe(false);
+    await expect(withDatabaseMaintenance(w.scope, () => null)).resolves.toBeNull();
   } finally { child.kill("SIGKILL"); await closed; }
+});
+
+async function expectBlocked(directory: string, markerPath: string, sentence: string) {
+  const before = await readFile(markerPath, "utf8");
+  const failure = (() => { try { new LocalDatabase(join(directory, "data.db")); } catch (error) { return error as Error; } })();
+  expect(failure?.message).toMatch(/maintenance_required/);
+  expect(failure?.message).toContain(sentence);
+  expect(await readFile(markerPath, "utf8")).toBe(before);
+  return failure!.message;
+}
+
+test("维护标记记着已退出的进程时打开数据库成功并删掉标记", async () => {
+  const w = await world();
+  const pid = await exitedPid();
+  const marker = await writeMarker(w.directory, pid, `pid:${pid}:lstart:${STALE_LSTART}`);
+  new LocalDatabase(join(w.directory, "data.db")).close();
+  expect(existsSync(marker)).toBe(false);
+});
+
+test("维护标记记着仍存活进程号、但启动时间和现在查到的不同时同样可清", async () => {
+  const w = await world(); const child = await aliveChild();
+  try {
+    const marker = await writeMarker(w.directory, child.pid!, `pid:${child.pid}:lstart:${STALE_LSTART}`);
+    new LocalDatabase(join(w.directory, "data.db")).close();
+    expect(existsSync(marker)).toBe(false);
+  } finally { await killChild(child); }
+});
+
+test("instance写法的标记记着已退出的进程时打开成功并删掉标记", async () => {
+  const w = await world(); const pid = await exitedPid();
+  const marker = await writeMarker(w.directory, pid, `pid:${pid}:instance:${uuidv7()}`);
+  new LocalDatabase(join(w.directory, "data.db")).close();
+  expect(existsSync(marker)).toBe(false);
+});
+
+test("本进程正在维护时从另一个连接打开：报还在备份、恢复或对账，不提删除，标记不动", async () => {
+  const w = await world(); const path = join(w.directory, "data.db");
+  new LocalDatabase(path).close();
+  await withDatabaseMaintenance(w.scope, async () => {
+    const message = await expectBlocked(w.directory, join(w.directory, DATABASE_MAINTENANCE_FILE), `本机数据正在备份、恢复或对账（进程 ${process.pid}），等它结束再试`);
+    expect(message).toContain(`进程 ${process.pid}`);
+    expect(message).toContain("等它结束再试");
+    expect(message).not.toContain("删除");
+  });
+});
+
+test("标记记着本进程pid时不比对身份字符串，一律按还在处理", async () => {
+  const w = await world();
+  const marker = await writeMarker(w.directory, process.pid, `pid:${process.pid}:lstart:${STALE_LSTART}`);
+  const message = await expectBlocked(w.directory, marker, `本机数据正在备份、恢复或对账（进程 ${process.pid}），等它结束再试`);
+  expect(message).toContain(`进程 ${process.pid}`);
+  expect(message).toContain("等它结束再试");
+  expect(message).not.toContain("删除");
+});
+
+test("instance写法的标记记着仍存活的进程时判断不了，报错带标记完整路径，标记不动", async () => {
+  const w = await world(); const child = await aliveChild();
+  try {
+    const marker = await writeMarker(w.directory, child.pid!, `pid:${child.pid}:instance:${uuidv7()}`);
+    const message = await expectBlocked(w.directory, marker, `判断不了留标记的进程是否还在；确认没有别的窗口在备份、恢复或对账后，删除 ${marker}`);
+    expect(message).toContain(`删除 ${marker}`);
+  } finally { await killChild(child); }
+});
+
+for (const content of ["{}", '{"state":"external"}']) {
+  test(`维护标记内容为${content}时读不出，报错带标记完整路径，标记内容不变`, async () => {
+    const w = await world(); const marker = join(w.directory, DATABASE_MAINTENANCE_FILE);
+    await writeFile(marker, content, { mode: 0o600 });
+    const message = await expectBlocked(w.directory, marker, `维护标记读不出；确认没有别的窗口在备份、恢复或对账后，删除 ${marker}`);
+    expect(message).toContain(`删除 ${marker}`);
+  });
+}
+
+test("维护标记里的进程身份和owner.pid对不上时按读不出处理", async () => {
+  const w = await world(); const pid = await exitedPid();
+  const marker = await writeMarker(w.directory, pid, `pid:${pid + 1}:lstart:${STALE_LSTART}`);
+  await expectBlocked(w.directory, marker, `维护标记读不出；确认没有别的窗口在备份、恢复或对账后，删除 ${marker}`);
+});
+
+test("维护标记不是JSON时按读不出处理", async () => {
+  const w = await world(); const marker = join(w.directory, DATABASE_MAINTENANCE_FILE);
+  await writeFile(marker, "not json", { mode: 0o600 });
+  await expectBlocked(w.directory, marker, `维护标记读不出；确认没有别的窗口在备份、恢复或对账后，删除 ${marker}`);
+});
+
+test("清理可清的维护标记时只删标记文件，目录里的其他文件不动", async () => {
+  const w = await world(); const pid = await exitedPid();
+  const marker = await writeMarker(w.directory, pid, `pid:${pid}:lstart:${STALE_LSTART}`);
+  await mkdir(join(w.directory, "backups", "any-id"), { recursive: true });
+  const kept = join(w.directory, "backups", "any-id", "x.txt");
+  await writeFile(kept, "keep");
+  new LocalDatabase(join(w.directory, "data.db")).close();
+  expect(existsSync(marker)).toBe(false);
+  expect(await readFile(kept, "utf8")).toBe("keep");
+});
+
+test("留有可清的维护标记时开始维护先清掉标记再照常进行；标记不能清时仍报maintenance_already_exists", async () => {
+  const w = await world(); const pid = await exitedPid();
+  const marker = await writeMarker(w.directory, pid, `pid:${pid}:lstart:${STALE_LSTART}`);
+  await expect(withDatabaseMaintenance(w.scope, () => "done")).resolves.toBe("done");
+  expect(existsSync(marker)).toBe(false);
+  await writeMarker(w.directory, process.pid, `pid:${process.pid}:lstart:${STALE_LSTART}`);
+  await expect(withDatabaseMaintenance(w.scope, () => null)).rejects.toThrow(/maintenance_already_exists/);
+});
+
+test("两个进程同时发现同一个可清的维护标记时都能打开成功", async () => {
+  const w = await world(); const pid = await exitedPid();
+  new LocalDatabase(join(w.directory, "data.db")).close();
+  const marker = await writeMarker(w.directory, pid, `pid:${pid}:lstart:${STALE_LSTART}`);
+  const script = join(w.root, "open.mjs");
+  await writeFile(script, `import {LocalDatabase} from ${JSON.stringify(new URL("../src/core/storage/database.ts", import.meta.url).href)};
+new LocalDatabase(${JSON.stringify(join(w.directory, "data.db"))}).close();`);
+  const run = () => new Promise<{ code: number | null; err: string }>((resolve) => {
+    const child = spawn(process.execPath, [script], { stdio: ["ignore", "ignore", "pipe"] });
+    let err = ""; child.stderr.on("data", (d) => { err += d; });
+    child.once("close", (code) => resolve({ code, err }));
+  });
+  const results = await Promise.all([run(), run()]);
+  expect(results.map((r) => r.code), results.map((r) => r.err).join("\n")).toEqual([0, 0]);
+  expect(existsSync(marker)).toBe(false);
 });

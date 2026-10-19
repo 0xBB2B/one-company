@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { closeSync, constants, fsyncSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { UUID_V7_PATTERN, uuidv7 } from "./database.ts";
 import { assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_MAINTENANCE_FILE, DATABASE_SCHEMA_VERSIONS, DATABASE_SNAPSHOT_FILE, pathExists } from "./database-paths.ts";
 import type { DatabaseKind } from "./database-paths.ts";
+import { processIdentity, processMissing, releaseStaleMaintenanceMarker } from "./maintenance-marker.ts";
 
 export class DatabaseMaintenanceError extends Error {
   readonly code: string;
@@ -81,20 +81,6 @@ function samePrivateFile(path: string, expected: PrivateFileState, code: string)
   if (current.inode !== expected.inode || current.device !== expected.device || current.size !== expected.size || current.mtimeMs !== expected.mtimeMs || current.ctimeMs !== expected.ctimeMs || current.contents !== expected.contents) throw new DatabaseMaintenanceError(code);
   return current;
 }
-function processMissing(pid: number): boolean {
-  try { process.kill(pid, 0); return false; }
-  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
-}
-function processIdentity(pid: number): { state: "active"; identity: string } | { state: "missing" | "unknown" } {
-  try {
-    const output = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
-      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000,
-      env: { PATH: "/usr/bin:/bin", LC_ALL: "C", LANG: "C" },
-    }).trim();
-    if (output) return { state: "active", identity: `pid:${pid}:lstart:${output}` };
-  } catch { /* 无进程查询权限时仍不能把活进程判为已退出。 */ }
-  return { state: processMissing(pid) ? "missing" : "unknown" };
-}
 const PROCESS_INSTANCE = `pid:${process.pid}:instance:${uuidv7()}`;
 function ownProcessIdentity(): string {
   const identity = processIdentity(process.pid);
@@ -165,11 +151,18 @@ export async function withDatabaseMaintenance<T>(scope: DatabaseMaintenanceScope
   try { writeNew(path, contents); syncDirectory(directory); file = readPrivateText(path, "maintenance_identity_changed"); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-    const existing = readPrivateText(path, "maintenance_needs_review");
-    if (!scope.takeover) throw new DatabaseMaintenanceError("maintenance_already_exists");
-    const prior = parseMaintenanceMarker(existing);
-    file = takeoverMarker(path, directory, existing, prior, scope);
-    tookOver = true;
+    if (!scope.takeover) {
+      if (!releaseStaleMaintenanceMarker(path).cleared) throw new DatabaseMaintenanceError("maintenance_already_exists");
+      try { writeNew(path, contents); } catch (retryError) {
+        throw (retryError as NodeJS.ErrnoException).code === "EEXIST" ? new DatabaseMaintenanceError("maintenance_already_exists") : retryError;
+      }
+      syncDirectory(directory); file = readPrivateText(path, "maintenance_identity_changed");
+    } else {
+      const existing = readPrivateText(path, "maintenance_needs_review");
+      const prior = parseMaintenanceMarker(existing);
+      file = takeoverMarker(path, directory, existing, prior, scope);
+      tookOver = true;
+    }
   }
   const state: Maintenance = { directory, path, file, operationId, takeover: tookOver, active: true };
   const permit = Object.freeze({}) as DatabaseMaintenancePermit;

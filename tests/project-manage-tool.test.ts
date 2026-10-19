@@ -4,7 +4,8 @@ import { repositoryDatabase, UUID_V7_PATTERN, uuidv7, withDatabase } from "../sr
 import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
@@ -23,6 +24,7 @@ import { draftApprover } from "./helpers/approval-fixture.ts";
 import type { WriteGrant } from "./helpers/approval-fixture.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { STALE_LSTART, exitedPid, writeMarker } from "./helpers/maintenance-marker.ts";
 
 
 const exec = promisify(execFile);
@@ -760,6 +762,24 @@ describe("operationId 由程序生成：模型不填，中断后的续做由程�
     expect(w.record()!.data.operationId).toBe(original);
     await w.runtime.shutdown();
   }, 30000);
+
+  test("数据目录留有可清的维护标记时 backup 清掉标记后返回 completed", async () => {
+    const w = await requirementWorld();
+    const pid = await exitedPid();
+    const marker = await writeMarker(dirname(repositoryDatabase(w.dataRoot, w.repoId)), pid, `pid:${pid}:lstart:${STALE_LSTART}`);
+    expect(details(await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx))).toMatchObject({ status: "completed" });
+    expect(existsSync(marker)).toBe(false);
+    await w.runtime.shutdown();
+  }, 60000);
+
+  test("数据目录留有可清的维护标记时 recovery-check 清掉标记后返回 restart_ready", async () => {
+    const w = await requirementWorld();
+    const pid = await exitedPid();
+    const marker = await writeMarker(dirname(repositoryDatabase(w.dataRoot, w.repoId)), pid, `pid:${pid}:lstart:${STALE_LSTART}`);
+    expect(details(await call(w.runtime, { action: "recovery-check", repoId: w.repoId }, w.ctx))).toMatchObject({ status: "restart_ready" });
+    expect(existsSync(marker)).toBe(false);
+    await w.runtime.shutdown();
+  }, 60000);
 
   test("备份中途失败：报错说明会从头开始新的备份，不含照抄与编号；再调 backup 从头做一次新的并成功，编号与失败那次不同，可用于 restore", async () => {
     const w = await requirementWorld();
