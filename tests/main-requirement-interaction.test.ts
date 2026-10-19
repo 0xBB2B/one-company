@@ -662,13 +662,13 @@ test("M8D-AC9：登记问题后弹出提问窗口，用户选推荐项，主代�
 
 test("窗口里点选非首项的推荐项，交给核验器的原话就是该项标题加说明，不带序号、推荐标记和推荐理由", async () => {
   const { w, input, ask } = await askedWorld();
-  const choices = [{ label: "先核对信息完整性，项目名称由用户填写", reason: "不查询项目系统，是否真实和能否按期交付由你判断。" },
-    { label: "你维护项目清单，BOT 匹配项目并核对信息完整性", reason: "按清单确认项目归属；交付可行性仍由你判断。", recommended: true, recommendedReason: "把交付承诺留给你，减少错误承诺。" }];
-  const result = await ask("你维护项目清单，BOT 匹配项目并核对信息完整性", { choices });
-  expect(result).toMatchObject({ status: "answered", answer: { text: "选第 2 项：你维护项目清单，BOT 匹配项目并核对信息完整性（推荐）", choice: 2 } });
+  const choices = [{ label: "先核对信息完整性，项目名称由用户填写", reason: "不查询项目系统，是否真实和能否按期交付由负责人判断。" },
+    { label: "负责人维护项目清单，BOT 匹配项目并核对信息完整性", reason: "按清单确认项目归属；交付可行性仍由负责人判断。", recommended: true, recommendedReason: "把交付承诺留给负责人，减少错误承诺。" }];
+  const result = await ask("负责人维护项目清单，BOT 匹配项目并核对信息完整性", { choices });
+  expect(result).toMatchObject({ status: "answered", answer: { text: "选第 2 项：负责人维护项目清单，BOT 匹配项目并核对信息完整性（推荐）", choice: 2 } });
   scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
   await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "交付可行性由需求负责人判断。\n" });
-  expect(verifierText(w)).toBe("你维护项目清单，BOT 匹配项目并核对信息完整性\n按清单确认项目归属；交付可行性仍由你判断。");
+  expect(verifierText(w)).toBe("负责人维护项目清单，BOT 匹配项目并核对信息完整性\n按清单确认项目归属；交付可行性仍由负责人判断。");
 });
 
 const TWO_HOURS = 7_200_000;
@@ -728,6 +728,29 @@ test("M8D-AC9：在其他里自己输入的文字原样当作用户原话；Esc 
   const result = await skipped.ask(false);
   expect(result).toMatchObject({ status: "pending", answer: null });
   expect(withDatabase(repositoryDatabase(skipped.w.dataRoot, skipped.w.repoId), (db) => db.list("interaction_questions_v1"))).toHaveLength(1);
+});
+
+test("提问文字含人称字：ask 失败并逐处写明字段、选项序号和含的字，改用用户、AI 或角色，窗口不弹", async () => {
+  const { w, ask } = await askedWorld();
+  const before = w.windows.length;
+  const error = await ask("5 分钟", { question: "我们该选哪种？", choices: [{ label: "5 分钟", reason: "你也觉得够用", recommended: true, recommendedReason: "常见做法" }, { label: "10 分钟", reason: "来得及" }] })
+    .then(() => undefined, (caught: unknown) => caught as Error);
+  expect(error).toMatchObject({ code: "question_format" });
+  expect(error!.message).toContain("question");
+  expect(error!.message).toContain("我");
+  expect(error!.message).toContain("第 1 个选项");
+  expect(error!.message).toContain("reason");
+  expect(error!.message).toContain("你");
+  expect(error!.message).toMatch(/用户[\s\S]*AI|AI[\s\S]*用户/);
+  expect(error!.message).toContain("角色");
+  expect(w.windows.length).toBe(before);
+});
+
+test("提问文字不含人称字：照常弹窗；用户在其他里输入含人称字的话不检查，原文返回", async () => {
+  const { w, ask } = await askedWorld();
+  const result = await ask({ other: "我来验收" });
+  expect(w.windows).toHaveLength(1);
+  expect(result).toMatchObject({ status: "answered", answer: { text: "我来验收", other: true } });
 });
 
 test("M8D-AC9：窗口里的回答只算回答：拿它批准时不弹批准窗口、不生效，拿它裁决时被拒并写明原因", async () => {

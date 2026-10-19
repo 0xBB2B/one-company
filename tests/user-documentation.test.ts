@@ -173,6 +173,14 @@ describe("旧命令与旧页面已清除", () => {
     expect(await readText(join(PACKAGE_ROOT, "rules/01-main-session.md"))).toContain("在 /one:setting 的开关里开启 Git 交付");
   });
 
+  test("主代理提示词的提问条目写明问题等文字不用我、你、您，指人写用户或角色，指自己写 AI", async () => {
+    const line = (await readText(join(PACKAGE_ROOT, "rules/01-main-session.md"))).split("\n").find((text) => text.includes("**提问**"))!;
+    expect(line).toMatch(/不用[^\n]{0,12}我[^\n]{0,6}你[^\n]{0,6}您/u);
+    expect(line).toContain("用户");
+    expect(line).toContain("角色");
+    expect(line).toContain("AI");
+  });
+
   for (const phrase of ["设定栏", "右上角写着各层"]) {
     test(`README 里搜不到旧页面的说法：${phrase}`, async () => {
       expect(await readText(README)).not.toContain(phrase);

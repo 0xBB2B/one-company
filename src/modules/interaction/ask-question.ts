@@ -24,7 +24,7 @@ export function askRecordText(ask: AskQuestion): string {
 export function askQuestionIssues(value: { question?: unknown; rootCheck?: unknown; choices?: unknown }): string[] {
   const issues: string[] = [];
   if (!text(value.rootCheck)) issues.push("缺少根源自检（rootCheck）：用一两句话说明这个问题针对的根源，以及为什么这些选项是从根源解决而不是临时修补");
-  if (!Array.isArray(value.choices)) { issues.push("缺少选项（choices）：要给 2 到 4 个选项"); return issues; }
+  if (!Array.isArray(value.choices)) { issues.push("缺少选项（choices）：要给 2 到 4 个选项"); return [...issues, ...pronounIssues(value)]; }
   const choices = value.choices as Array<Record<string, unknown> | null>;
   if (choices.length < 2 || choices.length > 4) issues.push(`选项要 2 到 4 个，现在是 ${choices.length} 个`);
   choices.forEach((choice, i) => {
@@ -40,5 +40,24 @@ export function askQuestionIssues(value: { question?: unknown; rootCheck?: unkno
     const length = [...askRecordText(value as AskQuestion)].length;
     if (length > SHORT_DECISION_LIMITS.textCodePoints) issues.push(`问题和各选项名称加起来 ${length} 个字，超过 ${SHORT_DECISION_LIMITS.textCodePoints} 个字，请精简`);
   }
-  return issues;
+  return [...issues, ...pronounIssues(value)];
+}
+
+function pronounIssues(value: { question?: unknown; rootCheck?: unknown; choices?: unknown }): string[] {
+  const fix = "请改用“用户”或这个人在需求里的角色（如负责人）指回答问题的人，用“AI”指主代理自己";
+  const found = (field: string, where: string, content: unknown) => {
+    if (typeof content !== "string") return [];
+    const chars = [...new Set(content.match(/[我你您]/gu) ?? [])];
+    return chars.length ? [`${where}${field}含“${chars.join("”“")}”：${fix}`] : [];
+  };
+  const choices = Array.isArray(value.choices) ? value.choices as Array<Record<string, unknown> | null> : [];
+  return [
+    ...found("问题（question）", "", value.question),
+    ...found("根源自检（rootCheck）", "", value.rootCheck),
+    ...choices.flatMap((choice, i) => [
+      ...found("选什么（label）", `第 ${i + 1} 个选项的`, choice?.label),
+      ...found("理由（reason）", `第 ${i + 1} 个选项的`, choice?.reason),
+      ...found("推荐理由（recommendedReason）", `第 ${i + 1} 个选项的`, choice?.recommendedReason),
+    ]),
+  ];
 }

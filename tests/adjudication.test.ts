@@ -613,6 +613,22 @@ test("M8L-AC3：主代理撰写选项的事项（计划两次被拒）窗口里�
     .rejects.toThrow("这只算回答，不能当作批准或裁决");
 });
 
+test("面板事项提问的问题含人称字：ask 失败并写明字段与字，窗口不弹；不含人称字的同一提问照常弹窗", async () => {
+  const w = await world();
+  w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
+  const ask = (question: string) => w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question, rootCheck: "两次都是轮数用完",
+    choices: ["再给一次机会，轮数上限 3", "调整目标或范围", "终止这个任务"].map((label, index) => choice(label, index === 0)) });
+  w.answerWindows("再给一次机会，轮数上限 3");
+  await ask("任务 login 两次未完成，怎么裁决？");
+  const before = w.windows.length;
+  expect(before).toBe(1);
+  const error = await ask("您想怎么裁决？").then(() => undefined, (caught: unknown) => caught as Error);
+  expect(error).toMatchObject({ code: "question_format" });
+  expect(error!.message).toContain("question");
+  expect(error!.message).toContain("您");
+  expect(w.windows.length).toBe(before);
+});
+
 test("M8L-AC3：取消或拒绝整个需求用 itemId=requirement:<编号> 的固定选项请用户确认，回答可登记为这个需求级决定", async () => {
   const w = await world();
   const target = `requirement:${w.fixture.requirementId}`, version = `${target}:${w.fixture.state.read(w.fixture.requirementId).version}`;
