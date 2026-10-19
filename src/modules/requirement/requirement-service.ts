@@ -61,7 +61,6 @@ export interface RequirementServiceOptions {
   localMutationOrigin?: object;
 }
 
-const RESUMABLE_FAILURES: ReadonlySet<string> = new Set(["state_changed_after_git", "git_result_missing", "write_claim_lost", "operation_not_ready"]);
 const VALIDATION_REQUIREMENT_ID = "00000000-0000-7000-8000-000000000000";
 
 const STATE_SCOPE: Record<RequirementServiceAction, ReadonlySet<RequirementAction>> = {
@@ -422,9 +421,6 @@ export class RequirementService {
         }
         this.ownerTokens.delete(input.operationId);
       }
-      if (error instanceof RequirementServiceError && RESUMABLE_FAILURES.has(error.code)) {
-        throw new RequirementServiceError(error.code, `原操作编号 ${input.operationId}`);
-      }
       throw error;
     } finally {
       this.runningOperations.delete(input.operationId);
@@ -453,7 +449,7 @@ export class RequirementService {
         archivePath: document.archivePath,
       };
       for (const [key, value] of Object.entries(expected)) {
-        if (operation[key as keyof RequirementOperation] !== value) throw new RequirementServiceError("operation_conflict");
+        if (operation[key as keyof RequirementOperation] !== value) throw new RequirementServiceError("requirement_write_pending", "内容和这次不同");
       }
       if (operation.finalVersion === null) operation = this.operations.claim(operation.operationId, owner).data;
     } else {

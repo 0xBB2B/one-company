@@ -10,10 +10,9 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostAuthorizationError, HostAuthorizationManager } from "../requirement/host-authorization.ts";
 import { RequirementService } from "../requirement/requirement-service.ts";
 import { RequirementOperations } from "../requirement/requirement-operations.ts";
-import type { RequirementOperationAction } from "../requirement/requirement-operations.ts";
 import type { RequirementServiceOptions } from "../requirement/requirement-service.ts";
 import type { ConfirmationContext, CreateRequirementInput, UpdateDraftInput, LoadConfirmationInput, ServiceAuthorizationRequest } from "../requirement/requirement-manage-contracts.ts";
-import { requirementIntentHash } from "../requirement/requirement-manage-contracts.ts";
+import { requirementIntentHash, RequirementServiceError } from "../requirement/requirement-manage-contracts.ts";
 import { UserInteractionCore } from "./user-interaction.ts";
 import { partitionPrdDocument, prdSectionsProblem } from "../requirement/prd-view.ts";
 import { RequirementDocError, resolveRepositoryRequirementDoc } from "../requirement/requirement-doc.ts";
@@ -26,7 +25,7 @@ import { decisionDigest } from "../requirement/short-decision-format.ts";
 import { parseStrictJson } from "../../core/storage/strict-json.ts";
 import { ApprovalManifestStore, summarizeApprovalManifest, assertApprovalScopeReturnIn, assertRegisteredScopeReturnIn, APPROVAL_MANIFEST_NAMESPACE } from "../requirement/approval-manifest-store.ts";
 import type { RegisteredScopeReturnProof } from "../requirement/approval-manifest-store.ts";
-import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { checkRequirement } from "../requirement/requirement-contracts.ts";
 import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
@@ -476,11 +475,14 @@ export class MainRequirementInteraction {
     // 原因是模型说法，只帮主代理改草稿，不改变拒绝本身
     if (refusal !== undefined) throw new HostAuthorizationError("draft_interpretation_denied", refusal ? `核验器说明，模型撰写，仅供参考：${refusal}` : undefined);
   }
-  async draft(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", input: CreateRequirementInput | UpdateDraftInput, summary: string, resume = false) {
-    if (resume) {
-      const operation = this.#resumable(ctx, repoId, input.operationId, action === "create" ? null : (input as UpdateDraftInput).requirementId, action);
-      if (action === "create") input = { ...input, requestId: operation.requestId! } as CreateRequirementInput;
-    }
+  async draft(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", draftInput: Omit<CreateRequirementInput, "requestId" | "operationId"> | Omit<UpdateDraftInput, "operationId">, summary: string) {
+    this.#authorization.assertRepository(repoId, this.#host(ctx).sessionId);
+    const operations = new RequirementOperations({ dataRoot: this.#options.dataRoot, repoId });
+    const unfinished = action === "create" ? operations.pendingCreate(requirementIntentHash({ title: draftInput.title, body: draftInput.body }))
+      : operations.pendingSave((draftInput as Omit<UpdateDraftInput, "operationId">).requirementId);
+    if (unfinished && unfinished.action !== action) throw new RequirementServiceError("requirement_write_pending", `那次是 ${unfinished.action}，用 ${unfinished.action} 续完`);
+    const input = { ...draftInput, operationId: unfinished?.operationId ?? uuidv7(),
+      ...(action === "create" ? { requestId: unfinished?.requestId ?? uuidv7() } : {}) } as CreateRequirementInput | UpdateDraftInput;
     const host = this.#host(ctx), generation = this.#generation;
     const questions = action === "updateDraft" ? (this.#snapshot(host, repoId, (input as UpdateDraftInput).requirementId),
       this.#authorization.interactionRecords(repoId, (input as UpdateDraftInput).requirementId, host.sessionId).questions
@@ -817,10 +819,6 @@ export class MainRequirementInteraction {
         approvalScope: { status: "available", summary: current.data.approvalManifest! } });
     }
     return this.#prove(ctx, request.repoId, wrapped);
-  }
-  #resumable(ctx: ExtensionContext, repoId: string, operationId: string, requirementId: string | null, action: RequirementOperationAction) {
-    this.#authorization.assertRepository(repoId, this.#host(ctx).sessionId);
-    return new RequirementOperations({ dataRoot: this.#options.dataRoot, repoId }).resumable(operationId, requirementId, action);
   }
   /** SDK execute与tool_result之间只保留来源元数据，最终交付仍读实际DB。 */
   async execute(toolCallId: string, ctx: ExtensionContext, repoId: string, params: Record<string, unknown>, run: () => Promise<unknown>, signal?: AbortSignal) {

@@ -14,26 +14,29 @@ describe("requirement_manage严格公开参数", () => {
       expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: base, [key]: "forged" }), key).toBe(false);
     }
   });
-  test("编号由程序生成：create不带requestId与operationId也合格，带requestId被拒，create与updateDraft的operationId可选，confirmUpdate带operationId被拒", async () => {
-    expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...base, operationId: uuidv7() } })).toBe(true);
+  test("编号由程序生成：create与updateDraft带operationId被拒，create带requestId被拒，confirmUpdate带operationId被拒", async () => {
+    expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...base, operationId: uuidv7() } })).toBe(false);
+    await expect(tool0().execute("test", { request: { ...base, operationId: uuidv7() } } as never, undefined, undefined, {} as never)).rejects.toMatchObject({ code: "invalid_shape" });
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...base, requestId: uuidv7() } })).toBe(false);
     const tool = createRequirementManageTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
     await expect(tool.execute("test", { request: { ...base, requestId: uuidv7() } } as never, undefined, undefined, {} as never)).rejects.toMatchObject({ code: "invalid_shape" });
     const update = { action: "updateDraft", repoId: base.repoId, requirementId: uuidv7(), version: 1, summary: base.summary, title: "标题", body: "正文" };
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: update })).toBe(true);
-    expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...update, operationId: uuidv7() } })).toBe(true);
+    expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...update, operationId: uuidv7() } })).toBe(false);
+    await expect(tool0().execute("test", { request: { ...update, operationId: uuidv7() } } as never, undefined, undefined, {} as never)).rejects.toMatchObject({ code: "invalid_shape" });
     const confirm = { action: "confirmUpdate", repoId: base.repoId, requirementId: uuidv7(), savedOperationId: uuidv7(), version: 2 };
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: confirm })).toBe(true);
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...confirm, operationId: uuidv7() } })).toBe(false);
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...confirm, operationId: "不是编号" } })).toBe(false);
     await expect(tool.execute("test", { request: { ...confirm, operationId: uuidv7() } } as never, undefined, undefined, {} as never)).rejects.toMatchObject({ code: "invalid_shape" });
   });
-  test("工具说明不提新生成与UUIDv7，写明operationId平时不填、只在续做时照抄报错或结果给出的编号", () => {
+  const tool0 = () => createRequirementManageTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
+  test("工具说明不提新生成与UUIDv7，也不让模型填写或照抄操作编号去续做", () => {
     const { description } = createRequirementManageTool({ interaction: {} as never });
     expect(description).not.toContain("新生成");
     expect(description).not.toContain("UUIDv7");
-    expect(description).toMatch(/operationId[^。；]*不填/u);
-    expect(description).toMatch(/(报错|结果)[^。；]*续做[^。；]*照抄/u);
+    expect(description).not.toMatch(/operationId[^。；]*(照抄|填进来)/u);
+    expect(description).not.toContain("原操作编号");
   });
   test("confirmUpdate执行期只接saved操作等元数据，严格拒绝旧正文确认载荷", async () => {
     const tool = createRequirementManageTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
@@ -47,7 +50,7 @@ describe("requirement_manage严格公开参数", () => {
     const { body: _body, ...withoutBody } = base;
     const error = await tool.execute("test", { request: { ...withoutBody, requirementId: uuidv7(), sectionId: "x" } } as never, undefined, undefined, {} as never).catch((caught: unknown) => caught);
     expect(error).toMatchObject({ code: "invalid_shape" });
-    expect((error as Error).message).toContain("多余字段：requirementId、sectionId；缺少字段：body；本动作允许字段：action、repoId、operationId、summary、title、body");
+    expect((error as Error).message).toContain("多余字段：requirementId、sectionId；缺少字段：body；本动作允许字段：action、repoId、summary、title、body");
     expect((error as Error).message).not.toContain("标题");
     const unknown = await tool.execute("test", { request: { action: "approve", repoId: base.repoId } } as never, undefined, undefined, {} as never).catch((caught: unknown) => caught);
     expect((unknown as Error).message).toContain("可用 action：create、updateDraft、confirmUpdate、read、diff、next、metadata");

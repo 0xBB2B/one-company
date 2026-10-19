@@ -15,11 +15,13 @@ import { HostAuthorizationError, HostAuthorizationManager } from "../src/modules
 import { MainRequirementInteraction } from "../src/modules/interaction/main-requirement-interaction.ts";
 import { UserInteractionCore } from "../src/modules/interaction/user-interaction.ts";
 import { RequirementOperations } from "../src/modules/requirement/requirement-operations.ts";
+import { prdRequirementPath } from "../src/modules/requirement/prd-storage.ts";
 import { REQUIREMENT_OPERATION_NAMESPACE } from "../src/modules/requirement/requirement-coordination.ts";
 import type { MainRequirementInteractionOptions } from "../src/modules/interaction/main-requirement-interaction.ts";
 import { createRequirementManageTool } from "../src/modules/interaction/requirement-manage-tool.ts";
 import { createUserInteractTool } from "../src/modules/interaction/user-interact-tool.ts";
-import { RequirementService } from "../src/modules/requirement/requirement-service.ts";
+import { RequirementService, requirementIntentHash } from "../src/modules/requirement/requirement-service.ts";
+import { adviceOf } from "../src/core/exec/tool-failure.ts";
 import { RequirementServiceError } from "../src/modules/requirement/requirement-manage-contracts.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { resolveRepositoryRequirementDoc } from "../src/modules/requirement/requirement-doc.ts";
@@ -1315,55 +1317,134 @@ describe("编号由程序生成", () => {
     expect(replied.operationId).toMatch(UUID_V7_PATTERN);
   });
 
-  test("没做完的保存留着时，再发起新保存的报错原因里带原操作编号；照抄原编号、带原内容再调，保存完成", async () => {
-    const w = await world(), created = await w.create(), state = await stateOf(w);
-    allowDrafts(w);
-    const unfinished = await leaveUnfinishedUpdate(w, created);
-    w.capture(); const error = await w.call(draft(created, { version: state.read(String(created.requirementId)).version, body: BODY + "别的内容。\n" })).catch((caught: unknown) => caught as Error);
-    expect(error.message).toContain(unfinished);
-    w.capture(); const resumed = await w.call(draft(created, { operationId: unfinished }));
-    expect(resumed).toMatchObject({ status: "saved", operationId: unfinished });
-    expect(Number(resumed.version)).toBeGreaterThan(Number(created.version));
+  async function leaveUnfinishedCreate(w: World, params: Record<string, unknown>) {
+    const original = RequirementOperations.prototype.recordGitResult;
+    const spy = vi.spyOn(RequirementOperations.prototype, "recordGitResult").mockImplementationOnce(() => { throw new Error("injected git-result log failure"); }).mockImplementation(original);
+    try { w.capture(); await expect(w.call(params)).rejects.toThrow(); } finally { spy.mockRestore(); }
+    const pending = new RequirementOperations({ dataRoot: w.dataRoot, repoId: w.repoId }).pendingCreate(requirementIntentHash({ title: String(params.title), body: String(params.body) }));
+    expect(pending).not.toBeNull();
+    return pending!;
+  }
+  const createParams = (extra: Record<string, unknown> = {}) => ({ action: "create", summary: "短信登录", title: "短信登录需求", body: BODY, ...extra });
+  const creates = (w: World) => withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list(REQUIREMENT_OPERATION_NAMESPACE))
+    .filter((row) => (row.data as { action: string }).action === "create");
+  const reasonOf = (error: unknown) => `${(error as Error).message}\n${adviceOf(error)?.why ?? ""}\n${adviceOf(error)?.next ?? ""}`;
+
+  test("create 与 updateDraft 带 operationId 被拒为参数不合格；create 带 requestId 同样被拒", async () => {
+    const w = await world(), created = await w.create();
+    w.capture();
+    await expect(w.call(createParams({ operationId: uuidv7() }))).rejects.toMatchObject({ code: "invalid_shape" });
+    await expect(w.call(createParams({ requestId: uuidv7() }))).rejects.toMatchObject({ code: "invalid_shape" });
+    await expect(w.call(draft(created, { operationId: uuidv7() }))).rejects.toMatchObject({ code: "invalid_shape" });
   });
 
-  const rejections: Array<[string, string]> = [
-    ["编号不存在", "找不到这个操作编号对应的保存"],
-    ["编号对应的保存已完成", "已经完成"],
-    ["编号属于别的需求", "属于别的需求或别的动作"],
-    ["内容与原操作不同", "续做的内容与原操作不同"],
-  ];
-  for (const [reason, phrase] of rejections) test(`续做时${reason}：被拒并写明原因，需求状态不变`, async () => {
+  test("没做完的保存留着时，用原来的标题和正文再调一次 updateDraft（不带编号）：沿用原操作编号，保存完成，需求解锁", async () => {
+    const w = await world(), created = await w.create();
+    allowDrafts(w);
+    const unfinished = await leaveUnfinishedUpdate(w, created);
+    w.capture(); const resumed = await w.call(draft(created));
+    expect(resumed).toMatchObject({ status: "saved", operationId: unfinished });
+    expect(Number(resumed.version)).toBeGreaterThan(Number(created.version));
+    w.capture(); const next = await w.call(draft(created, { version: Number(resumed.version), body: BODY + "解锁后的新内容。\n" }));
+    expect(next).toMatchObject({ status: "saved" });
+    expect(next.operationId).not.toBe(unfinished);
+  });
+
+  test("续做 updateDraft 不再产生第二次正文提交", async () => {
+    const w = await world(), created = await w.create();
+    allowDrafts(w);
+    await leaveUnfinishedUpdate(w, created);
+    const repo = prdRequirementPath({ dataRoot: w.dataRoot, repoId: w.repoId, requirementId: String(created.requirementId) });
+    const commits = async () => (await promisify(execFile)("git", ["-C", repo, "rev-list", "--count", "HEAD"])).stdout.trim();
+    const before = await commits();
+    w.capture(); await w.call(draft(created));
+    expect(await commits()).toBe(before);
+  });
+
+  test("需求挂着一次没做完的 create 时调 updateDraft：被拒，建议用原来的动作续完", async () => {
+    const w = await world(), state = await stateOf(w);
+    allowDrafts(w);
+    const pending = await leaveUnfinishedCreate(w, createParams());
+    w.capture();
+    const error = await w.call({ action: "updateDraft", requirementId: pending.requirementId, version: state.read(pending.requirementId).version,
+      summary: "短信登录", title: "短信登录需求", body: BODY }).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(reasonOf(error)).toContain("这个需求还有一次没完成的保存");
+    expect(reasonOf(error)).toContain("原来的动作");
+  });
+
+  test("create 时填了不属于本窗口的仓库编号：先按仓库鉴权拒绝，不建出那个仓库的库", async () => {
+    const w = await world();
+    w.capture();
+    const foreign = "e".repeat(64);
+    await expect(w.call({ ...createParams(), repoId: foreign })).rejects.toThrow();
+    await expect(stat(repositoryDatabase(w.dataRoot, foreign))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  test("没做完的 updateDraft 后用不同内容再调 updateDraft：被拒并写明还有一次没完成的保存，需求状态不变", async () => {
     const w = await world(), created = await w.create(), other = await w.create(), state = await stateOf(w);
     allowDrafts(w);
-    const cases: Record<string, () => Promise<Record<string, unknown>>> = {
-      "编号不存在": async () => draft(created, { operationId: uuidv7() }),
-      "编号对应的保存已完成": async () => {
-        w.capture(); const done = await w.call(draft(created));
-        return draft(created, { version: Number(done.version), operationId: String(done.operationId), body: BODY + "再来一句。\n" });
-      },
-      "编号属于别的需求": async () => {
-        const unfinished = await leaveUnfinishedUpdate(w, created);
-        return draft(other, { operationId: unfinished });
-      },
-      "内容与原操作不同": async () => {
-        const unfinished = await leaveUnfinishedUpdate(w, created);
-        return draft(created, { operationId: unfinished, title: "登录改名" });
-      },
-    };
-    const attempt = await cases[reason]!();
+    await leaveUnfinishedUpdate(w, created);
     const before = [state.read(String(created.requirementId)), state.read(String(other.requirementId))];
-    w.capture();
-    const error = await w.call(attempt).catch((caught: unknown) => caught as Error);
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain(phrase);
+    for (const extra of [{ title: "登录改名" }, { body: BODY + "别的内容。\n" }]) {
+      w.capture(); const error = await w.call(draft(created, { version: state.read(String(created.requirementId)).version, ...extra })).catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(reasonOf(error)).toContain("这个需求还有一次没完成的保存");
+      expect(reasonOf(error)).toContain("内容和这次不同");
+      expect(reasonOf(error)).not.toContain("在 operationId 填");
+      expect(reasonOf(error)).not.toContain("原操作编号");
+    }
     expect([state.read(String(created.requirementId)), state.read(String(other.requirementId))]).toEqual(before);
+  });
+
+  test("本仓库有一次没做完的 create，标题和正文相同再调 create：续完原需求，不另建需求", async () => {
+    const w = await world();
+    allowDrafts(w);
+    const pending = await leaveUnfinishedCreate(w, createParams());
+    const before = creates(w).length;
+    w.capture(); const resumed = await w.call(createParams());
+    expect(resumed).toMatchObject({ status: "recovered", operationId: pending.operationId, requirementId: pending.requirementId });
+    expect(creates(w)).toHaveLength(before);
+  });
+
+  test("没做完的 create 后标题或正文不同再调 create：新建另一个需求成功", async () => {
+    const w = await world();
+    allowDrafts(w);
+    const pending = await leaveUnfinishedCreate(w, createParams());
+    const before = creates(w).length;
+    for (const extra of [{ title: "另一个标题" }, { body: BODY + "多一句。\n" }]) {
+      w.capture(); const other = await w.call(createParams(extra));
+      expect(other).toMatchObject({ status: "created" });
+      expect(other.requirementId).not.toBe(pending.requirementId);
+      expect(other.operationId).not.toBe(pending.operationId);
+    }
+    expect(creates(w)).toHaveLength(before + 2);
+  });
+
+  test("pendingSave 与 pendingCreate：返回没做完的保存记录，没有或已做完返回 null", async () => {
+    const w = await world(), created = await w.create();
+    allowDrafts(w);
+    const operations = new RequirementOperations({ dataRoot: w.dataRoot, repoId: w.repoId });
+    const hash = requirementIntentHash({ title: "短信登录需求", body: BODY });
+    expect(operations.pendingSave(String(created.requirementId))).toBeNull();
+    expect(operations.pendingCreate(hash)).toBeNull();
+    const unfinished = await leaveUnfinishedUpdate(w, created);
+    expect(operations.pendingSave(String(created.requirementId))).toMatchObject({ operationId: unfinished, action: "updateDraft", finalVersion: null });
+    expect(operations.pendingSave(uuidv7())).toBeNull();
+    const pendingCreate = await leaveUnfinishedCreate(w, createParams());
+    expect(operations.pendingCreate(hash)).toMatchObject({ operationId: pendingCreate.operationId, action: "create", finalVersion: null });
+    expect(operations.pendingSave(pendingCreate.requirementId)).toMatchObject({ operationId: pendingCreate.operationId, action: "create" });
+    expect(operations.pendingCreate(requirementIntentHash({ title: "别的", body: BODY }))).toBeNull();
+    w.capture(); await w.call(createParams());
+    expect(operations.pendingCreate(hash)).toBeNull();
+    expect(operations.pendingSave(pendingCreate.requirementId)).toBeNull();
   });
 });
 
-test("续做时填了不属于本窗口的仓库编号：先按仓库鉴权拒绝，不在本机建出这个仓库的库", async () => {
+test("填了不属于本窗口的仓库编号：先按仓库鉴权拒绝，不在本机建出这个仓库的库", async () => {
   const w = await world();
   w.capture("改一下需求");
   const foreign = "f".repeat(64);
-  await expect(w.call({ repoId: foreign, action: "updateDraft", requirementId: uuidv7(), operationId: uuidv7(), version: 1, summary: "手机号登录", title: "登录", body: BODY })).rejects.toThrow();
+  await expect(w.call({ repoId: foreign, action: "updateDraft", requirementId: uuidv7(), version: 1, summary: "手机号登录", title: "登录", body: BODY })).rejects.toThrow();
   await expect(stat(repositoryDatabase(w.dataRoot, foreign))).rejects.toMatchObject({ code: "ENOENT" });
 });

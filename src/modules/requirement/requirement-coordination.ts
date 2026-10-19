@@ -94,11 +94,10 @@ export function claimRequirementWriteIn(
   }
   const existing = readRequirementWriteClaimIn(db, input.repoId, input.requirementId);
   if (existing) {
-    const original = `原操作编号 ${existing.data.operationId}`;
-    if (existing.data.operationId !== input.operationId) throw new RequirementServiceError("requirement_write_pending", original);
+    if (existing.data.operationId !== input.operationId) throw new RequirementServiceError("requirement_write_pending");
     if (existing.data.ownerToken === input.ownerToken && existing.data.pid === input.pid) return existing;
     if (processIsAlive(existing.data.pid)) throw new RequirementServiceError("requirement_write_busy");
-    if (!options.allowDeadOriginalOperationRecovery) throw new RequirementServiceError("write_recovery_required", original);
+    if (!options.allowDeadOriginalOperationRecovery) throw new RequirementServiceError("write_recovery_required");
     const recovered: RequirementWriteClaim = {
       ...existing.data,
       ownerToken: input.ownerToken,
@@ -163,7 +162,7 @@ export function assertNoUnfinishedRequirementOperationsIn(db: LocalDatabase, req
     if (raw?.requirementId !== requirementId) return false;
     return operationStatus(stored.data, requirementId).unfinished;
   }).map((stored) => operationStatus(stored.data, requirementId).operationId);
-  if (unfinished.length > 0) throw new RequirementServiceError("unfinished_requirement_operation", `原操作编号 ${unfinished.join("、")}`);
+  if (unfinished.length > 0) throw new RequirementServiceError("unfinished_requirement_operation");
 }
 
 /**

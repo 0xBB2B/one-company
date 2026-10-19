@@ -735,7 +735,7 @@ export class RequirementStateStore {
     return this.mutate("begin-close", request, (db) => {
       const record = this.get(db, request.requirementId);
       if (record.data.close) {
-        if (!equal(record.data.close, request.intent)) throw new RequirementStateError("close_intent_conflict", `原操作编号 ${record.data.close.operationId}`);
+        if (!equal(record.data.close, request.intent)) throw new RequirementStateError("close_intent_conflict");
         return record;
       }
       this.active(record.data, true); this.version(record, request.version);
@@ -757,8 +757,7 @@ export class RequirementStateStore {
     const request = checked(commands.finish, input);
     return this.mutate("finish-close", request, (db) => {
       const record = this.get(db, request.requirementId);
-      if (!record.data.close) throw new RequirementStateError("close_intent_conflict");
-      if (record.data.close.operationId !== request.operationId) throw new RequirementStateError("close_intent_conflict", `原操作编号 ${record.data.close.operationId}`);
+      if (!record.data.close || record.data.close.operationId !== request.operationId) throw new RequirementStateError("close_intent_conflict");
       if (record.data.lifecycle === "closed") return record;
       if (record.data.lifecycle !== "closing" || record.data.recovery !== "ready") throw new RequirementStateError("lifecycle_denied");
       this.version(record, request.version);

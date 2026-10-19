@@ -279,7 +279,7 @@ export class UserInteractionCore {
     if (!op || !after?.record || op.data.action !== "updateDraft" || op.data.requirementId !== after.record.id ||
       op.data.saveVersion !== r.before.record!.version || op.data.finalVersion !== after.record.version || op.data.savedVersion !== after.record.version ||
       op.data.intentHash !== r.expected.intentHash || op.data.targetHash !== r.expected.targetHash || op.data.epoch !== after.record.data.epoch ||
-      op.data.git?.commit !== after.record.data.saved?.commit || op.data.git?.hash !== after.record.data.saved?.hash) throw new UserInteractionError("resave_not_finalized", `原操作编号 ${r.expected.operationId}`);
+      op.data.git?.commit !== after.record.data.saved?.commit || op.data.git?.hash !== after.record.data.saved?.hash) throw new UserInteractionError("resave_not_finalized");
     withDatabase(this.#path(), (db) => db.transaction(() => {
       const current = db.read("requirements", after.record!.id), operation = db.read(REQUIREMENT_OPERATION_NAMESPACE, r.expected.operationId);
       const pm = createHash("sha256").update(JSON.stringify(db.read<{ lease?: unknown }>("pm_ownership", after.record!.id)?.data.lease ?? null)).digest("hex");

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
@@ -189,12 +190,12 @@ export class RequirementOperations {
     return withDatabase(this.path, (db) => db.transaction(() => {
       const existing = this.readIn(db, input.operationId);
       if (existing) {
-        if (!same(mutableFields(existing.data), mutableFields(input))) throw new RequirementServiceError("operation_conflict", "同一 operationId 对应不同请求");
+        if (!same(mutableFields(existing.data), mutableFields(input))) throw new RequirementServiceError("operation_conflict");
         if (existing.data.finalVersion === null) {
           const otherPending = db.list(NAMESPACE)
             .map((stored) => checkOperation(stored.data))
             .find((operation) => operation.requirementId === input.requirementId && operation.operationId !== input.operationId && operation.finalVersion === null);
-          if (otherPending) throw new RequirementServiceError("requirement_write_pending", `原操作编号 ${otherPending.operationId}`);
+          if (otherPending) throw new RequirementServiceError("requirement_write_pending");
           claimRequirementWriteIn(db, { ...owner, repoId: this.repoId, requirementId: input.requirementId, operationId: input.operationId, acquiredAt: this.checkedNow() }, { allowDeadOriginalOperationRecovery: true });
         }
         return existing;
@@ -204,7 +205,7 @@ export class RequirementOperations {
         .find((operation) => operation.requirementId === input.requirementId && operation.finalVersion === null);
       const claimed = readRequirementWriteClaimIn(db, this.repoId, input.requirementId);
       if (conflicting || claimed) {
-        throw new RequirementServiceError("requirement_write_pending", `原操作编号 ${(conflicting?.operationId ?? claimed!.data.operationId)}`);
+        throw new RequirementServiceError("requirement_write_pending");
       }
       const requirementStored = db.read("requirements", input.requirementId);
       if (!requirementStored) throw new RequirementServiceError("unknown_requirement");
@@ -239,21 +240,24 @@ export class RequirementOperations {
       const otherPending = db.list(NAMESPACE)
         .map((candidate) => checkOperation(candidate.data))
         .find((operation) => operation.requirementId === stored.data.requirementId && operation.operationId !== operationId && operation.finalVersion === null);
-      if (otherPending) throw new RequirementServiceError("requirement_write_pending", `原操作编号 ${otherPending.operationId}`);
+      if (otherPending) throw new RequirementServiceError("requirement_write_pending");
       claimRequirementWriteIn(db, { ...owner, repoId: this.repoId, requirementId: stored.data.requirementId, operationId, acquiredAt: this.checkedNow() }, { allowDeadOriginalOperationRecovery: true });
       return stored;
     }));
   }
 
-  resumable(operationId: string, requirementId: string | null, action: RequirementOperationAction): RequirementOperation {
-    const stored = this.read(operationId);
-    if (!stored) throw new RequirementServiceError("resume_not_found");
-    const operation = stored.data;
-    if (operation.finalVersion !== null) throw new RequirementServiceError("resume_finished");
-    if ((requirementId !== null && operation.requirementId !== requirementId) || operation.action !== action) {
-      throw new RequirementServiceError("resume_target_mismatch");
-    }
-    return operation;
+  pendingSave(requirementId: string): RequirementOperation | null {
+    if (!existsSync(this.path)) return null;
+    return withDatabase(this.path, (db) => db.list(NAMESPACE)
+      .map((stored) => checkOperation(stored.data))
+      .find((operation) => operation.requirementId === requirementId && operation.finalVersion === null) ?? null);
+  }
+
+  pendingCreate(intentHash: string): RequirementOperation | null {
+    if (!existsSync(this.path)) return null;
+    return withDatabase(this.path, (db) => db.list(NAMESPACE)
+      .map((stored) => checkOperation(stored.data))
+      .find((operation) => operation.action === "create" && operation.finalVersion === null && operation.intentHash === intentHash) ?? null);
   }
 
   assertOwned(operationId: string, owner: RequirementWriteOwner): RequirementOperation {

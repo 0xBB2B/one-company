@@ -415,14 +415,14 @@ process.stdin.once('data', async()=> { try { const lease=await store.acquirePm({
   } finally { children.forEach((c) => c.proc.kill("SIGKILL")); await Promise.allSettled(children.map((c) => c.closed)); }
 }, 10_000);
 
-test("已有在办关闭时，关闭冲突的原因里带在办关闭的原操作编号", async () => {
+test("已有在办关闭时，关闭冲突的原因不带操作编号", async () => {
   const w = await world(); const record = w.store.reserve({ requestId: uuidv7(), intentHash: "c".repeat(64) });
   const intent = { operationId: uuidv7(), reason: "cancelled" as const, receiptId: uuidv7() };
   const closing = w.store.beginClose({ requirementId: record.id, version: record.version, intent });
   const begin = (() => { try { w.store.beginClose({ requirementId: record.id, version: record.version, intent: { ...intent, operationId: uuidv7() } }); } catch (error) { return error; } })();
   expect(begin).toMatchObject({ code: "close_intent_conflict" });
-  expect(adviceOf(begin)!.why).toContain(intent.operationId);
+  expect(adviceOf(begin)!.why).not.toContain(intent.operationId);
   const finish = (() => { try { w.store.finishClose({ requirementId: record.id, version: closing.version, operationId: uuidv7() }); } catch (error) { return error; } })();
   expect(finish).toMatchObject({ code: "close_intent_conflict" });
-  expect(adviceOf(finish)!.why).toContain(intent.operationId);
+  expect(adviceOf(finish)!.why).not.toContain(intent.operationId);
 });
