@@ -1,6 +1,6 @@
 import { answeringUi } from "./helpers/window-host.ts";
 import type { WindowDecision } from "./helpers/window-host.ts";
-import { uuidv7 } from "../src/core/storage/database.ts";
+import { repositoryDatabase, UUID_V7_PATTERN, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -16,8 +16,14 @@ import type {
   ProjectManageHostContext,
 } from "../src/modules/project-index/project-manage-tool.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { RequirementService, requirementIntentHash } from "../src/modules/requirement/requirement-service.ts";
+import { RequirementCloseService } from "../src/modules/delivery/workflow-close.ts";
+import { MANAGED_WORKSPACES, workspaceLocation } from "../src/modules/delivery/workspace-manage.ts";
+import { draftApprover } from "./helpers/approval-fixture.ts";
+import type { WriteGrant } from "./helpers/approval-fixture.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { RESUME_FINISHED, RESUME_NOT_FOUND } from "../src/modules/requirement/requirement-backup.ts";
 
 
 const exec = promisify(execFile);
@@ -133,11 +139,13 @@ describe("project_manage 固定输入与主代理宿主边界", () => {
     }));
     const ctx = context("session-main", async () => true);
     await expect(call(runtime, { action: "workspace-prepare", repoId: world.repoId }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
+    await expect(call(runtime, { action: "workspace-prepare", repoId: world.repoId, requirementId: uuidv7() },
+      context("session-main", async () => true, false))).rejects.toMatchObject({ code: "workspace_confirmation_required" });
     await expect(call(runtime, { action: "init", repoId: world.repoId, preview: true, requirementId: uuidv7() }, ctx))
       .rejects.toThrow("多余字段：requirementId；本动作允许字段：action、repoId、preview");
     await expect(runtime.tool.execute("flat", { action: "status", repoId: world.repoId } as never, undefined, undefined, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
-    await expect(call(runtime, { action: "workspace-prepare", repoId: world.repoId, requirementId: uuidv7(), operationId: uuidv7(), preview: true }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
-    await expect(call(runtime, { action: "workspace-recycle", repoId: world.repoId, requirementId: uuidv7(), operationId: uuidv7() },
+    await expect(call(runtime, { action: "workspace-prepare", repoId: world.repoId, requirementId: uuidv7(), preview: true }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
+    await expect(call(runtime, { action: "workspace-recycle", repoId: world.repoId, requirementId: uuidv7() },
       context("session-main", async () => true, false))).rejects.toMatchObject({ code: "workspace_confirmation_required" });
     await expect(call(runtime, { action: "status", repoId: world.repoId, preview: true }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
     await expect(call(runtime, { action: "refresh", repoId: world.repoId, preview: false }, ctx)).rejects.toMatchObject({ code: "invalid_shape" });
@@ -628,5 +636,197 @@ describe("project_manage 项目规范 AGENTS.md：只有用户在窗口里选写
     const changed = details(await update(world, RULES_V2, context("session-main", async () => { await writeFile(file, "别处改的\n"); return "写入"; })));
     expect(changed).toMatchObject({ status: "blocked", reason: "确认期间 AGENTS.md 被别处改动", next: "重新读取仓库根目录的 AGENTS.md，在最新内容上修改后再提交" });
     await expect(readFile(file, "utf8")).resolves.toBe("别处改的\n");
+  });
+});
+
+describe("operationId 由程序生成：平时不填，只在续做时照抄报错给出的编号", () => {
+  const BODY = "# 目标 {#goals}\n保留移动。\n";
+  const idle: OpenProjectIndexService = async () => ({ preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}) });
+  const details = (result: unknown) => (result as { details: Record<string, unknown> }).details;
+  const UUIDS = new RegExp(UUID_V7_PATTERN.source.slice(1, -1), "g");
+
+  async function requirementWorld() {
+    const world = await fixture();
+    const paths = { repositoryRoot: world.repositoryRoot, dataRoot: world.dataRoot, repoId: world.repoId };
+    const grants = new Map<string, { action: string; intent: string; receiptId?: string }>();
+    const service = await RequirementService.open({ ...paths, authorize: (request) => {
+      if (request.repoId !== paths.repoId) return false;
+      if (request.action === "metadata") return true;
+      const grant = request.operationId ? grants.get(request.operationId) : undefined;
+      return !!grant && grant.action === request.action && grant.intent === request.intentHash && grant.receiptId === request.receiptId;
+    }, authorizeManifest: () => true });
+    const grantWrite: WriteGrant = (r) => grants.set(r.operationId, { action: r.action, intent: requirementIntentHash({ title: r.title, body: r.body }), receiptId: r.receiptId });
+    const create = { requestId: uuidv7(), operationId: uuidv7(), title: "角色跳跃", body: BODY };
+    grants.set(create.operationId, { action: "create", intent: requirementIntentHash({ title: create.title, body: BODY }) });
+    const { requirementId } = await service.create(create);
+    await draftApprover(paths, service, { requirementId, operationId: create.operationId, title: "角色跳跃", body: BODY }, grantWrite)();
+    const runtime = runtimeFor(world, idle);
+    const ctx = context("session-main", async () => true);
+    const record = () => withDatabase(repositoryDatabase(world.dataRoot, world.repoId), (db) => db.read<{ status: string; operationId: string }>(MANAGED_WORKSPACES, requirementId));
+    async function close() {
+      const receipt = uuidv7();
+      const closer = await RequirementCloseService.open({ ...paths, stopAgents: async () => {}, authorize: (request) => request.action !== "close" || request.receiptId === receipt });
+      try { await closer.close({ requirementId, reason: "cancelled", receiptId: receipt, operationId: uuidv7() }); } finally { closer.dispose(); }
+    }
+    return { ...world, requirementId, runtime, ctx, record, close };
+  }
+
+  test("五个动作的 schema：operationId 对 prepare/backup/restore 可选，对 recycle/recovery-check 不允许", () => {
+    const repoId = "a".repeat(64);
+    const requirementId = uuidv7();
+    const check = (request: Record<string, unknown>) => Value.Check(PROJECT_MANAGE_PARAMETERS, { request });
+    const restore = { action: "restore", repoId, backupOperationId: uuidv7(), backupManifestHash: "b".repeat(64) };
+    expect(check({ action: "workspace-prepare", repoId, requirementId })).toBe(true);
+    expect(check({ action: "workspace-prepare", repoId, requirementId, operationId: uuidv7() })).toBe(true);
+    expect(check({ action: "workspace-prepare", repoId, requirementId, operationId: "not-a-uuid" })).toBe(false);
+    expect(check({ action: "workspace-recycle", repoId, requirementId })).toBe(true);
+    expect(check({ action: "workspace-recycle", repoId, requirementId, operationId: uuidv7() })).toBe(false);
+    expect(check({ action: "recovery-check", repoId })).toBe(true);
+    expect(check({ action: "recovery-check", repoId, operationId: uuidv7() })).toBe(false);
+    expect(check({ action: "backup", repoId })).toBe(true);
+    expect(check({ action: "backup", repoId, operationId: uuidv7() })).toBe(true);
+    expect(check(restore)).toBe(true);
+    expect(check({ ...restore, operationId: uuidv7() })).toBe(true);
+    expect(check({ action: "restore", repoId, backupOperationId: restore.backupOperationId })).toBe(false);
+    expect(check({ action: "restore", repoId, backupManifestHash: restore.backupManifestHash })).toBe(false);
+  });
+
+  test("workspace-prepare 不填 operationId 成功：结果带合规 UUIDv7，且就是记录里的操作编号", async () => {
+    const w = await requirementWorld();
+    const result = details(await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx));
+    expect(result).toMatchObject({ status: "ready" });
+    expect(result.operationId).toMatch(UUID_V7_PATTERN);
+    expect(w.record()!.data.operationId).toBe(result.operationId);
+    const again = details(await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx));
+    expect(again).toMatchObject({ status: "ready", operationId: result.operationId });
+    await w.runtime.shutdown();
+  });
+
+  test("workspace-recycle 不填 operationId 成功且结果带 UUIDv7；带 operationId 被参数校验拒绝", async () => {
+    const w = await requirementWorld();
+    await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx);
+    await w.close();
+    await expect(call(w.runtime, { action: "workspace-recycle", repoId: w.repoId, requirementId: w.requirementId, operationId: uuidv7() }, w.ctx))
+      .rejects.toMatchObject({ code: "invalid_shape" });
+    const result = details(await call(w.runtime, { action: "workspace-recycle", repoId: w.repoId, requirementId: w.requirementId }, w.ctx));
+    expect(result).toMatchObject({ status: "recycled" });
+    expect(result.operationId).toMatch(UUID_V7_PATTERN);
+    await w.runtime.shutdown();
+  });
+
+  test("recovery-check 不填 operationId 成功且结果带 UUIDv7；带 operationId 被参数校验拒绝", async () => {
+    const w = await requirementWorld();
+    await expect(call(w.runtime, { action: "recovery-check", repoId: w.repoId, operationId: uuidv7() }, w.ctx)).rejects.toMatchObject({ code: "invalid_shape" });
+    const result = details(await call(w.runtime, { action: "recovery-check", repoId: w.repoId }, w.ctx));
+    expect(result).toMatchObject({ status: "restart_ready" });
+    expect(result.operationId).toMatch(UUID_V7_PATTERN);
+    await w.runtime.shutdown();
+  });
+
+  test("backup 与 restore 不填 operationId 成功：各自结果带合规 UUIDv7，restore 只需备份结果里的编号和哈希", async () => {
+    const w = await requirementWorld();
+    const backup = details(await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx));
+    expect(backup).toMatchObject({ status: "completed" });
+    expect(backup.operationId).toMatch(UUID_V7_PATTERN);
+    const restored = details(await call(w.runtime,
+      { action: "restore", repoId: w.repoId, backupOperationId: backup.operationId, backupManifestHash: backup.manifestHash }, w.ctx));
+    expect(restored).toMatchObject({ status: "needs_review" });
+    expect(restored.operationId).toMatch(UUID_V7_PATTERN);
+    expect(restored.operationId).not.toBe(backup.operationId);
+    await w.runtime.shutdown();
+  }, 30000);
+
+  test("工作区准备中断后：不填编号再准备被拒且原因写出原编号；照抄这个编号再调，工作区变 ready", async () => {
+    const w = await requirementWorld();
+    const original = uuidv7();
+    const location = workspaceLocation(await realpath(w.repositoryRoot), w.requirementId);
+    const head = await git(w.repositoryRoot, ["rev-parse", "HEAD"]);
+    withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.create(MANAGED_WORKSPACES, w.requirementId, { format: "managed-workspace/v1",
+      requirementId: w.requirementId, title: "角色跳跃", operationId: original, baseCommit: head, branch: location.branch, path: location.path, status: "preparing", recycleOperationId: null }));
+    await mkdir(join(location.path, ".."), { recursive: true });
+    await git(w.repositoryRoot, ["worktree", "add", "-b", `req/${w.requirementId}`, location.path, head]);
+
+    const refused = await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx);
+    expect(details(refused)).toMatchObject({ status: "blocked" });
+    expect(JSON.stringify(details(refused))).toContain(original);
+    expect(w.record()!.data.status).toBe("preparing");
+
+    const resumed = details(await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId, operationId: original }, w.ctx));
+    expect(resumed).toMatchObject({ status: "ready", operationId: original });
+    expect(w.record()!.data.status).toBe("ready");
+    await w.runtime.shutdown();
+  }, 30000);
+
+  test("备份中途失败：报错原因写出本次编号并说明可照抄续做；照抄编号再调，备份完成且回执与一次做完相同", async () => {
+    const w = await requirementWorld();
+    const unfinishedId = uuidv7();
+    const database = repositoryDatabase(w.dataRoot, w.repoId);
+    withDatabase(database, (db) => db.create("requirement_service_operations", unfinishedId, {
+      format: "requirement-service-operation/v1", operationId: unfinishedId, repoId: w.repoId,
+      requirementId: w.requirementId, finalVersion: null, git: null,
+    }));
+    const outcome = await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx)
+      .then((result) => JSON.stringify(result), (error: Error) => error.message);
+    expect(outcome).toContain("照抄");
+    const [operationId] = (outcome.match(UUIDS) ?? []).filter((value) => value !== unfinishedId);
+    expect(operationId).toMatch(UUID_V7_PATTERN);
+
+    withDatabase(database, (db) => db.remove("requirement_service_operations", unfinishedId, db.read("requirement_service_operations", unfinishedId)!.version));
+    const resumed = details(await call(w.runtime, { action: "backup", repoId: w.repoId, operationId }, w.ctx));
+    const direct = details(await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx));
+    expect(resumed).toMatchObject({ status: "completed", operationId });
+    expect({ ...resumed, operationId: undefined, manifestHash: undefined }).toEqual({ ...direct, operationId: undefined, manifestHash: undefined });
+    await w.runtime.shutdown();
+  }, 30000);
+
+  test("续做 workspace-prepare 填的编号对不上：找不到、已完成分别被拒，状态不变", async () => {
+    const w = await requirementWorld();
+    const missing = details(await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId, operationId: uuidv7() }, w.ctx));
+    expect(missing).toMatchObject({ status: "blocked" });
+    expect(JSON.stringify(missing)).toContain("找不到这个操作编号对应的工作区准备");
+    expect(w.record()).toBeNull();
+
+    const done = details(await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx));
+    const before = w.record()!;
+    const finished = details(await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId, operationId: done.operationId }, w.ctx));
+    expect(finished).toMatchObject({ status: "blocked" });
+    expect(JSON.stringify(finished)).toContain("已经完成");
+    expect(finished.next).toContain("会直接返回已有工作区");
+    expect(w.record()).toEqual(before);
+    await w.runtime.shutdown();
+  }, 30000);
+
+  test("续做 backup/restore 填的编号对不上：找不到、已完成分别被拒", async () => {
+    const w = await requirementWorld();
+    const missingBackup = details(await call(w.runtime, { action: "backup", repoId: w.repoId, operationId: uuidv7() }, w.ctx));
+    expect(missingBackup).toMatchObject({ status: "blocked", reason: RESUME_NOT_FOUND });
+    expect(JSON.stringify(missingBackup)).toContain("找不到这个操作编号对应的备份或恢复");
+
+    const backup = details(await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx));
+    const finishedBackup = details(await call(w.runtime, { action: "backup", repoId: w.repoId, operationId: backup.operationId }, w.ctx));
+    expect(finishedBackup).toMatchObject({ status: "blocked", reason: RESUME_FINISHED });
+    expect(JSON.stringify(finishedBackup)).toContain("已经完成");
+
+    const restoreParams = { action: "restore", repoId: w.repoId, backupOperationId: backup.operationId, backupManifestHash: backup.manifestHash };
+    const missingRestore = details(await call(w.runtime, { ...restoreParams, operationId: uuidv7() }, w.ctx));
+    expect(missingRestore).toMatchObject({ status: "blocked", reason: RESUME_NOT_FOUND });
+    expect(JSON.stringify(missingRestore)).toContain("找不到这个操作编号对应的备份或恢复");
+
+    const restored = details(await call(w.runtime, restoreParams, w.ctx));
+    const finishedRestore = details(await call(w.runtime, { ...restoreParams, operationId: restored.operationId }, w.ctx));
+    expect(finishedRestore).toMatchObject({ status: "blocked", reason: RESUME_FINISHED });
+    expect(JSON.stringify(finishedRestore)).toContain("已经完成");
+    await w.runtime.shutdown();
+  }, 60000);
+
+  test("工具说明与 workspace-manage 报错文字不出现“新生成”“UUIDv7”，说明里写明 operationId 平时不填", async () => {
+    const world = await fixture();
+    const runtime = runtimeFor(world, idle);
+    const clean = (text: string) => text.replaceAll("重新生成", "");
+    expect(clean(runtime.tool.description)).not.toMatch(/新生成|UUIDv7/u);
+    expect(runtime.tool.description).toContain("平时不填");
+    const source = await readFile(new URL("../src/modules/delivery/workspace-manage.ts", import.meta.url), "utf8");
+    expect(clean(source)).not.toMatch(/新生成|UUIDv7/u);
+    await runtime.shutdown();
   });
 });

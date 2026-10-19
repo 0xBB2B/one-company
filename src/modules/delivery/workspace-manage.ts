@@ -34,7 +34,9 @@ const WORKSPACE_ADVICE = {
   declined: { why: "用户在界面上拒绝了这次操作", next: "不要重试；确实需要时先向用户说明原因再问" },
   path_conflict: { why: "工作区目标路径已被占用", next: "请用户处理该路径后重试" },
   branch_conflict: { why: "需求分支名已被占用且不属于本需求", next: "请用户处理同名分支后重试" },
-  operation_conflict: { why: "同一操作编号已用于别的工作区操作", next: "换一个新生成的操作编号重试" },
+  operation_conflict: { why: "这个需求的工作区还有一次没完成的准备", next: "照抄原因里给出的原操作编号填进 operationId，再调一次 workspace-prepare，让它续完" },
+  resume_not_found: { why: "找不到这个操作编号对应的工作区准备", next: "不是续做就不填 operationId，重新发起" },
+  resume_finished: { why: "这个操作编号对应的工作区准备已经完成", next: "不填 operationId 再调 workspace-prepare，会直接返回已有工作区" },
   not_prepared: { why: "需求还没有准备工作区", next: "先用 workspace-prepare 准备工作区" },
   recycle_blocked: { why: "工作区还不能回收", next: "按原因逐项处理后再回收" },
   git_failed: { why: "Git 命令执行失败", next: "按 Git 的报错处理；需要改动仓库时请用户介入" },
@@ -124,14 +126,18 @@ export class WorkspaceManageService {
     return (await service.read({ requirementId, source: "approved" })).title;
   }
 
-  async prepare(input: { requirementId: string; operationId: string }): Promise<ManagedWorkspace> {
+  async prepare(input: { requirementId: string; operationId: string; resume?: boolean }): Promise<ManagedWorkspace> {
     checked(id, input.requirementId); checked(id, input.operationId);
     const record = this.state.read(input.requirementId);
     if (record.data.lifecycle !== "active") throw new WorkspaceManageError("requirement_not_active", ["需求批准生效后才能创建工作区"]);
     const existing = this.read(input.requirementId);
+    if (input.resume) {
+      if (!existing) throw new WorkspaceManageError("resume_not_found");
+      if (existing.status === "ready") throw new WorkspaceManageError("resume_finished");
+    }
     if (existing && existing.operationId !== input.operationId) {
       if (existing.status === "ready") return existing;
-      throw new WorkspaceManageError("operation_conflict");
+      throw new WorkspaceManageError("operation_conflict", [`原操作编号 ${existing.operationId}`]);
     }
     const location = workspaceLocation(this.options.repositoryRoot, input.requirementId);
     let baseCommit = existing?.baseCommit ?? await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
