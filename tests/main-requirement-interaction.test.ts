@@ -1403,7 +1403,7 @@ describe("编号由程序生成", () => {
     const pending = await leaveUnfinishedCreate(w, createParams());
     const before = creates(w).length;
     w.capture(); const resumed = await w.call(createParams());
-    expect(resumed).toMatchObject({ status: "recovered", operationId: pending.operationId, requirementId: pending.requirementId });
+    expect(resumed).toMatchObject({ status: "created", operationId: pending.operationId, requirementId: pending.requirementId });
     expect(creates(w)).toHaveLength(before);
   });
 

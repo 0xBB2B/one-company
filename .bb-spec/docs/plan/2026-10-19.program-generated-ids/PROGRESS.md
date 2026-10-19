@@ -10,6 +10,7 @@
 | 07 | 07-requirement-auto-resume | done | 2026-10-19 |
 | 09 | 09-change-apply-auto-resume | done | 2026-10-19 |
 | 08 | 08-close-workspace-backup | done | 2026-10-19 |
+| 10 | 10-final-cleanup | in-progress | — |
 | 收尾 | 全量纯代码测试 + 真实模型验收（P1–P13、M9-AC12、M9-AC2/AC3/AC11） | pending | — |
 ## 当前
 01–09 完成；当前：收尾（全量纯代码测试与真实模型验收重跑）。

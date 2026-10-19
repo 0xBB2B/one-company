@@ -291,7 +291,7 @@ test("Git 完成后操作日志登记故障，原 operation 重试复用提交�
   expect(await commitCount(requirementRoot)).toBe(1);
 
   const recovered = await w.service.create(input);
-  expect(recovered.status).toBe("recovered");
+  expect(recovered.status).toBe("created");
   expect(await commitCount(requirementRoot)).toBe(1);
   expect(w.state.events(reserved.id).filter((event) => event.data.kind === "prd.saved")).toHaveLength(1);
   expect(spy).toHaveBeenCalled();

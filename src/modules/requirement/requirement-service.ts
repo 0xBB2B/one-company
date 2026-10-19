@@ -601,7 +601,7 @@ export class RequirementService {
       requirementId: operation.requirementId,
       commit: operation.git!.commit,
       prdHash: storageHash(operation.git!.hash),
-      status: operation.git!.status,
+      status: operation.git!.status === "recovered" ? (operation.action === "create" ? "created" : "saved") : operation.git!.status,
       archivePath: operation.archivePath,
       lifecycle: current.data.lifecycle as "draft" | "active",
       version: current.version,

@@ -16,3 +16,4 @@
 - [07-requirement-auto-resume](07-requirement-auto-resume.md) — 需求保存去掉 operationId，按内容认出没做完的保存 [依赖: 06-approval-atomic]
 - [09-change-apply-auto-resume](09-change-apply-auto-resume.md) — worker 写入去掉 operationId，按同一批文件续写
 - [08-close-workspace-backup](08-close-workspace-backup.md) — 关闭、工作区准备自动续办，备份恢复从头来 [依赖: 07-requirement-auto-resume]
+- [10-final-cleanup](10-final-cleanup.md) — 续完状态与一次做完相同；删掉备份恢复走不到的续做代码 [依赖: 08-close-workspace-backup]
