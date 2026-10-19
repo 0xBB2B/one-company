@@ -4,7 +4,7 @@
 | 01 | 01-requirement-resume | done | 2026-10-19 |
 | 03 | 03-workflow-close | pending | — |
 | 04 | 04-project-manage | pending | — |
-| 05 | 05-change-apply | pending | — |
+| 05 | 05-change-apply | done | 2026-10-19 |
 | 02 | 02-interaction-tools | pending | — |
 | 收尾 | 全量纯代码测试 + 真实模型验收（P1–P13、M9-AC12、M9-AC2/AC3/AC11） | pending | — |
 ## 当前

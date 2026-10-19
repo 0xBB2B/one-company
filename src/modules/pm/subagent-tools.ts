@@ -46,7 +46,7 @@ export async function createSubagentTools(input: SubagentToolsInput): Promise<{ 
         : "在检查阶段运行正式检查（formal），或查询、停止运行。", VERIFICATION_RUN_PARAMETERS, verification));
     if (role === "worker") {
       const change = track(await createChangeApplyTool({ ...shared, authorize, grant: { ...identity, role, epoch: input.epoch, writePaths: input.task.writePaths } }));
-      tools.push(toPiTool("change_apply", `只在授权范围 ${input.task.writePaths.join("、")} 内预检、写入或导入代码与测试。prepare 可省略 baseHash，结果会给出各文件当前的 baseHash；apply 可省略 baseHash，自动用本会话对该文件最近一次 prepare 的值，也可照填；新建文件未 prepare 时填 absent。operationId 每次新生成 UUIDv7。`, CHANGE_APPLY_PARAMETERS, change));
+      tools.push(toPiTool("change_apply", `只在授权范围 ${input.task.writePaths.join("、")} 内预检、写入或导入代码与测试。prepare 可省略 baseHash，结果会给出各文件当前的 baseHash；apply 可省略 baseHash，自动用本会话对该文件最近一次 prepare 的值，也可照填；新建文件未 prepare 时填 absent。apply、import 的 operationId 由程序生成，平时不填；结果显示没写完（applying 或 partial_failure）时，照抄结果里的 operationId、带同样的文件再调一次续写；报错里给出本次操作编号时，同样照抄它续写。status 填要查的那次写入的 operationId。`, CHANGE_APPLY_PARAMETERS, change));
     } else {
       const read = track(await createRequirementReadTool({ ...shared, authorize, binding: { ...identity, role, lease: input.pmLease } }));
       tools.push(toPiTool("requirement_manage", `${role === "qa" ? "读取已批准的需求正文、章节或差异（黑盒验收基线）。" : "读取已批准的需求正文、章节或差异。"}结果的 coverage.nextCursor 不为空时用 next 带上它读下一页。`,

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { COMMON_ADVICE, withDetail } from "../../core/exec/tool-failure.ts";
+import { adviceOf, COMMON_ADVICE, withDetail } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, posix, relative, sep } from "node:path";
@@ -9,7 +9,7 @@ import type { Static } from "typebox";
 import { snapshotBranchState } from "../../core/exec/branch-guard.ts";
 import { assertModificationAllowedIn, CheckRoundError } from "./check-round.ts";
 import { authorizeToolAction, classifyManagedWritePath, writePathAllowed } from "../../core/policy/core-permissions.ts";
-import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import { overlaps } from "../../core/policy/ranges.ts";
 import { checked, hash, id, object, positive } from "../requirement/requirement-contracts.ts";
 import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
@@ -40,8 +40,8 @@ const applyFile = object({ path: relativePath, baseHash: Type.Optional(fileHash)
 const scratchFile = object({ path: relativePath, baseHash: fileHash, sourcePath: relativePath, targetHash: hash });
 export const CHANGE_APPLY_PARAMETERS = Type.Union([
   object({ action: Type.Literal("prepare"), files: Type.Array(prepareFile, { minItems: 1, maxItems: 64 }) }),
-  object({ action: Type.Literal("apply"), operationId: id, files: Type.Array(applyFile, { minItems: 1, maxItems: 64 }) }),
-  object({ action: Type.Literal("import"), operationId: id, files: Type.Array(scratchFile, { minItems: 1, maxItems: 64 }) }),
+  object({ action: Type.Literal("apply"), operationId: Type.Optional(id), files: Type.Array(applyFile, { minItems: 1, maxItems: 64 }) }),
+  object({ action: Type.Literal("import"), operationId: Type.Optional(id), files: Type.Array(scratchFile, { minItems: 1, maxItems: 64 }) }),
   object({ action: Type.Literal("status"), operationId: id }),
 ]);
 export type ChangeApplyParameters = Static<typeof CHANGE_APPLY_PARAMETERS>;
@@ -69,7 +69,9 @@ const CHANGE_APPLY_ADVICE = {
   path_escape: { why: "路径经过链接或 .. 指到了工作区以外", next: "改用工作区内的真实路径" },
   out_of_scope: { why: "路径不在本任务的授权写入范围内", next: "只改授权范围内的文件；确实需要时在结果里说明，由 PM 调整任务" },
   stale_base: { why: "文件或分支在预检后已被改动", next: "重新 prepare 取得最新 baseHash 后再写入" },
-  operation_conflict: { why: "这个操作编号已用于别的写入", next: "换一个新生成的操作编号重试" },
+  operation_conflict: { why: "续写的文件或内容与原来那批不同", next: "带上原来那批文件续写；不是续写就不填 operationId" },
+  resume_not_found: { why: "找不到这个操作编号对应的、属于本运行的写入", next: "不是续写就不填 operationId，重新发起" },
+  resume_finished: { why: "这个操作编号对应的那批文件已经全部写完", next: "不填 operationId 发起新的写入；要看结果用 status" },
   import_mismatch: { why: "要导入的生成文件与声明不一致，或不是 UTF-8 文本文件", next: "重新生成文件并按实际内容填写 targetHash" },
   resource_limit: { why: "请求或文件超出大小上限", next: "拆成更小的改动后分次写入" },
   not_found: { why: "找不到这次写入记录，或它不属于本运行", next: "核对操作编号" },
@@ -225,12 +227,17 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
     await mkdir(dirname(file.absolute), { recursive: true });
     await writeFileAtomic(file.absolute, file.content.toString("utf8"));
   }
-  async function run(action: "apply" | "import", params: { operationId: string; files: ReadonlyArray<Static<typeof inlineFile> | Static<typeof scratchFile>> }) {
+  async function run(action: "apply" | "import", params: { operationId?: string; files: ReadonlyArray<Static<typeof inlineFile> | Static<typeof scratchFile>> }) {
     const { root } = await bindWorkspace(action);
     const planned = await plan(root, params);
     const intentHash = intentHashOf(planned);
-    const existing = readSet(params.operationId);
-    if (existing && (!ownSet(existing.data) || existing.data.intentHash !== intentHash)) throw new ChangeApplyError("operation_conflict");
+    const operationId = params.operationId ?? uuidv7();
+    const existing = params.operationId === undefined ? null : readSet(operationId);
+    if (params.operationId !== undefined) {
+      if (!existing || !ownSet(existing.data)) throw new ChangeApplyError("resume_not_found");
+      if (existing.data.status === "applied") throw new ChangeApplyError("resume_finished");
+      if (existing.data.intentHash !== intentHash) throw new ChangeApplyError("operation_conflict");
+    }
     withDatabase(database, (db) => modificationAllowed(db));
     const head = (await snapshotBranchState({ repoRoot: root })).head;
     const observed = await observe(planned);
@@ -238,7 +245,6 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
     let set: ChangeSet;
     if (existing) {
       version = existing.version; set = structuredClone(existing.data);
-      if (set.status === "applied") return freeze({ status: set.status, operationId: set.operationId, baseHead: set.baseHead, files: set.files });
       if (set.baseHead !== head) {
         version = saveSet(version, { ...set, status: "stale" });
         throw new ChangeApplyError("stale_base", "分支提交已变化");
@@ -247,50 +253,57 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
       const stale = planned.flatMap((file, index) => observed[index]!.currentHash === file.baseHash ? [] : [`${file.path} 当前 baseHash=${observed[index]!.currentHash}`]);
       if (stale.length > 0) throw new ChangeApplyError("stale_base", stale.join(","));
       host(action);
-      set = checked(ChangeSet, { format: "change-set/v1", operationId: params.operationId, runId: grant.runId, requirementId: grant.requirementId,
+      set = checked(ChangeSet, { format: "change-set/v1", operationId, runId: grant.runId, requirementId: grant.requirementId,
         repoId: grant.repoId, workspaceId: grant.workspaceId, branch: grant.branch, epoch: grant.epoch, intentHash, baseHead: head,
         status: "applying", files: planned.map((file) => ({ path: file.path, baseHash: file.baseHash, targetHash: file.targetHash, status: "pending" })),
         createdAt: Date.now(), updatedAt: Date.now() });
       version = withDatabase(database, (db) => db.transaction(() => {
         modificationAllowed(db);
-        if (db.read(CHANGE_SETS, set.operationId)) throw new ChangeApplyError("operation_conflict");
         return db.create(CHANGE_SETS, set.operationId, set).version;
       }));
     }
-    for (const file of planned) {
-      const entry = set.files.find((candidate) => candidate.path === file.path);
-      if (!entry) throw new ChangeApplyError("operation_conflict");
-      if (entry.status === "written") continue;
-      host(action);
-      const current = await currentHash(file.absolute);
-      if (current === file.targetHash) { entry.status = "written"; delete entry.reason; version = saveSet(version, set); continue; }
-      if (current !== file.baseHash) {
+    try {
+      for (const file of planned) {
+        const entry = set.files.find((candidate) => candidate.path === file.path);
+        if (!entry) throw new ChangeApplyError("operation_conflict");
+        if (entry.status === "written") continue;
+        host(action);
+        const current = await currentHash(file.absolute);
+        if (current === file.targetHash) { entry.status = "written"; delete entry.reason; version = saveSet(version, set); continue; }
+        if (current !== file.baseHash) {
+          entry.status = "stale"; entry.reason = "目标文件已被外部修改"; set.status = "stale";
+          saveSet(version, set);
+          return freeze({ status: set.status, operationId: set.operationId, baseHead: set.baseHead, files: set.files });
+        }
+        try {
+          await write(file);
+          if (await currentHash(file.absolute) !== file.targetHash) throw new Error("写入后指纹不符");
+        } catch (error) {
+          entry.status = "failed"; entry.reason = (error instanceof Error ? error.message : String(error)).slice(0, 512); set.status = "partial_failure";
+          saveSet(version, set);
+          return freeze({ status: set.status, operationId: set.operationId, baseHead: set.baseHead, files: set.files });
+        }
+        entry.status = "written"; delete entry.reason;
+        version = saveSet(version, set);
+      }
+      for (const file of planned) {
+        if (await currentHash(file.absolute) === file.targetHash) continue;
+        const entry = set.files.find((candidate) => candidate.path === file.path)!;
         entry.status = "stale"; entry.reason = "目标文件已被外部修改"; set.status = "stale";
         saveSet(version, set);
-        return freeze({ status: set.status, operationId: set.operationId, baseHead: set.baseHead, files: set.files });
+        throw new ChangeApplyError("stale_base", file.path);
       }
-      try {
-        await write(file);
-        if (await currentHash(file.absolute) !== file.targetHash) throw new Error("写入后指纹不符");
-      } catch (error) {
-        entry.status = "failed"; entry.reason = (error instanceof Error ? error.message : String(error)).slice(0, 512); set.status = "partial_failure";
-        saveSet(version, set);
-        return freeze({ status: set.status, operationId: set.operationId, baseHead: set.baseHead, files: set.files });
-      }
-      entry.status = "written"; delete entry.reason;
-      version = saveSet(version, set);
-    }
-    for (const file of planned) {
-      if (await currentHash(file.absolute) === file.targetHash) continue;
-      const entry = set.files.find((candidate) => candidate.path === file.path)!;
-      entry.status = "stale"; entry.reason = "目标文件已被外部修改"; set.status = "stale";
+      set.status = "applied";
       saveSet(version, set);
-      throw new ChangeApplyError("stale_base", file.path);
+      host(action); activeWorkspace();
+      return freeze({ status: set.status, operationId: set.operationId, baseHead: set.baseHead, files: set.files });
+    } catch (error) {
+      const note = `本次操作编号 ${operationId}，照抄它、带同样的文件再调一次可以续写`;
+      const advice = adviceOf(error);
+      if (advice) throw Object.assign(error as Error, { advice: withDetail(advice, note) });
+      if (error instanceof Error) { error.message = `${error.message}；${note}`; throw error; }
+      throw new Error(`${String(error)}；${note}`, { cause: error });
     }
-    set.status = "applied";
-    saveSet(version, set);
-    host(action); activeWorkspace();
-    return freeze({ status: set.status, operationId: set.operationId, baseHead: set.baseHead, files: set.files });
   }
 
   async function execute(input: unknown) {

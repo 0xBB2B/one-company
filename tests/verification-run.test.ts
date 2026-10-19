@@ -112,8 +112,9 @@ test("M6-AC12/AC13：本轮 worker、未完成写入或写占用未收尾不能�
   const original = store.writeFileAtomic;
   vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => { if (path.endsWith("b.ts")) throw new Error("模拟磁盘故障"); return original(path, content); });
   const applier = await w.changeApply();
-  const partial = uuidv7();
-  expect(((await applier.execute({ action: "apply", operationId: partial, files: [{ path: "src/b.ts", baseHash: "absent", content: "b\n" }] })) as { status: string }).status).toBe("partial_failure");
+  const partialResult = await applier.execute({ action: "apply", files: [{ path: "src/b.ts", baseHash: "absent", content: "b\n" }] }) as { status: string; operationId: string };
+  expect(partialResult.status).toBe("partial_failure");
+  const partial = partialResult.operationId;
   vi.restoreAllMocks();
   await expect(w.open()).rejects.toMatchObject({ code: "writes_pending" });
   expect(((await applier.execute({ action: "apply", operationId: partial, files: [{ path: "src/b.ts", baseHash: "absent", content: "b\n" }] })) as { status: string }).status).toBe("applied");
@@ -127,7 +128,7 @@ test("M6-AC12/AC13：本轮 worker、未完成写入或写占用未收尾不能�
   expect(round.baseline.inputCount).toBeGreaterThan(0);
   await expect(w.open()).rejects.toMatchObject({ code: "check_round_active" });
 
-  await expect(applier.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "check_phase_active" });
+  await expect(applier.execute({ action: "apply", files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "check_phase_active" });
   await expect(w.read("src/c.ts")).rejects.toMatchObject({ code: "ENOENT" });
   const worker = await w.tool(w.grant({ role: "worker" }));
   await expect(worker.execute({ action: "run", kind: "debug", command: "true", performance: NA })).rejects.toMatchObject({ code: "check_phase_active" });
@@ -157,14 +158,14 @@ test("M6-AC12/AC13：本轮 worker、未完成写入或写占用未收尾不能�
   expect(w.rounds.requestStop({ lease: w.lease, checkRoundId: round.checkRoundId }).status).toBe("stopping");
   expect(() => w.rounds.release({ lease: w.lease, checkRoundId: round.checkRoundId })).toThrow(/verification_active/);
   await expect(qa.execute({ action: "run", kind: "formal", command: "true", performance: NA })).rejects.toMatchObject({ code: "round_not_open" });
-  await expect(applier.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "check_phase_active" });
+  await expect(applier.execute({ action: "apply", files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "check_phase_active" });
   const stopped = await qa.execute({ action: "stop", verificationId: status.active[0]! }) as VerificationView;
   expect(stopped.status).toBe("cancelled");
   expect((await slow).status).toBe("cancelled");
   await expect(stat(join(stopped.outputRoot, "outputs"))).rejects.toMatchObject({ code: "ENOENT" });
   await expect(stat(join(stopped.outputRoot, "manifest.json"))).resolves.toBeTruthy();
   expect(w.rounds.release({ lease: w.lease, checkRoundId: round.checkRoundId }).status).toBe("released");
-  expect(((await applier.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })) as { status: string }).status).toBe("applied");
+  expect(((await applier.execute({ action: "apply", files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })) as { status: string }).status).toBe("applied");
   const debug = await worker.execute({ action: "run", kind: "debug", command: "true", performance: NA }) as VerificationView;
   expect(debug.status).toBe("passed"); expect(debug.checkRoundId).toBeNull();
 });
@@ -247,7 +248,7 @@ test("M6-AC2/AC14：证据适用性按实际内容重算；检查期间外部改
   expect([observed.status, observed.exitCode, observed.invalidation?.reason]).toEqual(["invalidated", 0, "observed_change"]);
   await expect(qa.execute({ action: "run", kind: "formal", command: "true", performance: NA })).rejects.toMatchObject({ code: "round_not_open" });
   const applier = await w.changeApply();
-  await expect(applier.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "check_phase_active" });
+  await expect(applier.execute({ action: "apply", files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "check_phase_active" });
   const releasedSecond = w.rounds.release({ lease: w.lease, checkRoundId: second.checkRoundId });
   expect([releasedSecond.status, releasedSecond.invalidation?.reason]).toEqual(["released", "observed_change"]);
 
@@ -302,7 +303,7 @@ test("M6-AC16：检查中收到已批准更新只能由有效 PM 记录 interrup
   const evidence = await formalEvidence(w, original.verificationId);
   expect(evidence!.reasons).toEqual(["round_not_released", "prd_changed"]);
   const applier = await w.changeApply();
-  await expect(applier.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "check_phase_active" });
+  await expect(applier.execute({ action: "apply", files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "check_phase_active" });
   w.rounds.release({ lease: w.lease, checkRoundId: round.checkRoundId });
   await expect(w.open()).rejects.toMatchObject({ code: "pending_update" });
 
