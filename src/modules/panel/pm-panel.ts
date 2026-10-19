@@ -105,7 +105,7 @@ export class PmPanel {
       const elapsed = overview.elapsedMs + (running ? Math.max(0, this.options.now() - entry.fetchedAt) : 0);
       const goals = overview.goals.length ? overview.goals.join("、") : overview.requirementId.slice(-8);
       const cache = overview.cacheRate === null ? "" : ` (${Math.round(overview.cacheRate * 100)}%)`;
-      const head = `${branch} ${icon} ${goals} · ↻${overview.turns} · ${overview.toolUses} tool uses · ${formatTokens(overview.tokens)} token${cache} · ${formatElapsed(elapsed)}`;
+      const head = `${branch} ${icon} ${goals}${overview.taskProgress ? ` · 任务 ${overview.taskProgress.completed}/${overview.taskProgress.total}` : ""} · ↻${overview.turns} · ${overview.toolUses} tool uses · ${formatTokens(overview.tokens)} token${cache} · ${formatElapsed(elapsed)}`;
       lines.push(this.mark(this.fit(head, safeWidth), selected !== undefined && selected.kind === "pm" && selected.entry === entry));
       lines.push(this.fit(`${rail}   └ ${overview.doing}`, safeWidth));
       overview.pendingItems.forEach((item, itemIndex) => {

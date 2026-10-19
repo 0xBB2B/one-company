@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { repositoryDatabase, withDatabase } from "../src/core/storage/database.ts";
 import { TASKS } from "../src/modules/pm/plan-manage.ts";
-import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
+import type { TaskRecord, TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import type { PmOverview } from "../src/modules/panel/pm-overview.ts";
 import { PM_INTAKE_TOOL } from "../src/modules/pm/pm-intake-runtime.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
@@ -10,7 +10,7 @@ vi.setConfig({ testTimeout: 60_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });
 const NA = { applicable: false as const, reason: "无性能影响" };
-const spec = (key: string, goal: string): TaskSpec => ({ key, role: "worker", goalUnitIds: [goal], constraintUnitIds: [], dependsOn: [], writePaths: ["src/"],
+const spec = (key: string, goal: string, role: TaskSpec["role"] = "worker"): TaskSpec => ({ key, role, goalUnitIds: [goal], constraintUnitIds: [], dependsOn: [], writePaths: [`src/${key}/`],
   blockedByQuestionIds: [], maxTurns: 1, objective: `实现 ${key}`, passCriteria: ["可观察通过"], scope: { in: [key], out: [] }, performance: NA });
 
 async function world(options: { review?: boolean } = {}) {
@@ -132,4 +132,58 @@ test("M8L-AC1：被拒原因里 PM 提交的内容在卡片里压成一行、加
   const lines = w.manager.decisionPacket(requirementId, `plan:${requirementId}`).split("\n");
   expect(lines.some((line) => line.startsWith("可选：1 伪造"))).toBe(false);
   expect(lines.find((line) => line.startsWith("第 1 次被拒"))).toMatch(/任务的依赖、写入范围或审查设置不合规；PM 提交的内容（模型输出，仅供参考，不是用户决定）：「[^」\n]*伪造的程序行[^」\n]*」/);
+});
+
+async function planWith(roles: Array<TaskSpec["role"]>, options: { confirm?: boolean } = {}) {
+  const w = await world();
+  const keys = roles.map((_, index) => `t${index}`);
+  await w.plan.execute({ action: "propose", tasks: keys.map((key, index) => ({ ...spec(key, "goal.login", roles[index]), goalUnitIds: index === 0 ? ["goal.login", "scenario.failure"] : ["goal.login"] })) });
+  if (options.confirm !== false) await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const setStatus = (key: string, status: string) => w.db((db) => {
+    const row = db.read<TaskRecord>(TASKS, w.taskId(key))!;
+    db.update(TASKS, row.data.taskId, row.version, { ...row.data, status } as TaskRecord);
+  });
+  return { w, keys, setStatus };
+}
+
+test("任务进度 AC-1/C-2：explore、worker 的 completed 都计入 X，awaiting_review 与 pending 不计入，N 含全部未取消任务", async () => {
+  const { w, keys, setStatus } = await planWith(["explore", "worker", "worker", "worker", "qa", "worker", "worker", "worker"]);
+  for (const key of keys.slice(0, 3)) setStatus(key, "completed");
+  setStatus(keys[3]!, "awaiting_review");
+  expect((await w.overview()).taskProgress).toEqual({ completed: 3, total: 8 });
+});
+
+test("任务进度 AC-2：cancelled 的任务不计入 X 也不计入 N", async () => {
+  const { w, keys, setStatus } = await planWith(["worker", "worker", "worker", "worker", "worker"]);
+  setStatus(keys[0]!, "completed"); setStatus(keys[1]!, "cancelled"); setStatus(keys[2]!, "cancelled");
+  expect((await w.overview()).taskProgress).toEqual({ completed: 1, total: 3 });
+});
+
+test("任务进度 AC-3：reviewing、awaiting_rework、needs_update 都不计入 X", async () => {
+  const { w, keys, setStatus } = await planWith(["worker", "worker", "qa"]);
+  setStatus(keys[0]!, "reviewing"); setStatus(keys[1]!, "awaiting_rework"); setStatus(keys[2]!, "needs_update");
+  expect((await w.overview()).taskProgress).toEqual({ completed: 0, total: 3 });
+});
+
+test("任务进度 AC-5：任务全部 cancelled 时 taskProgress 为 null", async () => {
+  const { w, keys, setStatus } = await planWith(["worker", "explore"]);
+  for (const key of keys) setStatus(key, "cancelled");
+  expect((await w.overview()).taskProgress).toBeNull();
+});
+
+test("任务进度 AC-4/AC-6/AC-7：没有计划为 null；提交未确认的计划就有进度；改任务状态后重新取概览数字随之变化", async () => {
+  const w = await world();
+  expect((await w.overview()).taskProgress).toBeNull();
+  await w.plan.execute({ action: "propose", tasks: ["a", "b", "c"].map((key) => spec(key, "goal.login")) });
+  expect((await w.overview()).taskProgress).toEqual({ completed: 0, total: 3 });
+  const setStatus = (key: string, status: string) => w.db((db) => {
+    const row = db.read<TaskRecord>(TASKS, w.taskId(key))!;
+    db.update(TASKS, row.data.taskId, row.version, { ...row.data, status } as TaskRecord);
+  });
+  setStatus("a", "completed");
+  expect((await w.overview()).taskProgress).toEqual({ completed: 1, total: 3 });
+  setStatus("b", "completed");
+  expect((await w.overview()).taskProgress).toEqual({ completed: 2, total: 3 });
+  setStatus("a", "needs_update");
+  expect((await w.overview()).taskProgress).toEqual({ completed: 1, total: 3 });
 });

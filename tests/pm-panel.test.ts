@@ -10,7 +10,7 @@ import { registerRequirementInput } from "../src/core/host/extension-lifecycle.t
 
 function overview(patch: Partial<PmOverview>): PmOverview {
   return { requirementId: "01900000-0000-7000-8000-000000000001", pmRunId: "01900000-0000-7000-8000-00000000000a", goals: ["角色跳跃", "跳跃动画"],
-    status: "running", doing: "派 worker 执行 login（第 2 次尝试）", turns: 5, toolUses: 5, tokens: 33_800, cacheRate: 0.62, elapsedMs: 12_300, pendingItems: [], ...patch };
+    status: "running", doing: "派 worker 执行 login（第 2 次尝试）", turns: 5, toolUses: 5, tokens: 33_800, cacheRate: 0.62, elapsedMs: 12_300, taskProgress: null, pendingItems: [], ...patch };
 }
 const jump = overview({ pendingItems: [{ itemId: "task:t1", kind: "adjudicate", label: "待裁决：任务 login 两次未完成", version: "task:t1:3" }] });
 const run = overview({ requirementId: "01900000-0000-7000-8000-000000000002", pmRunId: "01900000-0000-7000-8000-00000000000b", goals: ["角色快跑"],
@@ -220,4 +220,30 @@ test("原型设计变化信号到达时，主窗口面板重新拉取原型设�
   listeners.get("prototype.changed")!();
   await vi.waitFor(() => expect(calls.filter((method) => method === "prototypes.list").length).toBe(before + 1));
   await fake.trigger("session_shutdown", {}, ctx);
+});
+
+test("面板进度 AC-1：有任务时第一行在目标后、轮数前显示“任务 X/N”", () => {
+  const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+  instance.update([{ repoId: "r", overview: overview({ goals: ["角色跳跃"], taskProgress: { completed: 3, total: 8 } }), fetchedAt: 1_000 }]);
+  expect(instance.render(120)[1]).toBe("└─ ⠋ 角色跳跃 · 任务 3/8 · ↻5 · 5 tool uses · 33.8k token (62%) · 12.3s");
+});
+
+test("面板进度 AC-5：没有任务进度时第一行不含“任务”", () => {
+  const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+  instance.update([{ repoId: "r", overview: overview({ taskProgress: null }), fetchedAt: 1_000 }]);
+  expect(instance.render(120)[1]).not.toContain("任务");
+});
+
+test("面板进度 AC-6：running、pausing、paused、waiting 状态都显示任务进度", () => {
+  for (const status of ["running", "pausing", "paused", "waiting"] as const) {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.update([{ repoId: "r", overview: overview({ status, taskProgress: { completed: 2, total: 4 } }), fetchedAt: 1_000 }]);
+    expect(instance.render(120)[1], status).toContain(" · 任务 2/4 · ↻");
+  }
+});
+
+test("面板进度：窄屏下带任务进度的行照旧按宽度截断", () => {
+  const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+  instance.update([{ repoId: "r", overview: overview({ taskProgress: { completed: 3, total: 8 } }), fetchedAt: 1_000 }]);
+  for (const line of instance.render(20)) expect(visibleWidth(line)).toBeLessThanOrEqual(20);
 });

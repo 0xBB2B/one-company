@@ -31,6 +31,7 @@ export interface PmOverview {
   /** 缓存读取 ÷（输入 + 缓存读取 + 缓存写入）；尚无输入时为 null。 */
   cacheRate: number | null;
   elapsedMs: number;
+  taskProgress: { completed: number; total: number } | null;
   pendingItems: PendingItem[];
 }
 
@@ -162,6 +163,11 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
   return "空闲";
 }
 
+function taskProgressOf(tasks: TaskRecord[]): PmOverview["taskProgress"] {
+  const counted = tasks.filter((task) => task.status !== "cancelled");
+  return counted.length ? { completed: counted.filter((task) => task.status === "completed").length, total: counted.length } : null;
+}
+
 export function pmOverview(input: PmOverviewInput): PmOverview {
   const plan = readPlanIn(input.db, input.lease.requirementId);
   const tasks = plan?.tasks ?? [];
@@ -182,6 +188,7 @@ export function pmOverview(input: PmOverviewInput): PmOverview {
     turns: sum((run) => run.turns), toolUses: sum((run) => run.usage?.toolUses ?? 0),
     tokens: prompt + sum((run) => run.usage?.output ?? 0), cacheRate: prompt > 0 ? cacheRead / prompt : null,
     elapsedMs: Math.max(0, input.now - Date.parse(input.pm.startedAt) - (input.pm.pausedMs ?? 0) - pausedNow),
+    taskProgress: taskProgressOf(tasks),
     pendingItems: items,
   };
 }
