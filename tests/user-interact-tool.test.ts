@@ -184,7 +184,7 @@ function rendered(result: { details?: unknown; content?: Array<{ type: "text"; t
 test("M8D-AC9：对话里的提问记录块：登记中显示问题；回答后显示需求名、问题与回答，推荐项标绿色推荐，自己输入与暂不回答分别写明", () => {
   expect(rendered(undefined)).toEqual(["<b>提问</b>  <muted>起跳时机怎么定？</>"]);
   const caption = "按住空格时长控制跳跃高度（第 2 版）";
-  expect(rendered({ details: { caption, question: "起跳时机怎么定？", status: "answered", answer: { text: "选第 1 项：松开空格时起跳（推荐）", choice: 1 } } })).toEqual([
+  expect(rendered({ details: { caption, question: "起跳时机怎么定？", status: "answered", answer: { text: "松开空格时起跳\n松开即起跳，手感更直接", choice: 1 } } })).toEqual([
     `<b>提问</b>  <muted>${caption}</>`, "", "起跳时机怎么定？", "<muted>你的回答  </>1. 松开空格时起跳<success>（推荐）</>"]);
   expect(rendered({ details: { caption, question: "起跳时机怎么定？", status: "answered", answer: { text: "按下立即起跳", other: true } } }).at(-1))
     .toBe("<muted>你的回答  </>按下立即起跳<muted>（自己输入）</>");
@@ -206,7 +206,7 @@ test("提问记录块在 pi 的工具显示组件里只画一份问题和回答�
   const args = { request: { ...base, action: "ask", question: "起跳时机怎么定？", rootCheck: "根源", choices: CHOICES, scope: "仅起跳", actions: [], unitIds: ["A"] } };
   const component = new ToolExecutionComponent(tool.name, "call", args, undefined, tool, { requestRender: () => {} } as never, "/");
   const caption = "按住空格时长控制跳跃高度（第 2 版）";
-  component.updateResult({ content: [], details: { caption, question: "起跳时机怎么定？", status: "answered", answer: { text: "选第 1 项：实施 A（推荐）", choice: 1 } }, isError: false } as never);
+  component.updateResult({ content: [], details: { caption, question: "起跳时机怎么定？", status: "answered", answer: { text: "实施 A\n实施 A 的理由", choice: 1 } }, isError: false } as never);
   const text = component.render(80).join("\n").replace(/\x1b\[[0-9;]*m/g, "");
   expect(text.split("起跳时机怎么定？").length - 1).toBe(1);
   expect(text.split("你的回答").length - 1).toBe(1);

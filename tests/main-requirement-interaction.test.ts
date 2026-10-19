@@ -654,10 +654,11 @@ test("M8D-AC9：登记问题后弹出提问窗口，用户选推荐项，主代�
   expect(shown.title).toBe("提问 · 登录（第 1 版）");
   expect(shown.text).toContain("根源自检  要定的是验证码多久失效");
   expect(shown.choices).toEqual(["5 分钟", "10 分钟", "其他（自己输入）"]);
-  expect(result).toMatchObject({ status: "answered", answer: { text: "选第 1 项：5 分钟（推荐）", choice: 1 } });
+  expect(result).toMatchObject({ status: "answered", answer: { text: "5 分钟\n更安全", choice: 1 } });
   scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
   await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
   expect(verifierText(w)).toBe("5 分钟\n更安全");
+  expect(verifierText(w)).toBe((result as { answer: { text: string } }).answer.text);
 });
 
 test("窗口里点选非首项的推荐项，交给核验器的原话就是该项标题加说明，不带序号、推荐标记和推荐理由", async () => {
@@ -665,7 +666,7 @@ test("窗口里点选非首项的推荐项，交给核验器的原话就是该�
   const choices = [{ label: "先核对信息完整性，项目名称由用户填写", reason: "不查询项目系统，是否真实和能否按期交付由负责人判断。" },
     { label: "负责人维护项目清单，BOT 匹配项目并核对信息完整性", reason: "按清单确认项目归属；交付可行性仍由负责人判断。", recommended: true, recommendedReason: "把交付承诺留给负责人，减少错误承诺。" }];
   const result = await ask("负责人维护项目清单，BOT 匹配项目并核对信息完整性", { choices });
-  expect(result).toMatchObject({ status: "answered", answer: { text: "选第 2 项：负责人维护项目清单，BOT 匹配项目并核对信息完整性（推荐）", choice: 2 } });
+  expect(result).toMatchObject({ status: "answered", answer: { text: "负责人维护项目清单，BOT 匹配项目并核对信息完整性\n按清单确认项目归属；交付可行性仍由负责人判断。", choice: 2 } });
   scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
   await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, operationId: uuidv7(), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "交付可行性由需求负责人判断。\n" });
   expect(verifierText(w)).toBe("负责人维护项目清单，BOT 匹配项目并核对信息完整性\n按清单确认项目归属；交付可行性仍由负责人判断。");
@@ -702,7 +703,7 @@ test("提问窗口开着两小时后才回答：ask 返回 answered，不报 sta
     const { w, ask } = await askedWorld({ now: () => now });
     w.beforeAnswer(async () => { now += TWO_HOURS; await vi.advanceTimersByTimeAsync(TWO_HOURS); vi.useRealTimers(); });
     const result = await ask("5 分钟");
-    expect(result).toMatchObject({ status: "answered", answer: { text: "选第 1 项：5 分钟（推荐）", choice: 1 } });
+    expect(result).toMatchObject({ status: "answered", answer: { text: "5 分钟\n更安全", choice: 1 } });
   } finally { vi.useRealTimers(); }
 });
 test("提问窗口两小时后回答的话成为新的原话，之后立即可用于更新草稿", async () => {

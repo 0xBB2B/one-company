@@ -593,7 +593,7 @@ test("M8L-AC3：待你裁决经问答窗口给建议：选项文字须与程序�
   await expect(ask(["再给一次机会，轮数上限 1001", "调整目标或范围", "终止这个任务"])).rejects.toThrow("「再给一次机会，轮数上限 N」");
   w.answerWindows("再给一次机会，轮数上限 3");
   const answered = await ask(["再给一次机会，轮数上限 3", "调整目标或范围", "终止这个任务"]);
-  expect(answered).toMatchObject({ status: "answered", answer: { text: "选第 1 项：再给一次机会，轮数上限 3（推荐）", choice: 1 }, decision: { itemId: w.itemId, itemVersion: w.version() } });
+  expect(answered).toMatchObject({ status: "answered", answer: { text: "再给一次机会，轮数上限 3\n再给一次机会，轮数上限 3的理由", choice: 1 }, decision: { itemId: w.itemId, itemVersion: w.version() } });
   expect(w.windows.at(-1)!.title).toContain("事项 · 待你裁决：任务 login 两次未完成");
   const result = await w.register(w.itemId, w.version(), [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
   expect(result).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 3 });
@@ -635,7 +635,7 @@ test("M8L-AC3：取消或拒绝整个需求用 itemId=requirement:<编号> 的�
   w.answerWindows("取消需求");
   const answered = await w.panelAsk({ itemId: target, itemVersion: version, question: "确认取消这个需求吗？", rootCheck: "用户在上一个窗口选了取消需求",
     choices: [choice("调整需求"), choice("取消需求", true), choice("拒绝需求")] });
-  expect(answered).toMatchObject({ status: "answered", answer: { text: "选第 2 项：取消需求（推荐）" }, decision: { itemId: target, itemVersion: version } });
+  expect(answered).toMatchObject({ status: "answered", answer: { text: "取消需求\n取消需求的理由", choice: 2 }, decision: { itemId: target, itemVersion: version } });
   await expect(w.panelAsk({ itemId: target, itemVersion: `${target}:1`, question: "确认取消吗？", rootCheck: "x",
     choices: [choice("调整需求"), choice("取消需求", true), choice("拒绝需求")] })).rejects.toThrow("事项在用户做决定后已变化");
 });
