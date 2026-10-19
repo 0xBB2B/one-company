@@ -5,6 +5,7 @@ import { convertToLlm, initTheme, ToolExecutionComponent } from "@earendil-works
 import { Value } from "typebox/value";
 import { uuidv7 } from "../src/core/storage/database.ts";
 import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../src/modules/interaction/main-intake-interaction.ts";
+import { askQuestionIssues } from "../src/modules/interaction/ask-question.ts";
 import { createUserInteractTool, USER_INTERACT_PARAMETERS } from "../src/modules/interaction/user-interact-tool.ts";
 const base = { action: "reply", repoId: "a".repeat(64), requirementId: uuidv7(), operationId: uuidv7(), savedOperationId: uuidv7(), version: 2 };
 test("user_interact不接受转述、请求选择、角色或回执", async () => {
@@ -120,9 +121,49 @@ test("M8D-AC9：登记问题缺根源自检、选项数量不对、没有推荐�
   for (const [patch, text] of cases) {
     const error = await tool.execute("call", { request: { ...ask, ...patch } } as never, undefined, undefined, {} as never).catch((caught: unknown) => caught);
     expect(error, text).toMatchObject({ code: "question_format" });
-    expect((error as Error).message, text).toContain("原因：问题没有按要求写全：");
+    expect((error as Error).message, text).toContain("原因：问题不符合登记要求：");
     expect((error as Error).message, text).toContain(text);
   }
+});
+
+const GOOD = { question: "A可以实施吗？", rootCheck: "要定的是 A 何时实施", choices: CHOICES };
+test("提问五处各含一个人称字：每处各一条问题，写明字段、选项序号和那个字", () => {
+  const patch = (fields: Record<string, unknown>, choice0: Record<string, unknown> = {}) =>
+    askQuestionIssues({ ...GOOD, ...fields, choices: [{ ...CHOICES[0], ...choice0 }, CHOICES[1]] });
+  const cases: Array<[string[], string, string[]]> = [
+    [patch({ question: "我想知道A可以实施吗？" }), "我", ["question"]],
+    [patch({ rootCheck: "要问你A何时实施" }), "你", ["rootCheck"]],
+    [patch({}, { label: "您来实施 A" }), "您", ["第 1 个选项", "label"]],
+    [patch({}, { reason: "我们马上能用" }), "我", ["第 1 个选项", "reason"]],
+    [patch({}, { recommendedReason: "你看 A 已写清楚" }), "你", ["第 1 个选项", "recommendedReason"]],
+  ];
+  for (const [issues, pronoun, parts] of cases) {
+    expect(issues, pronoun).toHaveLength(1);
+    for (const part of [pronoun, ...parts]) expect(issues[0], part).toContain(part);
+  }
+});
+
+test("提问多处含人称字：每处一条，合起来写明改用用户、AI、角色", () => {
+  const issues = askQuestionIssues({ question: "我们该先做哪个？", rootCheck: "你想先要的是 A", choices: [{ ...CHOICES[0], label: "我来做 A" }, CHOICES[1]] });
+  expect(issues).toHaveLength(3);
+  const joined = issues.join("；");
+  for (const word of ["用户", "AI", "角色"]) expect(joined).toContain(word);
+});
+
+test("提问不含人称字：askQuestionIssues 返回空数组", () => {
+  expect(askQuestionIssues(GOOD)).toEqual([]);
+});
+
+test("user-confirmation 提问的选项理由含人称字：失败，原因含该字，不弹窗", async () => {
+  let executed = false;
+  const tool = createUserInteractTool({ interaction: { execute: () => { executed = true; throw new Error("must-not-run"); } } as never });
+  const ask = { ...base, action: "ask", question: "A可以实施吗？", rootCheck: "要定的是 A 何时实施", scope: "仅A", actions: ["implement"], unitIds: ["A"],
+    choices: [CHOICES[0], { ...CHOICES[1], reason: "等你定了再做" }] };
+  const error = await tool.execute("call", { request: ask } as never, undefined, undefined, {} as never).catch((caught: unknown) => caught as Error);
+  expect(error).toMatchObject({ code: "question_format" });
+  expect(error.message).toContain("你");
+  expect(error.message).toContain("第 2 个选项");
+  expect(executed).toBe(false);
 });
 
 const renderTheme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bold: (text: string) => `<b>${text}</b>` };
@@ -148,8 +189,8 @@ test("M8D-AC9：对话里的提问记录块：登记中显示问题；回答后�
   expect(rendered({ details: { caption, question: "起跳时机怎么定？", status: "answered", answer: { text: "按下立即起跳", other: true } } }).at(-1))
     .toBe("<muted>你的回答  </>按下立即起跳<muted>（自己输入）</>");
   expect(rendered({ details: { caption, question: "起跳时机怎么定？", status: "pending", answer: null } }).at(-1)).toBe("<muted>你暂不回答，问题保留。</>");
-  expect(rendered({ content: [{ type: "text", text: "one_company_user_interact 的 ask 动作失败。\n原因：问题没有按要求写全：没有标出推荐项\n建议：按原因补全后重新登记问题" }] }, true).at(-1))
-    .toBe("<error>没有登记：问题没有按要求写全：没有标出推荐项</>");
+  expect(rendered({ content: [{ type: "text", text: "one_company_user_interact 的 ask 动作失败。\n原因：问题不符合登记要求：没有标出推荐项\n建议：按原因修改后重新登记问题" }] }, true).at(-1))
+    .toBe("<error>没有登记：问题不符合登记要求：没有标出推荐项</>");
 });
 
 test("M8D-AC9：提问以外的动作不改显示，交给 pi 的默认样式", () => {
