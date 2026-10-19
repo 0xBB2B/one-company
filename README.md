@@ -292,6 +292,8 @@ pi install git:github.com/0xBB2B/one-company
 
 - worker、reviewer、qa、explore、prototype 的定义都生效；PM、解释器、草稿核验器没有定义文件，不接 MCP。
 - 派出时只连接定义里点名的服务。模型通过 codemode 脚本或工具搜索调用它们的工具，服务设了 `exposure` 的按设置来；codemode 脚本里不能调用分类模型或生图模型。
+- mcp.json 里没写 `exposure` 的服务，pi 默认按 codemode 处理：模型要先写一段脚本，再在脚本里调用服务的工具。pi 规定同一个进程最多同时运行 2 个 codemode 脚本，第 3 个会被直接拒绝。所有角色都在守护进程这一个进程里运行，共用这 2 个名额，所以几个角色同时用 MCP 时，后面的角色可能拿不到结果。
+- 需要多个角色同时用某个服务时，在 mcp.json 里给这个服务写 `"exposure": "direct"`。这样它的工具会直接列给模型调用，不占 codemode 的名额。代价是这些工具的说明每轮都会发给模型；单次调用返回的文字超过 20 KB 时，pi 会截掉中间一段。
 - 程序不按只读与否拦截这些工具。不想让角色用的工具，在 mcp.json 里用 `toolExposure` 设成 `hidden`。
 - 点名的服务不存在或被停用时算缺失，配置写错时写明原因；两种情况都不报错，角色照常用本包自带的工具。
 - 需要 OAuth 登录的服务，先在 pi 里用 `/mcp` 登录一次，守护进程不会弹浏览器。
