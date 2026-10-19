@@ -17,7 +17,7 @@ export class DecisionPacketError extends Error {
 const MODEL_NOTE = "（模型输出，仅供参考，不是用户决定）";
 /** 要登记用户决定的事项：主代理分析后用问答窗口给建议，选项文字须是程序固定的那几条。 */
 function windowLine(itemId: string, version: string, fixed: readonly string[]): string {
-  return `请核对记录、分析后用 one_company_user_interact purpose=panel-item itemId=${itemId} itemVersion=${version} 向用户给出建议，选项文字须依次为：${fixed.map((label) => `「${label}」`).join("、")}（N 填你建议的轮数上限，1 到 1000）`;
+  return `请核对记录、分析后用 one_company_user_interact purpose=panel-item itemId=${itemId} itemVersion=${version} 向用户给出建议，选项文字须依次为：${fixed.map((label) => `「${label}」`).join("、")}（N 填建议的轮数上限，1 到 1000）`;
 }
 /** 模型写的文字压成一行并加引号，不能换行伪装成程序生成的行。 */
 function quoted(text: string, limit: number): string {
