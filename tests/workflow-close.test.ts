@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import { repositoryDatabase, UUID_V7_PATTERN, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { RequirementService, requirementIntentHash } from "../src/modules/requirement/requirement-service.ts";
@@ -16,7 +16,9 @@ import { createResultSubmitTool } from "../src/modules/pm/result-submit.ts";
 import { createChangeApplyTool } from "../src/modules/verification/change-apply.ts";
 import { createRequirementReadTool } from "../src/modules/pm/requirement-read-tool.ts";
 import { createWorkflowManageTool } from "../src/modules/delivery/workflow-manage.ts";
+import { WORKFLOW_MANAGE_PARAMETERS } from "../src/modules/delivery/workflow-manage.ts";
 import type { WorkflowManageGrant, WorkflowManageToolOptions } from "../src/modules/delivery/workflow-manage.ts";
+import { MAIN_WORKFLOW_MANAGE_PARAMETERS, registerWorkflowManageTool } from "../src/modules/delivery/workflow-manage-extension.ts";
 import { RequirementCloseService, CLOSE_OPERATIONS, COMPLETION_REPORTS, DELIVERY_RECEIPTS, decideReportIn } from "../src/modules/delivery/workflow-close.ts";
 import { prototypeFilePath } from "../src/modules/requirement/requirement-prototypes.ts";
 import { writePrototypeRevision } from "../src/modules/requirement/requirement-prototype-revisions.ts";
@@ -155,10 +157,10 @@ test("M6-AC3/AC21：completed 预检列出缺项且不改状态、不撤权；�
   const main = await w.main();
   const before = w.state.read(w.created.requirementId);
   const receiptId = w.receipt();
-  await expect(pm.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() })).rejects.toMatchObject({ code: "action_not_allowed", advice: { why: "当前角色的职责不允许这个动作：pm 不能做 close" } });
+  await expect(pm.execute({ action: "close", reason: "completed", receiptId })).rejects.toMatchObject({ code: "action_not_allowed", advice: { why: "当前角色的职责不允许这个动作：pm 不能做 close" } });
   await expect(main.execute({ action: "report", note: "说明" })).rejects.toMatchObject({ code: "action_not_allowed", advice: { why: "当前角色的职责不允许这个动作：主代理 不能做 report" } });
   expect(await pm.execute({ action: "report", note: "说明" })).toMatchObject({ status: "rejected", missing: expect.arrayContaining(["还没有做过正式检查轮"]) });
-  const empty = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as CloseResult;
+  const empty = await main.execute({ action: "close", reason: "completed", receiptId }) as CloseResult;
   expect(empty.status).toBe("rejected");
   expect((empty as { missing: string[] }).missing).toEqual(expect.arrayContaining(["还没有做过正式检查轮"]));
   const after = w.state.read(w.created.requirementId);
@@ -173,7 +175,7 @@ test("M6-AC3/AC21：completed 预检列出缺项且不改状态、不撤权；�
   const check = await pm2.execute({ action: "delivery-check" }) as DeliveryReceipt;
   expect(check.deliverable).toBe(true); expect(check.suggestions).toBe(1);
   expect(JSON.stringify(check)).not.toContain("保留移动");
-  const unauthorized = await main.execute({ action: "close", reason: "completed", receiptId: uuidv7(), operationId: uuidv7() }) as CloseResult;
+  const unauthorized = await main.execute({ action: "close", reason: "completed", receiptId: uuidv7() }) as CloseResult;
   expect(unauthorized).toMatchObject({ status: "rejected", missing: [expect.stringMatching(/^关闭依据的用户决定无效/)] });
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("active");
   const blocked = await w.closeService.preflight({ requirementId: w.created.requirementId, reason: "completed", receiptId: uuidv7() });
@@ -188,9 +190,9 @@ test("M6-AC3/AC21：completed 预检列出缺项且不改状态、不撤权；�
   const other = await world();
   const otherMain = await other.main();
   const worker2 = await other.run("role", "one-company.worker");
-  expect(await otherMain.execute({ action: "close", reason: "cancelled", receiptId: uuidv7(), operationId: uuidv7() })).toMatchObject({ status: "rejected", missing: [expect.stringMatching(/^关闭依据的用户决定无效/)], next: expect.any(String) });
-  await expect((await other.tool()).execute({ action: "close", reason: "cancelled", receiptId: other.receipt(), operationId: uuidv7() })).rejects.toMatchObject({ code: "action_not_allowed" });
-  const cancelled = await otherMain.execute({ action: "close", reason: "cancelled", receiptId: other.receipt(), operationId: uuidv7() }) as CloseResult;
+  expect(await otherMain.execute({ action: "close", reason: "cancelled", receiptId: uuidv7() })).toMatchObject({ status: "rejected", missing: [expect.stringMatching(/^关闭依据的用户决定无效/)], next: expect.any(String) });
+  await expect((await other.tool()).execute({ action: "close", reason: "cancelled", receiptId: other.receipt() })).rejects.toMatchObject({ code: "action_not_allowed" });
+  const cancelled = await otherMain.execute({ action: "close", reason: "cancelled", receiptId: other.receipt() }) as CloseResult;
   expect(cancelled).toMatchObject({ status: "closed", reason: "cancelled", archive: null });
   expect((await other.runs.get(worker2)).ok && (await other.runs.get(worker2) as { run: { state: string } }).run.state).toBe("stopped");
   const { message } = cancelled as { message: string };
@@ -206,50 +208,53 @@ test("M6-AC11：预检通过后注入 PRD 更新、代码变化、阻塞裁决�
   let receiptId = await w.accept();
   expect((await w.closeService.preflight({ requirementId: w.created.requirementId, reason: "completed", receiptId })).eligible).toBe(true);
   await writeFile(join(w.worktree.root, "src", "a.ts"), "export const a = 2;\n");
-  const changed = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] };
+  const changed = await main.execute({ action: "close", reason: "completed", receiptId }) as { missing: string[] };
   expect(changed.missing).toEqual(expect.arrayContaining(["工作区内容与正式检查时不一致"]));
   await writeFile(join(w.worktree.root, "src", "a.ts"), "export const a = 1;\n");
   expect((await w.closeService.preflight({ requirementId: w.created.requirementId, reason: "completed", receiptId })).eligible).toBe(true);
   await w.approve(BODY_2);
-  const updated = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] };
+  const updated = await main.execute({ action: "close", reason: "completed", receiptId }) as { missing: string[] };
   expect(updated.missing).toEqual(expect.arrayContaining(["有新批准的需求版本还没复核"]));
   await w.state.assessUpdate({ lease: w.lease, version: w.state.read(w.created.requirementId).version, revision: w.state.read(w.created.requirementId).data.revision, assessmentId: uuidv7(), tasks: [{ taskId: "move", impact: "unaffected", reason: "章节未变" }] });
-  const stale = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] };
+  const stale = await main.execute({ action: "close", reason: "completed", receiptId }) as { missing: string[] };
   expect(stale.missing).toEqual(expect.arrayContaining(["检查轮依据的批准版本不是当前版本"]));
   const { round: round2 } = await w.fullEvidence([finding("blocking")]);
-  const blocked = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] };
+  const blocked = await main.execute({ action: "close", reason: "completed", receiptId }) as { missing: string[] };
   expect(blocked.missing).toEqual(expect.arrayContaining(["QA 发现了阻塞问题"]));
   const { round: round3 } = await w.fullEvidence([finding("unverified")]);
   expect(round3.checkRoundId).not.toBe(round2.checkRoundId);
-  expect((await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] }).missing).toEqual(expect.arrayContaining(["QA 还有未验证的项"]));
+  expect((await main.execute({ action: "close", reason: "completed", receiptId }) as { missing: string[] }).missing).toEqual(expect.arrayContaining(["QA 还有未验证的项"]));
   await w.fullEvidence();
   const applier = await w.changeApply();
-  const write = applier.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/b.ts", baseHash: "absent", content: "b\n" }] });
+  const write = applier.execute({ action: "apply", files: [{ path: "src/b.ts", baseHash: "absent", content: "b\n" }] });
   await write;
-  const dirty = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] };
+  const dirty = await main.execute({ action: "close", reason: "completed", receiptId }) as { missing: string[] };
   expect(dirty.missing).toEqual(expect.arrayContaining(["工作区内容与正式检查时不一致"]));
   await rm(join(w.worktree.root, "src", "b.ts"));
-  expect((await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { missing: string[] }).missing).toEqual(["用户验收的完成报告已不是最新依据"]);
+  expect((await main.execute({ action: "close", reason: "completed", receiptId }) as { missing: string[] }).missing).toEqual(["用户验收的完成报告已不是最新依据"]);
   receiptId = await w.accept();
   const original = RequirementCloseService.prototype.preflight;
   const injected = vi.spyOn(RequirementCloseService.prototype, "preflight").mockImplementation(async function (this: RequirementCloseService, input) {
     const result = await original.call(this, input);
     injected.mockRestore();
-    await applier.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/late.ts", baseHash: "absent", content: "late\n" }] });
+    await applier.execute({ action: "apply", files: [{ path: "src/late.ts", baseHash: "absent", content: "late\n" }] });
     return result;
   });
-  const raced = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as { status: string; missing: string[] };
+  const raced = await main.execute({ action: "close", reason: "completed", receiptId }) as { status: string; missing: string[] };
   expect([raced.status, raced.missing]).toEqual(["rejected", ["关闭依据在确认后又发生了变化"]]);
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("active");
   await rm(join(w.worktree.root, "src", "late.ts"));
   receiptId = await w.accept();
-  const operationId = uuidv7();
-  const closed = await main.execute({ action: "close", reason: "completed", receiptId, operationId }) as CloseResult;
+  const closed = await main.execute({ action: "close", reason: "completed", receiptId }) as CloseResult & { operationId: string };
+  const operationId = closed.operationId;
   expect(closed).toMatchObject({ status: "closed", reason: "completed", archive: { status: "archived" } });
-  const again = await main.execute({ action: "close", reason: "completed", receiptId, operationId }) as CloseResult;
-  expect(again).toMatchObject({ status: "closed", reason: "completed" });
-  expect(await main.execute({ action: "close", reason: "cancelled", receiptId: w.receipt(), operationId: uuidv7() })).toMatchObject({ status: "rejected", missing: ["需求已有另一个关闭请求在办理"] });
-  expect(await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() })).toMatchObject({ status: "rejected", missing: ["需求已有另一个关闭请求在办理"] });
+  const again = await main.execute({ action: "close", reason: "completed", receiptId, operationId });
+  expect(JSON.stringify(again)).toContain("这次关闭已经办完");
+  expect(w.state.read(w.created.requirementId).data.close?.reason).toBe("completed");
+  for (const late of [await main.execute({ action: "close", reason: "cancelled", receiptId: w.receipt() }), await main.execute({ action: "close", reason: "completed", receiptId })]) {
+    expect(late).toMatchObject({ status: "rejected", missing: ["这次关闭已经办完，用 status 查看结果"] });
+    expect(late).not.toHaveProperty("operationId");
+  }
   expect(w.state.read(w.created.requirementId).data.close?.reason).toBe("completed");
   expect(w.state.events(w.created.requirementId).filter((event) => event.data.kind === "closed")).toHaveLength(1);
   expect(withDatabase(w.database, (db) => db.list(DELIVERY_RECEIPTS)).length).toBeGreaterThan(0);
@@ -264,15 +269,15 @@ test("M6-AC6/AC4/AC15：closing 生效即撤权，代理未停止或收尾失败
   const receiptId = await w.accept();
   const bytes = await readFile(w.prdFile);
   w.setStop("throw");
-  const operationId = uuidv7();
-  const first = await main.execute({ action: "close", reason: "completed", receiptId, operationId }) as CloseResult;
-  expect(first).toMatchObject({ status: "closing", pending: ["还有运行没停止"], next: "等这些事项结束后，用原决定编号再次 close 续办" });
+  const first = await main.execute({ action: "close", reason: "completed", receiptId }) as CloseResult & { operationId: string };
+  const operationId = first.operationId;
+  expect(first).toMatchObject({ status: "closing", pending: ["还有运行没停止"] });
   const closing = w.state.read(w.created.requirementId);
   expect(closing.data.lifecycle).toBe("closing"); expect(closing.data.epoch).toBe(w.lease.epoch + 1);
   expect(w.state.pmOwner(w.created.requirementId)?.lease).toBeNull();
   await expect((await w.reader()).execute({ action: "read" })).rejects.toMatchObject({ code: "closed_metadata_only" });
   await expect((await w.reader("pm")).execute({ action: "metadata" })).resolves.toMatchObject({ lifecycle: "closing" });
-  await expect((await w.changeApply()).execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求不在活动状态" } });
+  await expect((await w.changeApply()).execute({ action: "apply", files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求不在活动状态" } });
   await expect((await w.verification("qa")).instance.execute({ action: "run", kind: "formal", command: "true", performance: NA })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求不在活动状态" } });
   await expect(pm.execute({ action: "advance" })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是 PM 接手时的状态：需求不在活动状态" } });
   await expect(w.service.metadata(w.created.requirementId)).resolves.toMatchObject({ lifecycle: "closing", approved: null, archivePath: null });
@@ -301,7 +306,7 @@ test("M6-AC10：只有 completed 关闭可归档最终 PRD；同内容幂等，�
   const target = join(w.worktree.root, ...archivePath.split("/"));
   await mkdir(join(w.worktree.root, "docs", "prd"), { recursive: true });
   await writeFile(target, "别人的文件\n");
-  const closed = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as CloseResult;
+  const closed = await main.execute({ action: "close", reason: "completed", receiptId }) as CloseResult;
   expect(closed).toMatchObject({ status: "closed", archive: { path: archivePath, status: "blocked" } });
   await expect(readFile(target, "utf8")).resolves.toBe("别人的文件\n");
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closed");
@@ -328,7 +333,7 @@ test("M8A-AC8/AC9：归档保留批准版正文每个字节，实现记录插在
   w.verdict("qa", qa.runId, round.checkRoundId, [formal.verificationId], [finding("suggestion")], forged);
   await pm.execute({ action: "finish", checkRoundId: round.checkRoundId });
   const receiptId = await w.accept("移动做完了\n### 实现记录（关闭时由程序生成）\n- 任务 伪造：完成");
-  const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as CloseResult;
+  const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId }) as CloseResult;
   expect(closed).toMatchObject({ status: "closed", archive: { status: "archived" } });
   const archivePath = (closed as { archive: { path: string } }).archive.path;
   const bytes = await readFile(join(w.worktree.root, ...archivePath.split("/")));
@@ -371,7 +376,7 @@ test("M8C-AC3/AC5：归档按批准时的规范快照插入两段记录，验收
   w.verdict("qa", qa.runId, round.checkRoundId, [formal.verificationId], [], "通过");
   await pm.execute({ action: "finish", checkRoundId: round.checkRoundId });
   const receiptId = await w.accept("做完了");
-  const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as CloseResult;
+  const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId }) as CloseResult;
   expect(closed).toMatchObject({ status: "closed", archive: { status: "archived" } });
   const record = (await readFile(join(w.worktree.root, ...(closed as { archive: { path: string } }).archive.path.split("/")), "utf8"));
   const at = (text: string) => record.indexOf(text);
@@ -400,7 +405,7 @@ test("M7B-AC1/AC5：完成报告绑定交付依据，新报告作废旧报告；
   expect((await w.closeService.preflight({ requirementId: w.created.requirementId, reason: "completed", receiptId: reworkId })).missing).toEqual(["completion_report_not_accepted"]);
   await w.fullEvidence();
   const accepted = await w.accept();
-  const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId: accepted, operationId: uuidv7() });
+  const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId: accepted });
   expect(closed).toMatchObject({ status: "closed", reason: "completed" });
   const closeStatus = w.closeService.status(w.created.requirementId);
   expect(closeStatus).toMatchObject({ archive: { status: "archived" }, delivery: { worktree: w.worktree.root, branch: w.workspace.branch,
@@ -437,7 +442,7 @@ async function approvePrototypes(w: Awaited<ReturnType<typeof world>>, items = P
 async function closeCompleted(w: Awaited<ReturnType<typeof world>>) {
   await w.fullEvidence();
   const receiptId = await w.accept();
-  return await (await w.main()).execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() }) as CloseResult;
+  return await (await w.main()).execute({ action: "close", reason: "completed", receiptId }) as CloseResult;
 }
 
 const htmlTarget = (w: Awaited<ReturnType<typeof world>>, name: string) => join(w.worktree.root, "docs", "prd", `${w.created.requirementId}.${name}.html`);
@@ -581,4 +586,115 @@ test("最终批准版本没有原型时归档只有正文，关闭记录的原�
   expect(names).toHaveLength(1);
   expect(names[0]).toMatch(/\.md$/);
   expect(storedArchive(w).prototypes).toEqual([]);
+});
+
+type Closing = { status: "closing"; operationId: string; pending: string[]; next: string };
+type Rejected = { status: "rejected"; missing: string[]; operationId?: string };
+
+test("close 不填 operationId 时由程序生成合规编号并随结果返回", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await w.fullEvidence();
+  const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId: await w.accept() }) as CloseResult & { operationId: string };
+  expect(closed.status).toBe("closed");
+  expect(closed.operationId).toMatch(UUID_V7_PATTERN);
+});
+
+test("关闭返回 closing 时带 operationId，建议写明照抄编号并用原 receiptId 与 reason 续办；照抄续办先 closing 后 closed", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await w.run("requirement");
+  await w.fullEvidence();
+  const main = await w.main();
+  const receiptId = await w.accept();
+  w.setStop("leave");
+  const first = await main.execute({ action: "close", reason: "completed", receiptId }) as unknown as Closing;
+  expect(first.status).toBe("closing");
+  expect(first.operationId).toMatch(UUID_V7_PATTERN);
+  for (const word of ["operationId", "receiptId", "reason"]) expect(first.next).toContain(word);
+  expect(await main.execute({ action: "close", reason: "completed", receiptId, operationId: first.operationId })).toMatchObject({ status: "closing", operationId: first.operationId });
+  w.setStop("stop");
+  expect(await main.execute({ action: "close", reason: "completed", receiptId, operationId: first.operationId })).toMatchObject({ status: "closed", operationId: first.operationId, reason: "completed", archive: { status: "archived" } });
+  expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closed");
+});
+
+test("已有一次没办完的关闭时，不填编号再发起 close 被拒，结果带原 operationId，关闭状态不变", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await w.run("requirement");
+  await w.fullEvidence();
+  const main = await w.main();
+  const receiptId = await w.accept();
+  w.setStop("leave");
+  const first = await main.execute({ action: "close", reason: "completed", receiptId }) as unknown as Closing;
+  const before = w.state.read(w.created.requirementId);
+  const again = await main.execute({ action: "close", reason: "completed", receiptId }) as unknown as Rejected;
+  expect(again).toMatchObject({ status: "rejected", missing: ["需求已有另一个关闭请求在办理"], operationId: first.operationId });
+  expect(JSON.stringify(again)).toContain("照抄结果里的 operationId");
+  expect(w.state.read(w.created.requirementId).version).toBe(before.version);
+  expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closing");
+});
+
+test("续办时填了对不上的 operationId 被拒并分别说明原因，状态不变", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await w.run("requirement");
+  await w.fullEvidence();
+  const main = await w.main();
+  const receiptId = await w.accept();
+  const text = (value: unknown) => JSON.stringify(value);
+
+  const none = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() });
+  expect(text(none)).toContain("这个需求没有在办的关闭");
+  expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("active");
+
+  w.setStop("leave");
+  const first = await main.execute({ action: "close", reason: "completed", receiptId }) as unknown as Closing;
+  const closingVersion = w.state.read(w.created.requirementId).version;
+  const mismatch = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() });
+  expect(text(mismatch)).toContain("与这个需求在办的关闭不一致");
+  expect(mismatch).toMatchObject({ operationId: first.operationId });
+  const changed = await main.execute({ action: "close", reason: "completed", receiptId: w.receipt(), operationId: first.operationId });
+  expect(text(changed)).toContain("reason 或 receiptId 与原关闭不同");
+  expect(changed).toMatchObject({ status: "rejected", operationId: first.operationId });
+  expect(w.state.read(w.created.requirementId).version).toBe(closingVersion);
+
+  w.setStop("stop");
+  expect(await main.execute({ action: "close", reason: "completed", receiptId, operationId: first.operationId })).toMatchObject({ status: "closed" });
+  const closedVersion = w.state.read(w.created.requirementId).version;
+  const done = await main.execute({ action: "close", reason: "completed", receiptId, operationId: first.operationId });
+  expect(text(done)).toContain("这次关闭已经办完");
+  expect(w.state.read(w.created.requirementId).version).toBe(closedVersion);
+});
+
+test("主窗口侧工具说明不含新生成与 UUIDv7，写明 close 的 operationId 平时不填；两侧 operationId 都是可选参数", () => {
+  const tools: Array<{ name: string; description: string; parameters: unknown }> = [];
+  registerWorkflowManageTool({ registerTool: (tool: never) => { tools.push(tool); } } as never, () => ({}) as never);
+  const [tool] = tools;
+  expect(tool.name).toBe("one_company_workflow_manage");
+  expect(tool.description).not.toContain("新生成");
+  expect(tool.description).not.toContain("UUIDv7");
+  expect(tool.description).toMatch(/operationId[^。]*不填/);
+  for (const schema of [MAIN_WORKFLOW_MANAGE_PARAMETERS, WORKFLOW_MANAGE_PARAMETERS]) {
+    const close = (schema as unknown as { anyOf: Array<{ properties: Record<string, unknown>; required?: string[] }> }).anyOf.find((variant) => JSON.stringify(variant.properties.action).includes("close"))!;
+    expect(Object.keys(close.properties)).toContain("operationId");
+    expect(close.required ?? []).not.toContain("operationId");
+  }
+});
+
+test("两个窗口几乎同时关闭时，后到的一方被拒且结果带先到那次的 operationId", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await w.run("requirement");
+  await w.fullEvidence();
+  const main = await w.main();
+  const receiptId = await w.accept();
+  w.setStop("leave");
+  const original = RequirementStateStore.prototype.beginClose;
+  const earlier = uuidv7();
+  vi.spyOn(RequirementStateStore.prototype, "beginClose").mockImplementationOnce(function (this: RequirementStateStore, input, guard) {
+    original.call(this, { ...input, intent: { ...input.intent, operationId: earlier } }, guard);
+    return original.call(this, input, guard);
+  });
+  expect(await main.execute({ action: "close", reason: "completed", receiptId })).toMatchObject({ status: "rejected", operationId: earlier });
 });

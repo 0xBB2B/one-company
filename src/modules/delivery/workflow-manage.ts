@@ -3,6 +3,7 @@ import { adviceOf, COMMON_ADVICE, withDetail } from "../../core/exec/tool-failur
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { Type } from "typebox";
 import type { Static } from "typebox";
+import { uuidv7 } from "../../core/storage/database.ts";
 import { CheckRoundService } from "../verification/check-round.ts";
 import { authorizeToolAction } from "../../core/policy/core-permissions.ts";
 import { checked, hash, id, object, PmLease, positive } from "../requirement/requirement-contracts.ts";
@@ -22,7 +23,7 @@ export const WORKFLOW_MANAGE_PARAMETERS = Type.Union([
   object({ action: Type.Literal("advance") }),
   object({ action: Type.Literal("finish"), checkRoundId: id }),
   object({ action: Type.Literal("check-decision"), checkRoundId: id, kind: Type.Union([Type.Literal("interrupt"), Type.Literal("defer")]), revision: positive }),
-  object({ action: Type.Literal("close"), reason: CloseReason, receiptId: id, operationId: id }),
+  object({ action: Type.Literal("close"), reason: CloseReason, receiptId: id, operationId: Type.Optional(id) }),
   object({ action: Type.Literal("delivery-check") }),
   object({ action: Type.Literal("report"), note: Type.String({ minLength: 1, maxLength: 4000 }) }),
   object({ action: Type.Literal("escalate"), taskId: id, note: Type.String({ minLength: 1, maxLength: 1024 }) }),
@@ -60,8 +61,10 @@ function explained(value: unknown, authorization?: string): unknown {
     out[key] = ITEM_KEYS.has(key) && Array.isArray(item) && item.every((entry) => typeof entry === "string")
       ? item.map((code) => closeItemText(code, auth)) : explained(item, auth);
   }
-  if (row.status === "rejected") out.next = "按原因逐项处理后再试；需要用户决定的，先问用户";
-  if (row.status === "closing") out.next = "等这些事项结束后，用原决定编号再次 close 续办";
+  if (row.status === "rejected") out.next = typeof row.operationId === "string"
+    ? "照抄结果里的 operationId，用原决定编号 receiptId、原原因 reason 再次 close 续办"
+    : "按原因逐项处理后再试；需要用户决定的，先问用户";
+  if (row.status === "closing") out.next = "等这些事项结束后，照抄结果里的 operationId，用原决定编号 receiptId、原原因 reason 再次 close 续办";
   return out;
 }
 export interface WorkflowManageAuthorization { readonly grant: Readonly<WorkflowManageGrant>; readonly action: WorkflowManageAction; readonly receiptId?: string; readonly reason?: string }
@@ -134,7 +137,7 @@ async function openWorkflowManageTool(options: WorkflowManageToolOptions) {
           return freeze({ taskId: task.taskId, key: task.key, status: task.status, next: "已交用户裁决；在用户决定前不能再派这个任务" });
         }
         case "close": {
-          const result = await close.close({ requirementId: grant.requirementId, reason: params.reason, receiptId: params.receiptId, operationId: params.operationId });
+          const result = await close.close({ requirementId: grant.requirementId, reason: params.reason, receiptId: params.receiptId, operationId: params.operationId ?? uuidv7(), resume: params.operationId !== undefined });
           if (result.status !== "closed" || !result.archive || result.archive.status === "archived") return result;
           host("close", { receiptId: params.receiptId, reason: params.reason });
           let archive;

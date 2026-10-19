@@ -131,6 +131,10 @@ const CLOSE_ITEM_TEXT: Record<string, string> = {
   completion_report_not_accepted: "用户还没有验收通过完成报告",
   agents_running: "还有运行没停止",
   pm_lease_active: "PM 仍持有租约",
+  close_not_found: "这个需求没有在办的关闭，不是续办就不填 operationId",
+  close_finished: "这次关闭已经办完，用 status 查看结果",
+  close_operation_mismatch: "填的 operationId 与这个需求在办的关闭不一致，照抄结果给出的原操作编号",
+  close_content_mismatch: "operationId 对上了，但 reason 或 receiptId 与原关闭不同，带原决定编号和原原因续办",
 };
 /** 关闭、交付核对与完成报告里的缺项说明；授权问题带上具体原因。 */
 export function closeItemText(code: string, authorization?: string): string {
@@ -333,10 +337,10 @@ export function decideReportIn(db: LocalDatabase, reportId: string, decision: { 
 }
 
 const PreflightInput = object({ requirementId: id, reason: CloseReason, receiptId: id });
-const CloseInput = object({ requirementId: id, reason: CloseReason, receiptId: id, operationId: id });
+const CloseInput = object({ requirementId: id, reason: CloseReason, receiptId: id, operationId: id, resume: Type.Optional(Type.Boolean()) });
 export interface ClosePreflight { eligible: boolean; missing: string[]; basis: CloseBasis | null; authorization?: string }
 export type CloseResult =
-  | { status: "rejected"; missing: string[]; authorization?: string }
+  | { status: "rejected"; missing: string[]; authorization?: string; operationId?: string }
   | { status: "closing"; operationId: string; pending: string[] }
   | { status: "closed"; operationId: string; reason: CloseReason; archive: { path: string; status: string } | null; message: string };
 
@@ -488,6 +492,12 @@ export class RequirementCloseService {
     catch (error) { authorization = adviceOf(error)?.why ?? (error as Error).message; }
     const existing = withDatabase(this.database, (db) => ({ operation: this.operation(db, request.requirementId), record: requirementIn(db, this.options.repoId, request.requirementId) }));
     if (authorization !== undefined) return freeze({ status: "rejected" as const, missing: ["close_authorization_invalid"], authorization });
+    if (request.resume) {
+      const current = existing.record.data.close;
+      if (!current) return freeze({ status: "rejected" as const, missing: ["close_not_found"] });
+      if (existing.operation?.data.status === "closed") return freeze({ status: "rejected" as const, missing: ["close_finished"] });
+      if (current.operationId !== request.operationId) return freeze({ status: "rejected" as const, missing: ["close_operation_mismatch"], operationId: current.operationId });
+    }
     if (!existing.record.data.close) {
       const preflight = await this.preflight({ requirementId: request.requirementId, reason: request.reason, receiptId: request.receiptId });
       if (!preflight.eligible || !preflight.basis) return freeze({ status: "rejected" as const, missing: preflight.missing, ...(preflight.authorization ? { authorization: preflight.authorization } : {}) });
@@ -517,11 +527,20 @@ export class RequirementCloseService {
             createdAt: now, updatedAt: now });
         });
       } catch (error: unknown) {
-        if (error instanceof RequirementStateError) return freeze({ status: "rejected" as const, missing: [error.code] });
-        throw error;
+        if (!(error instanceof RequirementStateError)) throw error;
+        const earlier = error.code === "close_intent_conflict"
+          ? withDatabase(this.database, (db) => requirementIn(db, this.options.repoId, request.requirementId).data.close?.operationId) : undefined;
+        return freeze({ status: "rejected" as const, missing: [error.code], ...(earlier ? { operationId: earlier } : {}) });
       }
-    } else if (existing.record.data.close.operationId !== request.operationId || existing.record.data.close.reason !== request.reason || existing.record.data.close.receiptId !== request.receiptId) {
-      return freeze({ status: "rejected" as const, missing: ["close_intent_conflict"] });
+    } else {
+      const current = existing.record.data.close;
+      if (current.operationId !== request.operationId) {
+        if (existing.operation?.data.status === "closed") return freeze({ status: "rejected" as const, missing: ["close_finished"] });
+        return freeze({ status: "rejected" as const, missing: ["close_intent_conflict"], operationId: current.operationId });
+      }
+      if (current.reason !== request.reason || current.receiptId !== request.receiptId) {
+        return freeze({ status: "rejected" as const, missing: ["close_content_mismatch"], operationId: current.operationId });
+      }
     }
     return this.finish(request.requirementId);
   }
