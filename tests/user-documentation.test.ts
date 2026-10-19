@@ -181,6 +181,11 @@ describe("旧命令与旧页面已清除", () => {
     expect(line).toContain("AI");
   });
 
+  test("主代理提示词的提问条目写明 answer.text 就是用户这一轮的原话", async () => {
+    const line = (await readText(join(PACKAGE_ROOT, "rules/01-main-session.md"))).split("\n").find((text) => text.includes("**提问**"))!;
+    expect(line).toContain("answer.text 就是用户这一轮的原话");
+  });
+
   for (const phrase of ["设定栏", "右上角写着各层"]) {
     test(`README 里搜不到旧页面的说法：${phrase}`, async () => {
       expect(await readText(README)).not.toContain(phrase);

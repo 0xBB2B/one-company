@@ -694,8 +694,8 @@ export class MainRequirementInteraction {
         ...(choice.recommendedReason ? { recommendedReason: choice.recommendedReason } : {}) })) }, signal);
     const index = picked ? request.choices.findIndex((choice) => choice.label === picked.choices[0]) : -1;
     const answer = picked?.other ? { text: picked.other, other: true }
-      : index >= 0 ? { text: `选第 ${index + 1} 项：${request.choices[index]!.label}${request.choices[index]!.recommended ? "（推荐）" : ""}`, choice: index + 1 } : null;
-    if (answer) this.#adoptQuestionAnswer("choice" in answer ? `${request.choices[index]!.label}\n${request.choices[index]!.reason}` : answer.text, host, ctx);
+      : index >= 0 ? { text: `${request.choices[index]!.label}\n${request.choices[index]!.reason}`, choice: index + 1 } : null;
+    if (answer) this.#adoptQuestionAnswer(answer.text, host, ctx);
     return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: loaded.version, epoch: loaded.epoch, requestId: question.requestId,
       caption, question: request.question, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false });
   }
@@ -747,8 +747,8 @@ export class MainRequirementInteraction {
         ...(choice.recommendedReason ? { recommendedReason: choice.recommendedReason } : {}) })) }, signal);
     const index = picked ? request.choices.findIndex((choice) => choice.label === picked.choices[0]) : -1;
     const answer = picked?.other ? { text: picked.other, other: true }
-      : index >= 0 ? { text: `选第 ${index + 1} 项：${request.choices[index]!.label}${request.choices[index]!.recommended ? "（推荐）" : ""}`, choice: index + 1 } : null;
-    if (answer) this.#adoptQuestionAnswer("choice" in answer ? `${request.choices[index]!.label}\n${request.choices[index]!.reason}` : answer.text, host, ctx, target.decision ?? undefined);
+      : index >= 0 ? { text: `${request.choices[index]!.label}\n${request.choices[index]!.reason}`, choice: index + 1 } : null;
+    if (answer) this.#adoptQuestionAnswer(answer.text, host, ctx, target.decision ?? undefined);
     const record = this.#snapshot(host, request.repoId, request.requirementId);
     const decision = answer ? target.decision : null;
     return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: record.version, epoch: record.data.epoch, itemId: request.itemId,
