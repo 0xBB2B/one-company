@@ -2,13 +2,13 @@ import { afterEach, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { LocalDatabase, uuidv7 } from "../src/core/storage/database.ts";
+import { LocalDatabase, repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { RequirementService, requirementIntentHash } from "../src/modules/requirement/requirement-service.ts";
 import { draftApprover } from "./helpers/approval-fixture.ts";
 import type { WriteGrant } from "./helpers/approval-fixture.ts";
-import { createChangeApplyTool } from "../src/modules/verification/change-apply.ts";
+import { createChangeApplyTool, retireRunChangeSetsIn } from "../src/modules/verification/change-apply.ts";
 import type { ChangeApplyGrant, ChangeApplyToolOptions } from "../src/modules/verification/change-apply.ts";
 import * as store from "../src/core/storage/store.ts";
 import { createRepoFixture, addWorktree, removeRepoFixture } from "./helpers/repo-fixture.ts";
@@ -433,4 +433,88 @@ test("写完后最后核对时发现文件被外部改过：报 stale_base，不
   expect(error).toMatchObject({ code: "stale_base" });
   expect(error!.message).not.toContain("续写");
   expect(JSON.stringify((error as { advice?: unknown }).advice ?? "")).not.toContain("续写");
+});
+
+const ENDED_REASON = "运行已结束，没写完";
+type StoredSet = { status: string; updatedAt: number; files: Array<{ path: string; status: string; reason?: string }> };
+
+async function failingBatch(w: Awaited<ReturnType<typeof world>>, runId: string, failName: string, names: string[]) {
+  const tool = await w.tool(w.grant({ runId }));
+  const original = store.writeFileAtomic;
+  const spy = vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
+    if (path.endsWith(failName)) throw new Error("模拟磁盘故障");
+    return original(path, content);
+  });
+  const result = await tool.execute({ action: "apply", files: names.map((name) => ({ path: `src/${name}`, baseHash: "absent", content: `${name}\n` })) }) as Result;
+  spy.mockRestore();
+  return { tool, result };
+}
+const readSet = (w: Awaited<ReturnType<typeof world>>, operationId: string) =>
+  withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.read<StoredSet>("change_sets", operationId)!.data);
+const retire = (w: Awaited<ReturnType<typeof world>>, runId: string) =>
+  withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.transaction(() => { retireRunChangeSetsIn(db, runId); }));
+
+test("运行结束收尾：partial_failure 的记录变 stale，没写成功的文件条目标为 stale 并写明原因，已写入的条目不变", async () => {
+  const w = await world();
+  const runId = uuidv7();
+  const { result } = await failingBatch(w, runId, "m.ts", ["l.ts", "m.ts", "n.ts"]);
+  expect(result.status).toBe("partial_failure");
+  expect(result.files.map((file) => file.status)).toEqual(["written", "failed", "pending"]);
+
+  retire(w, runId);
+
+  const set = readSet(w, result.operationId);
+  expect(set.status).toBe("stale");
+  expect(set.files.map((file) => [file.path, file.status])).toEqual([["src/l.ts", "written"], ["src/m.ts", "stale"], ["src/n.ts", "stale"]]);
+  expect(set.files[0]!.reason).toBeUndefined();
+  expect(set.files[1]!.reason).toBe(ENDED_REASON);
+  expect(set.files[2]!.reason).toBe(ENDED_REASON);
+});
+
+test("运行结束收尾：applying 状态的记录同样变 stale", async () => {
+  const w = await world();
+  const runId = uuidv7();
+  const { result } = await failingBatch(w, runId, "m.ts", ["l.ts", "m.ts"]);
+  withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => {
+    const row = db.read<StoredSet>("change_sets", result.operationId)!;
+    db.update("change_sets", result.operationId, row.version, { ...row.data, status: "applying" });
+  });
+
+  retire(w, runId);
+
+  expect(readSet(w, result.operationId).status).toBe("stale");
+});
+
+test("运行结束收尾：别的运行的记录、已 applied 的记录、已 stale 的记录原样不动", async () => {
+  const w = await world();
+  const runId = uuidv7();
+  const otherRunId = uuidv7();
+  const { result: appliedSet } = await failingBatch(w, runId, "never", ["done.ts"]);
+  expect(appliedSet.status).toBe("applied");
+  const stale = await failingBatch(w, runId, "s2.ts", ["s1.ts", "s2.ts"]);
+  withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => {
+    const row = db.read<StoredSet>("change_sets", stale.result.operationId)!;
+    db.update("change_sets", stale.result.operationId, row.version, { ...row.data, status: "stale" });
+  });
+  const other = await failingBatch(w, otherRunId, "o2.ts", ["o1.ts", "o2.ts"]);
+  expect(other.result.status).toBe("partial_failure");
+  const before = [appliedSet.operationId, stale.result.operationId, other.result.operationId].map((id) => readSet(w, id));
+
+  retire(w, runId);
+
+  expect([appliedSet.operationId, stale.result.operationId, other.result.operationId].map((id) => readSet(w, id))).toEqual(before);
+});
+
+test("运行结束收尾后，别的运行可以正常写入别的文件", async () => {
+  const w = await world();
+  const runA = uuidv7();
+  const { result } = await failingBatch(w, runA, "b2.ts", ["b1.ts", "b2.ts"]);
+  expect(result.status).toBe("partial_failure");
+  retire(w, runA);
+
+  const toolB = await w.tool(w.grant({ runId: uuidv7() }));
+  const applied = await toolB.execute({ action: "apply", files: [{ path: "src/other.ts", baseHash: "absent", content: "o\n" }] }) as Result;
+
+  expect(applied.status).toBe("applied");
+  expect(applied.operationId).not.toBe(result.operationId);
 });

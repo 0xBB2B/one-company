@@ -215,7 +215,7 @@ export class WorkspaceManageService {
       else if (status.archive && status.archive.status !== "archived") blockers.push("最终归档尚未完成");
     } finally { close.dispose(); }
     const pendingWrites = withDatabase(this.database, (db) => db.list<{ requirementId?: string; status?: string }>("change_sets")
-      .filter((row) => row.data.requirementId === plan.requirementId && row.data.status !== "applied").length);
+      .filter((row) => row.data.requirementId === plan.requirementId && (row.data.status === "applying" || row.data.status === "partial_failure")).length);
     if (pendingWrites > 0) blockers.push("存在未完成或待恢复的受控写入");
     if (!(await exists(plan.path))) return blockers;
     if (binding) {

@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { repositoryDatabase, withDatabase, uuidv7, UUID_V7_PATTERN } from "../../core/storage/database.ts";
+import type { LocalDatabase } from "../../core/storage/database.ts";
 
 export type RunKind = "requirement" | "role";
 
@@ -176,11 +177,13 @@ export class RunStore {
   private readonly dataRoot: string;
   private readonly repoId: string;
   private readonly daemonStartedAt: string;
+  private readonly onRunEnded?: (db: LocalDatabase, run: RunRecord) => void;
 
-  constructor(options: { dataRoot: string; repoId: string; daemonStartedAt: string }) {
+  constructor(options: { dataRoot: string; repoId: string; daemonStartedAt: string; onRunEnded?: (db: LocalDatabase, run: RunRecord) => void }) {
     this.dataRoot = options.dataRoot;
     this.repoId = options.repoId;
     this.daemonStartedAt = options.daemonStartedAt;
+    this.onRunEnded = options.onRunEnded;
   }
 
   async create(input: CreateRunInput): Promise<RunRecord> {
@@ -312,6 +315,7 @@ export class RunStore {
       merged.updatedAt = new Date().toISOString();
       checkedRun(merged, id);
       db.update("runs", id, current.version, merged);
+      if (!isTerminalState(run.state) && isTerminalState(merged.state)) this.onRunEnded?.(db, merged);
       return merged;
     }));
   }
