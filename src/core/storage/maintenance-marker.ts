@@ -4,7 +4,7 @@ import { closeSync, constants, fstatSync, linkSync, lstatSync, openSync, readFil
 
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-export function processMissing(pid: number): boolean {
+function processMissing(pid: number): boolean {
   try { process.kill(pid, 0); return false; }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
 }
