@@ -88,12 +88,28 @@ test("页面打开时焦点在目录、选中 worker，先在目录选分类再�
       s.press(DOWN, DOWN, DOWN, DOWN, DOWN);
       expect(s.now()).toMatch(/▸ 模型 +3/u);
       s.press(RIGHT);
-      expect(s.now()).toContain("← 回左栏  ↑↓ 选择  回车 修改");
-      s.press(ESC);
+      expect(s.now()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层");
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
 });
+
+test("焦点在右栏时第一次 Esc 回目录且页面不关闭，第二次 Esc 才关闭", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  let afterFirst = "";
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "models");
+      s.press(ESC);
+      afterFirst = s.now();
+      s.press(ESC);
+    },
+  ]);
+  await run(ctx);
+  expect(afterFirst).toContain("↑↓ 选分类  → 进右栏  Esc 退出");
+  expect(afterFirst).toMatch(/▸ 模型 +3/u);
+}, 5000);
 
 test("页内输入新名称，程序窗口列出两层与完整路径，复制后回到原分类选中新定义，新名字是绿色并显示成功提示", async () => {
   await mkdir(repoDir(), { recursive: true });
@@ -105,7 +121,7 @@ test("页内输入新名称，程序窗口列出两层与完整路径，复制�
       expect(s.now()).toMatch(/▸ api-worker +用户/u);
       expect(s.raw()).toContain("<success>api-worker</>");
       expect(s.now()).toContain(`✓ 已复制到 ${join(agentDir(), "agents", "api-worker.md")}，打开它写专长、skills 和 mcp`);
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -128,7 +144,7 @@ test("项目未受信任时项目层选项变暗并写明原因，页面不列�
       s.press(LEFT, UP, RIGHT, "c", ENTER);
     },
     (s) => { window = s.now(); s.press(ESC); },
-    (s) => s.press(ESC),
+    (s) => s.press(ESC, ESC),
   ], { trusted: false });
   await run(ctx);
   expect(window).toMatch(/项目层 +项目未受信任，暂不能复制到这里/u);
@@ -162,7 +178,7 @@ async function copyWith(atWindow: () => void, afterCopy: (s: PageScreen) => void
   const ctx = scripted([
     (s) => { s.press(RIGHT); expect(s.now()).toMatch(/▸ ui-w +用户/u); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
     (s) => { atWindow(); s.press(ENTER); },
-    (s) => { afterCopy(s); s.press(ESC); },
+    (s) => { afterCopy(s); s.press(ESC, ESC); },
   ]);
   await expect(run(ctx)).resolves.toBeUndefined();
 }
@@ -215,7 +231,7 @@ test("选 gpt-6-luna、xhigh、项目层后项目设置文件写入 pm 条目，
       expect(s.now()).toMatch(/▸ PM +项目 +gpt-6-luna +xhigh/u);
       expect(s.raw()).toMatch(/<success>PM +<\/>/u);
       expect(s.raw()).toContain("<success>✓ PM 改为 gpt-6-luna · xhigh，存到项目层，下次启动 PM 时生效</>");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -231,7 +247,7 @@ test("任一步连续 Esc 退出，两层设置文件都没有改动，底部写
       goTo(s, "models");
       s.press(ENTER, ENTER, ENTER, ESC, ESC, ESC);
       expect(s.now()).toContain("已取消修改");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -256,7 +272,7 @@ test("项目不受信任时第 3 步项目层不可选，回车存到用户层�
     (s) => {
       expect(s.now()).toMatch(/▸ PM +用户 +gpt-6\.1-sol +medium/u);
       expect(s.now()).toContain("存到用户层，下次启动 PM 时生效");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ], { trusted: false });
   await run(ctx);
@@ -280,7 +296,7 @@ test("没有任何配了凭据的模型时选跟随主会话，文件里 model �
     (s) => {
       expect(s.now()).toMatch(/▸ PM +项目 +跟随主会话 +high *\n/u);
       expect(s.now()).toMatch(/PM 改为 跟随主会话 · high，存到项目层/u);
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ], { models: [], authorized: [] });
   await run(ctx);
@@ -304,7 +320,7 @@ test("第 2 步选“跟随主会话”保存后，文件里 thinking 为 null�
     (s) => {
       expect(s.now()).toMatch(/▸ PM +用户 +gpt-6-luna +跟随 *\n/u);
       expect(s.now()).toContain("✓ PM 改为 gpt-6-luna · 跟随，存到用户层，下次启动 PM 时生效");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx, "xhigh");
@@ -327,7 +343,7 @@ test("第 1 步和第 2 步都选跟随主会话，保存后列表和提示都�
     (s) => {
       expect(s.now()).toMatch(/▸ 解释器 +项目 +跟随主会话 +跟随 *\n/u);
       expect(s.now()).toContain("✓ 解释器 改为 跟随主会话 · 跟随，存到项目层，下次调用时生效");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -340,7 +356,7 @@ test("清除用户层里模型和思考都跟随的设定后，提示写内置�
     (s) => { goTo(s, "models"); s.press("R"); },
     (s) => {
       expect(s.now().split("\n").map((line) => line.trim())).toContain("✓ 已清除用户层的 PM 设定，现在用内置默认值：跟随主会话");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -353,7 +369,7 @@ test("设置文件里 thinking 写 null 时列表写跟随，问题分类没有�
       goTo(s, "models");
       expect(s.now()).toMatch(/▸ PM +用户 +gpt-6-luna +跟随 *\n/u);
       expect(s.now()).not.toMatch(/问题 +\d/u);
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -366,7 +382,7 @@ test("来源为项目的 PM 按 R 后项目层这一项被删，改用内置默�
     (s) => {
       expect(s.now()).toMatch(/▸ PM +内置 +跟随主会话 +跟随/u);
       expect(s.now().split("\n").map((line) => line.trim())).toContain("✓ 已清除项目层的 PM 设定，现在用内置默认值：跟随主会话");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -382,7 +398,7 @@ test("项目层清除后下一层是用户层时，现在用用户层的值", as
     (s) => { goTo(s, "models"); s.press("R"); },
     (s) => {
       expect(s.now()).toMatch(/已清除项目层的 PM 设定，现在用.*gpt-6\.1-sol · low/u);
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -393,7 +409,7 @@ test("项目层清除后下一层是用户层时，现在用用户层的值", as
 
 test("来源为内置的 PM 按 R 只提示已经是内置默认值，不创建设置文件", async () => {
   await mkdir(repoDir(), { recursive: true });
-  const ctx = scripted([(s) => { goTo(s, "models"); s.press("R"); expect(s.now()).toContain("已经是内置默认值"); s.press(ESC); }]);
+  const ctx = scripted([(s) => { goTo(s, "models"); s.press("R"); expect(s.now()).toContain("已经是内置默认值"); s.press(ESC, ESC); }]);
   await run(ctx);
   expect(existsSync(userFile())).toBe(false);
   expect(existsSync(projectFile())).toBe(false);
@@ -409,7 +425,7 @@ test("设定里的模型没有凭据时这一行写不可用，选中时底部�
       expect(s.now()).toContain("✗ gpt-6-luna 没有可用的凭据，批准需求时解读会失败；回车重新选");
       s.press(ENTER);
       expect(s.now()).not.toMatch(/gpt-6-luna +5x/u);
-      s.press(ESC, ESC);
+      s.press(ESC, ESC, ESC);
     },
   ], { authorized: ["gpt-6.1-sol"] });
   await run(ctx);
@@ -422,7 +438,7 @@ test("项目设置文件写错时问题分类出现这一条", async () => {
       expect(s.now()).toMatch(/问题 +1/u);
       goTo(s, "problems");
       expect(s.now()).toMatch(/settings\.json +项目 +文件不是合法的 JSON/u);
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -441,7 +457,7 @@ test("把 PM 存到项目层后，项目设置文件里原有的其他字段原�
       moveTo(s, "项目层");
       s.press(ENTER);
     },
-    (s) => s.press(ESC),
+    (s) => s.press(ESC, ESC),
   ]);
   await run(ctx);
   expect(await readJson(projectFile())).toEqual({ theme: "dark", packages: ["x"], "one-company": { pm: { model: "gpt-6-luna", thinking: "high" } } });
@@ -464,7 +480,7 @@ test("开关选开启存到用户层：用户设置文件写 git-delivery，其�
       expect(s.now()).toMatch(/▸ Git 交付 +用户 +开启/u);
       expect(s.raw()).toMatch(/<success>Git 交付 *<\/>/u);
       expect(s.raw()).toContain("<success>✓ Git 交付 改为开启，存到用户层，立即生效</>");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -488,7 +504,7 @@ test("开关选关闭存到项目层：项目设置文件写 git-delivery 为 fa
     (s) => {
       expect(s.now()).toMatch(/▸ Git 交付 +项目 +关闭/u);
       expect(s.now()).toContain("✓ Git 交付 改为关闭，存到项目层，立即生效");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -503,7 +519,7 @@ test("开关按 R 清除用户层的设定：git-delivery 被删，提示现在�
     (s) => {
       expect(s.now().split("\n").map((line) => line.trim())).toContain("✓ 已清除用户层的 Git 交付 设定，现在用内置默认值：关闭");
       expect(s.now()).toMatch(/▸ Git 交付 +内置 +关闭/u);
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -518,7 +534,7 @@ test("开关按 R 清除项目层的设定后下一层是用户层的值：提�
     (s) => { goTo(s, "switches"); s.press("R"); },
     (s) => {
       expect(s.now().split("\n").map((line) => line.trim())).toContain("✓ 已清除项目层的 Git 交付 设定，现在用用户层的值：开启");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -539,7 +555,7 @@ test("项目层已写关闭时在开关里选开启存到用户层：用户文�
     },
     (s) => {
       expect(s.now()).toMatch(/▸ Git 交付 +项目 +关闭/u);
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -549,7 +565,7 @@ test("项目层已写关闭时在开关里选开启存到用户层：用户文�
 
 test("开关来源为内置时按 R 只提示已经是内置默认值，不创建设置文件，不调用回调", async () => {
   await mkdir(repoDir(), { recursive: true });
-  const ctx = scripted([(s) => { goTo(s, "switches"); s.press("R"); expect(s.now()).toContain("已经是内置默认值"); s.press(ESC); }]);
+  const ctx = scripted([(s) => { goTo(s, "switches"); s.press("R"); expect(s.now()).toContain("已经是内置默认值"); s.press(ESC, ESC); }]);
   await run(ctx);
   expect(existsSync(userFile())).toBe(false);
   expect(existsSync(projectFile())).toBe(false);
@@ -576,7 +592,7 @@ test("用户设置文件不是合法 JSON 时在模型里保存到用户层：�
       expect(line).toContain(userFile());
       expect(s.raw()).toContain("<error>✗ 没有保存：");
       expect(s.now()).toContain("/one:setting");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
@@ -601,7 +617,7 @@ test("用户设置文件不是合法 JSON 时在开关里保存到用户层：�
       expect(line).toContain(userFile());
       expect(s.raw()).toContain("<error>✗ 没有保存：");
       expect(s.now()).toContain("/one:setting");
-      s.press(ESC);
+      s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
