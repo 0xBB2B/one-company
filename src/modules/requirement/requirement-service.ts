@@ -60,6 +60,7 @@ export interface RequirementServiceOptions {
   localMutationOrigin?: object;
 }
 
+const RESUMABLE_FAILURES: ReadonlySet<string> = new Set(["state_changed_after_git", "git_result_missing", "write_claim_lost", "operation_not_ready"]);
 const VALIDATION_REQUIREMENT_ID = "00000000-0000-7000-8000-000000000000";
 
 const STATE_SCOPE: Record<RequirementServiceAction, ReadonlySet<RequirementAction>> = {
@@ -367,6 +368,9 @@ export class RequirementService {
           throw new AggregateError([error, cleanupError], "需求写入失败且写占用释放失败");
         }
         this.ownerTokens.delete(input.operationId);
+      }
+      if (error instanceof RequirementServiceError && RESUMABLE_FAILURES.has(error.code)) {
+        throw new RequirementServiceError(error.code, `原操作编号 ${input.operationId}`);
       }
       throw error;
     } finally {

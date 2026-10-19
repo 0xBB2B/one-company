@@ -15,6 +15,7 @@ import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { adviceOf } from "../src/core/exec/tool-failure.ts";
 
 
 const exec = promisify(execFile);
@@ -86,13 +87,15 @@ test("UUIDv7只分配一次，响应重试沿用身份，不同请求不混用",
   const reopened = await RequirementStateStore.open(w.options); expect(reopened.read(first.id)).toEqual(first);
 });
 
-test("UUID碰撞拒绝且不更换身份掩盖冲突", async () => {
+test("新生成的需求编号撞上已有需求时换一个编号创建成功，已有需求不受影响", async () => {
   const w = await world(); const existing = w.reserve(); const requestId = uuidv7();
-  const spy = vi.spyOn(databaseModule, "uuidv7").mockReturnValue(existing.id);
-  try { expect(() => w.store.reserve({ requestId, intentHash: "b".repeat(64) })).toThrow(/identity_collision/); }
-  finally { spy.mockRestore(); }
+  const original = databaseModule.uuidv7;
+  vi.spyOn(databaseModule, "uuidv7").mockImplementationOnce(() => existing.id).mockImplementation(original);
+  const created = w.store.reserve({ requestId, intentHash: "b".repeat(64) });
+  expect(created.id).not.toBe(existing.id);
+  expect(created.id).toMatch(UUID_V7_PATTERN);
   expect(w.store.read(existing.id)).toEqual(existing);
-  expect(withDatabase(repositoryDatabase(w.options.dataRoot, w.identity.repoId), (db) => db.read("requirement_requests", requestId))).toBeNull();
+  expect(w.store.reserve({ requestId, intentHash: "b".repeat(64) }).id).toBe(created.id);
 });
 
 test("预留或修改状态的事件写入失败时同库全部回滚，无半份状态", async () => {
@@ -411,3 +414,15 @@ process.stdin.once('data', async()=> { try { const lease=await store.acquirePm({
     expect(w.store.pmOwner(record.id)!.fence).toBe(1);
   } finally { children.forEach((c) => c.proc.kill("SIGKILL")); await Promise.allSettled(children.map((c) => c.closed)); }
 }, 10_000);
+
+test("已有在办关闭时，关闭冲突的原因里带在办关闭的原操作编号", async () => {
+  const w = await world(); const record = w.store.reserve({ requestId: uuidv7(), intentHash: "c".repeat(64) });
+  const intent = { operationId: uuidv7(), reason: "cancelled" as const, receiptId: uuidv7() };
+  const closing = w.store.beginClose({ requirementId: record.id, version: record.version, intent });
+  const begin = (() => { try { w.store.beginClose({ requirementId: record.id, version: record.version, intent: { ...intent, operationId: uuidv7() } }); } catch (error) { return error; } })();
+  expect(begin).toMatchObject({ code: "close_intent_conflict" });
+  expect(adviceOf(begin)!.why).toContain(intent.operationId);
+  const finish = (() => { try { w.store.finishClose({ requirementId: record.id, version: closing.version, operationId: uuidv7() }); } catch (error) { return error; } })();
+  expect(finish).toMatchObject({ code: "close_intent_conflict" });
+  expect(adviceOf(finish)!.why).toContain(intent.operationId);
+});

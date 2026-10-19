@@ -118,7 +118,7 @@ export interface PrdStorageVerifyResult {
 }
 
 function prdStorageNext(code: string): string {
-  if (code === "operation_conflict") return "换一个新生成的操作编号重试";
+  if (code === "operation_conflict") return "带上原来的内容续做；不是续做就不填 operationId，重新发起";
   if (code === "recovery_required") return "停止操作，请用户在主窗口完成恢复核对";
   if (code === "unknown_version") return "核对版本号，按需求当前的版本重新指定";
   if (/^git_|^data_root_|^unsafe_|permission_denied|invalid_config|path_escape|external_/u.test(code)) return "请用户检查本机 Git 与数据目录的安装、权限和链接";

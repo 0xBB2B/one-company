@@ -284,8 +284,9 @@ export class RequirementStateStore {
         if (reference.intentHash !== request.intentHash) throw new RequirementStateError("request_conflict");
         return this.get(db, reference.requirementId);
       }
-      const requirementId = uuidv7(), now = this.now();
-      if (db.read("requirements", requirementId)) throw new RequirementStateError("identity_collision");
+      let requirementId = uuidv7();
+      while (db.read("requirements", requirementId)) requirementId = uuidv7();
+      const now = this.now();
       const data: RequirementRecord = { format: "requirement-lifecycle/v1", requirementId, repoId: this.options.repoId, ...request,
         lifecycle: "draft", revision: 0, epoch: 1, saved: null, approved: null, approvalReceiptId: null, workspace: null,
         pendingRevision: null, close: null, recovery: "ready", recoveryReason: null, createdAt: now, updatedAt: now };
@@ -732,7 +733,7 @@ export class RequirementStateStore {
     return this.mutate("begin-close", request, (db) => {
       const record = this.get(db, request.requirementId);
       if (record.data.close) {
-        if (!equal(record.data.close, request.intent)) throw new RequirementStateError("close_intent_conflict");
+        if (!equal(record.data.close, request.intent)) throw new RequirementStateError("close_intent_conflict", `原操作编号 ${record.data.close.operationId}`);
         return record;
       }
       this.active(record.data, true); this.version(record, request.version);
@@ -754,7 +755,8 @@ export class RequirementStateStore {
     const request = checked(commands.finish, input);
     return this.mutate("finish-close", request, (db) => {
       const record = this.get(db, request.requirementId);
-      if (!record.data.close || record.data.close.operationId !== request.operationId) throw new RequirementStateError("close_intent_conflict");
+      if (!record.data.close) throw new RequirementStateError("close_intent_conflict");
+      if (record.data.close.operationId !== request.operationId) throw new RequirementStateError("close_intent_conflict", `原操作编号 ${record.data.close.operationId}`);
       if (record.data.lifecycle === "closed") return record;
       if (record.data.lifecycle !== "closing" || record.data.recovery !== "ready") throw new RequirementStateError("lifecycle_denied");
       this.version(record, request.version);
