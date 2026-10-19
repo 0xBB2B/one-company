@@ -789,6 +789,31 @@ describe("operationId 由程序生成：模型不填，中断后的续做由程�
     await w.runtime.shutdown();
   }, 60000);
 
+  test("恢复中途失败：报错说明会从头开始新的恢复，不含照抄与编号；再调 restore 从头做一次新的并成功，编号与失败那次不同", async () => {
+    const w = await requirementWorld();
+    const backup = details(await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx));
+    const restoreRequest = { action: "restore", repoId: w.repoId, backupOperationId: backup.operationId, backupManifestHash: backup.manifestHash };
+    const extra = join(w.dataRoot, "repos", w.repoId, "backups", "requirement-backups", backup.operationId, "payload", "extra.txt");
+    await writeFile(extra, "多余文件", { mode: 0o600 });
+    const outcome = await call(w.runtime, restoreRequest, w.ctx).then((result) => JSON.stringify(result), (error: Error) => error.message);
+    expect(outcome).toContain("backup_payload_mismatch");
+    expect(outcome).toContain("会从头开始一次新的备份或恢复");
+    expect(outcome).not.toContain("照抄");
+    expect((outcome.match(UUIDS) ?? []).filter((value) => value !== backup.operationId)).toEqual([]);
+    const restoreFamily = join(w.dataRoot, "restores");
+    const failedIds = await readdir(restoreFamily);
+    expect(failedIds).toHaveLength(1);
+
+    await rm(extra);
+    const fresh = details(await call(w.runtime, restoreRequest, w.ctx));
+    expect(fresh).toMatchObject({ status: "needs_review" });
+    expect(fresh.operationId).toMatch(UUID_V7_PATTERN);
+    expect(failedIds).not.toContain(fresh.operationId);
+    expect(fresh.operationId).not.toBe(backup.operationId);
+    expect(await readdir(restoreFamily)).toHaveLength(2);
+    await w.runtime.shutdown();
+  }, 60000);
+
   test("工具说明与 workspace-manage 报错文字不出现“新生成”“UUIDv7”，说明里不要求填 operationId", async () => {
     const world = await fixture();
     const runtime = runtimeFor(world, idle);
