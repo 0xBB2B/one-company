@@ -29,7 +29,7 @@ export interface ProjectMaintenanceOptions {
   confirm: (window: ProgramWindow) => Promise<boolean>;
 }
 
-type Input = { operationId: string; resume?: boolean };
+type Input = { operationId: string };
 
 async function context(options: ProjectMaintenanceOptions, title: string, lines: string[]) {
   const runs = await new RunStore({ dataRoot: options.dataRoot, repoId: options.repoId, daemonStartedAt: new Date().toISOString() })
@@ -50,18 +50,17 @@ export async function recoveryCheck(options: ProjectMaintenanceOptions, input: I
 
 export async function backup(options: ProjectMaintenanceOptions, input: Input) {
   const ctx = await context(options, "确认备份本机需求数据", ["备份本机运行库与需求版本仓库到私有备份目录；备份期间其他数据库写入会被拒绝。"]);
-  return createRequirementBackup({ repoDirectory: ctx.repoDirectory, repoId: options.repoId, operationId: input.operationId,
-    resume: input.resume, worktreeRoots: ctx.worktreeRoots });
+  return createRequirementBackup({ repoDirectory: ctx.repoDirectory, repoId: options.repoId, operationId: input.operationId, worktreeRoots: ctx.worktreeRoots });
 }
 
 export async function restore(options: ProjectMaintenanceOptions, input: Input & { backupOperationId: string; backupManifestHash: string }) {
   const ctx = await context(options, "确认从备份恢复到隔离目录",
     [`备份：${input.backupOperationId}`, "恢复结果放在独立隔离目录并标记待核对，不替换当前运行库，不恢复 PM、任务或执行授权。"]);
   const isolation = join(options.dataRoot, "restores", input.operationId, "repos", options.repoId);
-  if (!input.resume) await mkdir(isolation, { recursive: true, mode: 0o700 });
+  await mkdir(isolation, { recursive: true, mode: 0o700 });
   return restoreRequirementBackup({
     backupDirectory: join(ctx.repoDirectory, "backups", "requirement-backups", input.backupOperationId),
     backupOperationId: input.backupOperationId, backupManifestHash: input.backupManifestHash,
-    repoDirectory: isolation, repoId: options.repoId, operationId: input.operationId, resume: input.resume, worktreeRoots: ctx.worktreeRoots,
+    repoDirectory: isolation, repoId: options.repoId, operationId: input.operationId, worktreeRoots: ctx.worktreeRoots,
   });
 }

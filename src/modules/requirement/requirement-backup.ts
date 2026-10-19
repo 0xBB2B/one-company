@@ -32,7 +32,6 @@ export interface RequirementBackupOptions {
   repoDirectory: string;
   repoId: string;
   operationId: string;
-  resume?: boolean;
   worktreeRoots: readonly string[];
 }
 
@@ -119,8 +118,6 @@ interface BackupOperationLog {
   manifestHash?: string;
 }
 
-export const RESUME_NOT_FOUND = "找不到这个操作编号对应的备份或恢复，不是续做就不填 operationId";
-export const RESUME_FINISHED = "这个操作编号对应的备份或恢复已经完成，不填 operationId 发起新的";
 function fail(code: string, detail?: string): never { throw new RequirementBackupError(code, detail); }
 function sha256(bytes: Uint8Array | string): string { return createHash("sha256").update(bytes).digest("hex"); }
 function exactKeys(value: object, expected: readonly string[]): boolean { return Object.keys(value).sort().join("\0") === [...expected].sort().join("\0"); }
@@ -458,14 +455,12 @@ export async function createRequirementBackup(options: RequirementBackupOptions)
     const operationDirectory = join(family, options.operationId);
     const operationPath = join(operationDirectory, OPERATION_FILE);
     let log: BackupOperationLog;
-    if (options.resume && !pathExists(operationDirectory)) fail("resume_not_found", RESUME_NOT_FOUND);
     if (pathExists(operationDirectory)) {
       privateDirectory(operationDirectory, "operation_directory_invalid");
       if (!pathExists(operationPath)) fail("operation_conflict");
       log = parseOperation(operationPath);
       if (log.operationId !== options.operationId || log.repoId !== options.repoId || !sameIdentity(repo.identity, { dev: log.repoDevice, ino: log.repoInode })) fail("operation_conflict");
       if (log.phase === "completed") {
-        if (options.resume) fail("resume_finished", RESUME_FINISHED);
         inspectState(dataPath, options.repoId);
         return validateCompleted(log, operationDirectory);
       }

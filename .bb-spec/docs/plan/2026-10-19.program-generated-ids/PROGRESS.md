@@ -9,9 +9,9 @@
 | 06 | 06-approval-atomic | done | 2026-10-19 |
 | 07 | 07-requirement-auto-resume | done | 2026-10-19 |
 | 09 | 09-change-apply-auto-resume | done | 2026-10-19 |
-| 08 | 08-close-workspace-backup | pending | — |
+| 08 | 08-close-workspace-backup | done | 2026-10-19 |
 | 收尾 | 全量纯代码测试 + 真实模型验收（P1–P13、M9-AC12、M9-AC2/AC3/AC11） | pending | — |
 ## 当前
-01–06 完成；第一次真实模型验收 9/15（模型自编或抄回 operationId）。当前：07 与 09 并行（Red），之后 08。
+01–09 完成；当前：收尾（全量纯代码测试与真实模型验收重跑）。
 ## 阻塞
 （无）

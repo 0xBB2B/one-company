@@ -6,8 +6,6 @@ import { isAbsolute, join, posix, resolve } from "node:path";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { RequirementBackupError, RESUME_FINISHED, RESUME_NOT_FOUND } from "../requirement/requirement-backup.ts";
-import { RequirementRecoveryError } from "../requirement/requirement-recovery.ts";
 import { uuidv7 } from "../../core/storage/database.ts";
 import { assertDataRootOutsideWorktrees, assertRegularDatabaseFiles } from "../../core/storage/database-paths.ts";
 import { listWorktrees, repositoryIdentity } from "../../core/storage/identity.ts";
@@ -28,7 +26,6 @@ const MAX_RESULT_ENTRIES = 100;
 const MAX_PATH_LENGTH = 512;
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
-const optionalOperationId = Type.Optional(Type.String({ pattern: UUID_V7 }));
 
 const actionSchemas = {
   init: Type.Object({
@@ -48,7 +45,6 @@ const actionSchemas = {
     action: Type.Literal("workspace-prepare"),
     repoId: Type.String({ pattern: REPO_ID_PATTERN }),
     requirementId: Type.String({ pattern: UUID_V7 }),
-    operationId: optionalOperationId,
   }, { additionalProperties: false }),
   "workspace-recycle": Type.Object({
     action: Type.Literal("workspace-recycle"),
@@ -62,7 +58,6 @@ const actionSchemas = {
   backup: Type.Object({
     action: Type.Literal("backup"),
     repoId: Type.String({ pattern: REPO_ID_PATTERN }),
-    operationId: optionalOperationId,
   }, { additionalProperties: false }),
   "conventions-update": Type.Object({
     action: Type.Literal("conventions-update"),
@@ -72,7 +67,6 @@ const actionSchemas = {
   restore: Type.Object({
     action: Type.Literal("restore"),
     repoId: Type.String({ pattern: REPO_ID_PATTERN }),
-    operationId: optionalOperationId,
     backupOperationId: Type.String({ pattern: UUID_V7 }),
     backupManifestHash: Type.String({ pattern: REPO_ID_PATTERN }),
   }, { additionalProperties: false }),
@@ -85,11 +79,11 @@ export type ProjectManageAction = "init" | "status" | "refresh";
 
 type ProjectManageParams =
   | { action: ProjectManageAction; repoId: string; preview?: boolean }
-  | { action: "workspace-prepare"; repoId: string; requirementId: string; operationId?: string }
+  | { action: "workspace-prepare"; repoId: string; requirementId: string }
   | { action: "workspace-recycle"; repoId: string; requirementId: string }
   | { action: "recovery-check"; repoId: string }
-  | { action: "backup"; repoId: string; operationId?: string }
-  | { action: "restore"; repoId: string; operationId?: string; backupOperationId: string; backupManifestHash: string }
+  | { action: "backup"; repoId: string }
+  | { action: "restore"; repoId: string; backupOperationId: string; backupManifestHash: string }
   | { action: "conventions-update"; repoId: string; content: string };
 
 export interface ProjectManageHostContext {
@@ -138,7 +132,7 @@ const PROJECT_MANAGE_NEXT: Record<ProjectManageToolError["code"], string> = {
   operation_failed: "重试一次；仍然失败就把原因告诉用户",
   workspace_confirmation_required: "在有界面的主窗口里再做，这个操作要用户确认",
   workspace_failed: "按原因处理；需要改动仓库时请用户介入",
-  maintenance_failed: "按原因处理；仍然失败就把原因告诉用户",
+  maintenance_failed: "按原因处理后再调一次，会从头开始一次新的备份或恢复",
   conventions_confirmation_required: "在有界面的主窗口里再做，写入项目规范要用户在窗口里选择",
   conventions_failed: "按原因处理；仍然失败就把原因告诉用户",
 };
@@ -768,7 +762,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
   const tool: ToolDefinition<typeof publicParameters, Record<string, unknown>> = {
     name: "one_company_project_manage",
     label: "管理项目（索引、工作区、规范）",
-    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requirementId 取自需求工具结果，不要自编；operationId 由程序生成，平时不填，只有报错给出原操作编号、要续做那次没完成的工作区准备、备份或恢复时，才照抄那个编号填进来。初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认；结果里的 version 是需求的新版本号，后续需求操作要用它。conventions-update 以 content 给出仓库根目录 AGENTS.md 的完整新内容，界面显示与现有文件的差异，用户选「写入」后才写文件，此后派出的子代理按新内容工作；用户输入修改意见时结果为 status=revise。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
+    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requirementId 取自需求工具结果，不要自编；初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认；结果里的 version 是需求的新版本号，后续需求操作要用它。conventions-update 以 content 给出仓库根目录 AGENTS.md 的完整新内容，界面显示与现有文件的差异，用户选「写入」后才写文件，此后派出的子代理按新内容工作；用户输入修改意见时结果为 status=revise。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
     promptSnippet: "预览、初始化、查看或刷新当前项目索引；为需求建立或回收独立工作区；更新项目规范 AGENTS.md",
     parameters: publicParameters,
     executionMode: "sequential",
@@ -793,10 +787,9 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
           const workspace = await WorkspaceManageService.open({ repositoryRoot: root.path, dataRoot: options.dataRoot, repoId: params.repoId,
             confirm: (window) => confirmWindow(ctx, window, operation.signal) });
           try {
-            const operationId = params.action === "workspace-prepare" ? params.operationId ?? uuidv7() : uuidv7();
             const result = params.action === "workspace-prepare"
-              ? await workspace.prepare({ requirementId: params.requirementId, operationId, resume: params.operationId !== undefined })
-              : await workspace.recycle({ requirementId: params.requirementId, operationId });
+              ? await workspace.prepare({ requirementId: params.requirementId })
+              : await workspace.recycle({ requirementId: params.requirementId, operationId: uuidv7() });
             return textResult({ action: params.action, requirementId: result.requirementId, status: result.status, branch: result.branch,
               path: result.path, baseCommit: result.baseCommit, version: workspace.requirementVersion(result.requirementId),
               operationId: params.action === "workspace-prepare" ? result.operationId : result.recycleOperationId });
@@ -827,36 +820,25 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
           if (!ctx.hasUI) throw new ProjectManageToolError("workspace_confirmation_required", "恢复对账、备份与恢复需要当前 session 的真实宿主 UI 确认");
           const maintenance = { repositoryRoot: root.path, dataRoot: options.dataRoot, repoId: params.repoId,
             confirm: (window: ProgramWindow) => confirmWindow(ctx, window, operation.signal) };
-          const operationId = params.action === "recovery-check" ? uuidv7() : params.operationId ?? uuidv7();
-          const resume = params.action !== "recovery-check" && params.operationId !== undefined;
+          const operationId = uuidv7();
           try {
             if (params.action === "recovery-check") {
               const receipt = await recoveryCheck(maintenance, { operationId });
               return textResult({ action: params.action, operationId, status: receipt.state, requirementsChecked: "requirementsChecked" in receipt ? receipt.requirementsChecked : 0 });
             }
             if (params.action === "backup") {
-              const receipt = await backup(maintenance, { operationId, resume });
+              const receipt = await backup(maintenance, { operationId });
               return textResult({ action: params.action, status: receipt.state, operationId: receipt.operationId, manifestHash: receipt.manifestHash,
                 filesCopied: receipt.filesCopied, requirements: receipt.requirements.length });
             }
             if (params.action !== "restore") throw new ProjectManageToolError("invalid_action", "未知的维护 action");
-            const receipt = await restore(maintenance, { operationId, resume, backupOperationId: params.backupOperationId, backupManifestHash: params.backupManifestHash });
+            const receipt = await restore(maintenance, { operationId, backupOperationId: params.backupOperationId, backupManifestHash: params.backupManifestHash });
             return textResult({ action: params.action, status: receipt.restoreStatus, operationId: receipt.operationId, executable: receipt.executable,
               filesRestored: receipt.filesRestored, requirements: receipt.requirements.map((item) => ({ requirementId: item.requirementId, recoveryReason: item.recoveryReason })) });
           } catch (error) {
             if (error instanceof ProjectMaintenanceError) return textResult({ action: params.action, status: "blocked", reason: error.advice.why, next: error.advice.next });
-            if (error instanceof RequirementBackupError || error instanceof RequirementRecoveryError) {
-              if (error.code === "resume_not_found" || error.code === "resume_finished") {
-                return textResult({ action: params.action, status: "blocked", reason: error.code === "resume_not_found" ? RESUME_NOT_FOUND : RESUME_FINISHED, next: "不填 operationId 重新发起" });
-              }
-              if (resume && error.code === "restore_operation_conflict") {
-                return textResult({ action: params.action, status: "blocked", reason: "这个操作编号对应的恢复用的是另一份备份",
-                  next: "带上原来那次恢复的 backupOperationId 和 backupManifestHash 再调；不是续做就不填 operationId，重新发起" });
-              }
-            }
             if (adviceOf(error)) throw error;
-            const resumeHint = params.action === "recovery-check" ? "" : `；本次操作编号 ${operationId}，照抄它填进 operationId 再调一次可以续做，想从头来就不填`;
-            throw new ProjectManageToolError("maintenance_failed", `维护操作失败：${commandOutputTail(error)}${resumeHint}`);
+            throw new ProjectManageToolError("maintenance_failed", `维护操作失败：${commandOutputTail(error)}`);
           }
         }
 

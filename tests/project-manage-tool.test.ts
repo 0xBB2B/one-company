@@ -3,7 +3,7 @@ import type { WindowDecision } from "./helpers/window-host.ts";
 import { repositoryDatabase, UUID_V7_PATTERN, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import { afterEach, describe, expect, test } from "vitest";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -23,7 +23,6 @@ import { draftApprover } from "./helpers/approval-fixture.ts";
 import type { WriteGrant } from "./helpers/approval-fixture.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { RESUME_FINISHED, RESUME_NOT_FOUND } from "../src/modules/requirement/requirement-backup.ts";
 
 
 const exec = promisify(execFile);
@@ -639,7 +638,7 @@ describe("project_manage 项目规范 AGENTS.md：只有用户在窗口里选写
   });
 });
 
-describe("operationId 由程序生成：平时不填，只在续做时照抄报错给出的编号", () => {
+describe("operationId 由程序生成：模型不填，中断后的续做由程序认出", () => {
   const BODY = "# 目标 {#goals}\n保留移动。\n";
   const idle: OpenProjectIndexService = async () => ({ preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}) });
   const details = (result: unknown) => (result as { details: Record<string, unknown> }).details;
@@ -671,25 +670,34 @@ describe("operationId 由程序生成：平时不填，只在续做时照抄报�
     return { ...world, requirementId, runtime, ctx, record, close };
   }
 
-  test("五个动作的 schema：operationId 对 prepare/backup/restore 可选，对 recycle/recovery-check 不允许", () => {
+  test("五个动作的 schema：任何动作都不接受 operationId，restore 的 backupOperationId 与 backupManifestHash 仍必填", () => {
     const repoId = "a".repeat(64);
     const requirementId = uuidv7();
     const check = (request: Record<string, unknown>) => Value.Check(PROJECT_MANAGE_PARAMETERS, { request });
     const restore = { action: "restore", repoId, backupOperationId: uuidv7(), backupManifestHash: "b".repeat(64) };
     expect(check({ action: "workspace-prepare", repoId, requirementId })).toBe(true);
-    expect(check({ action: "workspace-prepare", repoId, requirementId, operationId: uuidv7() })).toBe(true);
-    expect(check({ action: "workspace-prepare", repoId, requirementId, operationId: "not-a-uuid" })).toBe(false);
+    expect(check({ action: "workspace-prepare", repoId, requirementId, operationId: uuidv7() })).toBe(false);
     expect(check({ action: "workspace-recycle", repoId, requirementId })).toBe(true);
     expect(check({ action: "workspace-recycle", repoId, requirementId, operationId: uuidv7() })).toBe(false);
     expect(check({ action: "recovery-check", repoId })).toBe(true);
     expect(check({ action: "recovery-check", repoId, operationId: uuidv7() })).toBe(false);
     expect(check({ action: "backup", repoId })).toBe(true);
-    expect(check({ action: "backup", repoId, operationId: uuidv7() })).toBe(true);
+    expect(check({ action: "backup", repoId, operationId: uuidv7() })).toBe(false);
     expect(check(restore)).toBe(true);
-    expect(check({ ...restore, operationId: uuidv7() })).toBe(true);
+    expect(check({ ...restore, operationId: uuidv7() })).toBe(false);
     expect(check({ action: "restore", repoId, backupOperationId: restore.backupOperationId })).toBe(false);
     expect(check({ action: "restore", repoId, backupManifestHash: restore.backupManifestHash })).toBe(false);
   });
+
+  test("workspace-prepare、backup、restore 带 operationId 被拒为 invalid_shape", async () => {
+    const w = await requirementWorld();
+    const backup = details(await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx));
+    const restore = { action: "restore", repoId: w.repoId, backupOperationId: backup.operationId, backupManifestHash: backup.manifestHash };
+    for (const request of [{ action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, { action: "backup", repoId: w.repoId }, restore]) {
+      await expect(call(w.runtime, { ...request, operationId: uuidv7() }, w.ctx)).rejects.toMatchObject({ code: "invalid_shape" });
+    }
+    await w.runtime.shutdown();
+  }, 30000);
 
   test("workspace-prepare 不填 operationId 成功：结果带合规 UUIDv7，且就是记录里的操作编号", async () => {
     const w = await requirementWorld();
@@ -736,7 +744,7 @@ describe("operationId 由程序生成：平时不填，只在续做时照抄报�
     await w.runtime.shutdown();
   }, 30000);
 
-  test("工作区准备中断后：不填编号再准备被拒且原因写出原编号；照抄这个编号再调，工作区变 ready", async () => {
+  test("工作区准备中断后再调 workspace-prepare：程序用记录里的原编号续完，工作区变 ready", async () => {
     const w = await requirementWorld();
     const original = uuidv7();
     const location = workspaceLocation(await realpath(w.repositoryRoot), w.requirementId);
@@ -746,18 +754,14 @@ describe("operationId 由程序生成：平时不填，只在续做时照抄报�
     await mkdir(join(location.path, ".."), { recursive: true });
     await git(w.repositoryRoot, ["worktree", "add", "-b", `req/${w.requirementId}`, location.path, head]);
 
-    const refused = await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx);
-    expect(details(refused)).toMatchObject({ status: "blocked" });
-    expect(JSON.stringify(details(refused))).toContain(original);
-    expect(w.record()!.data.status).toBe("preparing");
-
-    const resumed = details(await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId, operationId: original }, w.ctx));
+    const resumed = details(await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx));
     expect(resumed).toMatchObject({ status: "ready", operationId: original });
     expect(w.record()!.data.status).toBe("ready");
+    expect(w.record()!.data.operationId).toBe(original);
     await w.runtime.shutdown();
   }, 30000);
 
-  test("备份中途失败：报错原因写出本次编号并说明可照抄续做；照抄编号再调，备份完成且回执与一次做完相同", async () => {
+  test("备份中途失败：报错说明会从头开始新的备份，不含照抄与编号；再调 backup 从头做一次新的并成功，编号与失败那次不同，可用于 restore", async () => {
     const w = await requirementWorld();
     const unfinishedId = uuidv7();
     const database = repositoryDatabase(w.dataRoot, w.repoId);
@@ -767,66 +771,37 @@ describe("operationId 由程序生成：平时不填，只在续做时照抄报�
     }));
     const outcome = await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx)
       .then((result) => JSON.stringify(result), (error: Error) => error.message);
-    expect(outcome).toContain("照抄");
-    const [operationId] = (outcome.match(UUIDS) ?? []).filter((value) => value !== unfinishedId);
-    expect(operationId).toMatch(UUID_V7_PATTERN);
+    expect(outcome).toContain("会从头开始一次新的备份或恢复");
+    expect(outcome).not.toContain("照抄");
+    expect((outcome.match(UUIDS) ?? []).filter((value) => value !== unfinishedId)).toEqual([]);
+    const backupFamily = join(w.dataRoot, "repos", w.repoId, "backups", "requirement-backups");
+    const failedIds = await readdir(backupFamily);
+    expect(failedIds).toHaveLength(1);
 
     withDatabase(database, (db) => db.remove("requirement_service_operations", unfinishedId, db.read("requirement_service_operations", unfinishedId)!.version));
-    const resumed = details(await call(w.runtime, { action: "backup", repoId: w.repoId, operationId }, w.ctx));
-    const direct = details(await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx));
-    expect(resumed).toMatchObject({ status: "completed", operationId });
-    expect({ ...resumed, operationId: undefined, manifestHash: undefined }).toEqual({ ...direct, operationId: undefined, manifestHash: undefined });
-    await w.runtime.shutdown();
-  }, 30000);
-
-  test("续做 workspace-prepare 填的编号对不上：找不到、已完成分别被拒，状态不变", async () => {
-    const w = await requirementWorld();
-    const missing = details(await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId, operationId: uuidv7() }, w.ctx));
-    expect(missing).toMatchObject({ status: "blocked" });
-    expect(JSON.stringify(missing)).toContain("找不到这个操作编号对应的工作区准备");
-    expect(w.record()).toBeNull();
-
-    const done = details(await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx));
-    const before = w.record()!;
-    const finished = details(await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId, operationId: done.operationId }, w.ctx));
-    expect(finished).toMatchObject({ status: "blocked" });
-    expect(JSON.stringify(finished)).toContain("已经完成");
-    expect(finished.next).toContain("会直接返回已有工作区");
-    expect(w.record()).toEqual(before);
-    await w.runtime.shutdown();
-  }, 30000);
-
-  test("续做 backup/restore 填的编号对不上：找不到、已完成分别被拒", async () => {
-    const w = await requirementWorld();
-    const missingBackup = details(await call(w.runtime, { action: "backup", repoId: w.repoId, operationId: uuidv7() }, w.ctx));
-    expect(missingBackup).toMatchObject({ status: "blocked", reason: RESUME_NOT_FOUND });
-    expect(JSON.stringify(missingBackup)).toContain("找不到这个操作编号对应的备份或恢复");
-
-    const backup = details(await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx));
-    const finishedBackup = details(await call(w.runtime, { action: "backup", repoId: w.repoId, operationId: backup.operationId }, w.ctx));
-    expect(finishedBackup).toMatchObject({ status: "blocked", reason: RESUME_FINISHED });
-    expect(JSON.stringify(finishedBackup)).toContain("已经完成");
-
-    const restoreParams = { action: "restore", repoId: w.repoId, backupOperationId: backup.operationId, backupManifestHash: backup.manifestHash };
-    const missingRestore = details(await call(w.runtime, { ...restoreParams, operationId: uuidv7() }, w.ctx));
-    expect(missingRestore).toMatchObject({ status: "blocked", reason: RESUME_NOT_FOUND });
-    expect(JSON.stringify(missingRestore)).toContain("找不到这个操作编号对应的备份或恢复");
-
-    const restored = details(await call(w.runtime, restoreParams, w.ctx));
-    const finishedRestore = details(await call(w.runtime, { ...restoreParams, operationId: restored.operationId }, w.ctx));
-    expect(finishedRestore).toMatchObject({ status: "blocked", reason: RESUME_FINISHED });
-    expect(JSON.stringify(finishedRestore)).toContain("已经完成");
+    const fresh = details(await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx));
+    expect(fresh).toMatchObject({ status: "completed" });
+    expect(fresh.operationId).toMatch(UUID_V7_PATTERN);
+    expect(failedIds).not.toContain(fresh.operationId);
+    const restored = details(await call(w.runtime,
+      { action: "restore", repoId: w.repoId, backupOperationId: fresh.operationId, backupManifestHash: fresh.manifestHash }, w.ctx));
+    expect(restored).toMatchObject({ status: "needs_review" });
     await w.runtime.shutdown();
   }, 60000);
 
-  test("工具说明与 workspace-manage 报错文字不出现“新生成”“UUIDv7”，说明里写明 operationId 平时不填", async () => {
+  test("工具说明与 workspace-manage 报错文字不出现“新生成”“UUIDv7”，说明里不要求填 operationId", async () => {
     const world = await fixture();
     const runtime = runtimeFor(world, idle);
     const clean = (text: string) => text.replaceAll("重新生成", "");
-    expect(clean(runtime.tool.description)).not.toMatch(/新生成|UUIDv7/u);
-    expect(runtime.tool.description).toContain("平时不填");
+    expect(clean(runtime.tool.description)).not.toMatch(/新生成|UUIDv7|照抄/u);
+    expect(runtime.tool.description).not.toContain("operationId");
     const source = await readFile(new URL("../src/modules/delivery/workspace-manage.ts", import.meta.url), "utf8");
     expect(clean(source)).not.toMatch(/新生成|UUIDv7/u);
     await runtime.shutdown();
+  });
+
+  test("源码里不再有按操作编号续做的报错常量与关闭续办错误码", async () => {
+    const { stdout } = await exec("grep", ["-rEl", "resume_not_found|resume_finished|RESUME_NOT_FOUND|RESUME_FINISHED|close_operation_mismatch|close_not_found|close_content_mismatch", join(import.meta.dirname, "..", "src")]).catch((error: { stdout?: string }) => ({ stdout: error.stdout ?? "" }));
+    expect(stdout.trim()).toBe("");
   });
 });

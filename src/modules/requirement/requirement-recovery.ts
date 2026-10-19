@@ -8,7 +8,7 @@ import type { RecoveryRequirementStatus } from "../../core/storage/database-reco
 import { databaseMaintenanceDirectory, withDatabaseMaintenance } from "../../core/storage/database-maintenance.ts";
 import type { DatabaseMaintenancePermit } from "../../core/storage/database-maintenance.ts";
 import { DATABASE_SNAPSHOT_FILE, pathExists } from "../../core/storage/database-paths.ts";
-import { readRequirementBackupOperation, requirementBackupFiles, RESUME_FINISHED, RESUME_NOT_FOUND } from "./requirement-backup.ts";
+import { readRequirementBackupOperation, requirementBackupFiles } from "./requirement-backup.ts";
 import type { RequirementBackupFile, RequirementBackupManifest, RequirementBackupReference, RequirementBackupRequirement } from "./requirement-backup.ts";
 import { REQUIREMENT_WRITE_COORDINATION_NAMESPACE } from "./requirement-coordination.ts";
 import { PRD_FILE, PRD_FILE_PATTERN, verifyVersion } from "./prd-storage.ts";
@@ -39,7 +39,6 @@ export interface RequirementRestoreOptions {
   repoDirectory: string;
   repoId: string;
   operationId: string;
-  resume?: boolean;
   worktreeRoots: readonly string[];
   archiveDirectory?: string;
   registeredArchivePaths?: readonly string[];
@@ -394,7 +393,6 @@ function completedReceipt(options: RequirementRestoreOptions, repoDirectory: str
  */
 export async function restoreRequirementBackup(options: RequirementRestoreOptions): Promise<RequirementRestoreReceipt> {
   if (!options || !UUID_V7_PATTERN.test(options.operationId) || !UUID_V7_PATTERN.test(options.backupOperationId) || !HASH.test(options.backupManifestHash) || !Array.isArray(options.worktreeRoots) || options.worktreeRoots.length === 0) fail("invalid_options");
-  if (options.resume && !pathExists(options.repoDirectory)) fail("resume_not_found", RESUME_NOT_FOUND);
   const backup = readBackup(options);
   const destination = assertRepoDirectory(options.repoDirectory, options.repoId);
   if (contained(destination.path, backup.directory) || contained(backup.directory, destination.path)) fail("backup_overlaps_isolation");
@@ -405,14 +403,12 @@ export async function restoreRequirementBackup(options: RequirementRestoreOption
     const operationDirectory = join(restoreRoot, options.operationId);
     const logPath = join(operationDirectory, RESTORE_FILE);
     let log: RestoreLog;
-    if (options.resume && !pathExists(operationDirectory)) fail("resume_not_found", RESUME_NOT_FOUND);
     if (pathExists(operationDirectory)) {
       privateDirectory(operationDirectory, "restore_operation_invalid");
       if (!pathExists(logPath)) fail("restore_operation_conflict");
       log = parseRestoreLog(logPath);
       if (log.operationId !== options.operationId || log.backupOperationId !== options.backupOperationId || log.repoId !== options.repoId || log.backupManifestHash !== options.backupManifestHash || log.repoDevice !== destination.identity.dev || log.repoInode !== destination.identity.ino) fail("restore_operation_conflict");
       if (log.phase === "completed") {
-        if (options.resume) fail("resume_finished", RESUME_FINISHED);
         assertPayload(backup.payload, backup.manifest.files);
         assertRestoredPayload(destination.path, backup.manifest);
         await verifyRestoredRepositories(options, destination.dataRoot, backup.manifest.requirements);

@@ -245,10 +245,9 @@ test("M6-AC11：预检通过后注入 PRD 更新、代码变化、阻塞裁决�
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("active");
   await rm(join(w.worktree.root, "src", "late.ts"));
   receiptId = await w.accept();
-  const closed = await main.execute({ action: "close", reason: "completed", receiptId }) as CloseResult & { operationId: string };
-  const operationId = closed.operationId;
+  const closed = await main.execute({ action: "close", reason: "completed", receiptId }) as CloseResult;
   expect(closed).toMatchObject({ status: "closed", reason: "completed", archive: { status: "archived" } });
-  const again = await main.execute({ action: "close", reason: "completed", receiptId, operationId });
+  const again = await main.execute({ action: "close", reason: "completed", receiptId });
   expect(JSON.stringify(again)).toContain("这次关闭已经办完");
   expect(w.state.read(w.created.requirementId).data.close?.reason).toBe("completed");
   for (const late of [await main.execute({ action: "close", reason: "cancelled", receiptId: w.receipt() }), await main.execute({ action: "close", reason: "completed", receiptId })]) {
@@ -269,8 +268,7 @@ test("M6-AC6/AC4/AC15：closing 生效即撤权，代理未停止或收尾失败
   const receiptId = await w.accept();
   const bytes = await readFile(w.prdFile);
   w.setStop("throw");
-  const first = await main.execute({ action: "close", reason: "completed", receiptId }) as CloseResult & { operationId: string };
-  const operationId = first.operationId;
+  const first = await main.execute({ action: "close", reason: "completed", receiptId }) as CloseResult;
   expect(first).toMatchObject({ status: "closing", pending: ["还有运行没停止"] });
   const closing = w.state.read(w.created.requirementId);
   expect(closing.data.lifecycle).toBe("closing"); expect(closing.data.epoch).toBe(w.lease.epoch + 1);
@@ -282,10 +280,10 @@ test("M6-AC6/AC4/AC15：closing 生效即撤权，代理未停止或收尾失败
   await expect(pm.execute({ action: "advance" })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是 PM 接手时的状态：需求不在活动状态" } });
   await expect(w.service.metadata(w.created.requirementId)).resolves.toMatchObject({ lifecycle: "closing", approved: null, archivePath: null });
   w.setStop("leave");
-  expect(await main.execute({ action: "close", reason: "completed", receiptId, operationId })).toMatchObject({ status: "closing", pending: ["还有运行没停止"] });
+  expect(await main.execute({ action: "close", reason: "completed", receiptId })).toMatchObject({ status: "closing", pending: ["还有运行没停止"] });
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closing");
   w.setStop("stop");
-  const done = await main.execute({ action: "close", reason: "completed", receiptId, operationId }) as CloseResult;
+  const done = await main.execute({ action: "close", reason: "completed", receiptId }) as CloseResult;
   expect(done).toMatchObject({ status: "closed", reason: "completed", archive: { status: "archived" },
     message: `需求 ${w.created.requirementId} 已完成，PM 及相关子代理已结束。建议清空上下文后再开始新的需求，避免旧需求影响后续判断。` });
   expect((await w.runs.get(pmRun) as { run: { state: string } }).run.state).toBe("stopped");
@@ -591,7 +589,7 @@ test("最终批准版本没有原型时归档只有正文，关闭记录的原�
 type Closing = { status: "closing"; operationId: string; pending: string[]; next: string };
 type Rejected = { status: "rejected"; missing: string[]; operationId?: string };
 
-test("close 不填 operationId 时由程序生成合规编号并随结果返回", async () => {
+test("close 由程序生成合规编号并随结果返回", async () => {
   const w = await world();
   if (!darwin) return;
   await w.fullEvidence();
@@ -600,7 +598,17 @@ test("close 不填 operationId 时由程序生成合规编号并随结果返回"
   expect(closed.operationId).toMatch(UUID_V7_PATTERN);
 });
 
-test("关闭返回 closing 时带 operationId，建议写明照抄编号并用原 receiptId 与 reason 续办；照抄续办先 closing 后 closed", async () => {
+test("close 参数带 operationId 是 invalid_shape，主窗口侧与守护进程侧都一样", async () => {
+  const w = await world();
+  const main = await w.main();
+  const receiptId = w.receipt();
+  await expect(main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() })).rejects.toMatchObject({ code: "invalid_shape" });
+  const tools: Array<{ execute: (id: string, params: unknown) => Promise<unknown> }> = [];
+  registerWorkflowManageTool({ registerTool: (tool: never) => { tools.push(tool); } } as never, () => ({}) as never);
+  await expect(tools[0].execute("call", { action: "close", repoId: w.repoId, requirementId: w.created.requirementId, reason: "completed", receiptId, operationId: uuidv7() })).rejects.toMatchObject({ code: "invalid_shape" });
+});
+
+test("关闭返回 closing 时建议写明原决定编号与原原因；原样再调 close 由程序用原编号续办，先 closing 后 closed", async () => {
   const w = await world();
   if (!darwin) return;
   await w.run("requirement");
@@ -611,14 +619,15 @@ test("关闭返回 closing 时带 operationId，建议写明照抄编号并用�
   const first = await main.execute({ action: "close", reason: "completed", receiptId }) as unknown as Closing;
   expect(first.status).toBe("closing");
   expect(first.operationId).toMatch(UUID_V7_PATTERN);
-  for (const word of ["operationId", "receiptId", "reason"]) expect(first.next).toContain(word);
-  expect(await main.execute({ action: "close", reason: "completed", receiptId, operationId: first.operationId })).toMatchObject({ status: "closing", operationId: first.operationId });
+  expect(first.next).toContain("原决定编号 receiptId、原原因 reason");
+  expect(first.next).not.toContain("照抄");
+  expect(await main.execute({ action: "close", reason: "completed", receiptId })).toMatchObject({ status: "closing", operationId: first.operationId });
   w.setStop("stop");
-  expect(await main.execute({ action: "close", reason: "completed", receiptId, operationId: first.operationId })).toMatchObject({ status: "closed", operationId: first.operationId, reason: "completed", archive: { status: "archived" } });
+  expect(await main.execute({ action: "close", reason: "completed", receiptId })).toMatchObject({ status: "closed", operationId: first.operationId, reason: "completed", archive: { status: "archived" } });
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closed");
 });
 
-test("已有一次没办完的关闭时，不填编号再发起 close 被拒，结果带原 operationId，关闭状态不变", async () => {
+test("已有在办关闭时换 receiptId 或 reason 再调 close 被拒，不带 operationId，建议写明用原原因和原决定编号续办，关闭状态不变", async () => {
   const w = await world();
   if (!darwin) return;
   await w.run("requirement");
@@ -626,63 +635,46 @@ test("已有一次没办完的关闭时，不填编号再发起 close 被拒，�
   const main = await w.main();
   const receiptId = await w.accept();
   w.setStop("leave");
-  const first = await main.execute({ action: "close", reason: "completed", receiptId }) as unknown as Closing;
+  await main.execute({ action: "close", reason: "completed", receiptId });
   const before = w.state.read(w.created.requirementId);
-  const again = await main.execute({ action: "close", reason: "completed", receiptId }) as unknown as Rejected;
-  expect(again).toMatchObject({ status: "rejected", missing: ["需求已有另一个关闭请求在办理"], operationId: first.operationId });
-  expect(JSON.stringify(again)).toContain("照抄结果里的 operationId");
-  expect(w.state.read(w.created.requirementId).version).toBe(before.version);
-  expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closing");
+  for (const changed of [{ reason: "completed", receiptId: w.receipt() }, { reason: "cancelled", receiptId }]) {
+    const again = await main.execute({ action: "close", ...changed }) as unknown as Rejected & { next: string };
+    expect(again).toMatchObject({ status: "rejected", missing: ["需求已有另一个关闭请求在办理"] });
+    expect(again.next).toContain("用原来的原因和决定编号再次 close 续办");
+    expect(again).not.toHaveProperty("operationId");
+    expect(w.state.read(w.created.requirementId).version).toBe(before.version);
+    expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closing");
+  }
 });
 
-test("续办时填了对不上的 operationId 被拒并分别说明原因，状态不变", async () => {
+test("关闭已办完后再调 close 被拒并说明这次关闭已经办完，状态不变", async () => {
   const w = await world();
   if (!darwin) return;
   await w.run("requirement");
   await w.fullEvidence();
   const main = await w.main();
   const receiptId = await w.accept();
-  const text = (value: unknown) => JSON.stringify(value);
-
-  const none = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() });
-  expect(text(none)).toContain("这个需求没有在办的关闭");
-  expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("active");
-
-  w.setStop("leave");
-  const first = await main.execute({ action: "close", reason: "completed", receiptId }) as unknown as Closing;
-  const closingVersion = w.state.read(w.created.requirementId).version;
-  const mismatch = await main.execute({ action: "close", reason: "completed", receiptId, operationId: uuidv7() });
-  expect(text(mismatch)).toContain("与这个需求在办的关闭不一致");
-  expect(mismatch).toMatchObject({ operationId: first.operationId });
-  const changed = await main.execute({ action: "close", reason: "completed", receiptId: w.receipt(), operationId: first.operationId });
-  expect(text(changed)).toContain("reason 或 receiptId 与原关闭不同");
-  expect(changed).toMatchObject({ status: "rejected", operationId: first.operationId });
-  expect(w.state.read(w.created.requirementId).version).toBe(closingVersion);
-
-  w.setStop("stop");
-  expect(await main.execute({ action: "close", reason: "completed", receiptId, operationId: first.operationId })).toMatchObject({ status: "closed" });
+  expect(await main.execute({ action: "close", reason: "completed", receiptId })).toMatchObject({ status: "closed" });
   const closedVersion = w.state.read(w.created.requirementId).version;
-  const done = await main.execute({ action: "close", reason: "completed", receiptId, operationId: first.operationId });
-  expect(text(done)).toContain("这次关闭已经办完");
+  const done = await main.execute({ action: "close", reason: "completed", receiptId });
+  expect(JSON.stringify(done)).toContain("这次关闭已经办完");
+  expect(done).toMatchObject({ status: "rejected" });
   expect(w.state.read(w.created.requirementId).version).toBe(closedVersion);
 });
 
-test("主窗口侧工具说明不含新生成与 UUIDv7，写明 close 的 operationId 平时不填；两侧 operationId 都是可选参数", () => {
+test("主窗口侧工具说明不含新生成、UUIDv7、照抄与 operationId，close 的参数里没有 operationId", () => {
   const tools: Array<{ name: string; description: string; parameters: unknown }> = [];
   registerWorkflowManageTool({ registerTool: (tool: never) => { tools.push(tool); } } as never, () => ({}) as never);
   const [tool] = tools;
   expect(tool.name).toBe("one_company_workflow_manage");
-  expect(tool.description).not.toContain("新生成");
-  expect(tool.description).not.toContain("UUIDv7");
-  expect(tool.description).toMatch(/operationId[^。]*不填/);
+  for (const word of ["新生成", "UUIDv7", "照抄", "operationId"]) expect(tool.description).not.toContain(word);
   for (const schema of [MAIN_WORKFLOW_MANAGE_PARAMETERS, WORKFLOW_MANAGE_PARAMETERS]) {
-    const close = (schema as unknown as { anyOf: Array<{ properties: Record<string, unknown>; required?: string[] }> }).anyOf.find((variant) => JSON.stringify(variant.properties.action).includes("close"))!;
-    expect(Object.keys(close.properties)).toContain("operationId");
-    expect(close.required ?? []).not.toContain("operationId");
+    const close = (schema as unknown as { anyOf: Array<{ properties: Record<string, unknown> }> }).anyOf.find((variant) => JSON.stringify(variant.properties.action).includes("close"))!;
+    expect(Object.keys(close.properties)).not.toContain("operationId");
   }
 });
 
-test("两个窗口几乎同时关闭时，后到的一方被拒且结果带先到那次的 operationId", async () => {
+test("两个窗口几乎同时关闭时，后到的一方被拒且结果不带 operationId", async () => {
   const w = await world();
   if (!darwin) return;
   await w.run("requirement");
@@ -696,5 +688,7 @@ test("两个窗口几乎同时关闭时，后到的一方被拒且结果带先�
     original.call(this, { ...input, intent: { ...input.intent, operationId: earlier } }, guard);
     return original.call(this, input, guard);
   });
-  expect(await main.execute({ action: "close", reason: "completed", receiptId })).toMatchObject({ status: "rejected", operationId: earlier });
+  const raced = await main.execute({ action: "close", reason: "completed", receiptId });
+  expect(raced).toMatchObject({ status: "rejected", missing: ["需求已有另一个关闭请求在办理"] });
+  expect(raced).not.toHaveProperty("operationId");
 });
