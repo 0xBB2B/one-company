@@ -87,6 +87,13 @@ describe("README 必需句", () => {
     "pi install git:github.com/0xBB2B/one-company",
     "pi remove",
     "Node",
+    "Git ≥ 2.38",
+    "仅本地",
+    "merge-methods",
+    "Default to pull request title and description",
+    "Allow auto-merge",
+    "Squash commit message template",
+    "--diff-filter=A",
   ];
   for (const phrase of REQUIRED) {
     test(`含: ${phrase}`, async () => {
@@ -97,7 +104,7 @@ describe("README 必需句", () => {
 });
 
 describe("README 禁止句", () => {
-  const FORBIDDEN = ["pi-subagents", "符号链接", "/spec-new"];
+  const FORBIDDEN = ["pi-subagents", "符号链接", "/spec-new", "推荐用 rebase", "PR 用哪种方式合并", "开启 Git 交付", "`true` 或 `false`"];
   for (const phrase of FORBIDDEN) {
     test(`不含: ${phrase}`, async () => {
       const body = await readText(README);
@@ -105,6 +112,16 @@ describe("README 禁止句", () => {
     });
   }
 
+});
+
+describe("README 仓库合并设置提示框", () => {
+  test("提示框放在「前置条件」之后、「安装」之前", async () => {
+    const body = await readText(README);
+    const box = body.indexOf("> [!IMPORTANT]");
+    expect(box).toBeGreaterThan(body.indexOf("## 前置条件"));
+    expect(box).toBeLessThan(body.indexOf("## 安装"));
+    expect(body.slice(box, body.indexOf("## 安装"))).toContain("Squash commit message template");
+  });
 });
 
 describe("README 常量与实际代码一致", () => {

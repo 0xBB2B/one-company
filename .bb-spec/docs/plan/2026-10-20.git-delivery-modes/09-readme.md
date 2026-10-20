@@ -34,7 +34,7 @@ README 写清 Git 交付两档、三种合并方式、回收怎么判断已合�
 >   - 勾选 Allow auto-merge：交付时选了合并方式，会等仓库要求的检查通过后再合并；不勾时选了就立即合并。
 >   - 主分支设了规则集（Settings → Rules → Rulesets）时，规则里允许的合并方式也要放行你勾的方式。
 > - **GitLab**：Settings → Merge requests
->   - 要用压缩合并时，Squash commits when merging 不要选 Do not allow。
+>   - 要用压缩合并时，Squash commits when merging 不要选 Do not allow；选 Encourage 或 Require 时，交付窗口里只能选压缩合并。
 >   - Squash commit message template 填 `%{title}`、空一行、`%{description}`。
 ```
 
