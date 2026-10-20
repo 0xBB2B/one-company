@@ -40,6 +40,7 @@ date: 2026-10-20
 
 ## 约束
 - C-1：认平台只看本机登录记录：origin 所在主机在 gh 里登录过就用 GitHub（gh），否则在 glab 里登录过就用 GitLab（glab）。两者都没有时拒绝，原因"本机 gh 和 glab 都没登录 <主机>"，建议"登录后再交付，或在 /one:setting 把 Git 交付改成仅本地"。没有 origin 时拒绝，原因"仓库没有名为 origin 的远端"，建议"配置 origin 后再交付，或在 /one:setting 把 Git 交付改成仅本地"。
+- C-1a：认出平台后、推送之前，程序真连一次平台确认登录有效（GitHub 用 `gh api user`，GitLab 用 `glab api user`，都指定 origin 所在主机）。连不上时拒绝，什么都不推送，原因"<gh 或 glab> 连不上 <主机>：<平台给的报错>"，建议"检查网络和登录状态（gh auth status 或 glab auth status）后再交付"。
 - C-2：PR 标题是"<需求标题> [<编号>]"。PR 描述是下面几行，复用已有 PR 时也把描述换成这份：
 
   ```
@@ -67,6 +68,7 @@ date: 2026-10-20
 
 ## 验收
 - [ ] AC-1 ← C-1：origin 主机只在 gh 里登录 → 用 gh 建 PR；只在 glab 里登录 → 用 glab 建 MR，主机名里不含 github、gitlab 字样也一样；都没登录、没有 origin → 分别被拒，原因和建议如 C-1，远端没有新分支。
+- [ ] AC-1a ← C-1a：让 `gh api user` 失败时交付被拒，原因含"gh 连不上 <主机>"和平台的报错，建议如 C-1a，远端没有新分支；成功时照常推送。
 - [ ] AC-2 ← C-2：新建的 PR 标题和描述逐行如 C-2；验收后自动 rebase 过时多出那一行；对已有 PR 的分支再交付，PR 描述被换成新的一份。
 - [ ] AC-3 ← C-3、C-4：仓库允许三种、三种都勾、开了 Allow auto-merge 时，窗口有"自己 review"和三种方式，写"仓库要求的检查通过后合并"，光标在"压缩合并"上；仓库不允许 rebase 时 rebase 合并变暗，原因"仓库不允许 rebase 合并"；设置里只勾普通合并时只出现"自己 review"和"普通合并"，光标在"自己 review"上；查不到仓库设置时方式全部变暗；没开 Allow auto-merge 时写"仓库没开自动合并，选了就现在合并"；按 Esc 的结果是自己 review。
 - [ ] AC-4 ← C-5：选压缩合并或普通合并后，传给 gh 的标题和正文如 C-5，并且只允许合并推送的那个提交；开了 Allow auto-merge 时走等检查通过的自动合并，没开时直接合并；选 rebase 合并时不传标题和正文。

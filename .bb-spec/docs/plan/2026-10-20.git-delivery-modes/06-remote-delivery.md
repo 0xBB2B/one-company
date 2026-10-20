@@ -9,6 +9,7 @@ description: 远程交付按本机登录记录认平台，PR 描述带 Requireme
 
 ## 业务规则（来源：PRD 04-remote-delivery；已确认预览画面 11–14）
 - C-1 认平台：origin 主机先看 gh、再看 glab 的登录记录（plan 01 `providerForHost`）。没有 origin → 拒绝，原因"仓库没有名为 origin 的远端"，建议"配置 origin 后再交付，或在 /one:setting 把 Git 交付改成仅本地"；都没登录 → 原因"本机 gh 和 glab 都没登录 <主机>"，建议"登录后再交付，或在 /one:setting 把 Git 交付改成仅本地"。拒绝时什么都不推送。按地址字样判断的 `providerFor` 和 `unknown_host` 删掉。
+- C-1a 推送前真连一次：认出平台后、推送之前，GitHub 跑 `gh api user --hostname <主机>`，GitLab 跑 `glab api user --hostname <主机>`；失败就拒绝、什么都不推送，原因"<gh 或 glab> 连不上 <主机>：<报错>"，建议"检查网络和登录状态（gh auth status 或 glab auth status）后再交付"。
 - C-2 PR 标题"<需求标题> [<编号>]"（现状）。描述逐行：`需求 <编号>`、`交付提交 <推送的提交>`、`最终检查代码 <codeHead>`、（自动 rebase 过时）`验收后已自动 rebase，这部分未重新验证。`、空行、`Requirement: <编号>`。复用已有 PR/MR 时把描述换成这份（gh `pr edit <号> --body`，glab `mr update <号> --description`）。
 - C-3 GitHub 窗口：标题"PR 已就绪，怎么合并？"；正文需求标题、PR 链接（灰）、一行灰字：仓库开了 Allow auto-merge 写"仓库要求的检查通过后合并"，没开写"仓库没开自动合并，选了就现在合并"。选项：先"自己 review"（"PR 留着等你看，合并由你在网页上操作"），再按 squash、merge、rebase 顺序列出设置里勾了的："压缩合并"（"所有提交压成一个；标题是“需求标题 [编号] (#<号>)”，正文末行 Requirement: <编号>"）、"普通合并"（"保留每个提交，另加一个合并提交"）、"rebase 合并"（"保留每个提交，接到目标分支后面"）。仓库不允许的变暗，原因"仓库不允许<压缩合并/普通合并/rebase 合并>"；查不到仓库设置时这些项全变暗，原因"查不到仓库允许的合并方式：<原因>"。
 - 仓库设置用一次 `gh api repos/{owner}/{repo}` 取 `allow_squash_merge`、`allow_merge_commit`、`allow_rebase_merge`、`allow_auto_merge`（实测这些字段存在）；现有的 `gh repo view --json squashMergeAllowed,…` 查询删掉。
@@ -49,6 +50,7 @@ description: 远程交付按本机登录记录认平台，PR 描述带 Requireme
 - 测试入口：`deliverRequirement`；扩展工具 `execute`。
 - 测试输入：沿用 `tests/git-delivery.test.ts` 的假 gh/glab 脚本，扩展：`auth token --hostname`（按 `FAKE_GH_HOSTS`）、`api repos/...`（按 `FAKE_SQUASH`/`FAKE_MERGE_COMMIT`/`FAKE_REBASE`/`FAKE_AUTO_MERGE` 返回 JSON，`FAKE_REPO_VIEW_FAILS` 时失败）、`pr edit`、`glab api projects/:fullpath`（按 `FAKE_SQUASH_OPTION`）、`mr update`、`FAKE_MERGE_FAILS`。origin 改用 `https://<主机>/team/app.git` 写法，并用 `url.<本地 bare 路径>.insteadOf` 让推送落到本地 bare 仓库；glab 登录用临时 `GLAB_CONFIG_DIR`。
 - 预期结果：
+- [ ] 假 gh 的 `api user` 失败（`FAKE_API_USER_FAILS=1`）→ 拒绝，原因含"gh 连不上 <主机>"，bare 仓库里没有需求分支。
 - [ ] gh 登录 → 调 gh；只有 glab 登录、主机名不含 gitlab → 调 glab；都没登录、没有 origin → 拒绝文字如 C-1，bare 仓库里没有需求分支。
 - [ ] 新 PR 的 `--body` 逐行如 C-2；分支已有 PR 时调用了 `pr edit <号> --body`。
 - [ ] 三种都允许并勾选、开了 auto-merge：选项和灰字如 C-3，光标在"压缩合并"；`FAKE_REBASE=0` 时 rebase 变暗；只勾 merge 时只有"自己 review"和"普通合并"且光标在前者；仓库查询失败时方式全变暗；Esc → `merge.method` 为 review。
