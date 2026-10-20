@@ -98,6 +98,23 @@ export function pickerList(theme: PageTheme, rows: PickerRow[], cursor: number, 
   });
 }
 
+export interface CheckRow { name: string; note: string; checked: boolean; badge?: string }
+
+export function checkList(theme: PageTheme, rows: CheckRow[], cursor: number, nameWidth: number, width: number): string[] {
+  const dim = (text: string) => theme.fg("dim", text);
+  return rows.map((row, index) => {
+    const badge = row.badge ? `${row.badge} ` : "";
+    const note = fit(row.note, Math.max(0, width - MARKER - 4 - nameWidth - visibleWidth(badge)));
+    return tableRow(theme, index === cursor, width, [
+      [index === cursor ? " ▸ " : "   ", (text) => theme.fg("accent", text)],
+      ["[x] ", undefined, row.checked ? `[${theme.fg("success", "x")}] ` : "[ ] "],
+      [pad(fit(row.name, nameWidth), nameWidth)],
+      ...(badge ? [[badge, (text: string) => theme.fg("success", theme.bold(text))] as [string, (text: string) => string]] : []),
+      [note, dim],
+    ]);
+  });
+}
+
 export function pickerHead(theme: PageTheme, title: string, step: string, width: number): string {
   const shown = fit(title, width - 1);
   return ` ${theme.bold(shown)}${visibleWidth(step) <= width - 1 - visibleWidth(shown) - 2 ? theme.fg("dim", `  ${step}`) : ""}`;

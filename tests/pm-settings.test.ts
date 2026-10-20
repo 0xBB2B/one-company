@@ -23,7 +23,8 @@ type Setting = { model: string | null; thinking: string | null };
 const settingsOf = (pm: Setting) => async () => {
   const none = { model: null, thinking: null, source: "default" as const };
   return { values: { pm: { ...pm, source: "user" as const }, interpreter: none, "draft-verifier": none } as never,
-    layers: { user: {}, project: {} }, problems: [] };
+    layers: { user: {}, project: {} }, gitDelivery: { mode: "local" as const, source: "default" as const },
+    mergeMethods: { methods: ["squash", "merge", "rebase"] as const, source: "default" as const }, problems: [] };
 };
 
 async function tempRoot() {

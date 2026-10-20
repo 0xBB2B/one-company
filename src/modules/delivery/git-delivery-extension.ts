@@ -2,16 +2,12 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
-import { dirname } from "node:path";
-import { dataRoot } from "../../core/storage/data-root.ts";
-import { readAgentSettings } from "../settings/agent-settings.ts";
 import type { WorkspaceClientsHandle } from "../../core/host/daemon-client.ts";
 import { deliverRequirement } from "./git-delivery.ts";
 import type { DeliveryFacts } from "./git-delivery.ts";
 import { AdvisedError, toolFailure } from "../../core/exec/tool-failure.ts";
 import { shapeIssue } from "../../core/exec/tool-request.ts";
 import { windowContext } from "../../core/host/extension-lifecycle.ts";
-import { resolveRepoRoot } from "../../core/exec/git-read.ts";
 import { chooseWindow, confirmWindow } from "../../core/host/question-window.ts";
 
 export const GIT_DELIVER_TOOL = "one_company_git_deliver";
@@ -28,16 +24,8 @@ export interface GitDeliveryDeps { clients: () => WorkspaceClientsHandle }
 function result(value: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} };
 }
-async function gitDeliveryOn(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Promise<boolean> {
-  const settings = await readAgentSettings({ agentDir: dirname(dataRoot(process.env)), repositoryRoot: await resolveRepoRoot(ctx.cwd), projectTrusted: ctx.isProjectTrusted() });
-  return settings.gitDelivery.enabled;
-}
-export function showGitDeliveryTool(pi: Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">, enabled: boolean): void {
-  const others = pi.getActiveTools().filter((name) => name !== GIT_DELIVER_TOOL);
-  pi.setActiveTools(enabled ? [...others, GIT_DELIVER_TOOL] : others);
-}
 
-/** 可选业务 Git 交付：默认关闭，在 /one:setting 的开关里开启后主窗口才出现交付工具；确认与合并方式都由界面直接问用户。 */
+/** 业务 Git 交付：主窗口始终有交付工具；确认与合并方式都由界面直接问用户。 */
 export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDeps): void {
   pi.registerTool({
     name: GIT_DELIVER_TOOL,
@@ -47,7 +35,6 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
     executionMode: "sequential",
     async execute(_toolCallId, rawParams, _signal, _update, ctx: ExtensionContext) {
       const fail: (why: string, next: string) => never = (why, next) => { throw toolFailure(GIT_DELIVER_TOOL, new AdvisedError("git_deliver_failed", { why, next })); };
-      if (!(await gitDeliveryOn(ctx))) fail("Git 交付已关闭", "请用户在 /one:setting 的开关里开启 Git 交付后再交付");
       if (!Value.Check(PARAMETERS, rawParams)) fail(`参数不符合本工具的格式（${shapeIssue(PARAMETERS, rawParams)}）`, "按字段要求改正参数后重试");
       if (!ctx.hasUI) fail("推送前和选择合并方式都要在界面上直接问用户，当前会话没有界面", "在有界面的主窗口里再交付");
       const { repoId, requirementId } = rawParams as Static<typeof PARAMETERS>;
@@ -63,7 +50,10 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
       catch (error) { throw toolFailure(GIT_DELIVER_TOOL, error); }
     },
   });
-  pi.on("session_start", async (_event, ctx) => { showGitDeliveryTool(pi, await gitDeliveryOn(ctx)); });
+  pi.on("session_start", async () => {
+    const active = pi.getActiveTools();
+    if (!active.includes(GIT_DELIVER_TOOL)) pi.setActiveTools([...active, GIT_DELIVER_TOOL]);
+  });
 }
 
 export default function gitDeliveryExtension(pi: ExtensionAPI): void {

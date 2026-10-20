@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -8,6 +8,7 @@ import { openSettingsPage } from "../src/modules/settings/settings-extension.ts"
 import type { SettingsExtensionContext } from "../src/modules/settings/settings-extension.ts";
 import { projectSettingsPath, readAgentSettings, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
 import { readRoleDefinition, userRoleDir } from "../src/modules/agents/roles.ts";
+import { initRepoWithOrigin, installFakeGh } from "./helpers/fake-gh.ts";
 
 const LEFT = "\x1b[D", RIGHT = "\x1b[C", UP = "\x1b[A", DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
 const theme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bg: (kind: string, text: string) => `[${kind}]${text}[/]`,
@@ -18,9 +19,10 @@ const LUNA = { provider: "5x", id: "gpt-6-luna", reasoning: true, thinkingLevelM
 const GRAY_NOTE = /gpt-6-luna 不支持/u;
 const SECTIONS = ["worker", "reviewer", "qa", "explore", "prototype", "models", "switches", "problems"] as const;
 
-let root = "", savedAgentDir: string | undefined;
-beforeEach(async () => { root = await mkdtemp(join(tmpdir(), "pi-t-")); savedAgentDir = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = join(root, "agent"); });
+let root = "", savedAgentDir: string | undefined, gh: Awaited<ReturnType<typeof installFakeGh>>;
+beforeEach(async () => { root = await realpath(await mkdtemp(join(tmpdir(), "pi-t-"))); gh = await installFakeGh(); savedAgentDir = process.env.PI_CODING_AGENT_DIR; process.env.PI_CODING_AGENT_DIR = join(root, "agent"); });
 afterEach(async () => {
+  await gh.restore();
   if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
   await chmod(join(root, "agent", "agents"), 0o755).catch(() => undefined);
   await rm(root, { recursive: true, force: true });
@@ -51,11 +53,9 @@ function moveTo(screen: Screen, label: string) {
 const goTo = (screen: Screen, section: (typeof SECTIONS)[number]) => screen.press(...Array<string>(SECTIONS.indexOf(section)).fill(DOWN), RIGHT);
 
 const failures: unknown[] = [];
-let deliveryChanges: boolean[] = [];
 async function run(ctx: SettingsExtensionContext, mainThinking = "high") {
   failures.length = 0;
-  deliveryChanges = [];
-  await openSettingsPage(ctx, { mainThinking: () => mainThinking, onGitDeliveryChanged: (enabled) => { deliveryChanges.push(enabled); } });
+  await openSettingsPage(ctx, { mainThinking: () => mainThinking });
   if (failures.length) throw failures[0];
 }
 
@@ -237,7 +237,6 @@ test("选 gpt-6-luna、xhigh、项目层后项目设置文件写入 pm 条目，
   await run(ctx);
   expect((await readJson(projectFile()))["one-company"].pm).toEqual({ model: "gpt-6-luna", thinking: "xhigh" });
   expect(existsSync(userFile())).toBe(false);
-  expect(deliveryChanges).toEqual([]);
 }, 5000);
 
 test("任一步连续 Esc 退出，两层设置文件都没有改动，底部写已取消修改", async () => {
@@ -463,113 +462,178 @@ test("把 PM 存到项目层后，项目设置文件里原有的其他字段原�
   expect(await readJson(projectFile())).toEqual({ theme: "dark", packages: ["x"], "one-company": { pm: { model: "gpt-6-luna", thinking: "high" } } });
 }, 5000);
 
-test("开关选开启存到用户层：用户设置文件写 git-delivery，其他内容不变，重开后来源用户、状态开启、名字是绿色，提示写立即生效，回调收到 true", async () => {
-  await mkdir(repoDir(), { recursive: true });
+test("Git 交付选远程存到用户层：用户设置文件写 git-delivery 为 remote，其他内容不变，重开后来源用户、状态远程、名字是绿色，提示写立即生效", async () => {
+  await initRepoWithOrigin(repoDir(), null);
   await writeSettings(userFile(), { theme: "dark" });
   const ctx = scripted([
     (s) => {
       goTo(s, "switches");
-      expect(s.now()).toMatch(/▸ Git 交付 +内置 +关闭/u);
+      expect(s.now()).toMatch(/▸ Git 交付 +内置 +仅本地/u);
       s.press(ENTER);
-      moveTo(s, "开启");
+      moveTo(s, "远程");
       s.press(ENTER);
       moveTo(s, "用户层");
       s.press(ENTER);
     },
     (s) => {
-      expect(s.now()).toMatch(/▸ Git 交付 +用户 +开启/u);
+      expect(s.now()).toMatch(/▸ Git 交付 +用户 +远程/u);
       expect(s.raw()).toMatch(/<success>Git 交付 *<\/>/u);
-      expect(s.raw()).toContain("<success>✓ Git 交付 改为开启，存到用户层，立即生效</>");
+      expect(s.raw()).toContain("<success>✓ Git 交付 改为远程，存到用户层，立即生效</>");
       s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
-  expect(await readJson(userFile())).toEqual({ theme: "dark", "one-company": { "git-delivery": true } });
+  expect(await readJson(userFile())).toEqual({ theme: "dark", "one-company": { "git-delivery": "remote" } });
   expect(existsSync(projectFile())).toBe(false);
-  expect(deliveryChanges).toEqual([true]);
 }, 5000);
 
-test("开关选关闭存到项目层：项目设置文件写 git-delivery 为 false，提示写存到项目层，回调收到新的生效值 false", async () => {
-  await writeSettings(userFile(), oneCompany({ "git-delivery": true }));
+test("Git 交付选仅本地存到项目层：项目设置文件写 git-delivery 为 local，提示写存到项目层", async () => {
+  await writeSettings(userFile(), oneCompany({ "git-delivery": "remote" }));
   await mkdir(repoDir(), { recursive: true });
   const ctx = scripted([
     (s) => {
       goTo(s, "switches");
       s.press(ENTER);
-      moveTo(s, "关闭");
+      moveTo(s, "仅本地");
       s.press(ENTER);
       moveTo(s, "项目层");
       s.press(ENTER);
     },
     (s) => {
-      expect(s.now()).toMatch(/▸ Git 交付 +项目 +关闭/u);
-      expect(s.now()).toContain("✓ Git 交付 改为关闭，存到项目层，立即生效");
+      expect(s.now()).toMatch(/▸ Git 交付 +项目 +仅本地/u);
+      expect(s.now()).toContain("✓ Git 交付 改为仅本地，存到项目层，立即生效");
       s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
-  expect((await readJson(projectFile()))["one-company"]["git-delivery"]).toBe(false);
-  expect(deliveryChanges).toEqual([false]);
+  expect((await readJson(projectFile()))["one-company"]["git-delivery"]).toBe("local");
+  expect((await readJson(userFile()))["one-company"]["git-delivery"]).toBe("remote");
 }, 5000);
 
-test("开关按 R 清除用户层的设定：git-delivery 被删，提示现在用内置默认值：关闭，回调收到 false", async () => {
-  await writeSettings(userFile(), oneCompany({ "git-delivery": true }));
+test("Git 交付按 R 清除项目层的 local：git-delivery 被删，提示现在用内置默认值：远程（origin 在 github.com，gh 已登录）", async () => {
+  await initRepoWithOrigin(repoDir(), "git@github.com:acme/shop.git");
+  gh.ghLoggedIn(["github.com"]);
+  await writeSettings(projectFile(), oneCompany({ "git-delivery": "local" }));
   const ctx = scripted([
     (s) => { goTo(s, "switches"); s.press("R"); },
     (s) => {
-      expect(s.now().split("\n").map((line) => line.trim())).toContain("✓ 已清除用户层的 Git 交付 设定，现在用内置默认值：关闭");
-      expect(s.now()).toMatch(/▸ Git 交付 +内置 +关闭/u);
-      s.press(ESC, ESC);
-    },
-  ]);
-  await run(ctx);
-  expect((await readJson(userFile()))["one-company"]?.["git-delivery"]).toBeUndefined();
-  expect(deliveryChanges).toEqual([false]);
-}, 5000);
-
-test("开关按 R 清除项目层的设定后下一层是用户层的值：提示现在用用户层的值：开启，回调收到 true", async () => {
-  await writeSettings(userFile(), oneCompany({ "git-delivery": true }));
-  await writeSettings(projectFile(), oneCompany({ "git-delivery": false }));
-  const ctx = scripted([
-    (s) => { goTo(s, "switches"); s.press("R"); },
-    (s) => {
-      expect(s.now().split("\n").map((line) => line.trim())).toContain("✓ 已清除项目层的 Git 交付 设定，现在用用户层的值：开启");
+      expect(s.now().split("\n").map((line) => line.trim())).toContain("✓ 已清除项目层的 Git 交付 设定，现在用内置默认值：远程（origin 在 github.com，gh 已登录）");
+      expect(s.now()).toMatch(/▸ Git 交付 +内置 +远程/u);
       s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
   expect((await readJson(projectFile()))["one-company"]?.["git-delivery"]).toBeUndefined();
-  expect(deliveryChanges).toEqual([true]);
 }, 5000);
 
-test("项目层已写关闭时在开关里选开启存到用户层：用户文件写 true，回调收到的是生效值 false，重开后这一行来源仍是项目、状态关闭", async () => {
-  await writeSettings(projectFile(), oneCompany({ "git-delivery": false }));
+test("Git 交付按 R 清除项目层的设定后下一层是用户层的值：提示现在用用户层，写出远程", async () => {
+  await writeSettings(userFile(), oneCompany({ "git-delivery": "remote" }));
+  await writeSettings(projectFile(), oneCompany({ "git-delivery": "local" }));
+  const ctx = scripted([
+    (s) => { goTo(s, "switches"); s.press("R"); },
+    (s) => {
+      expect(s.now()).toMatch(/✓ 已清除项目层的 Git 交付 设定，现在用用户层.*远程/u);
+      expect(s.now()).toMatch(/▸ Git 交付 +用户 +远程/u);
+      s.press(ESC, ESC);
+    },
+  ]);
+  await run(ctx);
+  expect((await readJson(projectFile()))["one-company"]?.["git-delivery"]).toBeUndefined();
+  expect((await readJson(userFile()))["one-company"]["git-delivery"]).toBe("remote");
+}, 5000);
+
+test("项目层已写 local 时在开关里选远程存到用户层：用户文件写 remote，重开后这一行来源仍是项目、状态仅本地", async () => {
+  await writeSettings(projectFile(), oneCompany({ "git-delivery": "local" }));
   const ctx = scripted([
     (s) => {
       goTo(s, "switches");
       s.press(ENTER);
-      moveTo(s, "开启");
+      moveTo(s, "远程");
       s.press(ENTER);
       moveTo(s, "用户层");
       s.press(ENTER);
     },
     (s) => {
-      expect(s.now()).toMatch(/▸ Git 交付 +项目 +关闭/u);
+      expect(s.now()).toMatch(/▸ Git 交付 +项目 +仅本地/u);
       s.press(ESC, ESC);
     },
   ]);
   await run(ctx);
-  expect((await readJson(userFile()))["one-company"]["git-delivery"]).toBe(true);
-  expect(deliveryChanges).toEqual([false]);
+  expect((await readJson(userFile()))["one-company"]["git-delivery"]).toBe("remote");
 }, 5000);
 
-test("开关来源为内置时按 R 只提示已经是内置默认值，不创建设置文件，不调用回调", async () => {
+test("合并方式取消压缩合并和 rebase 合并后存到用户层：文件写 [merge]，状态普通合并，名字是绿色，提示写立即生效", async () => {
   await mkdir(repoDir(), { recursive: true });
-  const ctx = scripted([(s) => { goTo(s, "switches"); s.press("R"); expect(s.now()).toContain("已经是内置默认值"); s.press(ESC, ESC); }]);
+  await writeSettings(userFile(), { theme: "dark" });
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "switches");
+      expect(s.now()).toMatch(/合并方式 +内置 +压缩 · 普通合并 · rebase/u);
+      s.press(DOWN, ENTER, " ", DOWN, DOWN, " ", ENTER);
+      moveTo(s, "用户层");
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.now()).toMatch(/▸ 合并方式 +用户 +普通合并/u);
+      expect(s.raw()).toMatch(/<success>合并方式 *<\/>/u);
+      expect(s.raw()).toContain("<success>✓ 合并方式 改为 普通合并，存到用户层，立即生效</>");
+      s.press(ESC, ESC);
+    },
+  ]);
+  await run(ctx);
+  expect(await readJson(userFile())).toEqual({ theme: "dark", "one-company": { "merge-methods": ["merge"] } });
+  expect(existsSync(projectFile())).toBe(false);
+}, 5000);
+
+test("合并方式全部取消后回车停在第 1 步，红字提示，再勾一种能存到项目层，文件按固定顺序写数组", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "switches");
+      s.press(DOWN, ENTER, " ", DOWN, " ", DOWN, " ", ENTER);
+      expect(s.now()).toContain("第 1 步，共 2 步");
+      expect(s.raw()).toMatch(/<error>[^\n]*✗ 至少勾一种合并方式/u);
+      s.press(" ", UP, UP, " ", ENTER);
+      expect(s.now()).toMatch(/合并方式 改为 压缩合并、rebase 合并，存到哪一层/u);
+      moveTo(s, "项目层");
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.now()).toMatch(/▸ 合并方式 +项目 +压缩合并 · rebase 合并/u);
+      s.press(ESC, ESC);
+    },
+  ]);
+  await run(ctx);
+  expect((await readJson(projectFile()))["one-company"]["merge-methods"]).toEqual(["squash", "rebase"]);
+}, 5000);
+
+test("合并方式按 R 清除用户层的设定：merge-methods 被删，提示现在用内置默认值：压缩合并、普通合并、rebase 合并", async () => {
+  await writeSettings(userFile(), oneCompany({ "merge-methods": ["merge"] }));
+  const ctx = scripted([
+    (s) => { goTo(s, "switches"); s.press(DOWN, "R"); },
+    (s) => {
+      expect(s.now().split("\n").map((line) => line.trim())).toContain("✓ 已清除用户层的合并方式 设定，现在用内置默认值：压缩合并、普通合并、rebase 合并");
+      expect(s.now()).toMatch(/▸ 合并方式 +内置 +压缩 · 普通合并 · rebase/u);
+      s.press(ESC, ESC);
+    },
+  ]);
+  await run(ctx);
+  expect((await readJson(userFile()))["one-company"]?.["merge-methods"]).toBeUndefined();
+}, 5000);
+
+test("Git 交付和合并方式来源为内置时按 R 只提示已经是内置默认值，不创建设置文件", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([(s) => {
+    goTo(s, "switches");
+    s.press("R");
+    expect(s.now()).toContain("已经是内置默认值");
+    s.press(DOWN, "R");
+    expect(s.now()).toContain("已经是内置默认值");
+    s.press(ESC, ESC);
+  }]);
   await run(ctx);
   expect(existsSync(userFile())).toBe(false);
   expect(existsSync(projectFile())).toBe(false);
-  expect(deliveryChanges).toEqual([]);
 }, 5000);
 
 test("用户设置文件不是合法 JSON 时在模型里保存到用户层：底部用 error 色写没有保存并带文件路径，文件不变，页面仍开着", async () => {
@@ -599,14 +663,14 @@ test("用户设置文件不是合法 JSON 时在模型里保存到用户层：�
   expect(await readFile(userFile(), "utf8")).toBe("{ not json");
 }, 5000);
 
-test("用户设置文件不是合法 JSON 时在开关里保存到用户层：底部用 error 色写没有保存并带文件路径，文件不变，页面仍开着，不调用回调", async () => {
+test("用户设置文件不是合法 JSON 时在开关里保存到用户层：底部用 error 色写没有保存并带文件路径，文件不变，页面仍开着", async () => {
   await mkdir(repoDir(), { recursive: true });
   await writeSettings(userFile(), "{ not json");
   const ctx = scripted([
     (s) => {
       goTo(s, "switches");
       s.press(ENTER);
-      moveTo(s, "开启");
+      moveTo(s, "远程");
       s.press(ENTER);
       moveTo(s, "用户层");
       s.press(ENTER);
@@ -622,5 +686,4 @@ test("用户设置文件不是合法 JSON 时在开关里保存到用户层：�
   ]);
   await run(ctx);
   expect(await readFile(userFile(), "utf8")).toBe("{ not json");
-  expect(deliveryChanges).toEqual([]);
 }, 5000);

@@ -3,9 +3,7 @@ import { afterEach, expect, test } from "vitest";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { GIT_DELIVER_TOOL, registerGitDelivery, showGitDeliveryTool } from "../src/modules/delivery/git-delivery-extension.ts";
-import { dataRoot } from "../src/core/storage/data-root.ts";
-import { globalDatabase, withDatabase } from "../src/core/storage/database.ts";
+import { GIT_DELIVER_TOOL, registerGitDelivery } from "../src/modules/delivery/git-delivery-extension.ts";
 import * as gitDelivery from "../src/modules/delivery/git-delivery.ts";
 import { projectSettingsPath, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
 import type { WorkspaceClientsHandle } from "../src/core/host/daemon-client.ts";
@@ -19,7 +17,7 @@ afterEach(async () => {
 
 type Tool = { execute(id: string, params: unknown, signal: undefined, update: undefined, ctx: unknown): Promise<{ content: Array<{ text: string }> }> };
 type Handler = (event: unknown, ctx: unknown) => void | Promise<void>;
-const gitDeliverySettings = (enabled: boolean) => JSON.stringify({ "one-company": { "git-delivery": enabled } });
+const gitDeliverySettings = (value: unknown) => JSON.stringify({ "one-company": { "git-delivery": value } });
 async function writeSettings(path: string, content: string) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content);
@@ -52,99 +50,75 @@ async function world(status: Record<string, unknown> = { status: "closed", reaso
 }
 const PARAMS = { repoId: "a".repeat(64), requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10" };
 
-test("两层设置都没写时，窗口启动后工具列表里没有交付工具，其他工具保留", async () => {
+test("两层设置都没写时，窗口启动后工具列表里有交付工具，其他工具顺序不变", async () => {
   const w = await world();
-  await w.start();
-  expect(w.active()).toEqual(["read", "bash"]);
-});
-
-test("用户层写 false 时，窗口启动后没有交付工具", async () => {
-  const w = await world();
-  await writeSettings(w.userPath, gitDeliverySettings(false));
-  await w.start();
-  expect(w.active()).toEqual(["read", "bash"]);
-});
-
-test("用户层写 true 时，窗口启动后工具列表里有交付工具，其他工具顺序不变", async () => {
-  const w = await world();
-  await writeSettings(w.userPath, gitDeliverySettings(true));
   await w.start();
   expect(w.active()).toEqual(["read", "bash", GIT_DELIVER_TOOL]);
 });
 
-test("项目层 true、用户层没写、项目不受信任时没有交付工具", async () => {
+test.each([
+  ["用户层 remote", "user", "remote"],
+  ["用户层 local", "user", "local"],
+  ["项目层 remote", "project", "remote"],
+  ["项目层 local", "project", "local"],
+  ["用户层旧的 true", "user", true],
+  ["用户层旧的 false", "user", false],
+  ["用户层写错的字符串", "user", "yes"],
+])("设置是%s时，窗口启动后工具列表里都有交付工具", async (_label, layer, value) => {
+  const w = await world();
+  await writeSettings(layer === "user" ? w.userPath : w.projectPath, gitDeliverySettings(value));
+  await w.start();
+  expect(w.active()).toEqual(["read", "bash", GIT_DELIVER_TOOL]);
+});
+
+test("项目不受信任、项目层写 local 时，工具列表里仍有交付工具", async () => {
   const w = await world(undefined, false);
-  await writeSettings(w.projectPath, gitDeliverySettings(true));
-  await w.start();
-  expect(w.active()).toEqual(["read", "bash"]);
-});
-
-test("项目层 true、用户层没写、项目受信任时有交付工具", async () => {
-  const w = await world();
-  await writeSettings(w.projectPath, gitDeliverySettings(true));
+  await writeSettings(w.projectPath, gitDeliverySettings("local"));
   await w.start();
   expect(w.active()).toEqual(["read", "bash", GIT_DELIVER_TOOL]);
 });
 
-test("旧的全局数据库里有已开启的开关时不生效：两层设置都没写则没有交付工具，调用被拒", async () => {
+test("重复启动窗口不会让交付工具出现两个", async () => {
   const w = await world();
-  withDatabase(globalDatabase(dataRoot(process.env)), (db) => db.create("settings", "git-delivery", { enabled: true }));
   await w.start();
-  expect(w.active()).toEqual(["read", "bash"]);
-  await expect(w.run(PARAMS)).rejects.toThrow("原因：Git 交付已关闭");
-});
-
-test("用户层写 false、项目层写 true、项目受信任时有交付工具", async () => {
-  const w = await world();
-  await writeSettings(w.userPath, gitDeliverySettings(false));
-  await writeSettings(w.projectPath, gitDeliverySettings(true));
   await w.start();
   expect(w.active()).toEqual(["read", "bash", GIT_DELIVER_TOOL]);
 });
 
-test("项目层 false 盖过用户层 true", async () => {
-  const w = await world();
-  await writeSettings(w.userPath, gitDeliverySettings(true));
-  await writeSettings(w.projectPath, gitDeliverySettings(false));
-  await w.start();
-  expect(w.active()).toEqual(["read", "bash"]);
+test("仅本地和远程档位下调用交付工具，都会去查需求的关闭状态", async () => {
+  for (const mode of ["local", "remote"]) {
+    const w = await world();
+    await writeSettings(w.userPath, gitDeliverySettings(mode));
+    await w.start();
+    await w.run(PARAMS).catch(() => undefined);
+    expect(w.calls[0], mode).toEqual(["workflow.manage", { requirementId: PARAMS.requirementId, request: { action: "status" } }]);
+  }
 });
 
-test("showGitDeliveryTool 传 true 后有交付工具、传 false 后没有，其他工具顺序不变，重复传 true 不出现两个", async () => {
-  const w = await world();
-  showGitDeliveryTool(w.pi, true);
-  showGitDeliveryTool(w.pi, true);
-  expect(w.active()).toEqual(["read", "bash", GIT_DELIVER_TOOL]);
-  showGitDeliveryTool(w.pi, false);
-  expect(w.active()).toEqual(["read", "bash"]);
-});
-
-test("窗口启动时开启，之后用户设置改成 false，再调用交付工具会被拒绝并写明原因和建议", async () => {
-  const w = await world();
-  await writeSettings(w.userPath, gitDeliverySettings(true));
-  await w.start();
-  await writeSettings(w.userPath, gitDeliverySettings(false));
-  await expect(w.run(PARAMS)).rejects.toThrow("原因：Git 交付已关闭");
-  await expect(w.run(PARAMS)).rejects.toThrow("建议：请用户在 /one:setting 的开关里开启 Git 交付后再交付");
-  expect(w.calls).toEqual([]);
-});
-
-test("没开启过时直接调用交付工具也被拒绝", async () => {
+test("两层设置都没写，窗口启动后直接调用交付工具会去查需求的关闭状态", async () => {
   const w = await world();
   await w.start();
-  await expect(w.run(PARAMS)).rejects.toThrow("原因：Git 交付已关闭");
+  await w.run(PARAMS).catch(() => undefined);
+  expect(w.calls.length).toBeGreaterThan(0);
+});
+
+test("窗口启动后用户设置改成 local，再调用交付工具仍会去查需求的关闭状态", async () => {
+  const w = await world();
+  await writeSettings(w.userPath, gitDeliverySettings("remote"));
+  await w.start();
+  await writeSettings(w.userPath, gitDeliverySettings("local"));
+  await w.run(PARAMS).catch(() => undefined);
+  expect(w.calls.length).toBeGreaterThan(0);
 });
 
 test("模型不能在参数里代选合并方式", async () => {
   const w = await world();
-  await writeSettings(w.userPath, gitDeliverySettings(true));
   await w.start();
   await expect(w.run({ ...PARAMS, merge: "auto" })).rejects.toThrow("原因：参数不符合本工具的格式（多余字段：merge；本动作允许字段：repoId、requirementId）");
 });
 
 test("需求未以完成关闭时拒绝交付", async () => {
   const w = await world({ status: "closed", reason: "cancelled", archive: null, delivery: null });
-  await writeSettings(w.userPath, gitDeliverySettings(true));
   await w.start();
   await expect(w.run(PARAMS)).rejects.toThrow("原因：需求没有以完成（completed）关闭并归档，当前状态 closed，关闭原因 cancelled\n建议：只有用户验收通过并以完成关闭的需求才能交付；需求已取消或拒绝时不要交付");
   expect(w.calls).toEqual([["workflow.manage", { requirementId: PARAMS.requirementId, request: { action: "status" } }]]);

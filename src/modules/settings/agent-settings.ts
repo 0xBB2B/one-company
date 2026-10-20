@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { detectDeliveryMode } from "../../core/exec/git-host.ts";
+import type { DeliveryMode, GitProvider } from "../../core/exec/git-host.ts";
 import { MODEL_PATTERN, THINKING_LEVELS, type ThinkingLevel } from "../agents/roles.ts";
 
 export const SETTINGS_ROLES = [
@@ -8,6 +10,13 @@ export const SETTINGS_ROLES = [
   { key: "draft-verifier", label: "草稿核验器", purpose: "核对需求草稿是不是用户原话要求的", effect: "下次调用时生效", failure: "起草或修改需求草稿时核验会失败", model: null, thinking: null },
 ] as const;
 
+export const MERGE_METHODS = [
+  { key: "squash", label: "压缩合并" },
+  { key: "merge", label: "普通合并" },
+  { key: "rebase", label: "rebase 合并" },
+] as const;
+
+export type MergeMethod = (typeof MERGE_METHODS)[number]["key"];
 export type SettingsRoleKey = (typeof SETTINGS_ROLES)[number]["key"];
 export interface RoleSetting { model: string | null; thinking: ThinkingLevel | null }
 export type SettingsLayer = Partial<Record<SettingsRoleKey, RoleSetting>>;
@@ -34,7 +43,11 @@ function parseContent(text: string): unknown {
   return content.trim() === "" ? {} : JSON.parse(content);
 }
 
-export function parseSettingsLayer(path: string, layer: "user" | "project"): { entries: SettingsLayer; gitDelivery?: boolean; problems: SettingsProblem[] } {
+const isMergeMethods = (value: unknown): value is MergeMethod[] =>
+  Array.isArray(value) && value.length >= 1 && value.length <= MERGE_METHODS.length && new Set(value).size === value.length
+  && value.every((item) => MERGE_METHODS.some((method) => method.key === item));
+
+export function parseSettingsLayer(path: string, layer: "user" | "project"): { entries: SettingsLayer; gitDelivery?: DeliveryMode; mergeMethods?: MergeMethod[]; problems: SettingsProblem[] } {
   const entries: SettingsLayer = {};
   const problems: SettingsProblem[] = [];
   if (!existsSync(path)) return { entries, problems };
@@ -56,12 +69,18 @@ export function parseSettingsLayer(path: string, layer: "user" | "project"): { e
   if (!isObject(section)) {
     return { entries, problems: [{ path, layer, display: "one-company 要写成对象，这一层的设定都没有生效" }] };
   }
-  const keys = [...SETTINGS_ROLES.map((r) => r.key), "git-delivery"];
-  let gitDelivery: boolean | undefined;
+  const keys = [...SETTINGS_ROLES.map((r) => r.key), "git-delivery", "merge-methods"];
+  let gitDelivery: DeliveryMode | undefined;
+  let mergeMethods: MergeMethod[] | undefined;
   for (const [name, value] of Object.entries(section)) {
     if (name === "git-delivery") {
-      if (typeof value === "boolean") gitDelivery = value;
-      else problems.push({ path, layer, key: name, display: "git-delivery 只能写 true 或 false", value: JSON.stringify(value) });
+      if (value === "remote" || value === "local") gitDelivery = value;
+      else problems.push({ path, layer, key: name, display: "git-delivery 只能写 remote 或 local", value: JSON.stringify(value) });
+      continue;
+    }
+    if (name === "merge-methods") {
+      if (isMergeMethods(value)) mergeMethods = value;
+      else problems.push({ path, layer, key: name, display: "merge-methods 只能是 squash、merge、rebase 里的一到三个，不能重复", value: JSON.stringify(value) });
       continue;
     }
     const role = SETTINGS_ROLES.find((r) => r.key === name);
@@ -85,19 +104,16 @@ export function parseSettingsLayer(path: string, layer: "user" | "project"): { e
     }
     entries[role.key] = { model, thinking: thinking as ThinkingLevel | null };
   }
-  return { entries, gitDelivery, problems };
+  return { entries, gitDelivery, mergeMethods, problems };
 }
 
-export async function readAgentSettings(input: { agentDir: string; repositoryRoot: string; projectTrusted: boolean }): Promise<{
-  values: Record<SettingsRoleKey, EffectiveSetting>;
-  layers: { user: SettingsLayer; project: SettingsLayer };
-  gitDelivery: { enabled: boolean; source: "project" | "user" | "default" };
-  problems: SettingsProblem[];
-}> {
+type Settings = Awaited<ReturnType<typeof readAgentSettings>>;
+
+function readLayers(input: { agentDir: string; repositoryRoot: string; projectTrusted: boolean }) {
   const user = parseSettingsLayer(userSettingsPath(input.agentDir), "user");
   const project = input.projectTrusted
     ? parseSettingsLayer(projectSettingsPath(input.repositoryRoot), "project")
-    : { entries: {} as SettingsLayer, gitDelivery: undefined as boolean | undefined, problems: [] as SettingsProblem[] };
+    : { entries: {} as SettingsLayer, gitDelivery: undefined as DeliveryMode | undefined, mergeMethods: undefined as MergeMethod[] | undefined, problems: [] as SettingsProblem[] };
   const values = {} as Record<SettingsRoleKey, EffectiveSetting>;
   for (const role of SETTINGS_ROLES) {
     const fromProject = project.entries[role.key];
@@ -108,14 +124,37 @@ export async function readAgentSettings(input: { agentDir: string; repositoryRoo
         ? { ...fromUser, source: "user" }
         : { model: role.model, thinking: role.thinking, source: "default" };
   }
-  const gitDelivery = project.gitDelivery !== undefined
-    ? { enabled: project.gitDelivery, source: "project" as const }
-    : user.gitDelivery !== undefined
-      ? { enabled: user.gitDelivery, source: "user" as const }
-      : { enabled: false, source: "default" as const };
+  return { user, project, values };
+}
+
+export function readRoleSettings(input: { agentDir: string; repositoryRoot: string; projectTrusted: boolean }): Record<SettingsRoleKey, EffectiveSetting> {
+  return readLayers(input).values;
+}
+
+export async function readAgentSettings(input: { agentDir: string; repositoryRoot: string; projectTrusted: boolean }): Promise<{
+  values: Record<SettingsRoleKey, EffectiveSetting>;
+  layers: { user: SettingsLayer; project: SettingsLayer };
+  gitDelivery: { mode: DeliveryMode; source: "project" | "user" | "default"; detected?: { host: string | null; provider: GitProvider | null } };
+  mergeMethods: { methods: readonly MergeMethod[]; source: "project" | "user" | "default" };
+  problems: SettingsProblem[];
+}> {
+  const { user, project, values } = readLayers(input);
+  let gitDelivery: Settings["gitDelivery"];
+  if (project.gitDelivery !== undefined) gitDelivery = { mode: project.gitDelivery, source: "project" };
+  else if (user.gitDelivery !== undefined) gitDelivery = { mode: user.gitDelivery, source: "user" };
+  else {
+    const { mode, host, provider } = await detectDeliveryMode(input.repositoryRoot);
+    gitDelivery = { mode, source: "default", detected: { host, provider } };
+  }
+  const mergeMethods: Settings["mergeMethods"] = project.mergeMethods
+    ? { methods: project.mergeMethods, source: "project" }
+    : user.mergeMethods
+      ? { methods: user.mergeMethods, source: "user" }
+      : { methods: MERGE_METHODS.map((method) => method.key), source: "default" };
   return {
     values,
     gitDelivery,
+    mergeMethods,
     layers: { user: user.entries, project: project.entries },
     problems: [...user.problems, ...project.problems],
   };
@@ -153,18 +192,34 @@ export async function clearAgentSetting(input: { path: string; role: SettingsRol
   });
 }
 
-export async function saveGitDeliverySetting(input: { path: string; enabled: boolean }): Promise<void> {
-  rewriteSettings(input.path, (root) => {
+function saveOneCompanyKey(path: string, key: string, value: unknown): void {
+  rewriteSettings(path, (root) => {
     const section = isObject(root["one-company"]) ? root["one-company"] : {};
-    return { ...root, "one-company": { ...section, "git-delivery": input.enabled } };
+    return { ...root, "one-company": { ...section, [key]: value } };
   });
 }
 
-export async function clearGitDeliverySetting(input: { path: string }): Promise<void> {
-  rewriteSettings(input.path, (root) => {
-    if (!isObject(root["one-company"]) || !("git-delivery" in root["one-company"])) return undefined;
-    const { "git-delivery": _removed, ...rest } = root["one-company"];
+function clearOneCompanyKey(path: string, key: string): void {
+  rewriteSettings(path, (root) => {
+    if (!isObject(root["one-company"]) || !(key in root["one-company"])) return undefined;
+    const { [key]: _removed, ...rest } = root["one-company"];
     const { "one-company": _section, ...others } = root;
     return Object.keys(rest).length > 0 ? { ...others, "one-company": rest } : others;
   });
+}
+
+export async function saveGitDeliverySetting(input: { path: string; mode: DeliveryMode }): Promise<void> {
+  saveOneCompanyKey(input.path, "git-delivery", input.mode);
+}
+
+export async function clearGitDeliverySetting(input: { path: string }): Promise<void> {
+  clearOneCompanyKey(input.path, "git-delivery");
+}
+
+export async function saveMergeMethodsSetting(input: { path: string; methods: readonly MergeMethod[] }): Promise<void> {
+  saveOneCompanyKey(input.path, "merge-methods", MERGE_METHODS.map((method) => method.key).filter((key) => input.methods.includes(key)));
+}
+
+export async function clearMergeMethodsSetting(input: { path: string }): Promise<void> {
+  clearOneCompanyKey(input.path, "merge-methods");
 }

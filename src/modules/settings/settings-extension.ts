@@ -7,18 +7,18 @@ import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dataRoot } from "../../core/storage/data-root.ts";
 import { resolveRepoRoot } from "../../core/exec/git-read.ts";
-import { SettingsPageView, tilde } from "./settings-page-ui.ts";
+import { defaultModeReason, methodsText, MODE_LABEL, SettingsPageView, tilde } from "./settings-page-ui.ts";
 import type { ClearSwitchRequest, CopyRequest, PageState, SaveSwitchRequest } from "./settings-page-ui.ts";
 import { AgentCopyError, copyAgentDefinition } from "../agents/agent-copy.ts";
 import { describeSetting } from "./agent-settings-ui.ts";
 import type { ClearSettingRequest, PageNotice, PageTheme, SaveSettingRequest, SettingsLayerName } from "./agent-settings-ui.ts";
-import { clearAgentSetting, clearGitDeliverySetting, projectSettingsPath, readAgentSettings, saveAgentSetting, saveGitDeliverySetting, SETTINGS_ROLES, userSettingsPath } from "./agent-settings.ts";
+import { clearAgentSetting, clearGitDeliverySetting, clearMergeMethodsSetting, projectSettingsPath, readAgentSettings, saveAgentSetting, saveGitDeliverySetting, saveMergeMethodsSetting, SETTINGS_ROLES, userSettingsPath } from "./agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../agents/roles.ts";
 
 export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode" | "isProjectTrusted" | "modelRegistry" | "model">;
 
-/** /one:setting：查看内置、用户、项目三层的角色定义，C 复制为新定义；「模型」里改 PM、解释器、草稿核验器用的模型和思考等级；「开关」里开关 Git 交付。 */
-export async function openSettingsPage(ctx: SettingsExtensionContext, options: { mainThinking: () => string; onGitDeliveryChanged: (enabled: boolean) => void }): Promise<void> {
+/** /one:setting：查看内置、用户、项目三层的角色定义，C 复制为新定义；「模型」里改 PM、解释器、草稿核验器用的模型和思考等级；「开关」里改 Git 交付档位和允许的合并方式。 */
+export async function openSettingsPage(ctx: SettingsExtensionContext, options: { mainThinking: () => string }): Promise<void> {
   const projectTrusted = ctx.isProjectTrusted();
   const agentDir = dirname(dataRoot(process.env));
   const repositoryRoot = await resolveRepoRoot(ctx.cwd);
@@ -47,16 +47,24 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
       return { fresh: role, text: `✓ 已清除${layerLabel[layer]}的 ${label} 设定，现在用${now.source === "user" ? `用户层的 ${describeSetting(role, now)}` : "内置默认值：跟随主会话"}` };
     }
     if ("saveSwitch" in picked) {
-      const { enabled, layer } = picked.saveSwitch;
-      await saveGitDeliverySetting({ path: settingsPaths[layer], enabled });
-      options.onGitDeliveryChanged((await readSettings()).gitDelivery.enabled);
-      return { fresh: "git-delivery", text: `✓ Git 交付 改为${enabled ? "开启" : "关闭"}，存到${layerLabel[layer]}，立即生效` };
+      const request = picked.saveSwitch, path = settingsPaths[request.layer];
+      if (request.key === "git-delivery") {
+        await saveGitDeliverySetting({ path, mode: request.mode });
+        return { fresh: "git-delivery", text: `✓ Git 交付 改为${MODE_LABEL[request.mode]}，存到${layerLabel[request.layer]}，立即生效` };
+      }
+      await saveMergeMethodsSetting({ path, methods: request.methods });
+      return { fresh: "merge-methods", text: `✓ 合并方式 改为 ${methodsText(request.methods)}，存到${layerLabel[request.layer]}，立即生效` };
     }
-    const { layer } = picked.clearSwitch;
-    await clearGitDeliverySetting({ path: settingsPaths[layer] });
-    const now = (await readSettings()).gitDelivery;
-    options.onGitDeliveryChanged(now.enabled);
-    return { fresh: "git-delivery", text: `✓ 已清除${layerLabel[layer]}的 Git 交付 设定，现在用${now.source === "default" ? "内置默认值：关闭" : `${layerLabel[now.source]}的值：${now.enabled ? "开启" : "关闭"}`}` };
+    const { key, layer } = picked.clearSwitch;
+    await (key === "git-delivery" ? clearGitDeliverySetting : clearMergeMethodsSetting)({ path: settingsPaths[layer] });
+    const settings = await readSettings();
+    if (key === "git-delivery") {
+      const now = settings.gitDelivery;
+      const current = now.source === "default" ? `内置默认值：${MODE_LABEL[now.mode]}（${defaultModeReason(now.detected)}）` : `${layerLabel[now.source]}的值：${MODE_LABEL[now.mode]}`;
+      return { fresh: key, text: `✓ 已清除${layerLabel[layer]}的 Git 交付 设定，现在用${current}` };
+    }
+    const now = settings.mergeMethods;
+    return { fresh: key, text: `✓ 已清除${layerLabel[layer]}的合并方式 设定，现在用${now.source === "default" ? "内置默认值" : `${layerLabel[now.source]}的值`}：${methodsText(now.methods)}` };
   };
   let state: PageState | undefined;
   for (;;) {

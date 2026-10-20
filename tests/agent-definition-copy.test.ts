@@ -180,7 +180,7 @@ test("页面复制完成后底部提示：已复制到新文件路径，打开�
     notify() {},
   };
   const ctx = { hasUI: true, mode: "tui", cwd: join(root, "repo"), ui, isProjectTrusted: () => true, modelRegistry: { getAll: () => [], hasConfiguredAuth: () => false }, model: undefined } as unknown as SettingsExtensionContext;
-  await openSettingsPage(ctx, { mainThinking: () => "high", onGitDeliveryChanged() {} });
+  await openSettingsPage(ctx, { mainThinking: () => "high" });
   expect(screens[0]).toContain(`✓ 已复制到 ${join(root, "agent", "agents", "vue-engineer.md")}，打开它写专长、skills 和 mcp`);
 });
 

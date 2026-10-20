@@ -35,16 +35,11 @@ function makeOptions(overrides: Partial<RegisterCommandsOptions> = {}): {
   options: RegisterCommandsOptions;
   settingsCalls: unknown[];
   shellCalls: unknown[];
-  deliveryChanges: boolean[];
 } {
   const settingsCalls: unknown[] = [];
   const shellCalls: unknown[] = [];
-  const deliveryChanges: boolean[] = [];
   return {
     options: {
-      onGitDeliveryChanged: overrides.onGitDeliveryChanged ?? ((enabled: boolean) => {
-        deliveryChanges.push(enabled);
-      }),
       openSettingsPage: overrides.openSettingsPage ?? (async (ctx: unknown) => {
         settingsCalls.push(ctx);
       }),
@@ -54,7 +49,6 @@ function makeOptions(overrides: Partial<RegisterCommandsOptions> = {}): {
     },
     settingsCalls,
     shellCalls,
-    deliveryChanges,
   };
 }
 
@@ -117,18 +111,17 @@ describe("/one:setting", () => {
     expect(received[0]!.mainThinking()).toBe("xhigh");
   });
 
-  test("传给设置页的 onGitDeliveryChanged 把新的生效值交给注册时给的回调", async () => {
+  test("传给设置页的选项里只有主窗口思考等级", async () => {
     const { pi, registrations } = makeFakePi();
-    const received: Array<{ onGitDeliveryChanged: (enabled: boolean) => void }> = [];
-    const { options, deliveryChanges } = makeOptions({ openSettingsPage: async (_ctx, page) => { received.push(page); } });
+    const received: Array<Record<string, unknown>> = [];
+    const { options } = makeOptions({ openSettingsPage: async (_ctx, page) => { received.push(page); } });
     registerCommands(pi, options);
     const { ctx } = makeFakeCtx({ hasUI: true, mode: "tui" });
 
     await registrations["one:setting"]!.handler("", ctx);
-    received[0]!.onGitDeliveryChanged(true);
-    received[0]!.onGitDeliveryChanged(false);
 
-    expect(deliveryChanges).toEqual([true, false]);
+    expect(received).toHaveLength(1);
+    expect(Object.keys(received[0]!)).toEqual(["mainThinking"]);
   });
 
   test("打开设置页回调抛错时通知具体原因，不调用其他入口", async () => {
