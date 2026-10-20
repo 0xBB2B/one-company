@@ -31,7 +31,7 @@ export type StaleMarkerResult =
 
 function readFile(path: string): MarkerFile | "missing" | undefined {
   let fd: number;
-  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); }
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : undefined; }
   try {
     const before = fstatSync(fd);

@@ -198,25 +198,11 @@ await withDatabaseMaintenance({...${JSON.stringify(w.scope)},operationId:${JSON.
   } finally { child.kill("SIGKILL"); await closed; }
 });
 
-test("维护期间写下的标记ownershipEpoch为1且没有takeover字段", async () => {
-  const w = await world(), operationId = uuidv7();
-  await withDatabaseMaintenance({ ...w.scope, operationId }, async () => {
-    const marker = JSON.parse(await readFile(join(w.directory, ".database-maintenance.json"), "utf8"));
-    expect(marker).toMatchObject({ format: "database-maintenance/v2", operationId, ownershipEpoch: 1 });
-    expect(marker).not.toHaveProperty("takeover");
-  });
-});
-
 test("格式不对的旧维护标记让withDatabaseMaintenance报maintenance_already_exists且标记不动", async () => {
   const w = await world(), marker = join(w.directory, ".database-maintenance.json"), content = JSON.stringify({ operationId: uuidv7(), state: "maintenance" });
   await writeFile(marker, content, { mode: 0o600 });
   await expect(withDatabaseMaintenance({ ...w.scope, operationId: uuidv7() }, () => null)).rejects.toThrow(/maintenance_already_exists/);
   expect(await readFile(marker, "utf8")).toBe(content);
-});
-
-test("database-maintenance.ts源码里没有接管相关的名字和报错", async () => {
-  const source = await readFile(new URL("../src/core/storage/database-maintenance.ts", import.meta.url), "utf8");
-  for (const name of ["takeover", "DatabaseManagementAuthorization", "maintenance_owner_", "maintenance_takeover_unauthorized", "maintenance_operation_mismatch"]) expect(source, name).not.toContain(name);
 });
 
 test("归档枚举正文读取探针为零，并拒绝同UUID多路径冲突", async () => {

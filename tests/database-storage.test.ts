@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { copyFile, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
@@ -373,6 +373,26 @@ test("维护标记不是JSON时按读不出处理", async () => {
   await writeFile(marker, "not json", { mode: 0o600 });
   await expectBlocked(w.directory, marker, `维护标记读不出；确认没有别的窗口在备份、恢复或对账后，删除 ${marker}`);
 });
+
+test("维护标记是命名管道时打开数据库立刻失败，报错带标记完整路径，管道仍在原处", async () => {
+  const w = await world(); const marker = join(w.directory, DATABASE_MAINTENANCE_FILE);
+  execFileSync("mkfifo", [marker]);
+  const script = join(w.root, "open-fifo.mjs");
+  await writeFile(script, `import {LocalDatabase} from ${JSON.stringify(new URL("../src/core/storage/database.ts", import.meta.url).href)};
+try { new LocalDatabase(${JSON.stringify(join(w.directory, "data.db"))}).close(); } catch (error) { console.error(error.message); process.exit(1); }`);
+  const result = await new Promise<{ code: number | null; err: string; timedOut: boolean }>((resolve) => {
+    const child = spawn(process.execPath, [script], { stdio: ["ignore", "ignore", "pipe"] });
+    let err = "", timedOut = false;
+    child.stderr.on("data", (d) => { err += d; });
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 10_000);
+    child.once("close", (code) => { clearTimeout(timer); resolve({ code, err, timedOut }); });
+  });
+  expect(result.timedOut, "打开数据库在命名管道上被卡住").toBe(false);
+  expect(result.code).toBe(1);
+  expect(result.err).toContain("维护标记读不出");
+  expect(result.err).toContain(marker);
+  expect((await stat(marker)).isFIFO()).toBe(true);
+}, 20_000);
 
 test("清理可清的维护标记时只删标记文件，目录里的其他文件不动", async () => {
   const w = await world(); const pid = await exitedPid();

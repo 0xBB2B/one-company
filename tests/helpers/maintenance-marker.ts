@@ -11,7 +11,7 @@ export async function writeMarker(directory: string, pid: number, processStartId
   const path = join(directory, DATABASE_MAINTENANCE_FILE);
   await writeFile(path, JSON.stringify({
     format: "database-maintenance/v2", operationId: uuidv7(), state: "maintenance",
-    owner: { pid, processStartIdentity }, ownershipEpoch: 1, createdAt: new Date().toISOString(),
+    owner: { pid, processStartIdentity }, createdAt: new Date().toISOString(),
   }), { mode: 0o600 });
   return path;
 }

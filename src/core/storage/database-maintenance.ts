@@ -28,7 +28,6 @@ interface MaintenanceMarker {
   operationId: string;
   state: "maintenance";
   owner: { pid: number; processStartIdentity: string };
-  ownershipEpoch: number;
   createdAt: string;
 }
 const permits = new WeakMap<DatabaseMaintenancePermit, Maintenance>();
@@ -97,7 +96,7 @@ export async function withDatabaseMaintenance<T>(scope: DatabaseMaintenanceScope
   }
   if (scope.operationId !== undefined && !UUID_V7_PATTERN.test(scope.operationId)) throw new DatabaseMaintenanceError("invalid_operation_id");
   const path = join(directory, DATABASE_MAINTENANCE_FILE), operationId = scope.operationId ?? uuidv7();
-  const marker: MaintenanceMarker = { format: "database-maintenance/v2", operationId, state: "maintenance", owner: { pid: process.pid, processStartIdentity: ownProcessIdentity() }, ownershipEpoch: 1, createdAt: new Date().toISOString() };
+  const marker: MaintenanceMarker = { format: "database-maintenance/v2", operationId, state: "maintenance", owner: { pid: process.pid, processStartIdentity: ownProcessIdentity() }, createdAt: new Date().toISOString() };
   const contents = JSON.stringify(marker);
   let file: PrivateFileState;
   try { writeNew(path, contents); syncDirectory(directory); file = readPrivateText(path, "maintenance_identity_changed"); }
