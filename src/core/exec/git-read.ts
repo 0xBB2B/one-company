@@ -23,6 +23,24 @@ export async function readGit(cwd: string, args: string[], options: GitReadOptio
   return { stdout: result.stdout.toString("utf8"), stderr: result.stderr.toString("utf8") };
 }
 
+export function parseGitVersion(output: string): string {
+  return /\d+(\.\d+)+/.exec(output)?.[0] ?? "0";
+}
+
+export async function gitVersion(): Promise<string> {
+  return parseGitVersion((await readGit(process.cwd(), ["--version"])).stdout);
+}
+
+export function versionAtLeast(version: string, min: string): boolean {
+  const a = version.split(".").map(Number);
+  const b = min.split(".").map(Number);
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const diff = (a[i] ?? 0) - (b[i] ?? 0);
+    if (diff !== 0) return diff > 0;
+  }
+  return true;
+}
+
 export async function resolveRepoRoot(cwd: string): Promise<string> {
   try {
     const { stdout } = await readGit(cwd, ["rev-parse", "--show-toplevel"]);

@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
-import { readGit } from "../../core/exec/git-read.ts";
+import { gitVersion, readGit, versionAtLeast } from "../../core/exec/git-read.ts";
 import { checked, commit, id, object } from "../requirement/requirement-contracts.ts";
 import { RequirementService } from "../requirement/requirement-service.ts";
 import { RequirementStateStore } from "../requirement/requirement-state.ts";
@@ -43,10 +43,10 @@ export class WorkspaceManageError extends Error {
   readonly code: WorkspaceManageErrorCode;
   readonly blockers: string[];
   readonly advice: FailureAdvice;
-  constructor(code: WorkspaceManageErrorCode, blockers: string[] = []) {
+  constructor(code: WorkspaceManageErrorCode, blockers: string[] = [], next?: string) {
     super(blockers.length > 0 ? `${code}: ${blockers.join("；")}` : code);
     this.name = "WorkspaceManageError"; this.code = code; this.blockers = blockers;
-    this.advice = withDetail(WORKSPACE_ADVICE[code], blockers.join("；"));
+    this.advice = withDetail(next ? { ...WORKSPACE_ADVICE[code], next } : WORKSPACE_ADVICE[code], blockers.join("；"));
   }
 }
 
@@ -57,7 +57,10 @@ export interface WorkspaceManageOptions {
   repoId: string;
   /** 真实用户在宿主界面的确认；返回 false 即拒绝。 */
   confirm: (window: ProgramWindow) => Promise<boolean>;
+  gitVersion?: () => Promise<string>;
 }
+
+interface RecycleCheck { blockers: string[]; tooOldGit: string | null; unmerged: boolean }
 
 // 固定参数写 Git：关闭 hook 与 fsmonitor，避免创建/回收现场时执行仓库内脚本
 async function writeGit(cwd: string, args: string[]): Promise<string> {
@@ -69,8 +72,8 @@ async function writeGit(cwd: string, args: string[]): Promise<string> {
     throw new WorkspaceManageError("git_failed", [`git ${args.slice(0, 2).join(" ")}：${commandOutputTail(error)}`]);
   }
 }
-async function gitOutput(cwd: string, args: string[]): Promise<string | null> {
-  try { return (await readGit(cwd, args)).stdout.trim(); } catch { return null; }
+async function gitOutput(cwd: string, args: string[], timeout?: number): Promise<string | null> {
+  try { return (await readGit(cwd, args, { timeout })).stdout.trim(); } catch { return null; }
 }
 async function exists(path: string): Promise<boolean> {
   try { await lstat(path); return true; } catch { return false; }
@@ -187,26 +190,49 @@ export class WorkspaceManageService {
     const record = this.state.read(input.requirementId);
     if (record.data.lifecycle !== "closed") throw new WorkspaceManageError("requirement_not_closed");
 
-    const blockers = await this.recycleBlockers(plan, record.data.workspace);
-    if (blockers.length > 0) throw new WorkspaceManageError("recycle_blocked", blockers);
+    const check = await this.recycleBlockers(plan, record.data.workspace);
+    if (check.blockers.length > 0) throw this.blockedError(plan, check);
     const approved = await this.options.confirm({ title: "确认回收需求工作区", lines: [{ text: `需求：${plan.title}` }, ...mutedLines([
       `编号：${input.requirementId}`, `将移除目录：${plan.path}`, `将删除本地分支：${plan.branch.slice("refs/heads/".length)}`,
       "不删除主仓库、其他分支、远端分支或本机需求记录。"])] });
     if (!approved) throw new WorkspaceManageError("declined");
     const recheck = await this.recycleBlockers(plan, record.data.workspace);
-    if (recheck.length > 0) throw new WorkspaceManageError("recycle_blocked", recheck);
+    if (recheck.blockers.length > 0) throw this.blockedError(plan, recheck);
 
     if (await exists(plan.path)) await writeGit(this.options.repositoryRoot, ["worktree", "remove", plan.path]);
     if (await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", plan.branch]) !== null) {
-      await writeGit(this.options.repositoryRoot, ["branch", "-d", plan.branch.slice("refs/heads/".length)]);
+      await writeGit(this.options.repositoryRoot, ["branch", "-D", plan.branch.slice("refs/heads/".length)]);
     }
     const recycled = { ...plan, status: "recycled" as const, recycleOperationId: uuidv7() };
     this.save(recycled);
     return recycled;
   }
 
-  private async recycleBlockers(plan: ManagedWorkspace, binding: Parameters<typeof verifyRequirementWorkspace>[1] | null): Promise<string[]> {
+  private blockedError(plan: ManagedWorkspace, check: RecycleCheck): WorkspaceManageError {
+    const steps: string[] = [];
+    if (check.tooOldGit) steps.push("升级 Git 后再回收");
+    if (check.unmerged) {
+      const branch = plan.branch.slice("refs/heads/".length);
+      steps.push(`1. 远端已经合并的，先在主仓库把目标分支拉到本地（例如 git pull）再回收；2. 还没合并的，先交付或自己合并；3. 合并后主分支又改了同一处代码、确认改动都已进去的，自己运行 git worktree remove '${plan.path}' 和 git branch -D ${branch}`);
+    }
+    const others = check.blockers.length > (check.tooOldGit ? 1 : 0) + (check.unmerged ? 1 : 0);
+    const next = steps.length === 0 ? undefined : others ? `按原因逐项处理后再回收；${steps.join("；")}` : steps.join("；");
+    return new WorkspaceManageError("recycle_blocked", check.blockers, next);
+  }
+
+  // merge-tree 不碰工作区、暂存区和任何分支：合并后的树等于主仓库当前树，说明需求分支的改动已全部进了主仓库
+  private async mergedInto(tip: string): Promise<boolean> {
+    const root = this.options.repositoryRoot;
+    const merged = await gitOutput(root, ["merge-tree", "--write-tree", "HEAD", tip], 120_000);
+    const tree = await gitOutput(root, ["rev-parse", "HEAD^{tree}"]);
+    return merged !== null && tree !== null && merged.split("\n")[0] === tree;
+  }
+
+  private async recycleBlockers(plan: ManagedWorkspace, binding: Parameters<typeof verifyRequirementWorkspace>[1] | null): Promise<RecycleCheck> {
     const blockers: string[] = [];
+    let tooOldGit: string | null = null;
+    let unmerged = false;
+    const done = (): RecycleCheck => ({ blockers, tooOldGit, unmerged });
     const close = await RequirementCloseService.open({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.options.repoId,
       authorize: (request) => request.action === "status" && request.requirementId === plan.requirementId });
     try {
@@ -217,17 +243,33 @@ export class WorkspaceManageService {
     const pendingWrites = withDatabase(this.database, (db) => db.list<{ requirementId?: string; status?: string }>("change_sets")
       .filter((row) => row.data.requirementId === plan.requirementId && (row.data.status === "applying" || row.data.status === "partial_failure")).length);
     if (pendingWrites > 0) blockers.push("存在未完成或待恢复的受控写入");
-    if (!(await exists(plan.path))) return blockers;
-    if (binding) {
-      try { await verifyRequirementWorkspace(this.options.dataRoot, binding); } catch { blockers.push("工作区身份或分支已被外部改变"); return blockers; }
+    let tip: string | null;
+    if (await exists(plan.path)) {
+      if (binding) {
+        try { await verifyRequirementWorkspace(this.options.dataRoot, binding); } catch { blockers.push("工作区身份或分支已被外部改变"); return done(); }
+      }
+      const dirty = await gitOutput(plan.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
+      if (dirty === null) blockers.push("无法读取工作区状态");
+      else if (dirty.length > 0) blockers.push("存在未提交或未跟踪的文件");
+      tip = await gitOutput(plan.path, ["rev-parse", "HEAD"]);
+    } else {
+      tip = await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", `${plan.branch}^{commit}`]);
+      if (tip === null) return done();
     }
-    const dirty = await gitOutput(plan.path, ["status", "--porcelain=v1", "--untracked-files=all"]);
-    if (dirty === null) blockers.push("无法读取工作区状态");
-    else if (dirty.length > 0) blockers.push("存在未提交或未跟踪的文件");
-    const tip = await gitOutput(plan.path, ["rev-parse", "HEAD"]);
     const mainHead = await gitOutput(this.options.repositoryRoot, ["rev-parse", "HEAD"]);
     if (!tip || !mainHead) blockers.push("无法读取分支提交");
-    else if (tip !== mainHead && (await gitOutput(this.options.repositoryRoot, ["merge-base", "--is-ancestor", tip, mainHead])) === null) blockers.push("分支存在未合并进主仓库当前分支的提交");
-    return blockers;
+    else if (tip !== mainHead) {
+      const version = await (this.options.gitVersion ?? gitVersion)();
+      if (!versionAtLeast(version, "2.38")) {
+        tooOldGit = version;
+        blockers.push(`本机 Git 版本 ${version} 低于 2.38，判断不了需求是否已合并`);
+      } else if (!(await this.mergedInto(tip))) {
+        unmerged = true;
+        const mainBranch = await gitOutput(this.options.repositoryRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
+        const target = mainBranch ? `主仓库当前分支 ${mainBranch}` : `主仓库当前提交 ${mainHead.slice(0, 7)}`;
+        blockers.push(`需求分支 ${plan.branch.slice("refs/heads/".length)} 还有改动没进${target}`);
+      }
+    }
+    return done();
   }
 }
