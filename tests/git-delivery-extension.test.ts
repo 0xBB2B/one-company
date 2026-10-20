@@ -60,15 +60,14 @@ async function world(status: Record<string, unknown> = { status: "closed", reaso
   const git = (dir: string, ...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
   const makeDeliverable = async () => {
     await mkdir(mainRepo, { recursive: true });
-    await mkdir(join(root, "elsewhere"), { recursive: true });
     git(mainRepo, "init", "-q", "-b", "main");
     git(mainRepo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "seed");
     git(mainRepo, "worktree", "add", "-q", "-b", "req/login", worktree);
     Object.assign(status, { status: "closed", reason: "completed",
-      archive: { path: "docs/prd/a.md", archiveHash: "h", status: "archived", prototypes: [] }, delivery: { worktree, branch: "refs/heads/req/login", codeHead: "c" } });
+      archive: { path: "docs/prd/a.md", archiveHash: "h", status: "archived", prototypes: [] }, delivery: { worktree, branch: "refs/heads/req/login", codeHead: "c", repositoryRoot: mainRepo } });
   };
   return {
-    pi, active: () => active, commands, mainRoot: mainRepo, start, run, calls, makeDeliverable,
+    pi, root, status, active: () => active, commands, mainRoot: mainRepo, start, run, calls, makeDeliverable,
     userPath: userSettingsPath(agentDir), projectPath: projectSettingsPath(cwd), mainProjectPath: projectSettingsPath(mainRepo),
   };
 }
@@ -238,4 +237,23 @@ test("两次调用交付工具之间把主仓库从信任改成不信任，第�
   await w.run(PARAMS);
   expect(localMock).toHaveBeenCalledTimes(1);
   expect(remoteMock.mock.calls[0]![2]).toMatchObject({ mode: "remote" });
+});
+
+test("交付工具用守护进程给的 repositoryRoot 查信任、读项目层设置并交给仅本地交付，不自己从 git 推算", async () => {
+  const localDelivery = await import("../src/modules/delivery/local-delivery.ts");
+  const localMock = vi.mocked(localDelivery.deliverLocally), remoteMock = vi.mocked(gitDelivery.deliverRequirement);
+  const w = await world();
+  await w.makeDeliverable();
+  const given = join(w.root, "given");
+  await mkdir(given, { recursive: true });
+  (w.status.delivery as { repositoryRoot: string }).repositoryRoot = given;
+  await writeSettings(join(process.env.PI_CODING_AGENT_DIR!, "trust.json"), JSON.stringify({ [given]: true }));
+  await writeSettings(projectSettingsPath(given), oneCompanySettings({ "git-delivery": "local", "merge-methods": ["rebase"] }));
+  await writeSettings(w.userPath, gitDeliverySettings("remote"));
+  await w.start();
+  localMock.mockClear(); remoteMock.mockClear();
+  await w.run(PARAMS);
+  expect(remoteMock).not.toHaveBeenCalled();
+  expect(localMock).toHaveBeenCalledTimes(1);
+  expect(localMock.mock.calls[0]![2]).toEqual({ repositoryRoot: given, mergeMethods: ["rebase"] });
 });

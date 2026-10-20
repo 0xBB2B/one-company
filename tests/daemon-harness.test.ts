@@ -9,6 +9,7 @@ import type { Server, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { runInNewContext } from "node:vm";
+import { PROTOCOL_VERSION } from "../src/core/host/protocol.ts";
 import {
   authenticateTestClient,
   connectRawClient as nativeConnectRawClient,
@@ -138,7 +139,7 @@ function helloResult(_request: Record<string, unknown>, overrides: Record<string
   return {
     daemonPid: process.pid,
     repoId: "a".repeat(64),
-    protocolVersion: 2,
+    protocolVersion: PROTOCOL_VERSION,
     daemonInstanceId: randomUUID(),
     connectionId: randomUUID(),
     ...overrides,
@@ -161,7 +162,7 @@ const server = createServer((socket) => {
     let index;
     while ((index = buffer.indexOf("\\n")) >= 0) {
       const req = JSON.parse(buffer.slice(0, index)); buffer = buffer.slice(index + 1);
-      const result = { daemonPid: ${mode === "wrong-pid" ? "process.pid + 1" : "process.pid"}, repoId: ${JSON.stringify(repoId)}, protocolVersion: 2,
+      const result = { daemonPid: ${mode === "wrong-pid" ? "process.pid + 1" : "process.pid"}, repoId: ${JSON.stringify(repoId)}, protocolVersion: ${PROTOCOL_VERSION},
         daemonInstanceId: randomUUID(), connectionId: randomUUID() };
       socket.write(JSON.stringify({ t: "res", id: req.id, ok: true, result }) + "\\n");
     }

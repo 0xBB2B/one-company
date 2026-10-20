@@ -420,7 +420,7 @@ test("M7B-AC1/AC5：完成报告绑定交付依据，新报告作废旧报告；
   const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId: accepted });
   expect(closed).toMatchObject({ status: "closed", reason: "completed" });
   const closeStatus = w.closeService.status(w.created.requirementId);
-  expect(closeStatus).toMatchObject({ archive: { status: "archived" }, delivery: { worktree: w.worktree.root, branch: w.workspace.branch, codeHead } });
+  expect(closeStatus).toMatchObject({ archive: { status: "archived" }, delivery: { worktree: w.worktree.root, branch: w.workspace.branch, codeHead, repositoryRoot: w.repositoryRoot } });
   expect(await gitText(w.worktree.root, "rev-parse", "HEAD~1")).toBe(codeHead);
   expect(JSON.stringify(closeStatus)).not.toContain("保留移动");
 });

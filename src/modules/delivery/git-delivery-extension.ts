@@ -7,7 +7,6 @@ import { Value } from "typebox/value";
 import type { WorkspaceClientsHandle } from "../../core/host/daemon-client.ts";
 import { deliverRequirement } from "./git-delivery.ts";
 import { deliverLocally } from "./local-delivery.ts";
-import { gitIn } from "../../core/exec/target-branch.ts";
 import { dataRoot } from "../../core/storage/data-root.ts";
 import { readAgentSettings } from "../settings/agent-settings.ts";
 import type { DeliveryFacts } from "./git-delivery.ts";
@@ -23,7 +22,7 @@ const PARAMETERS = Type.Object({ repoId: Type.String({ pattern: "^[0-9a-f]{64}$"
 interface CloseStatus {
   status: string; reason?: string;
   archive?: DeliveryFacts["archive"];
-  delivery?: { worktree: string; branch: string; codeHead: string } | null;
+  delivery?: { repositoryRoot: string; worktree: string; branch: string; codeHead: string } | null;
 }
 export interface GitDeliveryDeps { clients: () => WorkspaceClientsHandle }
 
@@ -51,9 +50,9 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
       catch (error) { throw toolFailure(`${GIT_DELIVER_TOOL} 查询需求关闭状态这一步`, error); }
       if (!close.delivery) fail(`需求没有以完成（completed）关闭并归档，当前状态 ${close.status}，关闭原因 ${close.reason ?? "无"}`,
         "只有用户验收通过并以完成关闭的需求才能交付；需求已取消或拒绝时不要交付");
-      const facts: DeliveryFacts = { requirementId, closed: close.status === "closed", reason: close.reason ?? "", archive: close.archive ?? null, ...close.delivery };
+      const { repositoryRoot: mainRoot, ...delivery } = close.delivery;
+      const facts: DeliveryFacts = { requirementId, closed: close.status === "closed", reason: close.reason ?? "", archive: close.archive ?? null, ...delivery };
       try {
-        const mainRoot = /^worktree (.+)$/mu.exec((await gitIn(facts.worktree, ["worktree", "list", "--porcelain"])).stdout)![1];
         const agentDir = dirname(dataRoot(process.env));
         const { gitDelivery, mergeMethods } = await readAgentSettings({ agentDir, repositoryRoot: mainRoot, projectTrusted: new ProjectTrustStore(agentDir).get(mainRoot) === true });
         const ui = { confirm: (window: Parameters<typeof confirmWindow>[1]) => confirmWindow(ctx, window), choose: (window: Parameters<typeof chooseWindow>[1]) => chooseWindow(ctx, window) };

@@ -145,22 +145,38 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(w.provider.requests.length).toBe(calls);
   });
 
-  test.each([
-    ["trust.json 记为信任、会话返回不信任", true, false, "gpt-6.1-sol"],
-    ["trust.json 记为不信任、会话返回信任", false, true, "controlled"],
-  ])("解释器取模型按 trust.json 判断项目层（%s）", async (_label, recorded, sessionSays, expectedModel) => {
-    const w = await world(), created = await w.create(), { input } = await w.request(created);
-    vi.stubEnv("PI_CODING_AGENT_DIR", w.root);
-    cleanup.push(async () => { vi.unstubAllEnvs(); });
-    await writeFile(join(w.root, "settings.json"), JSON.stringify({ "one-company": { interpreter: { model: `${w.provider.providerId}/controlled`, thinking: null } } }));
-    await mkdir(join(w.repositoryRoot, ".pi"), { recursive: true });
-    await writeFile(join(w.repositoryRoot, ".pi", "settings.json"), JSON.stringify({ "one-company": { interpreter: { model: `${w.provider.providerId}/gpt-6.1-sol`, thinking: null } } }));
-    new ProjectTrustStore(w.root).set(w.repositoryRoot, recorded);
-    (w.ctx as { isProjectTrusted: () => boolean }).isProjectTrusted = () => sessionSays;
-    w.capture("同意"); scriptReview(w.provider, phoneReview);
-    const before = w.provider.models.length;
-    await w.call({ action: "confirmUpdate", ...input });
-    expect(w.provider.models.slice(before)).toEqual([expectedModel]);
+  describe.each([
+    ["父目录信任、仓库不信任", true, false, "controlled"],
+    ["父目录不信任、仓库信任", false, true, "gpt-6.1-sol"],
+  ])("按 trust.json 里离仓库最近的一条判断项目层（%s）", (_label, parentTrusted, repositoryTrusted, expectedModel) => {
+    const prepare = async (key: "interpreter" | "draft-verifier") => {
+      const w = await world();
+      vi.stubEnv("PI_CODING_AGENT_DIR", w.root);
+      cleanup.push(async () => { vi.unstubAllEnvs(); });
+      await writeFile(join(w.root, "settings.json"), JSON.stringify({ "one-company": { [key]: { model: `${w.provider.providerId}/controlled`, thinking: null } } }));
+      await mkdir(join(w.repositoryRoot, ".pi"), { recursive: true });
+      await writeFile(join(w.repositoryRoot, ".pi", "settings.json"), JSON.stringify({ "one-company": { [key]: { model: `${w.provider.providerId}/gpt-6.1-sol`, thinking: null } } }));
+      const store = new ProjectTrustStore(w.root);
+      store.set(w.root, parentTrusted); store.set(w.repositoryRoot, repositoryTrusted);
+      (w.ctx as { isProjectTrusted: () => boolean }).isProjectTrusted = () => !repositoryTrusted;
+      return w;
+    };
+
+    test("解释器", async () => {
+      const w = await prepare("interpreter"), created = await w.create(), { input } = await w.request(created);
+      w.capture("同意"); scriptReview(w.provider, phoneReview);
+      const before = w.provider.models.length;
+      await w.call({ action: "confirmUpdate", ...input });
+      expect(w.provider.models.slice(before)).toEqual([expectedModel]);
+    });
+
+    test("草稿核验器", async () => {
+      const w = await prepare("draft-verifier");
+      w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+      const before = w.provider.models.length;
+      await w.call({ action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY });
+      expect(w.provider.models.slice(before)).toEqual([expectedModel]);
+    });
   });
 
   test("设定没写思考等级时，解释器用主窗口当前的思考等级", async () => {

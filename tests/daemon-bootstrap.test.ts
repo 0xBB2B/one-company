@@ -8,6 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { connectTestClient, waitForSocketReady } from "./helpers/daemon-harness.ts";
+import { PROTOCOL_VERSION } from "../src/core/host/protocol.ts";
 import { daemonSocketPath, repositoryIdentity } from "../src/core/storage/identity.ts";
 
 
@@ -190,7 +191,7 @@ for (const node of nodeExecutables) describe(`正式安装 bootstrap (${node})`,
     try {
       expect(client.helloResult.daemonPid).toBe(first.proc.pid);
       expect(client.helloResult.repoId).toBe(identity.repoId);
-      expect(client.helloResult.protocolVersion).toBe(2);
+      expect(client.helloResult.protocolVersion).toBe(PROTOCOL_VERSION);
       expect(typeof client.helloResult.daemonInstanceId).toBe("string");
       const duplicate = child(node, [join(installed, "src/app/daemon/bootstrap.mjs")], extra);
       expect((await bounded(duplicate.closed)).code).toBe(0);

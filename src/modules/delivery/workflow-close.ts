@@ -578,7 +578,7 @@ export class RequirementCloseService {
     const delivery = data.status === "closed" && data.reason === "completed" && data.basis.checkRoundId ? withDatabase(this.database, (db) => {
       const workspace = requirementIn(db, this.options.repoId, requirementId).data.workspace;
       const round = db.read<unknown>(CHECK_ROUNDS, data.basis.checkRoundId!);
-      return workspace && round ? { worktree: workspace.path, branch: workspace.branch, codeHead: checked(CheckRound, round.data).baseline.codeHead } : null;
+      return workspace && round ? { repositoryRoot: this.options.repositoryRoot, worktree: workspace.path, branch: workspace.branch, codeHead: checked(CheckRound, round.data).baseline.codeHead } : null;
     }) : null;
     const archive = data.archive ? { path: data.archive.path, prdHash: data.archive.prdHash, archiveHash: data.archive.archiveHash, prototypes: data.archive.prototypes, status: data.archive.status,
       attempts: data.archive.attempts, lastError: data.archive.lastError } : null;
