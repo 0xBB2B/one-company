@@ -27,7 +27,7 @@ export interface DeliveryFacts {
 export interface DeliveryOptions { mode: DeliveryMode; mergeMethods: readonly MergeMethod[] }
 export interface DeliveryUi {
   confirm(window: ProgramWindow): Promise<boolean>;
-  choose(window: ProgramWindow & { choices: WindowChoice[]; cancelNote?: string }): Promise<string | undefined>;
+  choose(window: ProgramWindow & { choices: WindowChoice[]; cancelNote?: string; caption?: string }): Promise<string | undefined>;
 }
 type MergeChoice = MergeMethod | "project";
 export interface MergeOutcome { method: "review" | MergeChoice; state: "review" | "queued" | "merged" | "failed"; reason?: string; next?: string }
@@ -35,6 +35,8 @@ export type DeliveryResult =
   | { status: "rejected"; reason: string; next: string }
   | { status: "conflict"; target: string; reason: string; next: string }
   | { status: "cancelled"; head: string }
+  | { status: "merged-locally"; method: MergeMethod; target: string; head: string; rebasedAfterAcceptance: boolean }
+  | { status: "not-merged"; reason: string }
   | { status: "delivered"; head: string; provider: GitProvider; url: string; reused: boolean; rebasedAfterAcceptance: boolean; merge: MergeOutcome };
 
 const REJECT_ADVICE = {
@@ -76,7 +78,7 @@ async function updateRequestBody(provider: GitProvider, cwd: string, number: str
   else await cli("glab", cwd, ["mr", "update", number, "--description", body]);
 }
 
-const requirementTitle = (facts: DeliveryFacts) => facts.archive!.path.slice(facts.archive!.path.lastIndexOf("/") + 1).replace(/^[0-9a-f-]{36}\./, "").replace(/\.md$/, "");
+export const requirementTitle = (facts: DeliveryFacts) => facts.archive!.path.slice(facts.archive!.path.lastIndexOf("/") + 1).replace(/^[0-9a-f-]{36}\./, "").replace(/\.md$/, "");
 export const deliveryTitle = (facts: DeliveryFacts) => `${requirementTitle(facts)} [${facts.requirementId}]`;
 export const deliveryBody = (facts: DeliveryFacts, head: string, rebased: boolean) =>
   [`需求 ${facts.requirementId}`, `交付提交 ${head}`, `最终检查代码 ${facts.codeHead}`,
@@ -107,6 +109,9 @@ export async function prepareDelivery(facts: DeliveryFacts, target: TargetBranch
   const changed = entries((await git(["diff", "-z", "--name-only", `${target.sha}...HEAD`])).stdout);
   if (changed.some((path) => isPrdArchivePath(path) && !groupPaths.includes(path))) return reject("foreign_prd_archive");
   if ((await git(["diff", "--raw", `${target.sha}...HEAD`])).stdout.split("\n").some((line) => /^:\d+ 160000 /.test(line))) return reject("nested_repository");
+  for (const file of group) {
+    if (!file.hash || !await archiveInHead(facts.worktree, [{ path: file.path, hash: file.hash }])) return reject("archive_mismatch", file.path);
+  }
   let rebased = false;
   if (!(await includesCommit(facts.worktree, target.sha))) {
     const failure = await git(["rebase", "--no-autosquash", "--no-autostash", target.sha]).then(() => null, (error: unknown) => error);
@@ -119,9 +124,6 @@ export async function prepareDelivery(facts: DeliveryFacts, target: TargetBranch
         next: conflicted ? "请用户手动解决冲突，重新检查和验收后再交付" : "按 Git 的报错处理后再交付" };
     }
     rebased = true;
-  }
-  for (const file of group) {
-    if (!file.hash || !await archiveInHead(facts.worktree, [{ path: file.path, hash: file.hash }])) return reject("archive_mismatch", file.path);
   }
   return { status: "ready", head: (await git(["rev-parse", "HEAD"])).stdout.trim(), rebased };
 }

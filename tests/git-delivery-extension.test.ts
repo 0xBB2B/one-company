@@ -14,6 +14,10 @@ vi.mock("../src/modules/delivery/git-delivery.ts", async (importOriginal) => ({
   deliverRequirement: vi.fn(async () => ({ status: "rejected", reason: "测试替身", next: "无" })),
 }));
 
+vi.mock("../src/modules/delivery/local-delivery.ts", () => ({
+  deliverLocally: vi.fn(async () => ({ status: "rejected", reason: "测试替身", next: "无" })),
+}));
+
 const cleanups: string[] = [];
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 afterEach(async () => {
@@ -62,7 +66,7 @@ async function world(status: Record<string, unknown> = { status: "closed", reaso
       archive: { path: "docs/prd/a.md", archiveHash: "h", status: "archived", prototypes: [] }, delivery: { worktree, branch: "refs/heads/req/login", codeHead: "c" } });
   };
   return {
-    pi, active: () => active, commands, start, run, calls, makeDeliverable,
+    pi, active: () => active, commands, mainRoot: mainRepo, start, run, calls, makeDeliverable,
     userPath: userSettingsPath(agentDir), projectPath: projectSettingsPath(cwd), mainProjectPath: projectSettingsPath(mainRepo),
   };
 }
@@ -164,14 +168,28 @@ test("交付工具按需求工作区所在主仓库的设置，把交付档位�
   expect(deliverMock.mock.calls[0]![2]).toEqual({ mode: "remote", mergeMethods: ["merge"] });
 });
 
-test("用户层设置 local 且没写合并方式时，交付函数收到 local 和三种默认合并方式", async () => {
-  const deliverMock = vi.mocked(gitDelivery.deliverRequirement);
+test("用户层设置 local 且没写合并方式时，仅本地交付收到主仓库根和三种默认合并方式", async () => {
+  const localDelivery = await import("../src/modules/delivery/local-delivery.ts");
+  const localMock = vi.mocked(localDelivery.deliverLocally);
   const w = await world();
   await w.makeDeliverable();
   await writeSettings(w.userPath, gitDeliverySettings("local"));
   await w.start();
-  deliverMock.mockClear();
+  localMock.mockClear();
   await w.run(PARAMS);
-  expect(deliverMock.mock.calls[0]![2]).toEqual({ mode: "local", mergeMethods: ["squash", "merge", "rebase"] });
+  expect(localMock.mock.calls[0]![2]).toEqual({ repositoryRoot: w.mainRoot, mergeMethods: ["squash", "merge", "rebase"] });
 });
 
+test("档位为 local 时调用仅本地交付，参数带主仓库根和合并方式，不调远程交付（gh/glab 只在远程交付里用）", async () => {
+  const localDelivery = await import("../src/modules/delivery/local-delivery.ts");
+  const localMock = vi.mocked(localDelivery.deliverLocally), remoteMock = vi.mocked(gitDelivery.deliverRequirement);
+  const w = await world();
+  await w.makeDeliverable();
+  await writeSettings(w.mainProjectPath, oneCompanySettings({ "git-delivery": "local", "merge-methods": ["merge", "rebase"] }));
+  await w.start();
+  localMock.mockClear(); remoteMock.mockClear();
+  await w.run(PARAMS);
+  expect(remoteMock).not.toHaveBeenCalled();
+  expect(localMock).toHaveBeenCalledTimes(1);
+  expect(localMock.mock.calls[0]![2]).toEqual({ repositoryRoot: w.mainRoot, mergeMethods: ["merge", "rebase"] });
+});

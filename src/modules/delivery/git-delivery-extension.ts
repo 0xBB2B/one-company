@@ -5,6 +5,7 @@ import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import type { WorkspaceClientsHandle } from "../../core/host/daemon-client.ts";
 import { deliverRequirement } from "./git-delivery.ts";
+import { deliverLocally } from "./local-delivery.ts";
 import { gitIn } from "../../core/exec/target-branch.ts";
 import { dataRoot } from "../../core/storage/data-root.ts";
 import { readAgentSettings } from "../settings/agent-settings.ts";
@@ -53,7 +54,10 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
       try {
         const mainRoot = /^worktree (.+)$/mu.exec((await gitIn(facts.worktree, ["worktree", "list", "--porcelain"])).stdout)![1];
         const { gitDelivery, mergeMethods } = await readAgentSettings({ agentDir: dirname(dataRoot(process.env)), repositoryRoot: mainRoot, projectTrusted: ctx.isProjectTrusted() });
-        return result(await deliverRequirement(facts, { confirm: (window) => confirmWindow(ctx, window), choose: (window) => chooseWindow(ctx, window) }, { mode: gitDelivery.mode, mergeMethods: mergeMethods.methods }));
+        const ui = { confirm: (window: Parameters<typeof confirmWindow>[1]) => confirmWindow(ctx, window), choose: (window: Parameters<typeof chooseWindow>[1]) => chooseWindow(ctx, window) };
+        return result(gitDelivery.mode === "local"
+          ? await deliverLocally(facts, ui, { repositoryRoot: mainRoot, mergeMethods: mergeMethods.methods })
+          : await deliverRequirement(facts, ui, { mode: gitDelivery.mode, mergeMethods: mergeMethods.methods }));
       }
       catch (error) { throw toolFailure(GIT_DELIVER_TOOL, error); }
     },
