@@ -1,6 +1,8 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { promisify } from "node:util";
+import { afterEach, describe, expect, test } from "vitest";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import rulesExtension from "../src/app/extension/rules.ts";
 import type { WindowContextValue } from "../src/core/host/extension-lifecycle.ts";
@@ -73,18 +75,54 @@ test("M8C-AC1：零自定义时注入包内默认规范，按背景、需求、�
 test("M8C-AC2/AC4：受信任项目的规范取代默认注入主会话，项目未受信任时不生效；规范无效时写明原因", async () => {
   const { agentDir, dataRoot } = await agentRoot(), repo = join(agentDir, "repo"), dir = join(repo, ".pi", "skills", "requirement-doc");
   await mkdir(dir, { recursive: true });
+  const run = promisify(execFile);
+  await run("git", ["init", "-q", "--initial-branch=main"], { cwd: repo });
+  await run("git", ["-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: repo });
   await writeFile(join(dir, "SKILL.md"), "---\nname: requirement-doc\ndescription: 三板块\nsections:\n  - { id: goal, title: 目标, goal: true }\n" +
     "  - { id: build, title: 做法, record: implementation }\n  - { id: check, title: 检验, record: acceptance }\n---\n目标写清楚谁要什么。\n");
   const window = () => ({ workspace: { repos: [{ path: repo, repoId: "b".repeat(64), commonDir: join(repo, ".git") }], skipped: [] } });
   expect(await start(window, dataRoot)).toContain("（包内默认）");
   new ProjectTrustStore(agentDir).set(repo, true);
   const trusted = await start(window, dataRoot);
-  expect(trusted).toContain(`来源：${join(dir, "SKILL.md")}（项目）`);
+  expect(trusted).toContain(`来源：${join(await realpath(repo), ".pi", "skills", "requirement-doc", "SKILL.md")}（项目）`);
   expect(trusted).toContain("顶层板块依次为二级标题：`## 目标 {#goal}`、`## 做法 {#build}`、`## 检验 {#check}`");
   expect(trusted).toContain("目标写清楚谁要什么。");
   expect(trusted).not.toContain("## 背景 {#background}");
   await writeFile(join(dir, "SKILL.md"), "---\nname: requirement-doc\nsections: []\n---\n");
-  expect(await start(window, dataRoot)).toContain(`## 需求文档规范\n规范无效，批准会被拒绝：需求文档规范 ${join(dir, "SKILL.md")} 无效`);
+  expect(await start(window, dataRoot)).toContain(`## 需求文档规范\n规范无效，批准会被拒绝：需求文档规范 ${join(await realpath(repo), ".pi", "skills", "requirement-doc", "SKILL.md")} 无效`);
+});
+
+describe("在 linked worktree 里打开 pi，需求文档规范按主仓库目录判断项目层", () => {
+  const skillFile = (title: string) => `---\nname: requirement-doc\ndescription: 三板块\nsections:\n  - { id: goal, title: ${title}, goal: true }\n` +
+    "  - { id: build, title: 做法, record: implementation }\n  - { id: check, title: 检验, record: acceptance }\n---\n";
+  async function linked(mainTrusted: boolean, worktreeTrusted: boolean) {
+    const { agentDir, dataRoot } = await agentRoot(), repo = join(agentDir, "repo"), worktree = join(agentDir, "wt"), run = promisify(execFile);
+    await mkdir(repo);
+    await run("git", ["init", "-q", "--initial-branch=main"], { cwd: repo });
+    await run("git", ["-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-q", "--allow-empty", "-m", "init"], { cwd: repo });
+    await run("git", ["worktree", "add", "-q", worktree], { cwd: repo });
+    const mainDir = join(repo, ".pi", "skills", "requirement-doc"), worktreeDir = join(worktree, ".pi", "skills", "requirement-doc");
+    await mkdir(mainDir, { recursive: true }); await mkdir(worktreeDir, { recursive: true });
+    await writeFile(join(mainDir, "SKILL.md"), skillFile("主仓库目标"));
+    await writeFile(join(worktreeDir, "SKILL.md"), skillFile("工作目录目标"));
+    const store = new ProjectTrustStore(agentDir); store.set(repo, mainTrusted); store.set(worktree, worktreeTrusted);
+    const window = () => ({ workspace: { repos: [{ path: worktree, repoId: "c".repeat(64), commonDir: join(repo, ".git") }], skipped: [] } });
+    return { prompt: await start(window, dataRoot), mainFile: join(await realpath(repo), ".pi", "skills", "requirement-doc", "SKILL.md") };
+  }
+
+  test("主仓库信任、worktree 不信任：来源是主仓库的文件，标签为项目，板块取自主仓库的文件", async () => {
+    const { prompt, mainFile } = await linked(true, false);
+    expect(prompt).toContain(`来源：${mainFile}（项目）`);
+    expect(prompt).toContain("`## 主仓库目标 {#goal}`");
+    expect(prompt).not.toContain("工作目录目标");
+  });
+
+  test("主仓库不信任、worktree 信任：不用项目层，落到包内默认", async () => {
+    const { prompt } = await linked(false, true);
+    expect(prompt).toContain("（包内默认）");
+    expect(prompt).not.toContain("（项目）");
+    expect(prompt).not.toContain("目标 {#goal}");
+  });
 });
 
 test("M9：主会话规则要求收到需求的那一轮就保存草稿，待澄清的写成未决问题，不先在对话里问完再保存", async () => {

@@ -437,6 +437,33 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(await w.call({ action: "confirmUpdate", ...next.input })).toMatchObject({ prdActivated: true });
     expect(state.read(first.input.requirementId).data.docSpec).toEqual(snapshot);
   });
+  describe.each([
+    ["主仓库信任、worktree 不信任", true, false, ["goal", "build", "check"]],
+    ["主仓库不信任、worktree 信任", false, true, ["background", "requirements", "features", "implementation", "acceptance"]],
+  ])("在 linked worktree 里打开 pi，批准时存下的规范按主仓库目录判断项目层（%s）", (_label, mainTrusted, worktreeTrusted, expectedIds) => {
+    test("存下的规范板块", async () => {
+      const w = await world(), worktree = join(w.root, "wt");
+      await git(w.repositoryRoot, ["worktree", "add", "-q", worktree]);
+      const skillFile = (ids: [string, string, string]) => `---\nname: requirement-doc\ndescription: 三板块\nsections:\n  - { id: ${ids[0]}, title: 目标, goal: true }\n` +
+        `  - { id: ${ids[1]}, title: 实现, record: implementation }\n  - { id: ${ids[2]}, title: 验收, record: acceptance }\n---\n三板块写法。\n`;
+      for (const [root, ids] of [[w.repositoryRoot, ["goal", "build", "check"]], [worktree, ["aim", "make", "verify"]]] as const) {
+        const dir = join(root, ".pi", "skills", "requirement-doc");
+        await mkdir(dir, { recursive: true }); await writeFile(join(dir, "SKILL.md"), skillFile([...ids]));
+      }
+      const store = new ProjectTrustStore(w.root);
+      store.set(w.repositoryRoot, mainTrusted); store.set(worktree, worktreeTrusted);
+      vi.stubEnv("PI_CODING_AGENT_DIR", w.root);
+      cleanup.push(async () => { vi.unstubAllEnvs(); });
+      (w.ctx as { cwd: string }).cwd = worktree; w.setHostPath(worktree);
+      (w.ctx as { isProjectTrusted: () => boolean }).isProjectTrusted = () => worktreeTrusted;
+      const body = mainTrusted ? "## 目标 {#goal}\n登录需求。\n### 手机号 {#goal.A}\n增加手机号登录。\n## 实现 {#build}\n由 PM 规划。\n## 验收 {#check}\n手机号能登录。\n" : BODY;
+      const created = await w.create(body), { input } = await w.request(created);
+      w.capture("同意"); scriptReview(w.provider, (c) => wholeReview(c, mainTrusted ? "goal.A" : "A"));
+      expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ prdActivated: true });
+      const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+      expect((state.read(input.requirementId).data.docSpec as { sections: Array<{ id: string }> }).sections.map((section) => section.id)).toEqual(expectedIds);
+    });
+  });
   test("M8O-AC2：需求存下的规范快照没有标出实施目标板块时，批准直接报错写明原因，不调用模型、不激活", async () => {
     const w = await world(), created = await w.create(), first = await w.request(created), before = w.provider.requests.length;
     withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => {
