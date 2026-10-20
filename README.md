@@ -1,6 +1,14 @@
-<div align="center">
+<p align="center">
+  <img src="assets/onecompany-banner.png" alt="OneCompany — A Governed Autonomous Company" width="100%" />
+</p>
 
-# one-company
+<h1 align="center">OneCompany</h1>
+
+<p align="center">
+  One human. A team of AI workers. One governed autonomous company.
+</p>
+
+<div align="center">
 
 **pi 的扩展包：你在对话里说需求、点头确认，后台代理把它规划、实现、审查、验收完。**
 
@@ -9,7 +17,7 @@
 [![pi package](https://img.shields.io/badge/pi-package-8A2BE2.svg)](#安装)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen.svg)](package.json)
 
-[前置条件](#前置条件) · [安装](#安装) · [上手](#上手) · [功能](#功能) · [原理](#原理) · [常见问题](#常见问题) · [参与开发](CONTRIBUTING.md)
+[前置条件](#前置条件) · [安装](#安装) · [上手](#上手) · [功能](#功能) · [设置](#设置) · [原理](#原理) · [已知限制](#已知限制) · [常见问题](#常见问题) · [参与开发](CONTRIBUTING.md)
 
 </div>
 
