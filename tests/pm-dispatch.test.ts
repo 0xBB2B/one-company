@@ -72,7 +72,7 @@ async function plainWorld(options: { prepare?: boolean; activate?: boolean } = {
     await draftApprover(base, service, { requirementId, operationId: create.operationId, title: "角色跳跃", body: BODY }, grantWrite, false)();
     if (options.prepare !== false) {
       const workspace = await WorkspaceManageService.open({ ...base, confirm: async () => true });
-      const ready = await workspace.prepare({ requirementId, operationId: uuidv7() });
+      const ready = await workspace.prepare({ requirementId });
       cleanups.push(() => rm(join(ready.path, "..", ".."), { recursive: true, force: true }));
     }
   }

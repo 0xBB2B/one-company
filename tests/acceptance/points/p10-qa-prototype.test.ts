@@ -65,7 +65,7 @@ test.skipIf(!config || process.platform !== "darwin")("P10：需求第 1 版带�
   // 实现与审查由脚本完成；PM 按状态推进到派出 QA；QA 由真实模型完成
   type Step = ScriptedReply | ((request: Context) => ScriptedReply);
   const scripts = new Map<string, Step[]>([["page", [
-    call("change_apply", { action: "apply", operationId: uuidv7(), files: [{ path: "src/login-page.ts", baseHash: "absent", content: PAGE }] }),
+    call("change_apply", { action: "apply", files: [{ path: "src/login-page.ts", baseHash: "absent", content: PAGE }] }),
     verdict("按原型新增 src/login-page.ts"),
     call("verification_run", { action: "run", kind: "debug", command: "test -f src/login-page.ts", performance: NA }),
     (request) => verdict("实现与原型一致", [field(request, "verificationId")]),

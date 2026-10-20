@@ -284,8 +284,9 @@ export class RequirementStateStore {
         if (reference.intentHash !== request.intentHash) throw new RequirementStateError("request_conflict");
         return this.get(db, reference.requirementId);
       }
-      const requirementId = uuidv7(), now = this.now();
-      if (db.read("requirements", requirementId)) throw new RequirementStateError("identity_collision");
+      let requirementId = uuidv7();
+      while (db.read("requirements", requirementId)) requirementId = uuidv7();
+      const now = this.now();
       const data: RequirementRecord = { format: "requirement-lifecycle/v1", requirementId, repoId: this.options.repoId, ...request,
         lifecycle: "draft", revision: 0, epoch: 1, saved: null, approved: null, approvalReceiptId: null, workspace: null,
         pendingRevision: null, close: null, recovery: "ready", recoveryReason: null, createdAt: now, updatedAt: now };
@@ -387,6 +388,8 @@ export class RequirementStateStore {
       const record = this.get(db, request.requirementId); this.active(record.data, true);
       if (!equal(record.data.workspace, previous.data.workspace)) throw new RequirementStateError("workspace_binding_changed");
       if (record.data.workspace) this.checkClaims(db, record.data.workspace);
+      assertNoUnfinishedRequirementOperationsIn(db, record.id);
+      assertNoRequirementWriteClaimIn(db, this.options.repoId, record.id);
       if (!equal(record.data.saved, request.reference)) throw new RequirementStateError("saved_version_mismatch");
       const digest = createHash("sha256").update(canonicalJson(request)).digest("hex");
       const consumed = db.read("requirement_approval_uses", request.receiptId);

@@ -18,7 +18,8 @@ import { answeringUi } from "../helpers/window-host.ts";
 import { registerControlledProvider, scriptReplies } from "../helpers/controlled-provider.ts";
 import { repositoryIdentity, daemonSocketPath } from "../../src/core/storage/identity.ts";
 import { socketPathByteLimit } from "../../src/core/host/daemon-probe.ts";
-import { uuidv7 } from "../../src/core/storage/database.ts";
+import { UUID_V7_PATTERN } from "../../src/core/storage/database.ts";
+import { scriptReview } from "../helpers/interpreter-reply.ts";
 
 
 const exec = promisify(execFile);
@@ -128,15 +129,12 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
 
     const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null, refreshOnCreate: false });
     const provider = registerControlledProvider(runtime, { providerId: "requirement-install", modelId: "controlled" });
-    const requestId = uuidv7();
-    const operationId = uuidv7();
     const title = "安装产物需求";
     const body = "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n通过真实 SDK input 进入生产授权路径。\n## 功能 {#features}\n保存需求草稿。\n" +
       "## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n草稿能保存并批准。\n";
     scriptReplies(provider, [
-      { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, requestId, operationId, summary: "保存并批准一份草稿", title, body } } },
+      { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, summary: "保存并批准一份草稿", title, body } } },
       { type: "text", text: '{"allow":true}' },
-      { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, requestId, operationId, summary: "保存并批准一份草稿", title, body } } },
       { type: "text", text: "done" },
     ]);
 
@@ -183,11 +181,10 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     await session.waitForIdle();
     const result = session.messages.find((message) => message.role === "toolResult" && message.toolName === "one_company_requirement_manage");
     expect(result?.isError, JSON.stringify(result?.content)).toBe(false);
-    const details = result?.details as { requirementId: string; commit: string; prdHash: string; lifecycle: string; revision: number; version: number };
+    const details = result?.details as { requirementId: string; operationId: string; commit: string; prdHash: string; lifecycle: string; revision: number; version: number };
     const createResults = session.messages.filter((message) => message.role === "toolResult" && message.toolName === "one_company_requirement_manage");
-    expect(createResults).toHaveLength(2);
-    expect(createResults[1]?.details).toEqual(details);
-    expect(createResults[1]?.isError).toBe(false);
+    expect(createResults).toHaveLength(1);
+    expect(details.operationId).toMatch(UUID_V7_PATTERN);
     expect(details.requirementId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(details.lifecycle).toBe("draft");
     expect(details.revision).toBe(0);
@@ -199,18 +196,18 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     expect(await git(requirementRoot, ["rev-list", "--count", "HEAD"])).toBe("1");
     expect(await git(requirementRoot, ["show", "-s", "--format=%H", "HEAD"])).toBe(details.commit);
 
-    const confirmationOperationId = uuidv7();
-    const entry = (kind: "constraint" | "target" | "action", conclusion: string) => ({ kind, conclusion, scope: "仅分析安装接线，不实施",
-      basis: "explicit", resolution: "direct", candidateId: confirmationOperationId, requestId: null, actions: kind === "action" ? ["analyze"] : [], references: [], supersedes: [] });
-    const interpretation = { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: true,
-      entries: [{ ...entry("constraint", "需求身份、标题与格式板块"), unitIds: ["metadata", "background", "implementation", "acceptance"] },
-        { ...entry("target", "通过真实SDK处理需求保存"), unitIds: ["requirements", "features"] }, { ...entry("action", "只分析接线"), unitIds: ["requirements", "features"] }] };
+    const interpretation = (candidateId: string) => {
+      const entry = (kind: "constraint" | "target" | "action", conclusion: string) => ({ kind, conclusion, scope: "仅分析安装接线，不实施",
+        basis: "explicit", resolution: "direct", candidateId, requestId: null, actions: kind === "action" ? ["analyze"] : [], references: [], supersedes: [] });
+      return { format: "interaction-interpretation/v1", referenceResolution: "none", faithful: true,
+        entries: [{ ...entry("constraint", "需求身份、标题与格式板块"), unitIds: ["metadata", "background", "implementation", "acceptance"] },
+          { ...entry("target", "通过真实SDK处理需求保存"), unitIds: ["requirements", "features"] }, { ...entry("action", "只分析接线"), unitIds: ["requirements", "features"] }] };
+    };
     scriptReplies(provider, [
       { type: "toolcall", name: "one_company_user_interact", input: { request: { action: "reply", repoId: identity.repoId, requirementId: details.requirementId,
-        savedOperationId: operationId, operationId: confirmationOperationId, version: details.version } } },
-      { type: "text", text: JSON.stringify(interpretation) },
-      { type: "text", text: "done" },
+        savedOperationId: details.operationId, version: details.version } } },
     ]);
+    scriptReview(provider, ({ candidate }) => interpretation(candidate.candidateId), { otherwise: { type: "text", text: "done" } });
     await session.prompt("安装产物需要通过真实SDK处理需求保存，本轮只分析接线，不实施", { source: "interactive" });
     await session.waitForIdle();
     expect(await git(requirementRoot, ["rev-list", "--count", "HEAD"])).toBe("1");

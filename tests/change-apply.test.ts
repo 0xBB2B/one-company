@@ -63,7 +63,7 @@ async function world() {
   const base = sha("export const a = 1;\n");
   return { ...options, root, repo, state, created, workspace, worktree, grant, tool, read, base };
 }
-type Result = { status: string; baseHead: string; files: Array<{ path: string; status: string; reason?: string; targetHash: string }> };
+type Result = { status: string; operationId: string; baseHead: string; files: Array<{ path: string; status: string; reason?: string; targetHash: string }> };
 
 test("M5-AC1：无效批量补丁预检整批拒绝、不写任何文件、不留操作记录", async () => {
   const w = await world(); const tool = await w.tool();
@@ -81,9 +81,7 @@ test("M5-AC1：无效批量补丁预检整批拒绝、不写任何文件、不�
     ["invalid_shape", { path: "src/gone.ts", baseHash: "absent", content: null }],
   ];
   for (const [code, bad] of cases) {
-    const operationId = uuidv7();
-    await expect(tool.execute({ action: "apply", operationId, files: [good, bad] })).rejects.toMatchObject({ code });
-    await expect(tool.execute({ action: "status", operationId })).rejects.toMatchObject({ code: "not_found" });
+    await expect(tool.execute({ action: "apply", files: [good, bad] })).rejects.toMatchObject({ code });
     await expect(w.read("src/b.ts")).rejects.toMatchObject({ code: "ENOENT" });
   }
   await expect(w.read("src/a.ts")).resolves.toBe("export const a = 1;\n");
@@ -91,10 +89,10 @@ test("M5-AC1：无效批量补丁预检整批拒绝、不写任何文件、不�
     .rejects.toThrow(`stale_base: src/a.ts 当前 baseHash=${w.base}`);
   const filled = await tool.execute({ action: "prepare", files: [{ path: "src/a.ts", content: "x" }, { path: "src/new.ts", content: "y" }] }) as Result;
   expect(filled.files.map((file: { baseHash: string }) => file.baseHash)).toEqual([w.base, "absent"]);
-  await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/unprepared.ts", content: "x" }] }))
+  await expect(tool.execute({ action: "apply", files: [{ path: "src/unprepared.ts", content: "x" }] }))
     .rejects.toThrow("invalid_shape: src/unprepared.ts 没有预检过，先 prepare 或填 baseHash");
   for (const extra of [{ role: "worker" }, { requirementId: uuidv7() }, { writePaths: ["/"] }, { actor: "user" }]) {
-    await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [good], ...extra })).rejects.toMatchObject({ code: "invalid_shape" });
+    await expect(tool.execute({ action: "apply", files: [good], ...extra })).rejects.toMatchObject({ code: "invalid_shape" });
   }
   const preflight = await tool.execute({ action: "prepare", files: [good, { path: "src/a.ts", baseHash: w.base, content: "export const a = 2;\n" }] }) as Result;
   expect(preflight.status).toBe("ready");
@@ -102,21 +100,21 @@ test("M5-AC1：无效批量补丁预检整批拒绝、不写任何文件、不�
   await expect(w.read("src/b.ts")).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-test("M5-AC1/AC8：中途写入失败精确记录已写/失败/未动，同操作重试补齐；日志提交失败后重试按实际指纹续接", async () => {
+test("M5-AC1/AC8：中途写入失败精确记录已写/失败/未动，不带编号、带同样的文件重试补齐", async () => {
   const w = await world(); const tool = await w.tool();
   const files = [
     { path: "src/a.ts", baseHash: w.base, content: "export const a = 2;\n" },
     { path: "src/nested/b.ts", baseHash: "absent", content: "export const b = 2;\n" },
     { path: "src/c.ts", baseHash: "absent", content: "export const c = 3;\n" },
   ];
-  const operationId = uuidv7();
   const original = store.writeFileAtomic;
   vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
     if (path.endsWith("b.ts")) throw new Error("模拟磁盘故障");
     return original(path, content);
   });
-  const first = await tool.execute({ action: "apply", operationId, files }) as Result;
+  const first = await tool.execute({ action: "apply", files }) as Result;
   expect(first.status).toBe("partial_failure");
+  const operationId = first.operationId;
   expect(first.files.map((file) => file.status)).toEqual(["written", "failed", "pending"]);
   expect(first.files[1]!.reason).toContain("模拟磁盘故障");
   await expect(w.read("src/a.ts")).resolves.toBe("export const a = 2;\n");
@@ -124,30 +122,32 @@ test("M5-AC1/AC8：中途写入失败精确记录已写/失败/未动，同操�
   await expect(w.read("src/c.ts")).rejects.toMatchObject({ code: "ENOENT" });
   expect(((await tool.execute({ action: "status", operationId })) as Result).status).toBe("partial_failure");
   vi.restoreAllMocks();
-  const altered = files.map((file, index) => index === 2 ? { ...file, content: "别的内容" } : file);
-  await expect(tool.execute({ action: "apply", operationId, files: altered })).rejects.toMatchObject({ code: "operation_conflict" });
+  const altered = [{ ...files[2]!, content: "别的内容" }];
+  await expect(tool.execute({ action: "apply", files: altered })).rejects.toMatchObject({ code: "operation_conflict", advice: { why: expect.stringContaining("本运行还有一批没写完的文件") } });
   const reordered = [files[2]!, files[0]!, files[1]!];
-  const second = await tool.execute({ action: "apply", operationId, files: reordered }) as Result;
+  const second = await tool.execute({ action: "apply", files: reordered }) as Result;
+  expect(second.operationId).toBe(operationId);
   expect(second.status).toBe("applied");
   expect(second.files.map((file) => [file.path, file.status])).toEqual([["src/a.ts", "written"], ["src/nested/b.ts", "written"], ["src/c.ts", "written"]]);
   await expect(w.read("src/nested/b.ts")).resolves.toBe("export const b = 2;\n");
   await expect(w.read("src/c.ts")).resolves.toBe("export const c = 3;\n");
-  const again = await tool.execute({ action: "apply", operationId, files }) as Result;
-  expect(again.status).toBe("applied");
 
-  const logOperation = uuidv7();
   const logFiles = [{ path: "src/d.ts", baseHash: "absent", content: "d\n" }, { path: "src/e.ts", baseHash: "absent", content: "e\n" }];
   const update = LocalDatabase.prototype.update;
   let failures = 0;
   vi.spyOn(LocalDatabase.prototype, "update").mockImplementation(function (this: LocalDatabase, ...args) {
-    if (args[0] === "change_sets" && failures++ === 0) throw new Error("模拟日志提交失败");
+    if (args[0] === "change_sets" && failures++ === 0) throw Object.assign(new Error("模拟日志提交失败"), { code: "EIO" });
     return update.apply(this, args);
   });
-  await expect(tool.execute({ action: "apply", operationId: logOperation, files: logFiles })).rejects.toThrow("模拟日志提交失败");
+  const failure = await tool.execute({ action: "apply", files: logFiles }).then(() => undefined, (error: Error) => error);
+  expect(failure?.message).toContain("模拟日志提交失败");
+  expect(failure).toMatchObject({ code: "EIO" });
+  expect(failure?.message).toContain("带同样的文件再调一次可以续写");
+  expect(failure?.message).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/);
   await expect(w.read("src/d.ts")).resolves.toBe("d\n");
-  expect(((await tool.execute({ action: "status", operationId: logOperation })) as Result).files.map((file) => file.status)).toEqual(["pending", "pending"]);
+  await expect(w.read("src/e.ts")).rejects.toMatchObject({ code: "ENOENT" });
   vi.restoreAllMocks();
-  const recovered = await tool.execute({ action: "apply", operationId: logOperation, files: logFiles }) as Result;
+  const recovered = await tool.execute({ action: "apply", files: logFiles }) as Result;
   expect(recovered.status).toBe("applied");
   await expect(w.read("src/e.ts")).resolves.toBe("e\n");
 });
@@ -155,35 +155,40 @@ test("M5-AC1/AC8：中途写入失败精确记录已写/失败/未动，同操�
 test("M5-AC2：外部编辑或 pull 之后旧基础补丁拒绝，不覆盖用户新内容", async () => {
   const w = await world(); const tool = await w.tool();
   await writeFile(join(w.worktree.root, "src", "a.ts"), "用户手改\n");
-  await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/a.ts", baseHash: w.base, content: "x" }] }))
+  await expect(tool.execute({ action: "apply", files: [{ path: "src/a.ts", baseHash: w.base, content: "x" }] }))
     .rejects.toMatchObject({ code: "stale_base" });
   await expect(w.read("src/a.ts")).resolves.toBe("用户手改\n");
 
-  const operationId = uuidv7();
   const files = [{ path: "src/f.ts", baseHash: "absent", content: "f\n" }, { path: "src/g.ts", baseHash: "absent", content: "g\n" }];
   const original = store.writeFileAtomic;
   vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
     if (path.endsWith("g.ts")) throw new Error("模拟故障");
     return original(path, content);
   });
-  expect(((await tool.execute({ action: "apply", operationId, files })) as Result).status).toBe("partial_failure");
+  const partial = await tool.execute({ action: "apply", files }) as Result;
+  expect(partial.status).toBe("partial_failure");
+  const operationId = partial.operationId;
   vi.restoreAllMocks();
   await writeFile(join(w.worktree.root, "src", "g.ts"), "用户抢先写入\n");
-  const resumed = await tool.execute({ action: "apply", operationId, files }) as Result;
+  const resumed = await tool.execute({ action: "apply", files }) as Result;
+  expect(resumed.operationId).toBe(operationId);
   expect(resumed.status).toBe("stale");
   expect(resumed.files[1]).toMatchObject({ status: "stale" });
   await expect(w.read("src/g.ts")).resolves.toBe("用户抢先写入\n");
 
-  const pulled = uuidv7();
   const pulledFiles = [{ path: "src/h.ts", baseHash: "absent", content: "h\n" }, { path: "src/i.ts", baseHash: "absent", content: "i\n" }];
   vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
     if (path.endsWith("i.ts")) throw new Error("模拟故障");
     return original(path, content);
   });
-  expect(((await tool.execute({ action: "apply", operationId: pulled, files: pulledFiles })) as Result).status).toBe("partial_failure");
+  const afterStale = await tool.execute({ action: "apply", files: [{ path: "src/after-stale.ts", baseHash: "absent", content: "s\n" }] }) as Result;
+  expect(afterStale.status).toBe("applied");
+  const pulledFirst = await tool.execute({ action: "apply", files: pulledFiles }) as Result;
+  expect(pulledFirst.status).toBe("partial_failure");
+  const pulled = pulledFirst.operationId;
   vi.restoreAllMocks();
   await runGit(["add", "src/h.ts"], w.worktree.root); await runGit(["commit", "-qm", "外部提交"], w.worktree.root);
-  await expect(tool.execute({ action: "apply", operationId: pulled, files: pulledFiles })).rejects.toMatchObject({ code: "stale_base" });
+  await expect(tool.execute({ action: "apply", files: pulledFiles })).rejects.toMatchObject({ code: "stale_base" });
   expect(((await tool.execute({ action: "status", operationId: pulled })) as Result).status).toBe("stale");
   await expect(w.read("src/i.ts")).rejects.toMatchObject({ code: "ENOENT" });
 });
@@ -191,18 +196,18 @@ test("M5-AC2：外部编辑或 pull 之后旧基础补丁拒绝，不覆盖用�
 test("M5-AC2：apply 省略 baseHash 时用本会话最近一次 prepare 的值；预检后文件被改仍拒绝，不覆盖新内容", async () => {
   const w = await world(); const tool = await w.tool();
   await tool.execute({ action: "prepare", files: [{ path: "src/a.ts", content: "export const a = 2;\n" }, { path: "src/new.ts", content: "n\n" }] });
-  const applied = await tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/a.ts", content: "export const a = 2;\n" }, { path: "src/new.ts", content: "n\n" }] }) as Result;
+  const applied = await tool.execute({ action: "apply", files: [{ path: "src/a.ts", content: "export const a = 2;\n" }, { path: "src/new.ts", content: "n\n" }] }) as Result;
   expect(applied.status).toBe("applied");
   await expect(w.read("src/a.ts")).resolves.toBe("export const a = 2;\n");
   await expect(w.read("src/new.ts")).resolves.toBe("n\n");
 
   await tool.execute({ action: "prepare", files: [{ path: "src/a.ts", content: "export const a = 3;\n" }] });
   await writeFile(join(w.worktree.root, "src", "a.ts"), "用户手改\n");
-  await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/a.ts", content: "export const a = 3;\n" }] }))
+  await expect(tool.execute({ action: "apply", files: [{ path: "src/a.ts", content: "export const a = 3;\n" }] }))
     .rejects.toMatchObject({ code: "stale_base" });
   await expect(w.read("src/a.ts")).resolves.toBe("用户手改\n");
   const other = await w.tool();
-  await expect(other.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/a.ts", content: "x" }] })).rejects.toMatchObject({ code: "invalid_shape" });
+  await expect(other.execute({ action: "apply", files: [{ path: "src/a.ts", content: "x" }] })).rejects.toMatchObject({ code: "invalid_shape" });
 });
 
 test("M5-AC2：生成器只能从沙箱生成目录按声明指纹导入，越界或指纹不符不落盘", async () => {
@@ -213,25 +218,25 @@ test("M5-AC2：生成器只能从沙箱生成目录按声明指纹导入，越�
   await symlink(join(w.worktree.root, "src", "a.ts"), join(scratch, "link.ts"));
   const tool = await w.tool(w.grant({ scratchRoot: scratch }));
   const targetHash = sha("generated\n");
-  await expect(tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "src/out.ts", baseHash: "absent", sourcePath: "gen/out.ts", targetHash: sha("别的") }] }))
+  await expect(tool.execute({ action: "import", files: [{ path: "src/out.ts", baseHash: "absent", sourcePath: "gen/out.ts", targetHash: sha("别的") }] }))
     .rejects.toMatchObject({ code: "import_mismatch" });
-  await expect(tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "src/out.ts", baseHash: "absent", sourcePath: "../a.ts", targetHash }] }))
+  await expect(tool.execute({ action: "import", files: [{ path: "src/out.ts", baseHash: "absent", sourcePath: "../a.ts", targetHash }] }))
     .rejects.toMatchObject({ code: "path_escape" });
-  await expect(tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "src/out.ts", baseHash: "absent", sourcePath: "link.ts", targetHash: w.base }] }))
+  await expect(tool.execute({ action: "import", files: [{ path: "src/out.ts", baseHash: "absent", sourcePath: "link.ts", targetHash: w.base }] }))
     .rejects.toMatchObject({ code: "path_escape" });
-  await expect(tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "docs/prd/x.md", baseHash: "absent", sourcePath: "gen/out.ts", targetHash }] }))
+  await expect(tool.execute({ action: "import", files: [{ path: "docs/prd/x.md", baseHash: "absent", sourcePath: "gen/out.ts", targetHash }] }))
     .rejects.toMatchObject({ code: "forbidden_path" });
   await expect(w.read("src/out.ts")).rejects.toMatchObject({ code: "ENOENT" });
   await writeFile(join(scratch, "gen", "blob.bin"), Buffer.from([0xff, 0xfe, 0x00, 0x80]));
   const blobHash = createHash("sha256").update(Buffer.from([0xff, 0xfe, 0x00, 0x80])).digest("hex");
-  await expect(tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "src/blob.bin", baseHash: "absent", sourcePath: "gen/blob.bin", targetHash: blobHash }] }))
+  await expect(tool.execute({ action: "import", files: [{ path: "src/blob.bin", baseHash: "absent", sourcePath: "gen/blob.bin", targetHash: blobHash }] }))
     .rejects.toMatchObject({ code: "import_mismatch" });
   await expect(w.read("src/blob.bin")).rejects.toMatchObject({ code: "ENOENT" });
-  const result = await tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "src/out.ts", baseHash: "absent", sourcePath: "gen/out.ts", targetHash }] }) as Result;
+  const result = await tool.execute({ action: "import", files: [{ path: "src/out.ts", baseHash: "absent", sourcePath: "gen/out.ts", targetHash }] }) as Result;
   expect(result.status).toBe("applied");
   await expect(w.read("src/out.ts")).resolves.toBe("generated\n");
   const unscoped = await w.tool();
-  await expect(unscoped.execute({ action: "import", operationId: uuidv7(), files: [{ path: "src/out2.ts", baseHash: "absent", sourcePath: "gen/out.ts", targetHash }] }))
+  await expect(unscoped.execute({ action: "import", files: [{ path: "src/out2.ts", baseHash: "absent", sourcePath: "gen/out.ts", targetHash }] }))
     .rejects.toMatchObject({ code: "forbidden_path" });
 });
 
@@ -243,9 +248,9 @@ test("M5-AC3/AC7：非 worker 职责、伪造绑定、旧 epoch、宿主撤权�
   }
   await expect(w.tool(w.grant({ epoch: w.grant().epoch + 1 }))).resolves.toBeDefined();
   const staleEpoch = await w.tool(w.grant({ epoch: w.grant().epoch + 1 }));
-  await expect(staleEpoch.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求已换代（epoch 变化）" } });
+  await expect(staleEpoch.execute({ action: "apply", files: [good] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求已换代（epoch 变化）" } });
   const otherWorkspace = await w.tool(w.grant({ workspaceId: "f".repeat(64) }));
-  await expect(otherWorkspace.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求工作区绑定已变化" } });
+  await expect(otherWorkspace.execute({ action: "apply", files: [good] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求工作区绑定已变化" } });
   const otherBranch = await w.tool(w.grant({ branch: "refs/heads/elsewhere" }));
   await expect(otherBranch.execute({ action: "prepare", files: [good] })).rejects.toMatchObject({ code: "requirement_changed" });
   await expect(w.tool(w.grant(), () => false)).rejects.toMatchObject({ code: "session_inactive" });
@@ -253,12 +258,12 @@ test("M5-AC3/AC7：非 worker 职责、伪造绑定、旧 epoch、宿主撤权�
   const permits = new Map([[bound.callerId, true]]);
   const flip = await w.tool(bound, (request) => permits.get(request.grant.callerId) === true);
   permits.set(bound.callerId, false);
-  await expect(flip.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject({ code: "session_inactive" });
+  await expect(flip.execute({ action: "apply", files: [good] })).rejects.toMatchObject({ code: "session_inactive" });
   await expect(w.read("src/z.ts")).rejects.toMatchObject({ code: "ENOENT" });
   const closingTool = await w.tool();
   w.state.beginClose({ requirementId: w.created.requirementId, version: w.state.read(w.created.requirementId).version,
     intent: { operationId: uuidv7(), receiptId: uuidv7(), reason: "cancelled" } });
-  await expect(closingTool.execute({ action: "apply", operationId: uuidv7(), files: [good] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求不在活动状态" } });
+  await expect(closingTool.execute({ action: "apply", files: [good] })).rejects.toMatchObject({ code: "requirement_changed", advice: { why: "需求已不是派工时的状态：需求不在活动状态" } });
   await expect(w.read("src/z.ts")).rejects.toMatchObject({ code: "ENOENT" });
 });
 
@@ -269,11 +274,163 @@ test("写项目设置文件被拒并写明是哪个文件、为什么不能改�
   await writeFile(settings, "{}\n");
   const tool = await w.tool(w.grant({ writePaths: ["src/", ".pi/"] }));
   for (const path of [".pi/settings.json", ".PI/Settings.json"]) {
-    await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path, baseHash: sha("{}\n"), content: "{\"x\":1}\n" }] }))
+    await expect(tool.execute({ action: "apply", files: [{ path, baseHash: sha("{}\n"), content: "{\"x\":1}\n" }] }))
       .rejects.toMatchObject({ code: "host_settings", advice: { why: `这是 pi 的项目设置文件，只能由用户修改：${path}` } });
   }
   await expect(readFile(settings, "utf8")).resolves.toBe("{}\n");
-  const other = await tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: ".pi/other.json", baseHash: "absent", content: "{}\n" }] }) as Result;
+  const other = await tool.execute({ action: "apply", files: [{ path: ".pi/other.json", baseHash: "absent", content: "{}\n" }] }) as Result;
   expect(other.files[0]!.status).not.toBe("failed");
   await expect(w.read(".pi/other.json")).resolves.toBe("{}\n");
+});
+
+const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+test("apply、import 不带 operationId 成功，结果带本次操作编号且每次不同", async () => {
+  const w = await world();
+  const scratch = await mkdtemp(join(w.root, "scratch-"));
+  await mkdir(join(scratch, "gen"), { recursive: true });
+  await writeFile(join(scratch, "gen", "out.ts"), "generated\n");
+  const tool = await w.tool(w.grant({ scratchRoot: scratch }));
+  const one = await tool.execute({ action: "apply", files: [{ path: "src/one.ts", baseHash: "absent", content: "1\n" }] }) as Result;
+  const two = await tool.execute({ action: "apply", files: [{ path: "src/two.ts", baseHash: "absent", content: "2\n" }] }) as Result;
+  const imported = await tool.execute({ action: "import", files: [{ path: "src/out.ts", baseHash: "absent", sourcePath: "gen/out.ts", targetHash: sha("generated\n") }] }) as Result;
+  for (const result of [one, two, imported]) {
+    expect(result.status).toBe("applied");
+    expect(result.operationId).toMatch(UUID_V7);
+  }
+  await expect(tool.execute({ action: "apply", operationId: uuidv7(), files: [{ path: "src/three.ts", baseHash: "absent", content: "3\n" }] })).rejects.toMatchObject({ code: "invalid_shape" });
+  await expect(tool.execute({ action: "import", operationId: uuidv7(), files: [{ path: "src/out3.ts", baseHash: "absent", sourcePath: "gen/out.ts", targetHash: sha("generated\n") }] })).rejects.toMatchObject({ code: "invalid_shape" });
+  await expect(w.read("src/three.ts")).rejects.toMatchObject({ code: "ENOENT" });
+  expect(new Set([one.operationId, two.operationId, imported.operationId]).size).toBe(3);
+  await expect(w.read("src/one.ts")).resolves.toBe("1\n");
+});
+
+test("写到一半失败后不带编号、带同样的文件再调，续写完成且结果与一次写完相同", async () => {
+  const w = await world(); const tool = await w.tool();
+  const files = [{ path: "src/p.ts", baseHash: "absent", content: "p\n" }, { path: "src/q.ts", baseHash: "absent", content: "q\n" }];
+  const original = store.writeFileAtomic;
+  vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
+    if (path.endsWith("q.ts")) throw new Error("模拟磁盘故障");
+    return original(path, content);
+  });
+  const first = await tool.execute({ action: "apply", files }) as Result;
+  expect(["applying", "partial_failure"]).toContain(first.status);
+  expect(first.operationId).toMatch(UUID_V7);
+  vi.restoreAllMocks();
+  const resumed = await tool.execute({ action: "apply", files }) as Result;
+  expect(resumed.status).toBe("applied");
+  expect(resumed.operationId).toBe(first.operationId);
+  expect(resumed.files.map((file) => [file.path, file.status])).toEqual([["src/p.ts", "written"], ["src/q.ts", "written"]]);
+  await expect(w.read("src/q.ts")).resolves.toBe("q\n");
+  const fresh = await w.tool();
+  const direct = await fresh.execute({ action: "apply", files: [{ path: "src/p2.ts", baseHash: "absent", content: "p\n" }, { path: "src/q2.ts", baseHash: "absent", content: "q\n" }] }) as Result;
+  expect(direct.files.map((file) => file.status)).toEqual(resumed.files.map((file) => file.status));
+});
+
+test("没写完的写入还在时，另一批文件被拒；写完或 stale 的记录不挡新写入", async () => {
+  const w = await world(); const tool = await w.tool();
+  const files = [{ path: "src/p.ts", baseHash: "absent", content: "p\n" }, { path: "src/q.ts", baseHash: "absent", content: "q\n" }];
+  const original = store.writeFileAtomic;
+  vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
+    if (path.endsWith("q.ts")) throw new Error("模拟磁盘故障");
+    return original(path, content);
+  });
+  const partial = await tool.execute({ action: "apply", files }) as Result;
+  vi.restoreAllMocks();
+  const conflict = { code: "operation_conflict", advice: { why: expect.stringContaining("本运行还有一批没写完的文件") } };
+  const changed = [{ ...files[1]!, content: "别的内容" }];
+  await expect(tool.execute({ action: "apply", files: changed })).rejects.toMatchObject(conflict);
+  await expect(tool.execute({ action: "apply", files: [{ path: "src/other.ts", baseHash: "absent", content: "o\n" }] })).rejects.toMatchObject(conflict);
+  await expect(w.read("src/other.ts")).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(w.read("src/q.ts")).rejects.toMatchObject({ code: "ENOENT" });
+
+  const done = await tool.execute({ action: "apply", files }) as Result;
+  expect(done.status).toBe("applied");
+  expect(done.operationId).toBe(partial.operationId);
+  const next = await tool.execute({ action: "apply", files: [{ path: "src/other.ts", baseHash: "absent", content: "o\n" }] }) as Result;
+  expect(next.status).toBe("applied");
+  expect(next.operationId).not.toBe(partial.operationId);
+});
+
+test("导入没写完时，带同样的生成文件再调 import 续写，编号不变", async () => {
+  const w = await world();
+  const scratch = await mkdtemp(join(w.root, "scratch-"));
+  await mkdir(join(scratch, "gen"), { recursive: true });
+  await writeFile(join(scratch, "gen", "x.ts"), "x\n");
+  await writeFile(join(scratch, "gen", "y.ts"), "y\n");
+  const tool = await w.tool(w.grant({ scratchRoot: scratch }));
+  const files = [
+    { path: "src/x.ts", baseHash: "absent", sourcePath: "gen/x.ts", targetHash: sha("x\n") },
+    { path: "src/y.ts", baseHash: "absent", sourcePath: "gen/y.ts", targetHash: sha("y\n") },
+  ];
+  const original = store.writeFileAtomic;
+  vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
+    if (path.endsWith("y.ts")) throw new Error("模拟磁盘故障");
+    return original(path, content);
+  });
+  const first = await tool.execute({ action: "import", files }) as Result;
+  expect(first.status).toBe("partial_failure");
+  vi.restoreAllMocks();
+  const resumed = await tool.execute({ action: "import", files }) as Result;
+  expect(resumed.status).toBe("applied");
+  expect(resumed.operationId).toBe(first.operationId);
+  await expect(w.read("src/y.ts")).resolves.toBe("y\n");
+});
+
+test("status 仍要求 operationId，填了能查到本运行的写入", async () => {
+  const w = await world(); const tool = await w.tool();
+  await expect(tool.execute({ action: "status" })).rejects.toMatchObject({ code: "invalid_shape" });
+  const applied = await tool.execute({ action: "apply", files: [{ path: "src/s.ts", baseHash: "absent", content: "s\n" }] }) as Result;
+  const status = await tool.execute({ action: "status", operationId: applied.operationId }) as Result;
+  expect(status).toMatchObject({ status: "applied", operationId: applied.operationId });
+  await expect(tool.execute({ action: "status", operationId: uuidv7() })).rejects.toMatchObject({ code: "not_found" });
+});
+
+test("change_apply 的工具说明与报错文字不含“新生成”“UUIDv7”，import_mismatch 的“重新生成文件”保留", async () => {
+  const source = await readFile(join(import.meta.dirname, "..", "src", "modules", "verification", "change-apply.ts"), "utf8");
+  const tools = await readFile(join(import.meta.dirname, "..", "src", "modules", "pm", "subagent-tools.ts"), "utf8");
+  const description = tools.split("\n").find((line) => line.includes('toPiTool("change_apply"'))!;
+  expect(description).toBeDefined();
+  expect(description).not.toContain("报错里给出本次操作编号");
+  expect(description).not.toMatch(/apply、import 的 operationId/);
+  expect(source).not.toContain('if (db.read(CHANGE_SETS, set.operationId)) throw new ChangeApplyError("operation_conflict")');
+  for (const text of [source, description]) {
+    expect(text.replace(/重新生成/g, "")).not.toContain("新生成");
+    expect(text).not.toContain("UUIDv7");
+  }
+  expect(source).toContain("重新生成文件");
+  expect(source).not.toContain("resume_not_found");
+  expect(source).not.toContain("resume_finished");
+});
+
+test("写到一半失败后又重新预检，不填 baseHash 带同样的文件再调，仍按同一批续写完成", async () => {
+  const w = await world(); const tool = await w.tool();
+  const files = [{ path: "src/p.ts", content: "p\n" }, { path: "src/q.ts", content: "q\n" }];
+  await tool.execute({ action: "prepare", files });
+  const original = store.writeFileAtomic;
+  vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
+    if (path.endsWith("q.ts")) throw new Error("模拟磁盘故障");
+    return original(path, content);
+  });
+  const first = await tool.execute({ action: "apply", files }) as Result;
+  expect(["applying", "partial_failure"]).toContain(first.status);
+  vi.restoreAllMocks();
+  await tool.execute({ action: "prepare", files });
+  const resumed = await tool.execute({ action: "apply", files }) as Result;
+  expect(resumed).toMatchObject({ status: "applied", operationId: first.operationId });
+  await expect(w.read("src/q.ts")).resolves.toBe("q\n");
+});
+
+test("写完后最后核对时发现文件被外部改过：报 stale_base，不附续写提示", async () => {
+  const w = await world(); const tool = await w.tool();
+  const files = [{ path: "src/p.ts", baseHash: "absent", content: "p\n" }, { path: "src/q.ts", baseHash: "absent", content: "q\n" }];
+  const original = store.writeFileAtomic;
+  vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => {
+    await original(path, content);
+    if (path.endsWith("q.ts")) await writeFile(join(w.worktree.root, "src/p.ts"), "外部改动\n");
+  });
+  const error = await tool.execute({ action: "apply", files }).then(() => undefined, (caught: Error) => caught);
+  expect(error).toMatchObject({ code: "stale_base" });
+  expect(error!.message).not.toContain("续写");
+  expect(JSON.stringify((error as { advice?: unknown }).advice ?? "")).not.toContain("续写");
 });

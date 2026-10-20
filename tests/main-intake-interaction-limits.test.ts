@@ -38,7 +38,7 @@ test("真实终态回收和32条活调用上限，迟到结果仍走intake拒绝
     bridge.startSession(ctx);
     return bridge;
   };
-  const input = (): PmIntakeToolInput => ({ purpose: "pm-intake", action: "ask", repoId, requirementId, operationId: uuidv7() });
+  const input = (): PmIntakeToolInput => ({ purpose: "pm-intake", action: "ask", repoId, requirementId });
   try {
     const limited = create(), inputs = Array.from({ length: 32 }, input);
     inputs.forEach((value, index) => observe(limited, ctx, `limit-${index}`, value));
@@ -81,14 +81,14 @@ test("执行中的调用不被时间取消：服务等待两小时后信号未�
   try {
     bridge.startSession(ctx);
     for (let i = 0; i < 32; i++) {
-      const input: PmIntakeToolInput = { purpose: "pm-intake", action: "ask", repoId, requirementId, operationId: uuidv7() };
+      const input: PmIntakeToolInput = { purpose: "pm-intake", action: "ask", repoId, requirementId };
       observe(bridge, ctx, `waiting-${i}`, input);
       tasks.push(bridge.execute(`waiting-${i}`, input, ctx, controller.signal).then(() => "settled", () => "settled"));
     }
     while (signals.length < 32) await new Promise((resolve) => setImmediate(resolve));
     await passTwoHours(offset);
     expect(signals.every((signal) => !signal.aborted)).toBe(true);
-    const fresh: PmIntakeToolInput = { purpose: "pm-intake", action: "ask", repoId, requirementId, operationId: uuidv7() };
+    const fresh: PmIntakeToolInput = { purpose: "pm-intake", action: "ask", repoId, requirementId };
     expect(() => observe(bridge, ctx, "still-blocked", fresh)).toThrow(/tool_call_limit/);
   } finally {
     vi.useRealTimers(); clock.mockRestore();

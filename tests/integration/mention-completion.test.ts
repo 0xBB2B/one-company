@@ -47,7 +47,7 @@ test("M8D-AC1：交互终端里只登记一次 @ 补全；打 @ 时列出本窗�
     expect(factories).toHaveLength(1);
 
     scriptReplies(provider, [
-      { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId, operationId: uuidv7(), requestId: uuidv7(),
+      { type: "toolcall", name: "one_company_requirement_manage", input: { request: { action: "create", repoId: identity.repoId,
         summary: "手机号登录", title: "登录", body: BODY } } },
       { type: "text", text: '{"allow":true}' }, { type: "text", text: "done" },
     ]);

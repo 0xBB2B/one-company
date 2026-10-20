@@ -13,7 +13,7 @@ export const MAIN_WORKFLOW_MANAGE_PARAMETERS = Type.Union([
   Type.Object({ action: Type.Literal("status"), ...target }, strict),
   Type.Object({ action: Type.Literal("delivery-check"), ...target }, strict),
   Type.Object({ action: Type.Literal("close"), ...target, reason: Type.Union([Type.Literal("completed"), Type.Literal("cancelled"), Type.Literal("rejected")]),
-    receiptId: Type.String({ pattern: UUID_V7 }), operationId: Type.String({ pattern: UUID_V7 }) }, strict),
+    receiptId: Type.String({ pattern: UUID_V7 }) }, strict),
 ]);
 type Params = Static<typeof MAIN_WORKFLOW_MANAGE_PARAMETERS>;
 
@@ -28,7 +28,7 @@ export function registerWorkflowManageTool(pi: ExtensionAPI, context: () => Work
   pi.registerTool({
     name: "one_company_workflow_manage",
     label: "workflow_manage",
-    description: "查看需求状态（status）、交付核对（delivery-check）或关闭需求（close）。完成（completed）、取消（cancelled）或拒绝（rejected）都须先用 one_company_user_interact purpose=adjudicate 按用户原话登记决定（完成即用户验收通过 PM 的完成报告），再以返回的 decisionId 作为 receiptId。",
+    description: "查看需求状态（status）、交付核对（delivery-check）或关闭需求（close）。完成（completed）、取消（cancelled）或拒绝（rejected）都须先用 one_company_user_interact purpose=adjudicate 按用户原话登记决定（完成即用户验收通过 PM 的完成报告），再以返回的 decisionId 作为 receiptId。关闭没办完时，用原来的原因和决定编号再次 close，程序会接着办完。",
     parameters: MAIN_WORKFLOW_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams) {

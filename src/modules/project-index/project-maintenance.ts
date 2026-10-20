@@ -50,8 +50,7 @@ export async function recoveryCheck(options: ProjectMaintenanceOptions, input: I
 
 export async function backup(options: ProjectMaintenanceOptions, input: Input) {
   const ctx = await context(options, "确认备份本机需求数据", ["备份本机运行库与需求版本仓库到私有备份目录；备份期间其他数据库写入会被拒绝。"]);
-  return createRequirementBackup({ repoDirectory: ctx.repoDirectory, repoId: options.repoId, operationId: input.operationId,
-    worktreeRoots: ctx.worktreeRoots });
+  return createRequirementBackup({ repoDirectory: ctx.repoDirectory, repoId: options.repoId, operationId: input.operationId, worktreeRoots: ctx.worktreeRoots });
 }
 
 export async function restore(options: ProjectMaintenanceOptions, input: Input & { backupOperationId: string; backupManifestHash: string }) {

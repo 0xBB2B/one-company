@@ -97,7 +97,6 @@ const PM_INTAKE_SERVICE_ADVICE: Record<string, FailureAdvice> = {
   binding_changed: { why: "PM 与需求、工作区的绑定已变化", next: "停止操作，不要重试；把这段原因告诉用户" },
   foreign_request: { why: "这个复核请求不属于当前需求或 PM", next: "用 forward 重新取当前的复核请求" },
   intake_not_ready: { why: "PM 还没提交接手理解", next: "等 PM 提交接手理解后再复核" },
-  invalid_operation: { why: "操作编号不合规", next: "换一个新生成的操作编号重试" },
   invalid_repo: { why: "仓库编号不合规", next: "改用当前工作区列出的仓库编号" },
   invalid_review_decision: { why: "复核结论不合规，四类核对结果必须齐全且格式正确", next: "按原因改正后重试" },
   invalid_shape: { why: "接手复核参数不合规", next: "按原因改正后重试" },
@@ -452,7 +451,6 @@ export class PmIntakeService {
   }
 
   async openRequest(call: MainIntakeCall, operationId: string, signal = new AbortController().signal): Promise<IntakeRequestView> {
-    if (!UUID.test(operationId)) deny("invalid_operation");
     const prepared = await this.#prepareContext(call, signal);
     const submission = await this.#submission(call, prepared);
     const request = this.#store.prepareRequest({ operationId, proof: prepared.proof, submissionRef: submission.submissionRef,
@@ -478,7 +476,6 @@ export class PmIntakeService {
 
   async recordReview(call: MainIntakeCall, requestId: string, operationId: string, decisionValue: IntakeReviewDecision,
     signal = new AbortController().signal): Promise<IntakeReviewView> {
-    if (!UUID.test(operationId)) deny("invalid_operation");
     const prepared = await this.#prepareContext(call, signal);
     const decision = exactDecision(decisionValue), existing = this.#store.readRequest(requestId, prepared.proof);
     if (!intakeBindingsEqual(prepared.binding, existing.record.binding).equal || prepared.sourceDirectoryHash !== existing.record.sourceDirectoryHash) deny("request_not_current");

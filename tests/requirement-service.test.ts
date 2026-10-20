@@ -8,6 +8,7 @@ import { RequirementService, requirementIntentHash } from "../src/modules/requir
 import { draftApprover, manifestConfirmInput } from "./helpers/approval-fixture.ts";
 import type { RequirementServiceOptions, ServiceAuthorizationRequest } from "../src/modules/requirement/requirement-service.ts";
 import { RequirementOperations } from "../src/modules/requirement/requirement-operations.ts";
+import { assertNoUnfinishedRequirementOperationsIn, claimRequirementWriteIn, REQUIREMENT_OPERATION_NAMESPACE, RequirementWriteCoordinator } from "../src/modules/requirement/requirement-coordination.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import * as databaseModule from "../src/core/storage/database.ts";
@@ -16,7 +17,9 @@ import { prdRequirementPath } from "../src/modules/requirement/prd-storage.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
-import { beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, readPrototypeBoard, removeFromDraft, submitDesign } from "../src/modules/requirement/requirement-prototypes.ts";
+import { adviceOf } from "../src/core/exec/tool-failure.ts";
+import { readdir } from "node:fs/promises";
+import { beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, readPrototypeBoard, submitDesign } from "../src/modules/requirement/requirement-prototypes.ts";
 import { prototypesAtRevision } from "../src/modules/requirement/requirement-prototype-revisions.ts";
 
 
@@ -288,29 +291,10 @@ test("Git 完成后操作日志登记故障，原 operation 重试复用提交�
   expect(await commitCount(requirementRoot)).toBe(1);
 
   const recovered = await w.service.create(input);
-  expect(recovered.status).toBe("recovered");
+  expect(recovered.status).toBe("created");
   expect(await commitCount(requirementRoot)).toBe(1);
   expect(w.state.events(reserved.id).filter((event) => event.data.kind === "prd.saved")).toHaveLength(1);
   expect(spy).toHaveBeenCalled();
-});
-
-test("批准已落库但 finalize 响应丢失时，同 operation 重试不重复批准事件", async () => {
-  const w = await world();
-  const created = await w.service.create(createInput());
-  await w.bind(created.requirementId);
-  const input = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
-  const original = RequirementOperations.prototype.finalize;
-  vi.spyOn(RequirementOperations.prototype, "finalize").mockImplementationOnce(() => {
-    throw new Error("injected lost finalize response");
-  }).mockImplementation(original);
-  await expect(w.service.confirmUpdate(input)).rejects.toThrow(/lost finalize response/);
-  expect(w.state.read(created.requirementId).data.revision).toBe(1);
-
-  const recovered = await w.service.confirmUpdate(input);
-  expect(recovered.revision).toBe(1);
-  expect(recovered.lifecycle).toBe("active");
-  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prd.approved")).toHaveLength(1);
-  expect(await commitCount(prdRequirementPath({ ...w.options, requirementId: created.requirementId }))).toBe(1);
 });
 
 test("状态保存已成功但 operation 日志未登记时，原 operation 核对恢复且不再写 Git", async () => {
@@ -625,11 +609,6 @@ async function acceptedPrototype(w: Awaited<ReturnType<typeof world>>, requireme
   await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash, choice: "accept", opinion: null });
 }
 
-async function rejection(run: () => Promise<unknown>): Promise<string> {
-  const error = await run().then(() => { throw new Error("预期被拒，但成功了"); }, (caught: unknown) => caught as { message: string; advice?: { why: string; next: string } });
-  return `${error.message} ${error.advice?.why ?? ""} ${error.advice?.next ?? ""}`;
-}
-
 async function prototypeApproval(w: Awaited<ReturnType<typeof world>>) {
   const created = await w.service.create(createInput());
   await acceptedPrototype(w, created.requirementId, "设置页");
@@ -670,44 +649,6 @@ test("草稿里还有在途原型时，批准被拒且不留未完成的批准�
   expect(await prototypesAtRevision(boardRef(w), created.requirementId, 1)).toEqual([]);
 });
 
-test("批准操作没完成期间，原型看板锁住：登记通过、返工、放弃，移除，派出新设计都被拒，原因写明需求正在批准；完成后恢复正常", async () => {
-  const w = await world();
-  const { created, input } = await prototypeApproval(w);
-  const id = created.requirementId;
-  vi.spyOn(RequirementStateStore.prototype, "recordApprovedVersion").mockRejectedValueOnce(new Error("injected approve failure"));
-  await expect(w.service.confirmUpdate(input)).rejects.toThrow(/injected approve failure/);
-  const before = await readPrototypeBoard(boardRef(w), id);
-  const locked = async (run: () => Promise<unknown>) => {
-    const text = await rejection(run);
-    expect(text).toContain("需求正在批准");
-    expect(text).toContain("稍后再试");
-  };
-  await locked(() => beginDesign(boardRef(w), { requirementId: id, name: "命令行输出", runId: uuidv7(), agent: "designer" }));
-  await locked(() => removeFromDraft(boardRef(w), { requirementId: id, name: "设置页", version: 1 }));
-  await locked(() => decidePrototype(boardRef(w), { requirementId: id, name: "设置页", version: 1, hash: "a".repeat(64), choice: "accept", opinion: null }));
-  expect(await readPrototypeBoard(boardRef(w), id)).toEqual(before);
-
-  expect((await w.service.confirmUpdate(input)).revision).toBe(1);
-  await beginDesign(boardRef(w), { requirementId: id, name: "命令行输出", runId: uuidv7(), agent: "designer" });
-});
-
-test("带原型指纹的批准在写入前中断后，用同一份请求重放能补完：快照写入、看板提升", async () => {
-  const w = await world();
-  const { created, input } = await prototypeApproval(w);
-  const id = created.requirementId;
-  vi.spyOn(RequirementStateStore.prototype, "recordApprovedVersion").mockRejectedValueOnce(new Error("injected approve failure"));
-  await expect(w.service.confirmUpdate(input)).rejects.toThrow(/injected approve failure/);
-  expect(await prototypesAtRevision(boardRef(w), id, 1)).toEqual([]);
-  expect((await readPrototypeBoard(boardRef(w), id)).entries[0]!.approved).toBeNull();
-
-  const recovered = await w.service.confirmUpdate(input);
-  expect(recovered).toMatchObject({ revision: 1, lifecycle: "active" });
-  expect((await prototypesAtRevision(boardRef(w), id, 1)).map((item) => `${item.name}:${item.version}`)).toEqual(["设置页:1"]);
-  const entry = (await readPrototypeBoard(boardRef(w), id)).entries[0]!;
-  expect(entry.approved?.version).toBe(1);
-  expect(entry.draft).toBeNull();
-});
-
 test("需求的 epoch 变化后，metadata 不再给出旧 epoch 的保存操作编号", async () => {
   const w = await world();
   const created = await w.service.create(createInput());
@@ -735,4 +676,218 @@ test("归档目录里只有本需求的原型 html 时 read 照常成功；与�
   await writeFile(join(prd, `${created.requirementId}.需求标题.md`), "正文");
   await expect(w.service.read({ requirementId: created.requirementId, source: "saved" })).rejects.toMatchObject({ code: "recovery_required" });
   expect(w.state.read(created.requirementId).data.recoveryReason).toBe("archive_found");
+});
+
+async function leaveUnfinishedUpdate(w: Awaited<ReturnType<typeof world>>, created: Awaited<ReturnType<RequirementService["create"]>>) {
+  const input = { requirementId: created.requirementId, operationId: uuidv7(), version: created.version, title: "需求标题", body: "留下未完成保存" };
+  const original = RequirementOperations.prototype.recordSavedVersion;
+  vi.spyOn(RequirementOperations.prototype, "recordSavedVersion").mockImplementationOnce(() => {
+    throw new Error("injected saved-version log failure");
+  }).mockImplementation(original);
+  await expect(w.service.updateDraft(input)).rejects.toThrow(/saved-version log failure/);
+  return input;
+}
+
+test("另一次保存没完成时，requirement_write_pending 的原因不带操作编号，用原内容重试后需求解锁", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  const input = await leaveUnfinishedUpdate(w, created);
+  const error = await w.service.updateDraft({ ...input, operationId: uuidv7(), version: w.state.read(created.requirementId).version, body: "别的内容" }).catch((caught) => caught);
+  expect(error).toMatchObject({ code: "requirement_write_pending" });
+  expect(adviceOf(error)!.why).toContain("这个需求还有一次没完成的保存");
+  expect(adviceOf(error)!.why).not.toContain(input.operationId);
+  expect(adviceOf(error)!.next).not.toContain("在 operationId 填");
+  expect((await w.service.updateDraft(input)).status).toBe("saved");
+  const next = await w.service.updateDraft({ ...input, operationId: uuidv7(), version: w.state.read(created.requirementId).version, body: "解锁后的新内容" });
+  expect(next.status).toBe("saved");
+});
+
+test("本次保存的 operation_not_ready 报错不带操作编号，建议里不叫模型填 operationId", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  const input = { requirementId: created.requirementId, operationId: uuidv7(), version: created.version, title: "需求标题", body: "登记保存版本被跳过" };
+  vi.spyOn(RequirementOperations.prototype, "recordSavedVersion").mockImplementationOnce(function (this: RequirementOperations, operationId: string) {
+    return this.read(operationId)!;
+  });
+  const error = await w.service.updateDraft(input).catch((caught) => caught);
+  expect(error).toMatchObject({ code: "operation_not_ready" });
+  expect(adviceOf(error)!.why).not.toContain("原操作编号");
+  expect(adviceOf(error)!.next).not.toContain("在 operationId 填");
+});
+
+test("pendingSave：返回需求没做完的保存记录（create 或 updateDraft），没有或已完成返回 null", async () => {
+  const w = await world();
+  const operations = new RequirementOperations({ dataRoot: w.options.dataRoot, repoId: w.options.repoId });
+  const created = await w.service.create(createInput());
+  expect(operations.pendingSave(created.requirementId)).toBeNull();
+  const unfinished = await leaveUnfinishedUpdate(w, created);
+  expect(operations.pendingSave(created.requirementId)).toMatchObject({ operationId: unfinished.operationId, action: "updateDraft", finalVersion: null });
+  expect(operations.pendingSave(uuidv7())).toBeNull();
+  await w.service.updateDraft(unfinished);
+  expect(operations.pendingSave(created.requirementId)).toBeNull();
+});
+
+test("pendingCreate：返回本仓库 intentHash 相同且没做完的 create 记录，hash 不同或已完成返回 null", async () => {
+  const w = await world();
+  const operations = new RequirementOperations({ dataRoot: w.options.dataRoot, repoId: w.options.repoId });
+  const input = createInput();
+  const hash = requirementIntentHash({ title: input.title, body: input.body });
+  expect(operations.pendingCreate(hash)).toBeNull();
+  const original = RequirementOperations.prototype.recordGitResult;
+  vi.spyOn(RequirementOperations.prototype, "recordGitResult").mockImplementationOnce(() => {
+    throw new Error("injected operation DB failure");
+  }).mockImplementation(original);
+  await expect(w.service.create(input)).rejects.toThrow(/injected operation DB failure/);
+  expect(operations.pendingCreate(hash)).toMatchObject({ operationId: input.operationId, action: "create", requestId: input.requestId, intentHash: hash, finalVersion: null });
+  expect(operations.pendingCreate(requirementIntentHash({ title: input.title, body: "别的正文" }))).toBeNull();
+  expect(operations.pendingSave((operations.pendingCreate(hash))!.requirementId)).toMatchObject({ operationId: input.operationId });
+  await w.service.create(input);
+  expect(operations.pendingCreate(hash)).toBeNull();
+});
+
+test("requirement 模块文案不含“新生成”，源码里没有 identity_collision 和操作编号续做的旧字样", async () => {
+  const files = async (dir: string): Promise<string[]> => (await readdir(dir, { withFileTypes: true, recursive: true }))
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".ts")).map((entry) => join(entry.parentPath, entry.name));
+  const srcRoot = new URL("../src", import.meta.url).pathname;
+  const requirementFiles = ["requirement-operations.ts", "requirement-coordination.ts", "requirement-service.ts", "requirement-state.ts",
+    "requirement-contracts.ts", "requirement-manage-contracts.ts", "prd-storage.ts"].map((name) => join(srcRoot, "modules/requirement", name));
+  const withFreshText: string[] = [];
+  for (const file of requirementFiles) if ((await readFile(file, "utf8")).replace(/重新生成/g, "").includes("新生成")) withFreshText.push(file);
+  expect(withFreshText).toEqual([]);
+  const withCollision: string[] = [];
+  for (const file of await files(srcRoot)) if ((await readFile(file, "utf8")).includes("identity_collision")) withCollision.push(file);
+  expect(withCollision).toEqual([]);
+
+  const scanned = [...requirementFiles, ...["interaction/main-requirement-interaction.ts", "interaction/requirement-manage-tool.ts", "requirement/user-interaction-format.ts"].map((name) => join(srcRoot, "modules", name))];
+  const leftovers: string[] = [];
+  for (const file of scanned) {
+    const text = await readFile(file, "utf8");
+    for (const word of ["原操作编号", "resume_not_found", "resume_finished", "resume_target_mismatch", "resumable(", "在 operationId 填"]) if (text.includes(word)) leftovers.push(`${file}: ${word}`);
+  }
+  expect(leftovers).toEqual([]);
+});
+
+test("续做时内容与原操作不同被拒，需求仍锁着、没写入新内容", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  const input = await leaveUnfinishedUpdate(w, created);
+  const before = w.state.read(created.requirementId);
+  const conflict = await w.service.updateDraft({ ...input, title: "需求标题改" }).catch((caught) => caught);
+  expect(conflict).toMatchObject({ code: "requirement_write_pending" });
+  expect(adviceOf(conflict)!.why).toContain("这个需求还有一次没完成的保存");
+  expect(adviceOf(conflict)!.why).toContain("内容和这次不同");
+  const pending = await w.service.updateDraft({ ...input, operationId: uuidv7(), version: w.state.read(created.requirementId).version }).catch((caught) => caught);
+  expect(pending).toMatchObject({ code: "requirement_write_pending" });
+  expect(w.state.read(created.requirementId)).toEqual(before);
+});
+
+test("批准时这个需求另一次保存没做完：被拒，原因不带操作编号，建议用原来的标题和正文再保存", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  await w.bind(created.requirementId);
+  const confirm = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
+  const input = await leaveUnfinishedUpdate(w, { ...created, version: w.state.read(created.requirementId).version });
+  const error = await w.service.confirmUpdate(confirm).catch((caught) => caught);
+  expect(error).toMatchObject({ code: "unfinished_requirement_operation" });
+  expect(adviceOf(error)!.why).not.toContain(input.operationId);
+  expect(adviceOf(error)!.next).toContain("用原来的标题和正文");
+  expect(adviceOf(error)!.next).not.toContain("在 operationId 填");
+});
+
+function approvalSnapshot(w: Awaited<ReturnType<typeof world>>, requirementId: string) {
+  const database = repositoryDatabase(w.options.dataRoot, w.options.repoId);
+  return {
+    record: w.state.read(requirementId),
+    events: w.state.events(requirementId),
+    operations: withDatabase(database, (db) => db.list(REQUIREMENT_OPERATION_NAMESPACE)),
+    claims: new RequirementWriteCoordinator(w.options).inspect(requirementId),
+    uses: withDatabase(database, (db) => db.list("requirement_approval_uses")),
+  };
+}
+
+const confirmOperations = (w: Awaited<ReturnType<typeof world>>) =>
+  withDatabase(repositoryDatabase(w.options.dataRoot, w.options.repoId), (db) => db.list(REQUIREMENT_OPERATION_NAMESPACE))
+    .filter((row) => (row.data as { action?: string }).action === "confirmUpdate");
+
+test("批准成功后不留 confirmUpdate 操作记录，需求记录、prd.approved 事件、批准使用记录照常写入", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  const receipt = await activate(w, created);
+  expect(receipt).toMatchObject({ revision: 1, lifecycle: "active" });
+  expect(confirmOperations(w)).toEqual([]);
+  expect(w.state.read(created.requirementId).data).toMatchObject({ lifecycle: "active", revision: 1, approvalReceiptId: expect.any(String) });
+  expect(w.state.events(created.requirementId).filter((event) => event.data.kind === "prd.approved")).toHaveLength(1);
+  const uses = withDatabase(repositoryDatabase(w.options.dataRoot, w.options.repoId), (db) => db.list("requirement_approval_uses"));
+  expect(uses.map((row) => row.key)).toEqual([w.state.read(created.requirementId).data.approvalReceiptId]);
+});
+
+test("批准写入中途失败：调用被拒，需求记录、事件、操作记录、写占用都和调用前一样，随后重新批准成功", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  await w.bind(created.requirementId);
+  const input = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
+  const before = approvalSnapshot(w, created.requirementId);
+  const restore = failDatabaseWrites(repositoryDatabase(w.options.dataRoot, w.options.repoId), "events", "stream", `requirement_events:${created.requirementId}`);
+  try { await expect(w.service.confirmUpdate(input)).rejects.toBeTruthy(); }
+  finally { restore(); }
+  expect(approvalSnapshot(w, created.requirementId)).toEqual(before);
+
+  const retry = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
+  expect(await w.service.confirmUpdate(retry)).toMatchObject({ revision: 1, lifecycle: "active" });
+  expect(confirmOperations(w)).toEqual([]);
+});
+
+test("带原型的批准写入中途失败：看板和原型快照也保持调用前的样子，重新批准后快照写入、看板提升", async () => {
+  const w = await world();
+  const { created, input } = await prototypeApproval(w);
+  const id = created.requirementId;
+  const boardBefore = await readPrototypeBoard(boardRef(w), id);
+  const before = approvalSnapshot(w, id);
+  const restore = failDatabaseWrites(repositoryDatabase(w.options.dataRoot, w.options.repoId), "events", "stream", `requirement_events:${id}`);
+  try { await expect(w.service.confirmUpdate(input)).rejects.toBeTruthy(); }
+  finally { restore(); }
+  expect(approvalSnapshot(w, id)).toEqual(before);
+  expect(await readPrototypeBoard(boardRef(w), id)).toEqual(boardBefore);
+  expect(await prototypesAtRevision(boardRef(w), id, 1)).toEqual([]);
+
+  expect(await w.service.confirmUpdate(input)).toMatchObject({ revision: 1, lifecycle: "active" });
+  expect((await prototypesAtRevision(boardRef(w), id, 1)).map((item) => `${item.name}:${item.version}`)).toEqual(["设置页:1"]);
+  const entry = (await readPrototypeBoard(boardRef(w), id)).entries[0]!;
+  expect(entry.approved?.version).toBe(1);
+  expect(entry.draft).toBeNull();
+});
+
+test("另一次 updateDraft 没做完时批准被拒，原因写明还有一次没完成的保存，需求状态不变", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  await w.bind(created.requirementId);
+  const input = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
+  const unfinished = await leaveUnfinishedUpdate(w, { ...created, version: w.state.read(created.requirementId).version });
+  const before = w.state.read(created.requirementId);
+  const error = await w.service.confirmUpdate(input).catch((caught) => caught);
+  expect(error).toBeInstanceOf(Error);
+  expect(adviceOf(error)!.why).toContain("这个需求还有一次没完成的保存");
+  expect(adviceOf(error)!.why).not.toContain(unfinished.operationId);
+  expect(w.state.read(created.requirementId)).toEqual(before);
+  expect(confirmOperations(w)).toEqual([]);
+});
+
+test("批准事务内再次核对写占用：授权之后、写入之前出现别的写占用，批准被拒且什么都不写", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  const input = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
+  const database = repositoryDatabase(w.options.dataRoot, w.options.repoId);
+  let calls = 0;
+  const service = await RequirementService.open({ ...w.options, authorizeManifest: () => {
+    calls += 1;
+    if (calls === 2) withDatabase(database, (db) => db.transaction(() => claimRequirementWriteIn(db, { ownerToken: uuidv7(), pid: process.pid,
+      repoId: w.options.repoId, requirementId: created.requirementId, operationId: uuidv7(), acquiredAt: Date.now() }, { allowDeadOriginalOperationRecovery: false })));
+    return true;
+  } });
+  const before = approvalSnapshot(w, created.requirementId);
+  const error = await service.confirmUpdate(input).catch((caught) => caught);
+  expect(calls).toBe(2);
+  expect(error).toMatchObject({ code: "requirement_write_busy" });
+  const after = approvalSnapshot(w, created.requirementId);
+  expect({ ...after, claims: undefined }).toEqual({ ...before, claims: undefined });
 });

@@ -88,12 +88,13 @@ test("用途不符或未知旧布局的.db不被当成缓存重建", async () =>
   expect(() => new LocalDatabase(index)).toThrow(/wrong_database_kind/);
 });
 
-const OLD_VERSION_MESSAGE = (file: string) => new RegExp(`outdated_database.*${file}.*请备份后删除本机数据目录并重新初始化`);
+const OLD_VERSION_MESSAGE = (file: string) => new RegExp(`outdated_database.*${file}.*来自旧版本.*请备份后删除本机数据目录并重新初始化`);
 
 test.each([
   { kind: "data", version: 0, error: /wrong_database_kind/ },
   { kind: "data", version: 1, error: OLD_VERSION_MESSAGE("data\\.db") },
   { kind: "data", version: 2, error: OLD_VERSION_MESSAGE("data\\.db") },
+  { kind: "data", version: 3, error: OLD_VERSION_MESSAGE("data\\.db") },
   { kind: "data", version: 99, error: /不支持的数据库版本/ },
   { kind: "index", version: 1, error: OLD_VERSION_MESSAGE("index\\.db") },
   { kind: "index", version: 99, error: /不支持的数据库版本/ },
@@ -109,9 +110,9 @@ test.each([
   expect(existsSync(path + "-wal")).toBe(false);
 });
 
-test("新建的 data.db、index.db、global.db 版本号分别是 3、2、1", async () => {
+test("新建的 data.db、index.db、global.db 版本号分别是 4、2、1", async () => {
   const w = await world();
-  const expected = { data: 3, index: 2, global: 1 } as const;
+  const expected = { data: 4, index: 2, global: 1 } as const;
   for (const kind of ["data", "index", "global"] as const) {
     const path = databaseFile(w.directory, kind);
     new LocalDatabase(path).close();

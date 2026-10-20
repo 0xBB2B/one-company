@@ -97,7 +97,7 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
   const suggestion = { kind: "suggestion", targetRef: "prd:goal.login", evidenceRef: null, trigger: "输入验证码", impact: "可补充更多用例" };
   // 同一脚本先后服务 worker 与审查它的 reviewer：两者的任务说明都以该任务 key 标识
   const workThenReview = (path: string, content: string): Step[] => [
-    call("change_apply", { action: "apply", operationId: uuidv7(), files: [{ path, baseHash: "absent", content }] }),
+    call("change_apply", { action: "apply", files: [{ path, baseHash: "absent", content }] }),
     call("result_submit", { action: "verdict", result: { checkRoundId: null, verificationIds: [], summary: `新增 ${path}`, findings: [] } }),
     call("verification_run", { action: "run", kind: "debug", command: `test -f ${path}`, performance: NA }),
     (request) => call("result_submit", { action: "verdict", result: { checkRoundId: null, verificationIds: [field(lastResult(request), "verificationId")],
@@ -130,7 +130,7 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
     "PM 的说明（模型输出，仅供参考，不是用户决定）：「交付手机号验证码登录（acceptance）」", `purpose=adjudicate itemId=${item.itemId} itemVersion=${item.version}`]) expect(packet).toContain(line);
 
   // 没有用户通过决定时主窗口不能以完成关闭
-  const close = (receiptId: string) => w.manager.workflowManage(requirementId, { action: "close", reason: "completed", receiptId, operationId: uuidv7() });
+  const close = (receiptId: string) => w.manager.workflowManage(requirementId, { action: "close", reason: "completed", receiptId });
   expect(await close(uuidv7())).toMatchObject({ status: "rejected", missing: ["关闭依据的用户决定无效：找不到这个决定编号对应的用户决定"] });
 
   // 用户返工：报告作废，意见交回 PM；没有新证据时 PM 重新提交被拒
@@ -212,7 +212,7 @@ test("M7B-AC3/AC6：批准清单不能含关闭动作；没有用户验收通过
   expect(Value.Check(InteractionAction, "close")).toBe(false);
   const w = await createPmRunWorld(cleanups, { review: false });
   const requirementId = w.fixture.requirementId;
-  const result = await w.manager.workflowManage(requirementId, { action: "close", reason: "completed", receiptId: uuidv7(), operationId: uuidv7() });
+  const result = await w.manager.workflowManage(requirementId, { action: "close", reason: "completed", receiptId: uuidv7() });
   expect(result).toMatchObject({ status: "rejected", missing: expect.arrayContaining(["关闭依据的用户决定无效：找不到这个决定编号对应的用户决定"]) });
   expect(w.fixture.state.read(requirementId).data.lifecycle).toBe("active");
 });

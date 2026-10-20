@@ -7,7 +7,7 @@ import { uuidv7 } from "../src/core/storage/database.ts";
 import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../src/modules/interaction/main-intake-interaction.ts";
 import { askQuestionIssues } from "../src/modules/interaction/ask-question.ts";
 import { createUserInteractTool, USER_INTERACT_PARAMETERS } from "../src/modules/interaction/user-interact-tool.ts";
-const base = { action: "reply", repoId: "a".repeat(64), requirementId: uuidv7(), operationId: uuidv7(), savedOperationId: uuidv7(), version: 2 };
+const base = { action: "reply", repoId: "a".repeat(64), requirementId: uuidv7(), savedOperationId: uuidv7(), version: 2 };
 test("user_interact不接受转述、请求选择、角色或回执", async () => {
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: base })).toBe(true);
   const tool = createUserInteractTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
@@ -36,8 +36,39 @@ test("ask问题、范围、action限额严格，章节数不设单独上限，�
   }
 });
 
+test("编号由程序生成：user-confirmation的reply、ask、panel-item、adjudicate与pm-intake的ask和reply都不接受operationId", async () => {
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: base })).toBe(true);
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...base, purpose: "user-confirmation" } })).toBe(true);
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...base, operationId: "不是编号" } })).toBe(false);
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...base, operationId: uuidv7() } })).toBe(false);
+  const confirmTool = createUserInteractTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
+  await expect(confirmTool.execute("call", { request: { ...base, operationId: uuidv7() } } as never, undefined, undefined, {} as never)).rejects.toMatchObject({ code: "invalid_shape" });
+  const repoId = "a".repeat(64), requirementId = uuidv7(), operationId = uuidv7();
+  const askFields = { question: "A可以实施吗？", rootCheck: "要定的是 A 何时实施", choices: CHOICES, scope: "仅A", actions: ["implement"], unitIds: ["A"] };
+  const withoutId: Array<[string, Record<string, unknown>]> = [
+    ["user-confirmation ask", { action: "ask", repoId, requirementId, savedOperationId: uuidv7(), version: 2, ...askFields }],
+    ["panel-item ask", { purpose: "panel-item", action: "ask", repoId, requirementId, itemId: `task:${uuidv7()}`, itemVersion: "3", question: askFields.question, rootCheck: askFields.rootCheck, choices: CHOICES }],
+    ["adjudicate reply", { purpose: "adjudicate", action: "reply", repoId, requirementId, itemId: `requirement:${requirementId}`, itemVersion: `requirement:${requirementId}:1` }],
+    ["pm-intake ask", { purpose: "pm-intake", action: "ask", repoId, requirementId }],
+    ["pm-intake reply", { purpose: "pm-intake", action: "reply", repoId, requirementId, requestId: uuidv7(), result: "passed", shortIssues: [] }],
+  ];
+  const tool = createUserInteractTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
+  for (const [name, request] of withoutId) {
+    expect(Value.Check(USER_INTERACT_PARAMETERS, { request }), name).toBe(true);
+    expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...request, operationId } }), name).toBe(false);
+    await expect(tool.execute("call", { request: { ...request, operationId } } as never, undefined, undefined, {} as never), name).rejects.toMatchObject({ code: "invalid_shape" });
+  }
+});
+
+test("工具说明不提新生成、UUIDv7和operationId", () => {
+  const { description } = createUserInteractTool({ interaction: {} as never });
+  expect(description).not.toContain("新生成");
+  expect(description).not.toContain("UUIDv7");
+  expect(description).not.toContain("operationId");
+});
+
 test("pm-intake runtime对白名单副本做严格action分派", () => {
-  const valid = { purpose: "pm-intake", action: "ask", repoId: "b".repeat(64), requirementId: uuidv7(), operationId: uuidv7() };
+  const valid = { purpose: "pm-intake", action: "ask", repoId: "b".repeat(64), requirementId: uuidv7() };
   expect(checkPmIntakeToolInput(valid)).toEqual(valid);
   for (const action of [...Object.getOwnPropertyNames(Object.prototype), "unknown"]) {
     const input = { ...valid, action };
@@ -51,7 +82,7 @@ test("pm-intake runtime对白名单副本做严格action分派", () => {
 
 test("pm-intake schema按400个Unicode码点和8条问题限制", () => {
   const pm = { purpose: "pm-intake", action: "reply", repoId: "b".repeat(64), requirementId: uuidv7(),
-    requestId: uuidv7(), operationId: uuidv7(), result: "pm_correction_required" };
+    requestId: uuidv7(), result: "pm_correction_required" };
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...pm, shortIssues: ["😀".repeat(400)] } })).toBe(true);
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...pm, shortIssues: ["😀".repeat(401)] } })).toBe(false);
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...pm, shortIssues: Array.from({ length: 9 }, () => "问题") } })).toBe(false);
@@ -80,8 +111,8 @@ test("真实Anthropic序列化在onPayload前让content中的中文理解和requ
 });
 
 test("pm-intake严格分支只转给intake，默认及显式user-confirmation保持原路径", async () => {
-  const requirementId = uuidv7(), repoId = "b".repeat(64), operationId = uuidv7();
-  const pm = { purpose: "pm-intake", action: "ask", repoId, requirementId, operationId };
+  const requirementId = uuidv7(), repoId = "b".repeat(64);
+  const pm = { purpose: "pm-intake", action: "ask", repoId, requirementId };
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: pm })).toBe(true);
   for (const patch of [{ actor: "user" }, { role: "main" }, { reviewer: "forged" }, { trusted: true },
     { receipt: uuidv7() }, { understanding: {} }, { binding: {} }, { sourceDirectory: {} }, { submissionHash: "c".repeat(64) }]) {

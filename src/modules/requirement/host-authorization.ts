@@ -82,8 +82,6 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   invalid_approval_unit_id: { why: "需求正文的标题编号不合规：编号须以字母开头、只含字母数字和 . _ -、不超过 96 个字符、互不重复，且不能用 metadata、preamble、whole-body", next: "改正正文里的标题编号后重新保存" },
   response_limit: { why: "maxBytes 太小，放不下任何内容", next: "调大 maxBytes 后重试" },
   interaction_busy: { why: "上一个需求操作还没结束", next: "等上一个操作结束后再试" },
-  stale_operation_result: { why: "这个操作编号之前已失败过，不能再用", next: "换一个新生成的操作编号重试" },
-  operation_conflict: { why: "同一操作编号已用于内容不同的请求", next: "换一个新生成的操作编号重试" },
   delivery_expired: { why: "找不到这次调用的结果送达记录", next: "重新发起一次" },
   pm_intake_unavailable: { why: "当前窗口没有接手复核能力", next: STOP },
   interaction_denied: { why: "需求操作被拒绝，底层没有给出可说明的原因", next: "重试一次；仍然失败就把这段原因告诉用户" },

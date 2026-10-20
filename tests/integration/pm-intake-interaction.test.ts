@@ -320,7 +320,7 @@ async function withSdkWorld(
 
 function ask(fixture: PmIntakeFixture) {
   return { purpose: "pm-intake", action: "ask", repoId: fixture.repoId,
-    requirementId: fixture.requirementId, operationId: uuidv7() } as const;
+    requirementId: fixture.requirementId } as const;
 }
 
 test.each([
@@ -385,7 +385,7 @@ test("真实SDK下一次模型请求只从tool content解析requestId并完成as
         expect(view.requestId).toBe(modelRequestId);
         return { type: "toolcall", name: "one_company_user_interact", input: { request: { purpose: "pm-intake", action: "reply",
           repoId: fixture.repoId, requirementId: fixture.requirementId, requestId: modelRequestId,
-          operationId: uuidv7(), result: "passed", shortIssues: [] } } } satisfies ScriptedReply;
+          result: "passed", shortIssues: [] } } } satisfies ScriptedReply;
       }
       expect((view.record as { requestId: string; result: string }).requestId).toBe(modelRequestId);
       expect((view.record as { requestId: string; result: string }).result).toBe("passed");

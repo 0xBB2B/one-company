@@ -6,7 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import { readGit } from "../../core/exec/git-read.ts";
 import { checked, commit, id, object } from "../requirement/requirement-contracts.ts";
 import { RequirementService } from "../requirement/requirement-service.ts";
@@ -34,7 +34,6 @@ const WORKSPACE_ADVICE = {
   declined: { why: "用户在界面上拒绝了这次操作", next: "不要重试；确实需要时先向用户说明原因再问" },
   path_conflict: { why: "工作区目标路径已被占用", next: "请用户处理该路径后重试" },
   branch_conflict: { why: "需求分支名已被占用且不属于本需求", next: "请用户处理同名分支后重试" },
-  operation_conflict: { why: "同一操作编号已用于别的工作区操作", next: "换一个新生成的操作编号重试" },
   not_prepared: { why: "需求还没有准备工作区", next: "先用 workspace-prepare 准备工作区" },
   recycle_blocked: { why: "工作区还不能回收", next: "按原因逐项处理后再回收" },
   git_failed: { why: "Git 命令执行失败", next: "按 Git 的报错处理；需要改动仓库时请用户介入" },
@@ -124,15 +123,13 @@ export class WorkspaceManageService {
     return (await service.read({ requirementId, source: "approved" })).title;
   }
 
-  async prepare(input: { requirementId: string; operationId: string }): Promise<ManagedWorkspace> {
-    checked(id, input.requirementId); checked(id, input.operationId);
+  async prepare(input: { requirementId: string }): Promise<ManagedWorkspace> {
+    checked(id, input.requirementId);
     const record = this.state.read(input.requirementId);
     if (record.data.lifecycle !== "active") throw new WorkspaceManageError("requirement_not_active", ["需求批准生效后才能创建工作区"]);
     const existing = this.read(input.requirementId);
-    if (existing && existing.operationId !== input.operationId) {
-      if (existing.status === "ready") return existing;
-      throw new WorkspaceManageError("operation_conflict");
-    }
+    if (existing?.status === "ready") return existing;
+    const operationId = existing?.operationId ?? uuidv7();
     const location = workspaceLocation(this.options.repositoryRoot, input.requirementId);
     let baseCommit = existing?.baseCommit ?? await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
     const unbornBranch = baseCommit ? null : await gitOutput(this.options.repositoryRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
@@ -145,7 +142,7 @@ export class WorkspaceManageService {
         "主仓库未提交的改动不会带入新工作区。"])] });
       if (!approved) throw new WorkspaceManageError("declined");
       baseCommit ??= await this.initCommit();
-      this.save({ format: "managed-workspace/v1", requirementId: input.requirementId, title, operationId: input.operationId, baseCommit,
+      this.save({ format: "managed-workspace/v1", requirementId: input.requirementId, title, operationId, baseCommit,
         branch: location.branch, path: location.path, status: "preparing", recycleOperationId: null });
     }
     const plan = this.read(input.requirementId)!;
@@ -182,8 +179,8 @@ export class WorkspaceManageService {
     return commit;
   }
 
-  async recycle(input: { requirementId: string; operationId: string }): Promise<ManagedWorkspace> {
-    checked(id, input.requirementId); checked(id, input.operationId);
+  async recycle(input: { requirementId: string }): Promise<ManagedWorkspace> {
+    checked(id, input.requirementId);
     const plan = this.read(input.requirementId);
     if (!plan || plan.status === "preparing") throw new WorkspaceManageError("not_prepared");
     if (plan.status === "recycled") return plan;
@@ -203,7 +200,7 @@ export class WorkspaceManageService {
     if (await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", plan.branch]) !== null) {
       await writeGit(this.options.repositoryRoot, ["branch", "-d", plan.branch.slice("refs/heads/".length)]);
     }
-    const recycled = { ...plan, status: "recycled" as const, recycleOperationId: input.operationId };
+    const recycled = { ...plan, status: "recycled" as const, recycleOperationId: uuidv7() };
     this.save(recycled);
     return recycled;
   }

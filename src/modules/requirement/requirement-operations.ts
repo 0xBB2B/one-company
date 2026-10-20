@@ -1,14 +1,12 @@
+import { existsSync } from "node:fs";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
-import { ApprovalManifestReferenceSchema, RequirementDocSpecSchema, checkRequirement, commit, counter, hash, id, object, positive } from "./requirement-contracts.ts";
-import type { ApprovalManifestReference } from "./approval-manifest.ts";
-import type { RequirementDocSpec } from "./requirement-doc.ts";
+import { checkRequirement, commit, counter, hash, id, object, positive } from "./requirement-contracts.ts";
 import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
 import { prdRequirementPath } from "./prd-storage.ts";
 import type { PrdRepositoryIdentity, PrdStorageWriteResult } from "./prd-storage.ts";
-import { assertApprovableIn } from "./requirement-prototypes.ts";
 import { archivePathFor } from "./requirement-identity.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
 import {
@@ -22,7 +20,7 @@ import type { RequirementWriteOwner } from "./requirement-coordination.ts";
 import { PRD_ARCHIVE_DIRECTORY } from "../../core/policy/content-policy.ts";
 
 const nullable = <T extends Parameters<typeof Type.Union>[0][number]>(schema: T) => Type.Union([schema, Type.Null()]);
-const action = Type.Union([Type.Literal("create"), Type.Literal("updateDraft"), Type.Literal("confirmUpdate")]);
+const action = Type.Union([Type.Literal("create"), Type.Literal("updateDraft")]);
 const identity = object({ dev: counter, ino: positive });
 const gitResult = object({
   status: Type.Union([Type.Literal("created"), Type.Literal("saved"), Type.Literal("unchanged"), Type.Literal("recovered")]),
@@ -45,22 +43,17 @@ const operationSchema = object({
   expectedParent: nullable(commit),
   saveVersion: positive,
   epoch: positive,
-  receiptId: nullable(id),
-  manifest: Type.Optional(ApprovalManifestReferenceSchema),
-  docSpec: Type.Optional(RequirementDocSpecSchema),
-  prototypes: Type.Optional(hash),
   archivePath: Type.String({ minLength: 1, maxLength: 1024 }),
   repositoryRoot: Type.String({ minLength: 1, maxLength: 4096 }),
   expectedRepositoryIdentity: nullable(identity),
   git: nullable(gitResult),
   savedVersion: nullable(positive),
-  approvalVersion: nullable(positive),
   finalVersion: nullable(positive),
   createdAt: counter,
   updatedAt: counter,
 });
 
-export type RequirementOperationAction = "create" | "updateDraft" | "confirmUpdate";
+export type RequirementOperationAction = "create" | "updateDraft";
 export interface RequirementOperation {
   format: "requirement-service-operation/v1";
   operationId: string;
@@ -73,10 +66,6 @@ export interface RequirementOperation {
   expectedParent: string | null;
   saveVersion: number;
   epoch: number;
-  receiptId: string | null;
-  manifest?: ApprovalManifestReference;
-  docSpec?: RequirementDocSpec;
-  prototypes?: string;
   archivePath: string;
   repositoryRoot: string;
   expectedRepositoryIdentity: PrdRepositoryIdentity | null;
@@ -90,7 +79,6 @@ export interface RequirementOperation {
     repositoryIdentity: PrdRepositoryIdentity;
   } | null;
   savedVersion: number | null;
-  approvalVersion: number | null;
   finalVersion: number | null;
   createdAt: number;
   updatedAt: number;
@@ -107,10 +95,6 @@ export interface PrepareRequirementOperation {
   expectedParent: string | null;
   saveVersion: number;
   epoch: number;
-  receiptId: string | null;
-  manifest?: ApprovalManifestReference;
-  docSpec?: RequirementDocSpec;
-  prototypes?: string;
   archivePath: string;
   repositoryRoot: string;
   expectedRepositoryIdentity: PrdRepositoryIdentity | null;
@@ -142,18 +126,10 @@ function checkOperation(value: unknown): RequirementOperation {
   );
   if (!validArchive
     || (operation.action === "create") !== (operation.requestId !== null)
-    || (operation.action === "confirmUpdate") !== (operation.receiptId !== null)
     || operation.updatedAt < operation.createdAt
-    || (operation.docSpec !== undefined && operation.action !== "confirmUpdate")
-    || (operation.prototypes !== undefined && operation.action !== "confirmUpdate")
-    || (operation.action === "confirmUpdate") !== (operation.manifest !== undefined)
-    || (operation.manifest !== undefined && (operation.manifest.requirementId !== operation.requirementId ||
-      operation.manifest.candidate.operationId !== operation.operationId || operation.manifest.candidate.intentHash !== operation.intentHash ||
-      operation.manifest.candidate.to.hash !== operation.targetHash || operation.manifest.candidate.to.commit !== operation.expectedParent))
     || !gitConsistent
     || (operation.savedVersion !== null && operation.git === null)
-    || (operation.approvalVersion !== null && (operation.action !== "confirmUpdate" || operation.savedVersion === null))
-    || (operation.finalVersion !== null && (operation.savedVersion === null || (operation.action === "confirmUpdate" && operation.approvalVersion === null)))) {
+    || (operation.finalVersion !== null && operation.savedVersion === null)) {
     throw new RequirementServiceError("operation_corrupt", "持久操作记录内部关系冲突");
   }
   return operation;
@@ -171,10 +147,6 @@ function mutableFields(input: PrepareRequirementOperation) {
     expectedParent: input.expectedParent,
     saveVersion: input.saveVersion,
     epoch: input.epoch,
-    receiptId: input.receiptId,
-    ...(input.manifest ? { manifest: input.manifest } : {}),
-    ...(input.docSpec ? { docSpec: input.docSpec } : {}),
-    ...(input.prototypes ? { prototypes: input.prototypes } : {}),
     archivePath: input.archivePath,
     repositoryRoot: input.repositoryRoot,
     expectedRepositoryIdentity: input.expectedRepositoryIdentity,
@@ -218,7 +190,7 @@ export class RequirementOperations {
     return withDatabase(this.path, (db) => db.transaction(() => {
       const existing = this.readIn(db, input.operationId);
       if (existing) {
-        if (!same(mutableFields(existing.data), mutableFields(input))) throw new RequirementServiceError("operation_conflict", "同一 operationId 对应不同请求");
+        if (!same(mutableFields(existing.data), mutableFields(input))) throw new RequirementServiceError("operation_conflict");
         if (existing.data.finalVersion === null) {
           const otherPending = db.list(NAMESPACE)
             .map((stored) => checkOperation(stored.data))
@@ -242,14 +214,12 @@ export class RequirementOperations {
       if (requirement.epoch !== input.epoch) throw new RequirementServiceError("epoch_changed");
       const parent = requirement.saved?.commit ?? null;
       if (parent !== input.expectedParent) throw new RequirementServiceError("saved_version_changed");
-      if (input.action === "confirmUpdate") assertApprovableIn(db, input.requirementId, input.prototypes);
       const now = this.checkedNow();
       const data: RequirementOperation = {
         format: "requirement-service-operation/v1",
         ...input,
         git: null,
         savedVersion: null,
-        approvalVersion: null,
         finalVersion: null,
         createdAt: now,
         updatedAt: now,
@@ -273,6 +243,31 @@ export class RequirementOperations {
       claimRequirementWriteIn(db, { ...owner, repoId: this.repoId, requirementId: stored.data.requirementId, operationId, acquiredAt: this.checkedNow() }, { allowDeadOriginalOperationRecovery: true });
       return stored;
     }));
+  }
+
+  pendingSave(requirementId: string): RequirementOperation | null {
+    if (!existsSync(this.path)) return null;
+    return withDatabase(this.path, (db) => db.list(NAMESPACE)
+      .map((stored) => checkOperation(stored.data))
+      .find((operation) => operation.requirementId === requirementId && operation.finalVersion === null) ?? null);
+  }
+
+  pendingCreate(intentHash: string): Pick<RequirementOperation, "action" | "requestId"> & { operationId: string | null } | null {
+    if (!existsSync(this.path)) return null;
+    return withDatabase(this.path, (db) => {
+      const operations = db.list(NAMESPACE).map((stored) => checkOperation(stored.data));
+      const unfinished = operations.find((operation) => operation.action === "create" && operation.finalVersion === null && operation.intentHash === intentHash);
+      if (unfinished) return unfinished;
+      const reserved = db.list("requirement_requests")
+        .find((row) => {
+          const data = row.data as { requirementId: string; intentHash: string };
+          if (data.intentHash !== intentHash) return false;
+          const record = db.read("requirements", data.requirementId)?.data as RequirementRecord | undefined;
+          return record?.saved === null && record.lifecycle === "draft" && record.recovery === "ready"
+            && !operations.some((operation) => operation.requirementId === data.requirementId);
+        });
+      return reserved ? { action: "create" as const, requestId: reserved.key, operationId: null } : null;
+    });
   }
 
   assertOwned(operationId: string, owner: RequirementWriteOwner): RequirementOperation {
@@ -317,21 +312,13 @@ export class RequirementOperations {
     });
   }
 
-  prepareApproval(operationId: string, approvalVersion: number, owner: RequirementWriteOwner): StoredRecord<RequirementOperation> {
-    return this.update(operationId, owner, (operation) => {
-      if (operation.action !== "confirmUpdate" || !operation.receiptId || operation.savedVersion === null) throw new RequirementServiceError("approval_not_ready");
-      if (operation.approvalVersion !== null && operation.approvalVersion !== approvalVersion) throw new RequirementServiceError("operation_conflict");
-      return operation.approvalVersion === approvalVersion ? operation : { ...operation, approvalVersion };
-    });
-  }
-
   finalize(operationId: string, finalVersion: number, owner: RequirementWriteOwner): StoredRecord<RequirementOperation> {
     return withDatabase(this.path, (db) => db.transaction(() => {
       const stored = this.readIn(db, operationId);
       if (!stored) throw new RequirementServiceError("operation_missing");
       assertRequirementWriteOwnedIn(db, this.repoId, stored.data.requirementId, operationId, owner);
       const operation = stored.data;
-      if (!operation.git || operation.savedVersion === null || (operation.action === "confirmUpdate" && operation.approvalVersion === null)) {
+      if (!operation.git || operation.savedVersion === null) {
         throw new RequirementServiceError("operation_not_ready");
       }
       if (operation.finalVersion !== null && operation.finalVersion !== finalVersion) throw new RequirementServiceError("operation_conflict");
@@ -375,7 +362,7 @@ export class RequirementOperations {
       .filter((operation) => operation.requirementId === requirementId && operation.epoch === epoch && operation.finalVersion !== null && operation.git !== null &&
         operation.git.commit === reference.commit && operation.git.hash === reference.hash)
       .sort((left, right) => right.updatedAt - left.updatedAt));
-    return matching.find((operation) => operation.action !== "confirmUpdate")?.operationId ?? null;
+    return matching[0]?.operationId ?? null;
   }
 
   repositoryIdentity(requirementId: string): PrdRepositoryIdentity | null {

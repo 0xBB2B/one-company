@@ -9,9 +9,10 @@ import type { Context } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostAuthorizationError, HostAuthorizationManager } from "../requirement/host-authorization.ts";
 import { RequirementService } from "../requirement/requirement-service.ts";
+import { RequirementOperations } from "../requirement/requirement-operations.ts";
 import type { RequirementServiceOptions } from "../requirement/requirement-service.ts";
 import type { ConfirmationContext, CreateRequirementInput, UpdateDraftInput, LoadConfirmationInput, ServiceAuthorizationRequest } from "../requirement/requirement-manage-contracts.ts";
-import { requirementIntentHash } from "../requirement/requirement-manage-contracts.ts";
+import { requirementIntentHash, RequirementServiceError } from "../requirement/requirement-manage-contracts.ts";
 import { UserInteractionCore } from "./user-interaction.ts";
 import { partitionPrdDocument, prdSectionsProblem } from "../requirement/prd-view.ts";
 import { RequirementDocError, resolveRepositoryRequirementDoc } from "../requirement/requirement-doc.ts";
@@ -24,7 +25,7 @@ import { decisionDigest } from "../requirement/short-decision-format.ts";
 import { parseStrictJson } from "../../core/storage/strict-json.ts";
 import { ApprovalManifestStore, summarizeApprovalManifest, assertApprovalScopeReturnIn, assertRegisteredScopeReturnIn, APPROVAL_MANIFEST_NAMESPACE } from "../requirement/approval-manifest-store.ts";
 import type { RegisteredScopeReturnProof } from "../requirement/approval-manifest-store.ts";
-import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { checkRequirement } from "../requirement/requirement-contracts.ts";
 import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
@@ -124,6 +125,7 @@ export class MainRequirementInteraction {
   #ticket: InputTicket | undefined;
   #capability: InteractionCapability | undefined;
   #interpretation: InteractionInterpretation | undefined;
+  #interpreted: { repoId: string; requirementId: string; operationId: string } | undefined;
   #candidate: ConfirmationRequest | undefined;
   #adjudication: { requirementId: string; subject: AdjudicationSubject } | undefined;
   #resave: PendingResave | undefined;
@@ -137,9 +139,7 @@ export class MainRequirementInteraction {
   #ctx: ExtensionContext | undefined;
   readonly #deliveries = new Map<string, Delivery>();
   readonly #cursors = new Map<string, Cursor>();
-  readonly #failedOperations = new Set<string>();
   readonly #proofs = new WeakMap<object, HostResultProof>();
-  readonly #completed = new Map<string, { requestHash: string; result: Record<string, unknown>; repoId: string }>();
   constructor(options: MainRequirementInteractionOptions) {
     this.#options = { ...options }; this.#authorization = options.authorization;
     this.#unsubscribeHost = this.#authorization.onRevoke(() => this.revoke());
@@ -156,7 +156,7 @@ export class MainRequirementInteraction {
     const input = this.#input; this.#input = undefined;
     if (input) { input.event.text = ""; input.abort.abort(); }
     this.#unsubscribeState?.(); this.#unsubscribeState = undefined;
-    this.#cursors.clear(); this.#deliveries.clear(); this.#completed.clear(); this.#failedOperations.clear();
+    this.#cursors.clear(); this.#deliveries.clear();
   }
   shutdown(): void { this.revoke(); this.#ctx = undefined; }
   dispose(): void { this.shutdown(); this.#unsubscribeHost(); }
@@ -331,7 +331,6 @@ export class MainRequirementInteraction {
     } catch (error) {
       this.#proofs.delete(result); this.#cursors.clear();
       for (const [id, delivery] of this.#deliveries) if (delivery.result === result) this.#deliveries.delete(id);
-      for (const [id, cached] of this.#completed) if (cached.result === result) this.#invalidateOperation(id);
       throw error;
     }
   }
@@ -420,7 +419,7 @@ export class MainRequirementInteraction {
       this.#live(ctx, host, generation);
       if (input !== this.#input) denied("input_changed");
       this.#unsubscribeState = state.onAccessInvalidated(requirementId, (change) => {
-        this.#capability = undefined; this.#interpretation = undefined; this.#cursors.clear(); this.#deliveries.clear(); this.#completed.clear();
+        this.#capability = undefined; this.#interpretation = undefined; this.#cursors.clear(); this.#deliveries.clear();
         const pending = this.#resave;
         if (pending && !pending.complete && change.origin === pending.origin && change.operationId === pending.operationId) {
           try { core.observeCandidateResave(pending.permit, change); return; }
@@ -477,7 +476,14 @@ export class MainRequirementInteraction {
     // 原因是模型说法，只帮主代理改草稿，不改变拒绝本身
     if (refusal !== undefined) throw new HostAuthorizationError("draft_interpretation_denied", refusal ? `核验器说明，模型撰写，仅供参考：${refusal}` : undefined);
   }
-  async draft(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", input: CreateRequirementInput | UpdateDraftInput, summary: string) {
+  async draft(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", draftInput: Omit<CreateRequirementInput, "requestId" | "operationId"> | Omit<UpdateDraftInput, "operationId">, summary: string) {
+    this.#authorization.assertRepository(repoId, this.#host(ctx).sessionId);
+    const operations = new RequirementOperations({ dataRoot: this.#options.dataRoot, repoId });
+    const unfinished = action === "create" ? operations.pendingCreate(requirementIntentHash({ title: draftInput.title, body: draftInput.body }))
+      : operations.pendingSave((draftInput as Omit<UpdateDraftInput, "operationId">).requirementId);
+    if (unfinished && unfinished.action !== action) throw new RequirementServiceError("requirement_write_pending", `那次是 ${unfinished.action}，用 ${unfinished.action} 续完`);
+    const input = { ...draftInput, operationId: unfinished?.operationId ?? uuidv7(),
+      ...(action === "create" ? { requestId: unfinished?.requestId ?? uuidv7() } : {}) } as CreateRequirementInput | UpdateDraftInput;
     const host = this.#host(ctx), generation = this.#generation;
     const questions = action === "updateDraft" ? (this.#snapshot(host, repoId, (input as UpdateDraftInput).requirementId),
       this.#authorization.interactionRecords(repoId, (input as UpdateDraftInput).requirementId, host.sessionId).questions
@@ -569,7 +575,9 @@ export class MainRequirementInteraction {
     } finally { this.#adjudication = undefined; }
   }
   async confirm(ctx: ExtensionContext, request: ConfirmationRequest): Promise<Record<string, unknown>> {
-    const input = this.#currentInput(ctx); this.#candidate = { ...request };
+    const input = this.#currentInput(ctx);
+    if (this.#capability && this.#interpreted?.repoId === request.repoId && this.#interpreted.requirementId === request.requirementId) request = { ...request, operationId: this.#interpreted.operationId };
+    this.#candidate = { ...request };
     const loaded = await this.#load(ctx, request), core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
     const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);
     let docSpec = record.data.docSpec;
@@ -602,7 +610,7 @@ export class MainRequirementInteraction {
       if (pending && (!pending.complete || pending.requirementId !== request.requirementId || pending.operationId !== request.savedOperationId)) denied("resave_request_mismatch");
       const result = pending ? await core.reconsiderSavedCandidate(this.#ticket, request.requirementId, pending.permit) : await core.interpret(this.#ticket, request.requirementId);
       this.#resave = undefined;
-      this.#capability = result.capability; this.#interpretation = result.interpretation;
+      this.#capability = result.capability; this.#interpretation = result.interpretation; this.#interpreted = { repoId: request.repoId, requirementId: request.requirementId, operationId: request.operationId };
     }
     const capability = this.#capability, interpretation = this.#interpretation!;
     const review = interpretation.documentReview;
@@ -824,15 +832,7 @@ export class MainRequirementInteraction {
     try {
       signal?.throwIfAborted();
       const host = this.#host(ctx), generation = this.#generation;
-      const key = typeof params.operationId === "string" ? params.operationId : undefined;
-      if (key && this.#failedOperations.has(key)) denied("stale_operation_result");
-      const existing = key ? this.#completed.get(key) : undefined;
-      let value: unknown;
-      if (existing) {
-        if (existing.requestHash !== decisionDigest(params) || existing.repoId !== repoId) denied("operation_conflict");
-        this.assertResultCurrent(existing.result, ctx);
-        value = existing.result;
-      } else value = await run();
+      const value = await run();
       signal?.throwIfAborted();
       this.#live(ctx, host, generation);
       const result = value as Record<string, unknown>, requirementId = String(result.requirementId);
@@ -840,10 +840,6 @@ export class MainRequirementInteraction {
       if (current.version !== result.version || current.data.epoch !== result.epoch) denied("stale_result");
       const content = [{ type: "text" as const, text: JSON.stringify(result) }], response = { content, details: result };
       if (Buffer.byteLength(JSON.stringify(response)) > TRANSPORT_BYTES) denied("response_limit");
-      if (key && !existing && ["create", "updateDraft", "confirmUpdate", "reply"].includes(String(params.action))) {
-        while (this.#completed.size >= 16) this.#completed.delete(this.#completed.keys().next().value!);
-        this.#completed.set(key, { requestHash: decisionDigest(params), result, repoId });
-      }
       while (this.#deliveries.size >= 32) this.#deliveries.delete(this.#deliveries.keys().next().value!);
       this.#deliveries.set(toolCallId, { sessionId: host.sessionId, windowId: host.windowId, generation, repoId, requirementId,
         result });
@@ -851,7 +847,6 @@ export class MainRequirementInteraction {
       return response;
     } catch (error) {
       this.#cursors.clear(); this.#deliveries.delete(toolCallId);
-      if (typeof params.operationId === "string" && this.#completed.has(params.operationId)) this.#invalidateOperation(params.operationId);
       if (error instanceof HostAuthorizationError || adviceOf(error)) throw error;
       // 没有原因说明的下层错误只回传错误代码，不回传可能带正文的错误消息
       const code = (error as { code?: unknown } | null)?.code;
@@ -859,11 +854,6 @@ export class MainRequirementInteraction {
       recordUnexplained(this.#options.dataRoot, repoId, params.action, error);
       throw new HostAuthorizationError("interaction_denied");
     } finally { signal?.removeEventListener("abort", abort); this.#busy = false; }
-  }
-  #invalidateOperation(key: string): void {
-    this.#completed.delete(key);
-    if (this.#failedOperations.size >= 16) { this.revoke(); return; }
-    this.#failedOperations.add(key);
   }
   assertDelivery(toolCallId: string, ctx: ExtensionContext): void {
     const delivery = this.#deliveries.get(toolCallId); this.#deliveries.delete(toolCallId);
@@ -874,7 +864,6 @@ export class MainRequirementInteraction {
     try { this.assertResultCurrent(delivery.result, ctx); }
     catch (error) {
       this.#cursors.clear();
-      for (const [key, cached] of this.#completed) if (cached.result === delivery.result) this.#invalidateOperation(key);
       throw error;
     }
   }

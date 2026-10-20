@@ -23,7 +23,7 @@ const OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const HASH_RE = /^sha256:[0-9a-f]{64}(?![\s\S])/;
 const SAFE_PARTIAL_GIT_ENTRIES = new Set(["HEAD", "config", "description", "objects", "refs"]);
 
-export type PrdStorageAction = "create" | "updateDraft" | "confirmUpdate";
+export type PrdStorageAction = "create" | "updateDraft";
 export type PrdStorageInterfaceAction = "create" | "save" | "readVersion" | "diffVersions" | "verifyVersion";
 export type PrdStoragePermissionPhase = "beforeAction" | "beforeWrite" | "beforeReturn" | "beforeReturnBody";
 
@@ -118,7 +118,7 @@ export interface PrdStorageVerifyResult {
 }
 
 function prdStorageNext(code: string): string {
-  if (code === "operation_conflict") return "换一个新生成的操作编号重试";
+  if (code === "operation_conflict") return "停止操作，把这段原因告诉用户";
   if (code === "recovery_required") return "停止操作，请用户在主窗口完成恢复核对";
   if (code === "unknown_version") return "核对版本号，按需求当前的版本重新指定";
   if (/^git_|^data_root_|^unsafe_|permission_denied|invalid_config|path_escape|external_/u.test(code)) return "请用户检查本机 Git 与数据目录的安装、权限和链接";
@@ -753,7 +753,7 @@ async function parseCommitMetadata(config: PrdStorageConfig, paths: PreparedPath
   }
   if (lines.length !== trees.length + parents.length + authors.length + committers.length) fail("history_mismatch", "正文提交含非固定元数据");
   const escapedRequirement = config.requirementId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`^prd\\(${escapedRequirement}\\): (create|updateDraft|confirmUpdate)\\n\\nOperation-Id: ([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\nPrd-Hash: (sha256:[0-9a-f]{64})\\n(?![\\s\\S])`).exec(message);
+  const match = new RegExp(`^prd\\(${escapedRequirement}\\): (create|updateDraft)\\n\\nOperation-Id: ([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\nPrd-Hash: (sha256:[0-9a-f]{64})\\n(?![\\s\\S])`).exec(message);
   if (!match) fail("message_mismatch", "提交信息不符合固定正文格式");
   return { action: match[1] as PrdStorageAction, operationId: match[2]!, prdHash: match[3] as `sha256:${string}`, parents };
 }
@@ -959,7 +959,7 @@ async function saveInternal(input: PrdStorageSaveInput, action: PrdStorageAction
     if (expectedWorkingFile.prdHash !== headHash && expectedWorkingFile.prdHash !== prdHash) {
       fail("working_copy_mismatch", "prd.md 含不属于当前操作的外部内容，拒绝覆盖");
     }
-    if (operationIds.has(input.operationId)) fail("operation_conflict", "operationId 已用于其他正文提交");
+    if (operationIds.has(input.operationId)) fail("operation_conflict", "这次保存的编号已用于其他正文提交");
     if (headHash === prdHash) {
       requireAuthorized(input, { phase: "beforeReturn", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prdHash });
       return { status: "unchanged", action, operationId: input.operationId, commit: head, parent: headMetadata!.parents[0] ?? null, prdHash, changed: false, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
@@ -993,7 +993,7 @@ export async function create(input: PrdStorageSaveInput): Promise<PrdStorageWrit
 }
 
 export async function save(input: PrdStorageSaveInput & { action: Exclude<PrdStorageAction, "create"> }): Promise<PrdStorageWriteResult> {
-  if (input.action !== "updateDraft" && input.action !== "confirmUpdate") fail("invalid_action", "save action 只能是 updateDraft 或 confirmUpdate");
+  if (input.action !== "updateDraft") fail("invalid_action", "save action 只能是 updateDraft");
   return saveInternal(input, input.action, "save");
 }
 

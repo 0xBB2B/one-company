@@ -1,7 +1,6 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
-import { uuidv7 } from "../../../src/core/storage/database.ts";
 import { TASKS } from "../../../src/modules/pm/plan-manage.ts";
 import type { TaskRecord } from "../../../src/modules/pm/plan-manage.ts";
 import type { ScriptedReply } from "../../helpers/controlled-provider.ts";
@@ -26,7 +25,7 @@ test.skipIf(!config || process.platform !== "darwin")("P5：PM 收到 worker 结
   cleanups.push(() => real.close(evidence));
 
   const worker: ScriptedReply[] = [
-    call("change_apply", { action: "apply", operationId: uuidv7(), files: [{ path: "src/login.ts", baseHash: "absent", content: LOGIN }] }),
+    call("change_apply", { action: "apply", files: [{ path: "src/login.ts", baseHash: "absent", content: LOGIN }] }),
     call("verification_run", { action: "run", kind: "debug", command: "test -f src/login.ts", performance: NA }),
   ];
   let verificationId: string | undefined;
