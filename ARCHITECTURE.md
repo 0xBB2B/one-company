@@ -30,7 +30,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | 模块 | 职责 | 目录 | 关键文件 / 类型 |
 |---|---|---|---|
 | policy | 内容和权限规则、时钟、文字清洗 | `src/core/policy` | `core-permissions.ts`、`clock.ts` |
-| exec | 外部命令的报错格式、读 git、目标分支、git 快照、分支保护、安装前检查 git | `src/core/exec` | `tool-failure.ts`、`git-read.ts`、`git-prerequisite.mjs` |
+| exec | 外部命令的报错格式、读 git、目标分支、origin 主机与本机 gh / glab 登录记录、git 快照、分支保护、安装前检查 git | `src/core/exec` | `tool-failure.ts`、`git-read.ts`、`target-branch.ts`、`git-host.ts`、`git-prerequisite.mjs` |
 | storage | 本机 SQLite 数据库、数据根目录、仓库身份、操作日志 | `src/core/storage` | `database.ts`、`data-root.ts`、`identity.ts` |
 | host | 主窗口生命周期、守护进程客户端和通信格式、程序窗口、底部面板、后台 shell 登记表、断网暂停 | `src/core/host` | `extension-lifecycle.ts`、`daemon-client.ts`（`connectDaemon`）、`protocol.ts` |
 | agents | 角色定义的查找与复制、模型引用、职责规矩、MCP、检索排除、子代理会话、会话和运行记录 | `src/modules/agents` | `agent-session.ts`（`createAgentRoleSession`）、`roles.ts`、`run-store.ts` |
@@ -38,9 +38,9 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | prototype | 派原型设计师、"确认原型"窗口 | `src/modules/prototype` | `prototype-extension.ts`、`prototype-windows.ts` |
 | verification | 检查轮（所有 worker 任务审查通过后，PM 开的最后一轮全量测试和 QA 验收）、worker 改动的应用、写入保护、命令边界、项目规范（AGENTS.md）写入 | `src/modules/verification` | `CheckRoundService`、`change-apply.ts`、`write-guard.ts` |
 | explore | 只读检索的约定、派发、会话、联网，以及主窗口的 `one_company_agent_manage` 工具 | `src/modules/explore` | `agent-manage-extension.ts`、`explore-dispatch.ts`、`web-access.ts` |
-| settings | `/one:setting` 设置页、模型设定、PM 和内部代理用哪个模型 | `src/modules/settings` | `settings-page-ui.ts`、`agent-settings.ts`、`internal-model.ts` |
+| settings | `/one:setting` 设置页、模型设定、PM 和内部代理用哪个模型、Git 交付档位和合并方式 | `src/modules/settings` | `settings-page-ui.ts`、`agent-settings.ts`、`internal-model.ts` |
 | pm | 计划、派工、PM 提交与同步目标分支、PM 接手复核、需求读取工具、验证命令、子代理交结果 | `src/modules/pm` | `plan-manage.ts`、`task-dispatch.ts`、`PmIntakeService`、`pm-commit.ts`、`result-submit.ts` |
-| delivery | 关闭需求、需求流程管理、Git 交付（推送、建 PR）、需求工作区（worktree）管理 | `src/modules/delivery` | `RequirementCloseService`、`workflow-manage.ts`、`git-delivery.ts`（`deliverRequirement`）、`WorkspaceManageService` |
+| delivery | 关闭需求与归档提交、需求流程管理、Git 交付（远程：推送、建 PR/MR、合并；仅本地：合进主仓库当前分支）、需求工作区（worktree）管理 | `src/modules/delivery` | `RequirementCloseService`、`archive-commit.ts`、`workflow-manage.ts`、`git-delivery.ts`（`deliverRequirement`）、`local-delivery.ts`（`deliverLocally`）、`WorkspaceManageService` |
 | panel | 状态面板、PM 概览、⚑ 事项（面板上等用户处理的事）的决策包（打开事项时插进对话、供主代理查原因的材料）、裁决（用户对上报事项做的决定，比如任务两次没完成时怎么办） | `src/modules/panel` | `pm-panel.ts`、`pm-overview.ts`、`adjudication.ts` |
 | interaction | 主代理提问窗口、解读用户原话、主窗口的需求交互、@需求补全、`one_company_requirement_manage` 工具 | `src/modules/interaction` | `MainRequirementInteraction`、`user-interaction-model.ts`、`requirement-manage-tool.ts` |
 | project-index | 项目索引、语法解析、知识查询、`one_company_project_manage` 和 `one_company_knowledge_query` 工具 | `src/modules/project-index` | `project-index-service.ts`、`knowledge-query.ts`、`syntax-parser.ts`、`project-manage-tool.ts` |
@@ -61,8 +61,8 @@ pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExte
 3. 派 PM：主代理调 `one_company_agent_manage` → 守护进程方法 `agents.dispatchPm` → app/daemon：`RunManager` 用 agents 的 `createAgentRoleSession` 起 PM 会话，工具由 `createPmTools` 组装。
 4. 接手复核：PM 先交它对需求的理解 → pm：`PmIntakeService` 存档，主代理核对通过后 PM 才能写计划。
 5. 规划与派工：PM 用 `plan-manage.ts` 写计划和任务 → `RunManager.dispatchTask` 按任务派 worker、reviewer、qa → 子代理用 `result-submit.ts` 交结果，worker 的改动经 verification 的 `change-apply.ts` 核对写入范围后应用 → PM 用 `pm-commit.ts` 在需求分支里提交。
-6. 检查与关闭：verification：`CheckRoundService` 管最终检查轮，进入前 pm：`syncTargetBranch` 把需求分支同步到目标分支 → 用户验收后 delivery：`RequirementCloseService` 关闭需求并写归档。
-7. 交付（用户在设置里开了 Git 交付才有）：delivery：`deliverRequirement` 推送并建 PR。
+6. 检查与关闭：verification：`CheckRoundService` 管最终检查轮，进入前 pm：`syncTargetBranch` 把需求分支同步到目标分支 → 用户验收后 delivery：`RequirementCloseService` 关闭需求，写归档并用 `commitArchive` 提交进需求分支。
+7. 交付：主代理调交付工具，按设置里的 Git 交付档位分流：delivery：远程档位 `deliverRequirement` 推送、建或复用 PR/MR 并按用户选的方式合并；仅本地档位 `deliverLocally` 在本机合进主仓库当前分支。之后 `WorkspaceManageService` 回收工作区时，按"再合一次不带来任何改动"判断已合并。
 
 ### 查询项目索引
 
