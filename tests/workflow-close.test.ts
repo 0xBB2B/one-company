@@ -30,6 +30,7 @@ import { syncTargetBranch } from "../src/modules/pm/pm-sync.ts";
 import { createRepoFixture, addWorktree, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { setLocalIdentity, withoutGitIdentity } from "./helpers/git-identity.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -40,12 +41,15 @@ const BODY_2 = sections("保留移动并增加快跑。");
 const NA = { applicable: false as const, reason: "无性能影响" };
 const darwin = process.platform === "darwin";
 const sha = (bytes: Buffer | string) => createHash("sha256").update(bytes).digest("hex");
+const gitText = async (cwd: string, ...args: string[]) => (await runGit(args, cwd)).trim();
+const headFiles = async (cwd: string) => (await gitText(cwd, "-c", "core.quotePath=false", "show", "--name-only", "--format=", "HEAD")).split("\n").filter(Boolean).sort();
 const finding = (kind: "blocking" | "suggestion" | "unverified") => ({ kind, targetRef: "prd:goals", evidenceRef: null, trigger: "按方向键", impact: "无法移动" });
 
 async function world(custom: { body: string; docSpec: RequirementDocSpec } | null = null) {
   const root = await mkdtemp(join(temporaryRoot(), "close-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
+  await setLocalIdentity(repo.root);
   const identity = await repositoryIdentity(repo.root);
   const options = { repositoryRoot: repo.root, dataRoot: join(root, "private"), repoId: identity.repoId };
   const docSpec = custom?.docSpec ?? (await resolveRepositoryRequirementDoc(options.dataRoot, repo.root)).spec;
@@ -310,13 +314,18 @@ test("M6-AC10：只有 completed 关闭可归档最终 PRD；同内容幂等，�
   expect(w.state.read(w.created.requirementId).data.lifecycle).toBe("closed");
   await expect(w.closeService.archive(w.created.requirementId)).rejects.toMatchObject({ code: "archive_conflict" });
   await rm(target);
+  const commitsBefore = await gitText(w.worktree.root, "rev-list", "--count", "HEAD");
   const archived = await w.closeService.archive(w.created.requirementId);
   expect(archived.status).toBe("archived");
+  expect(await headFiles(w.worktree.root)).toEqual([archivePath]);
+  expect(await gitText(w.worktree.root, "rev-list", "--count", "HEAD")).toBe(String(Number(commitsBefore) + 1));
+  expect(await gitText(w.worktree.root, "status", "--porcelain")).toBe("");
   const bytes = await readFile(target);
   expect(sha(bytes)).toBe(archived.archiveHash);
   expect(bytes.toString("utf8")).toContain("保留移动");
   expect(JSON.stringify(archived)).not.toContain("保留移动");
   expect(await w.closeService.archive(w.created.requirementId)).toMatchObject({ status: "archived", attempts: archived.attempts });
+  expect(await gitText(w.worktree.root, "rev-list", "--count", "HEAD")).toBe(String(Number(commitsBefore) + 1));
   expect(w.closeService.status(w.created.requirementId)).toMatchObject({ status: "closed", archive: { status: "archived" } });
 });
 
@@ -334,6 +343,8 @@ test("M8A-AC8/AC9：归档保留批准版正文每个字节，实现记录插在
   const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId }) as CloseResult;
   expect(closed).toMatchObject({ status: "closed", archive: { status: "archived" } });
   const archivePath = (closed as { archive: { path: string } }).archive.path;
+  expect(await headFiles(w.worktree.root)).toEqual([archivePath]);
+  expect(await gitText(w.worktree.root, "show", `HEAD:${archivePath}`)).toBe((await readFile(join(w.worktree.root, ...archivePath.split("/")), "utf8")).trim());
   const bytes = await readFile(join(w.worktree.root, ...archivePath.split("/")));
   const prd = (await readFile(w.prdFile, "utf8")), record = bytes.toString("utf8");
   const cut = prd.indexOf("## 验收 {#acceptance}"), head = prd.slice(0, cut), tail = prd.slice(cut);
@@ -344,7 +355,7 @@ test("M8A-AC8/AC9：归档保留批准版正文每个字节，实现记录插在
   expect(acceptanceHeading).toBeGreaterThan(implementation);
   expect(record.slice(acceptanceHeading - 2, acceptanceHeading)).toBe("\n\n");
   expect(acceptance).toBe(acceptanceHeading + tail.length + 1);
-  const codeHead = (await runGit(["rev-parse", "HEAD"], w.worktree.root)).trim();
+  const codeHead = (await runGit(["rev-parse", "HEAD~1"], w.worktree.root)).trim();
   expect(record.match(/^### 验收记录（关闭时由程序生成）$/gm)).toHaveLength(1);
   expect(record.match(/^### 实现记录（关闭时由程序生成）$/gm)).toHaveLength(1);
   expect(record).toContain("#### PM 说明（模型撰写，仅供参考）\n\n> 移动做完了\n> ### 实现记录（关闭时由程序生成）\n> - 任务 伪造：完成");
@@ -403,11 +414,12 @@ test("M7B-AC1/AC5：完成报告绑定交付依据，新报告作废旧报告；
   expect((await w.closeService.preflight({ requirementId: w.created.requirementId, reason: "completed", receiptId: reworkId })).missing).toEqual(["completion_report_not_accepted"]);
   await w.fullEvidence();
   const accepted = await w.accept();
+  const codeHead = await gitText(w.worktree.root, "rev-parse", "HEAD");
   const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId: accepted });
   expect(closed).toMatchObject({ status: "closed", reason: "completed" });
   const closeStatus = w.closeService.status(w.created.requirementId);
-  expect(closeStatus).toMatchObject({ archive: { status: "archived" }, delivery: { worktree: w.worktree.root, branch: w.workspace.branch,
-    codeHead: (await runGit(["rev-parse", "HEAD"], w.worktree.root)).trim() } });
+  expect(closeStatus).toMatchObject({ archive: { status: "archived" }, delivery: { worktree: w.worktree.root, branch: w.workspace.branch, codeHead } });
+  expect(await gitText(w.worktree.root, "rev-parse", "HEAD~1")).toBe(codeHead);
   expect(JSON.stringify(closeStatus)).not.toContain("保留移动");
 });
 
@@ -458,6 +470,8 @@ test("归档把最终批准版本的原型 html 和正文一起写进归档目�
   expect(names.filter((name) => name.endsWith(".html")).sort()).toEqual([`${w.created.requirementId}.命令行输出.html`, `${w.created.requirementId}.设置页.html`].sort());
   expect(names).toHaveLength(3);
   for (const item of PROTOTYPES) expect(await readFile(htmlTarget(w, item.name))).toEqual(Buffer.from(item.html));
+  expect(await headFiles(w.worktree.root)).toEqual(names.map((name) => `docs/prd/${name}`).sort());
+  expect(await gitText(w.worktree.root, "status", "--porcelain")).toBe("");
   expect(storedArchive(w).prototypes).toEqual(PROTOTYPES.map((item) => ({ path: `docs/prd/${w.created.requirementId}.${item.name}.html`, name: item.name, version: item.version, hash: sha(item.html) })));
 });
 
@@ -474,6 +488,8 @@ test("归档位置已有内容不同的同名原型 html 时归档受阻、不�
   await rm(htmlTarget(w, "设置页"));
   expect(await w.closeService.archive(w.created.requirementId)).toMatchObject({ status: "archived" });
   expect(await readFile(htmlTarget(w, "设置页"))).toEqual(Buffer.from(PROTOTYPES[0].html));
+  expect(await headFiles(w.worktree.root)).toHaveLength(3);
+  expect(await gitText(w.worktree.root, "status", "--porcelain")).toBe("");
 });
 
 test("归档位置已有内容相同的原型 html 时跳过写入，归档仍成功", async () => {
@@ -487,6 +503,8 @@ test("归档位置已有内容相同的原型 html 时跳过写入，归档仍�
   expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "archived" } });
   expect((await stat(htmlTarget(w, "设置页"))).mtimeMs).toBe(before);
   expect(await readFile(htmlTarget(w, "命令行输出"))).toEqual(Buffer.from(PROTOTYPES[1].html));
+  expect(await headFiles(w.worktree.root)).toHaveLength(3);
+  expect(await gitText(w.worktree.root, "status", "--porcelain")).toBe("");
 });
 
 test("原型源文件内容与批准时的指纹不符时归档受阻，错误写明哪份原型第几版和下一步，正文也不写出", async () => {
@@ -561,6 +579,7 @@ test("某份原型的目标位置暂时是目录导致归档中断，恢复后�
   expect(await w.closeService.archive(w.created.requirementId)).toMatchObject({ status: "archived" });
   const names = await readdir(join(w.worktree.root, "docs", "prd"));
   expect(names).toHaveLength(3);
+  expect(await headFiles(w.worktree.root)).toHaveLength(3);
   for (const item of PROTOTYPES) expect(await readFile(htmlTarget(w, item.name))).toEqual(Buffer.from(item.html));
 });
 
@@ -574,6 +593,7 @@ test("早先版本带原型、最终批准版本不带原型时，归档的原�
   expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "archived" } });
   expect(storedArchive(w).prototypes).toEqual([]);
   expect((await readdir(join(w.worktree.root, "docs", "prd"))).filter((name) => name.endsWith(".html"))).toEqual([]);
+  expect((await headFiles(w.worktree.root)).filter((name) => name.endsWith(".html"))).toEqual([]);
 });
 
 test("最终批准版本没有原型时归档只有正文，关闭记录的原型清单为空", async () => {
@@ -583,6 +603,7 @@ test("最终批准版本没有原型时归档只有正文，关闭记录的原�
   const names = await readdir(join(w.worktree.root, "docs", "prd"));
   expect(names).toHaveLength(1);
   expect(names[0]).toMatch(/\.md$/);
+  expect(await headFiles(w.worktree.root)).toEqual([`docs/prd/${names[0]}`]);
   expect(storedArchive(w).prototypes).toEqual([]);
 });
 
@@ -683,6 +704,8 @@ test("关闭办完但归档被挡后，清掉冲突再用原原因和原决定�
   const retried = await main.execute({ action: "close", reason: "completed", receiptId });
   expect(retried).toMatchObject({ status: "closed", archive: { status: "archived" } });
   expect(await readFile(target, "utf8")).toContain("保留移动");
+  expect(await headFiles(w.worktree.root)).toHaveLength(1);
+  expect(await gitText(w.worktree.root, "status", "--porcelain")).toBe("");
   expect(w.closeService.status(w.created.requirementId)).toMatchObject({ status: "closed", archive: { status: "archived" } });
 });
 
@@ -740,4 +763,73 @@ test("两个窗口几乎同时关闭时，后到的一方被拒且结果不带 o
   const raced = await main.execute({ action: "close", reason: "completed", receiptId });
   expect(raced).toMatchObject({ status: "rejected", missing: ["需求已有另一个关闭请求在办理"] });
   expect(raced).not.toHaveProperty("operationId");
+});
+
+test("完成关闭把归档和原型提交进需求分支：只提交这些文件，事先另放的改动保持未提交，说明首行是归档标题、末行是 Requirement", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await approvePrototypes(w);
+  await writeFile(join(w.worktree.root, "notes.txt"), "另放的改动\n");
+  await w.fullEvidence();
+  const receiptId = await w.accept();
+  const codeHead = await gitText(w.worktree.root, "rev-parse", "HEAD");
+  const closed = await (await w.main()).execute({ action: "close", reason: "completed", receiptId }) as CloseResult;
+  expect(closed).toMatchObject({ status: "closed", archive: { status: "archived" } });
+  expect(await gitText(w.worktree.root, "status", "--porcelain")).toBe("?? notes.txt");
+  expect(await headFiles(w.worktree.root)).toEqual([(closed as { archive: { path: string } }).archive.path, ...PROTOTYPES.map((item) => `docs/prd/${w.created.requirementId}.${item.name}.html`)].sort());
+  expect(await gitText(w.worktree.root, "rev-parse", "HEAD~1")).toBe(codeHead);
+  const lines = (await gitText(w.worktree.root, "log", "-1", "--format=%B")).split("\n");
+  expect(lines[0]).toBe(`docs(prd): 归档需求 ${w.created.requirementId}`);
+  expect(lines[1]).toBe("");
+  expect(lines.at(-1)).toBe(`Requirement: ${w.created.requirementId}`);
+});
+
+test("没配 Git 用户名和邮箱时关闭办完但归档待重试并带 Git 的报错；配好后再归档只补提交，不重写文件", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await w.fullEvidence();
+  const receiptId = await w.accept();
+  const main = await w.main();
+  const closed = await withoutGitIdentity(w.repositoryRoot, () => main.execute({ action: "close", reason: "completed", receiptId })) as CloseResult;
+  expect(closed).toMatchObject({ status: "closed", archive: { status: "pending" } });
+  const archivePath = (closed as { archive: { path: string } }).archive.path;
+  const target = join(w.worktree.root, ...archivePath.split("/"));
+  const status = w.closeService.status(w.created.requirementId) as { archive: { status: string; lastError: string } };
+  expect(status.archive.status).toBe("pending");
+  expect(status.archive.lastError).toMatch(/identity|who you are|user\.(name|email)/i);
+  const codeHead = await gitText(w.worktree.root, "rev-parse", "HEAD");
+  const before = (await stat(target)).mtimeMs;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const archived = await w.closeService.archive(w.created.requirementId);
+  expect(archived).toMatchObject({ status: "archived", lastError: null });
+  expect((await stat(target)).mtimeMs).toBe(before);
+  expect(await gitText(w.worktree.root, "rev-parse", "HEAD~1")).toBe(codeHead);
+  expect(await headFiles(w.worktree.root)).toEqual([archivePath]);
+  expect(await gitText(w.worktree.root, "status", "--porcelain")).toBe("");
+});
+
+test("对已归档的需求再调 archive 仍是 archived，分支上的提交数不变", async () => {
+  const w = await world();
+  if (!darwin) return;
+  expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "archived" } });
+  const count = await gitText(w.worktree.root, "rev-list", "--count", "HEAD");
+  const head = await gitText(w.worktree.root, "rev-parse", "HEAD");
+  expect(await w.closeService.archive(w.created.requirementId)).toMatchObject({ status: "archived" });
+  expect(await gitText(w.worktree.root, "rev-list", "--count", "HEAD")).toBe(count);
+  expect(await gitText(w.worktree.root, "rev-parse", "HEAD")).toBe(head);
+});
+
+test("待重试时 HEAD 里已有内容一致的归档，再调 archive 直接 archived，分支上的提交不变", async () => {
+  const w = await world();
+  if (!darwin) return;
+  await w.fullEvidence();
+  const receiptId = await w.accept();
+  const main = await w.main();
+  const closed = await withoutGitIdentity(w.repositoryRoot, () => main.execute({ action: "close", reason: "completed", receiptId })) as CloseResult;
+  expect(closed).toMatchObject({ archive: { status: "pending" } });
+  const archivePath = (closed as { archive: { path: string } }).archive.path;
+  await runGit(["add", "--", archivePath], w.worktree.root); await runGit(["commit", "-qm", "手动归档"], w.worktree.root);
+  const head = await gitText(w.worktree.root, "rev-parse", "HEAD");
+  expect(await w.closeService.archive(w.created.requirementId)).toMatchObject({ status: "archived" });
+  expect(await gitText(w.worktree.root, "rev-parse", "HEAD")).toBe(head);
 });

@@ -31,6 +31,7 @@ import { endRequirementExploreSessionsIn } from "../explore/explore-session.ts";
 import { readGit } from "../../core/exec/git-read.ts";
 import { prototypeArchivePathFor } from "../requirement/requirement-identity.ts";
 import { prototypeFilePath } from "../requirement/requirement-prototypes.ts";
+import { commitArchive } from "./archive-commit.ts";
 import { prototypesAtRevision } from "../requirement/requirement-prototype-revisions.ts";
 
 export const CLOSE_OPERATIONS = "close_operations";
@@ -647,6 +648,7 @@ export class RequirementCloseService {
         await writeFileAtomic(html.target, html.content.toString("utf8"));
         if (sha256(await readFile(html.target)) !== sha256(html.content)) throw new Error("archive_write_mismatch");
       }
+      await commitArchive(root, requirementId, [{ path: archive.path, hash: archiveHash }, ...archive.prototypes.map((item) => ({ path: item.path, hash: item.hash }))]);
       save({ status: "archived", archiveHash, attempts: archive.attempts + 1, lastError: null });
       return freeze({ status: "archived" as const, path: archive.path, prdHash: archive.prdHash, archiveHash, attempts: archive.attempts + 1, lastError: null });
     } catch (error) {

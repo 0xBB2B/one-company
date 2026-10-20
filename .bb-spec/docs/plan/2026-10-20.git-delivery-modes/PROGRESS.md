@@ -3,14 +3,14 @@
 |---|---|---|---|
 | 01 | git-host-login | done | 2026-10-20 |
 | 02 | delivery-settings | pending | — |
-| 03 | archive-commit | in-progress | — |
-| 04 | recycle-merged-check | pending | — |
+| 03 | archive-commit | done | 2026-10-20 |
+| 04 | recycle-merged-check | in-progress | — |
 | 05 | target-branch-mode | pending | — |
 | 06 | remote-delivery | pending | — |
 | 07 | local-delivery | pending | — |
 | 08 | trace-rules | done | 2026-10-20 |
 | 09 | readme | pending | — |
 ## 当前
-第 1 组并行：01、08 已完成；03-archive-commit 在实现（Green）。01 审查后修了两处鲁棒性问题（origin 写法解析失败、glab 配置读不了时不再抛错，按认不出处理），并按用户决定改为 glab 主机条目令牌有值才算登录过。
+第 1 组（01、03、08）全部完成。03 审查后自修一次：换行或过滤设置改变归档内容时在提交前发现并撤掉暂存、不留孤儿提交；提交失败撤掉暂存；不再吞掉读 HEAD 的故障；报错补上下一步。04-recycle-merged-check 已过 Green，待合规审查。
 ## 阻塞
 （无）

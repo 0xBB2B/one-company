@@ -1,12 +1,10 @@
-import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { mutedLines } from "../../core/host/question-window.ts";
 import type { ProgramWindow, WindowChoice } from "../../core/host/question-window.ts";
 import { commandOutputTail } from "../../core/exec/tool-failure.ts";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { isPrdArchivePath } from "../../core/policy/content-policy.ts";
+import { archiveInHead } from "./archive-commit.ts";
 import { fetchRemoteTarget, gitIn, includesCommit } from "../../core/exec/target-branch.ts";
 
 const exec = promisify(execFile);
@@ -36,15 +34,13 @@ const REJECT_ADVICE = {
   requirement_not_completed: { why: "需求没有以完成关闭", next: "只有用户验收通过并以完成关闭的需求才能交付" },
   archive_not_written: { why: "需求归档还没写好", next: "用 workflow_manage 的 status 查看归档状态，归档完成后再交付" },
   branch_changed: { why: "需求工作区当前不在需求分支上", next: "请用户把需求工作区切回需求分支后再交付" },
-  worktree_dirty: { why: "需求工作区里有归档以外的未提交改动", next: "请用户处理这些改动后再交付" },
+  worktree_dirty: { why: "需求工作区里有未提交改动", next: "请用户处理这些改动后再交付" },
   no_remote: { why: "仓库没有名为 origin 的远端", next: "请用户配置 origin 远端后再交付" },
   unknown_host: { why: "origin 远端不是 GitHub 或 GitLab，无法开 PR 或 MR", next: "请用户确认远端地址；其他平台需要手动交付" },
   head_changed: { why: "需求分支在最终检查后又有代码改动", next: "重新做交付核对和验收后再交付" },
   foreign_prd_archive: { why: "分支里带了别的需求的归档文件", next: "请用户移除这些文件后再交付" },
   nested_repository: { why: "分支里有嵌套仓库（子模块）改动", next: "请用户处理子模块改动后再交付" },
   archive_mismatch: { why: "归档文件与关闭时登记的内容不一致", next: "请用户确认归档文件没有被手动改动" },
-  unexpected_staged: { why: "暂存区里有归档以外的文件", next: "请用户清理暂存区后再交付" },
-  unexpected_commit_content: { why: "交付提交里出现了归档以外的改动", next: "请用户检查分支后再交付" },
   push_rejected: { why: "推送被远端拒绝", next: "按 Git 的报错处理：没登录请用户登录，不能快进就先同步目标分支，受保护分支请用户调整权限" },
   pull_request_unknown: { why: "PR 或 MR 没能建立", next: "按报错处理：gh 或 glab 没装或没登录时请用户处理，也可以请用户手动开 PR" },
 } as const;
@@ -54,7 +50,6 @@ export const REVIEW_CHOICE = "自己 review";
 export const AUTO_MERGE_CHOICE = "自动合并";
 
 type Provider = "gh" | "glab";
-const sha256 = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const entries = (text: string) => text.split("\0").filter(Boolean);
 
 function providerFor(url: string): Provider | null {
@@ -97,7 +92,7 @@ async function enableAutoMerge(provider: Provider, cwd: string, number: string, 
 }
 
 /**
- * 可选业务 Git 交付：核对完成凭据与实际产物后，经用户确认提交归档、推送准确提交号并建或复用 PR/MR；
+ * 可选业务 Git 交付：核对完成凭据与已在分支中的归档后，经用户确认推送准确提交号并建或复用 PR/MR；
  * 验收后目标分支前进时能干净 rebase 才继续，并在描述中注明未重新验证；合并方式由用户在界面选择。
  */
 export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): Promise<DeliveryResult> {
@@ -112,8 +107,7 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
   const git = (args: string[]) => gitIn(facts.worktree, args);
   const branch = facts.branch.slice("refs/heads/".length);
   if ((await git(["symbolic-ref", "--quiet", "HEAD"])).stdout.trim() !== facts.branch) return reject("branch_changed");
-  const dirty = entries((await git(["status", "--porcelain", "-z", "--untracked-files=all"])).stdout).map((entry) => entry.slice(3));
-  if (dirty.some((path) => !groupPaths.includes(path))) return reject("worktree_dirty");
+  if ((await git(["status", "--porcelain", "-uall"])).stdout.trim()) return reject("worktree_dirty");
   let remoteError = "";
   const remoteUrl = (await git(["remote", "get-url", "origin"]).catch((error: unknown) => { remoteError = commandOutputTail(error); return { stdout: "" }; })).stdout.trim();
   const provider = providerFor(remoteUrl);
@@ -145,35 +139,15 @@ export async function deliverRequirement(facts: DeliveryFacts, ui: DeliveryUi): 
     rebasedAfterAcceptance = true;
   }
 
-  const literal = groupPaths.map((path) => `:(literal)${path}`);
-  try { await git(["add", "-f", "--", ...literal]); }
-  catch (error) {
-    await git(["reset", "--quiet", "--", ...literal]);
-    const missing = group.find((file) => !existsSync(join(facts.worktree, ...file.path.split("/"))));
-    if (missing) return reject("archive_mismatch", missing.path);
-    throw error;
-  }
   for (const file of group) {
-    const staged = /^\d+ ([0-9a-f]+) 0\t/.exec((await git(["ls-files", "-s", "--", `:(literal)${file.path}`])).stdout)?.[1];
-    const stagedBytes = staged ? (await exec("git", ["cat-file", "blob", staged], { cwd: facts.worktree, encoding: "buffer", maxBuffer: 1 << 26 })).stdout : null;
-    const worktreeMatchesIndex = await git(["diff", "--quiet", "--", `:(literal)${file.path}`]).then(() => true, () => false);
-    if (!stagedBytes || sha256(stagedBytes) !== file.hash || !worktreeMatchesIndex) {
-      await git(["reset", "--quiet", "--", ...literal]);
-      return reject("archive_mismatch", file.path);
-    }
+    if (!file.hash || !await archiveInHead(facts.worktree, [{ path: file.path, hash: file.hash }])) return reject("archive_mismatch", file.path);
   }
-  if ((await git(["diff", "--cached", "--name-only", "-z"])).stdout.split("\0").filter(Boolean).some((path) => !groupPaths.includes(path))) return reject("unexpected_staged");
-  const pending = (await git(["diff", "--cached", "--quiet"]).then(() => false, () => true));
-  const head = (await git(["rev-parse", "HEAD"])).stdout.trim();
+  const delivered = (await git(["rev-parse", "HEAD"])).stdout.trim();
   const title = archive.path.slice(archive.path.lastIndexOf("/") + 1).replace(/^[0-9a-f-]{36}\./, "").replace(/\.md$/, "");
   const approved = await ui.confirm({ title: "交付到 Git", lines: [{ text: `需求：${title}` }, ...mutedLines([`编号：${facts.requirementId}`,
-    `分支：${branch} → ${target.name}（${provider}）`, pending ? `将提交归档 ${archive.path}${prototypes.length ? `及 ${prototypes.length} 份原型` : ""}` : "归档已在分支中",
+    `分支：${branch} → ${target.name}（${provider}）`, "归档已在分支中",
     rebasedAfterAcceptance ? "目标分支在验收后前进，已自动 rebase，这部分未重新验证" : "目标分支未变化", "确认后推送并建立或复用 PR。"])] });
-  if (!approved) return { status: "cancelled", head };
-  if (pending) await git(["commit", "--quiet", "-m", `docs(prd): 归档需求 ${facts.requirementId}`]);
-  const delivered = (await git(["rev-parse", "HEAD"])).stdout.trim();
-  const archiveOnly = entries((await git(["diff", "-z", "--name-only", head, delivered])).stdout);
-  if (archiveOnly.some((path) => !groupPaths.includes(path))) return reject("unexpected_commit_content");
+  if (!approved) return { status: "cancelled", head: delivered };
   try { await git(["push", "--quiet", "origin", `${delivered}:refs/heads/${branch}`]); }
   catch (error) { return reject("push_rejected", commandOutputTail(error)); }
 

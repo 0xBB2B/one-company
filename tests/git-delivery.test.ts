@@ -37,7 +37,7 @@ else if (args[1] === "create") {
 else if (name === "gh" && args[0] === "repo") process.stdout.write(JSON.stringify({ squashMergeAllowed: process.env.FAKE_SQUASH !== "0", mergeCommitAllowed: process.env.FAKE_MERGE_COMMIT !== "0", rebaseMergeAllowed: process.env.FAKE_REBASE !== "0" }));
 `;
 
-async function world(host: "github" | "gitlab" = "github") {
+async function world(host: "github" | "gitlab" = "github", prototypes: ReadonlyArray<readonly [string, string]> = []) {
   const base = await realpath(await mkdtemp(join(tmpdir(), "git-delivery-")));
   cleanups.push(base);
   const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -50,16 +50,21 @@ async function world(host: "github" | "gitlab" = "github") {
   git(base, "clone", "-q", remote, main); identity(main);
   git(main, "worktree", "add", "-q", "-b", "req/login", worktree);
   await writeFile(join(worktree, "login.ts"), "export const login = 1;\n"); git(worktree, "add", "."); git(worktree, "commit", "-qm", "task-1: 登录");
+  const codeHead = git(worktree, "rev-parse", "HEAD");
   await mkdir(join(worktree, "docs", "prd"), { recursive: true });
   await writeFile(join(worktree, ARCHIVE), PRD);
+  for (const [name, html] of prototypes) await writeFile(join(worktree, `docs/prd/${REQUIREMENT}.${name}.html`), html);
+  git(worktree, "add", "-f", "--", "docs/prd");
+  git(worktree, "commit", "-q", "-m", `docs(prd): 归档需求 ${REQUIREMENT}`, "-m", `Requirement: ${REQUIREMENT}`);
   const bin = join(base, "bin"), state = join(base, "state");
   await mkdir(bin); await mkdir(state);
   for (const name of ["gh", "glab"]) { await writeFile(join(bin, name), FAKE_CLI); await chmod(join(bin, name), 0o755); }
   process.env.PATH = `${bin}:${originalPath}`;
   process.env.FAKE_STATE = state;
   for (const key of ["FAKE_CREATE_FAILS", "FAKE_SQUASH", "FAKE_MERGE_COMMIT", "FAKE_REBASE", "FAKE_REPO_VIEW_FAILS"]) delete process.env[key];
-  const facts: DeliveryFacts = { requirementId: REQUIREMENT, closed: true, reason: "completed", archive: { path: ARCHIVE, archiveHash: sha256(PRD), status: "archived", prototypes: [] },
-    worktree, branch: "refs/heads/req/login", codeHead: git(worktree, "rev-parse", "HEAD") };
+  const facts: DeliveryFacts = { requirementId: REQUIREMENT, closed: true, reason: "completed", archive: { path: ARCHIVE, archiveHash: sha256(PRD), status: "archived",
+      prototypes: prototypes.map(([name, html], index) => ({ path: `docs/prd/${REQUIREMENT}.${name}.html`, name, version: index + 1, hash: sha256(html) })) },
+    worktree, branch: "refs/heads/req/login", codeHead };
   const prompts: string[] = [];
   const windows: Parameters<DeliveryUi["choose"]>[0][] = [];
   const ui = (confirm = true, ...pick: [(string | undefined)?]): DeliveryUi => ({
@@ -68,14 +73,18 @@ async function world(host: "github" | "gitlab" = "github") {
   });
   const calls = async () => (await readFile(join(state, "calls.log"), "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as string[]);
   const remoteBranch = () => { try { return git(remote, "rev-parse", "refs/heads/req/login"); } catch { return null; } };
-  return { git, main, other, worktree, remote, facts, ui, prompts, windows, calls, remoteBranch };
+  const archiveCommits = () => Number(git(worktree, "rev-list", "--count", "--grep", "^docs(prd): 归档需求", "HEAD"));
+  return { git, main, other, worktree, remote, facts, ui, prompts, windows, calls, remoteBranch, archiveCommits };
 }
 
-test("M8-AC5/AC6：确认后只提交归档、推送准确提交号、建 PR（描述无 PRD 正文），用户选自动合并时在仓库允许 rebase 时用 rebase 并绑定已推送提交；选项按仓库允许的方式给出", async () => {
+test("M8-AC5/AC6：确认后不提交任何文件、推送准确提交号、建 PR（描述无 PRD 正文），用户选自动合并时在仓库允许 rebase 时用 rebase 并绑定已推送提交；选项按仓库允许的方式给出", async () => {
   const w = await world();
+  const head = w.git(w.worktree, "rev-parse", "HEAD");
   const result = await deliverRequirement(w.facts, w.ui(true, AUTO_MERGE_CHOICE));
   expect(result).toMatchObject({ status: "delivered", provider: "gh", reused: false, rebasedAfterAcceptance: false, merge: "auto", url: "https://example.test/1" });
-  const head = w.git(w.worktree, "rev-parse", "HEAD");
+  expect(w.git(w.worktree, "rev-parse", "HEAD")).toBe(head);
+  expect(w.archiveCommits()).toBe(1);
+  expect(w.prompts[0]).toContain("归档已在分支中");
   expect(result.status === "delivered" && result.head).toBe(head);
   expect(w.remoteBranch()).toBe(head);
   expect(w.git(w.worktree, "-c", "core.quotePath=false", "show", "--name-only", "--format=", "HEAD")).toBe(ARCHIVE);
@@ -163,11 +172,13 @@ test("M8-AC6：重跑复用已有 PR 不重复创建；创建结果不明时先�
   expect(calls.some((call) => call[2] === "merge")).toBe(false);
 });
 
-test("M8-AC6：用户不确认时不提交不推送；远端分支非快进时拒绝且不强推", async () => {
+test("M8-AC6：用户不确认时不推送、不动暂存区；远端分支非快进时拒绝且不强推", async () => {
   const w = await world();
+  const head = w.git(w.worktree, "rev-parse", "HEAD");
   expect(await deliverRequirement(w.facts, w.ui(false))).toMatchObject({ status: "cancelled" });
   expect(w.remoteBranch()).toBeNull();
-  expect(w.git(w.worktree, "rev-parse", "HEAD")).toBe(w.facts.codeHead);
+  expect(w.git(w.worktree, "rev-parse", "HEAD")).toBe(head);
+  expect(w.git(w.worktree, "diff", "--cached", "--name-only")).toBe("");
   w.git(w.other, "checkout", "-q", "-b", "req/login"); await writeFile(join(w.other, "x.ts"), "x\n");
   w.git(w.other, "add", "."); w.git(w.other, "commit", "-qm", "别人的提交"); w.git(w.other, "push", "-q", "origin", "req/login");
   const foreign = w.remoteBranch();
@@ -176,16 +187,22 @@ test("M8-AC6：用户不确认时不提交不推送；远端分支非快进时�
   expect((await w.calls()).some((call) => call[2] === "create")).toBe(false);
 });
 
-test("M8-AC2/AC5：未完成、归档未写入、归档字节与凭据不符、工作区有其他改动、分支带入别的 PRD 归档或嵌套仓库时拒绝交付", async () => {
+test("M8-AC2/AC5：未完成、归档未写入、归档未提交或与凭据不符、工作区有未提交改动、分支带入别的 PRD 归档或嵌套仓库时拒绝交付", async () => {
   const w = await world();
   expect(await deliverRequirement({ ...w.facts, reason: "cancelled" }, w.ui())).toMatchObject({ status: "rejected", reason: "需求没有以完成关闭" });
   expect(await deliverRequirement({ ...w.facts, archive: { ...w.facts.archive!, status: "pending" } }, w.ui())).toMatchObject({ status: "rejected", reason: "需求归档还没写好" });
   await writeFile(join(w.worktree, ARCHIVE), PRD + "被改过\n");
+  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: expect.stringMatching(/未提交改动/) });
+  w.git(w.worktree, "commit", "-qam", "改归档");
   expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
   expect(w.git(w.worktree, "diff", "--cached", "--name-only")).toBe("");
   await writeFile(join(w.worktree, ARCHIVE), PRD);
+  w.git(w.worktree, "commit", "-qam", "改回归档");
   await writeFile(join(w.worktree, "extra.ts"), "x\n");
-  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: "需求工作区里有归档以外的未提交改动" });
+  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: expect.stringMatching(/未提交改动/) });
+  w.git(w.worktree, "add", "extra.ts");
+  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: expect.stringMatching(/未提交改动/) });
+  w.git(w.worktree, "rm", "-q", "--cached", "extra.ts");
   await rm(join(w.worktree, "extra.ts"));
   const fake = `docs/prd/0197b7b0-6a20-7c51-8a32-b9465fb72d11.伪装.md`;
   await writeFile(join(w.worktree, fake), "伪装的归档\n"); w.git(w.worktree, "add", fake); w.git(w.worktree, "commit", "-qm", "夹带");
@@ -204,10 +221,23 @@ test("M8-AC9：验收后目标分支前进能干净 rebase 时继续并在 PR �
   expect((await w.calls()).find((call) => call[2] === "create")!.join("\n")).toContain("验收后已自动 rebase，这部分未重新验证。");
 
   const c = await world();
+  const conflictHead = c.git(c.worktree, "rev-parse", "HEAD");
   await writeFile(join(c.other, "login.ts"), "export const login = 2;\n"); c.git(c.other, "add", "."); c.git(c.other, "commit", "-qm", "冲突"); c.git(c.other, "push", "-q", "origin", "main");
   expect(await deliverRequirement(c.facts, c.ui())).toMatchObject({ status: "conflict", target: "refs/remotes/origin/main", reason: expect.stringMatching(/^目标分支在验收后前进，自动 rebase 有冲突：/) });
   expect(c.remoteBranch()).toBeNull();
-  expect(c.git(c.worktree, "rev-parse", "HEAD")).toBe(c.facts.codeHead);
+  expect(c.git(c.worktree, "rev-parse", "HEAD")).toBe(conflictHead);
+});
+
+test("C-5：分支上只比最终检查时多了归档提交，不报最终检查后又有代码改动；归档提交之后再有代码提交时仍报", async () => {
+  const w = await world();
+  expect(w.git(w.worktree, "rev-parse", "HEAD")).not.toBe(w.facts.codeHead);
+  expect(await deliverRequirement(w.facts, w.ui(true, undefined))).toMatchObject({ status: "delivered" });
+
+  const extra = await world();
+  await writeFile(join(extra.worktree, "later.ts"), "export const later = 1;\n");
+  extra.git(extra.worktree, "add", "later.ts"); extra.git(extra.worktree, "commit", "-qm", "归档后又改代码");
+  expect(await deliverRequirement(extra.facts, extra.ui())).toMatchObject({ status: "rejected", reason: expect.stringMatching(/最终检查后又有代码改动/) });
+  expect(extra.remoteBranch()).toBeNull();
 });
 
 test("M8-AC6：GitLab 用 glab 建 MR，选项按项目设置的合并方式描述，选自动合并时只调用一次 glab 合并且不带 squash", async () => {
@@ -223,33 +253,19 @@ test("M8-AC6：GitLab 用 glab 建 MR，选项按项目设置的合并方式描�
 
 const PROTOTYPE_HTMLS = [["设置页", "<html>设置页 v3</html>\n"], ["命令行输出", "<html>命令行输出 v1</html>\n"]] as const;
 const prototypePath = (name: string) => `docs/prd/${REQUIREMENT}.${name}.html`;
+const worldWithPrototypes = (items: ReadonlyArray<readonly [string, string]> = PROTOTYPE_HTMLS) => world("github", items);
 
-async function worldWithPrototypes(items: ReadonlyArray<readonly [string, string]> = PROTOTYPE_HTMLS) {
-  const w = await world();
-  for (const [name, html] of items) await writeFile(join(w.worktree, prototypePath(name)), html);
-  const prototypes = items.map(([name, html], index) => ({ path: prototypePath(name), name, version: index + 1, hash: sha256(html) }));
-  return { ...w, facts: { ...w.facts, archive: { ...w.facts.archive!, prototypes } } as DeliveryFacts };
-}
-
-test("正文与原型 html 作为一组一起提交，确认窗口写明原型文件数", async () => {
+test("正文与原型 html 已一起提交时，确认窗口写归档已在分支中，交付不新增归档提交，工作区保持干净", async () => {
   const w = await worldWithPrototypes();
-  const result = await deliverRequirement(w.facts, w.ui(true, undefined));
-  expect(result).toMatchObject({ status: "delivered", merge: "review" });
+  const before = w.git(w.worktree, "rev-parse", "HEAD");
+  expect(await deliverRequirement(w.facts, w.ui(true, undefined))).toMatchObject({ status: "delivered", merge: "review" });
+  expect(w.git(w.worktree, "rev-parse", "HEAD")).toBe(before);
+  expect(w.archiveCommits()).toBe(1);
   const committed = w.git(w.worktree, "-c", "core.quotePath=false", "show", "--name-only", "--format=", "HEAD").split("\n").sort();
   expect(committed).toEqual([ARCHIVE, prototypePath("命令行输出"), prototypePath("设置页")].sort());
   expect(w.git(w.worktree, "status", "--porcelain")).toBe("");
-  const line = w.prompts[0].split("\n").find((text) => text.startsWith("将提交归档"))!;
-  expect(line).toContain(ARCHIVE);
-  expect(line).toMatch(/原型.*2|2.*原型/);
-});
-
-test("正文与原型 html 已经提交过时，确认窗口写归档已在分支中，不再重复提交", async () => {
-  const w = await worldWithPrototypes();
-  w.git(w.worktree, "add", "--", ARCHIVE, prototypePath("设置页"), prototypePath("命令行输出"));
-  w.git(w.worktree, "commit", "-qm", "归档");
-  const facts = { ...w.facts, codeHead: w.git(w.worktree, "rev-parse", "HEAD") };
-  expect(await deliverRequirement(facts, w.ui(true, undefined))).toMatchObject({ status: "delivered" });
   expect(w.prompts[0]).toContain("归档已在分支中");
+  expect(w.prompts[0]).not.toContain("将提交归档");
 });
 
 test("分支里带了别的需求的原型 html 时拒绝交付", async () => {
@@ -261,16 +277,17 @@ test("分支里带了别的需求的原型 html 时拒绝交付", async () => {
   expect(w.remoteBranch()).toBeNull();
 });
 
-test("工作区里有本组以外的 docs/prd 未提交改动时拒绝交付", async () => {
+test("工作区里有 docs/prd 下的未提交杂物文件时拒绝交付", async () => {
   const w = await worldWithPrototypes();
   await writeFile(join(w.worktree, "docs/prd/别的文件.html"), "<html>杂物</html>\n");
-  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: "需求工作区里有归档以外的未提交改动" });
+  expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: expect.stringMatching(/未提交改动/) });
   expect(w.remoteBranch()).toBeNull();
 });
 
-test("原型 html 与关闭时登记的指纹不一致时拒绝交付并取消暂存", async () => {
+test("已提交的原型 html 与关闭时登记的指纹不一致时拒绝交付，暂存区为空", async () => {
   const w = await worldWithPrototypes();
   await writeFile(join(w.worktree, prototypePath("设置页")), "<html>被手动改过</html>\n");
+  w.git(w.worktree, "commit", "-qam", "改原型");
   const result = await deliverRequirement(w.facts, w.ui());
   expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
   expect(result.status === "rejected" && result.reason).toContain(prototypePath("设置页"));
@@ -278,17 +295,18 @@ test("原型 html 与关闭时登记的指纹不一致时拒绝交付并取消�
   expect(w.remoteBranch()).toBeNull();
 });
 
-test("正文内容与登记指纹不一致被拒绝时，原因写出正文文件的相对路径", async () => {
+test("已提交的正文内容与登记指纹不一致被拒绝时，原因写出正文文件的相对路径", async () => {
   const w = await world();
   await writeFile(join(w.worktree, ARCHIVE), PRD + "被改过\n");
+  w.git(w.worktree, "commit", "-qam", "改归档");
   const result = await deliverRequirement(w.facts, w.ui());
   expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
   expect(result.status === "rejected" && result.reason).toContain(ARCHIVE);
 });
 
-test("登记的正文文件在工作区里不存在且从未被 Git 跟踪时，按内容不一致拒绝，不抛出 git 的原始报错，暂存区不留文件", async () => {
+test("登记的正文文件已从分支里删掉时，按内容不一致拒绝，不抛出 git 的原始报错，暂存区为空", async () => {
   const w = await world();
-  await rm(join(w.worktree, ARCHIVE));
+  w.git(w.worktree, "rm", "-q", "--", ARCHIVE); w.git(w.worktree, "commit", "-qm", "删归档");
   const result = await deliverRequirement(w.facts, w.ui());
   expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
   const reason = result.status === "rejected" ? result.reason : "";
@@ -298,9 +316,9 @@ test("登记的正文文件在工作区里不存在且从未被 Git 跟踪时，
   expect(w.remoteBranch()).toBeNull();
 });
 
-test("登记的原型 html 在工作区里不存在且从未被 Git 跟踪时，按内容不一致拒绝并写出该原型的相对路径，暂存区不留文件", async () => {
+test("登记的原型 html 已从分支里删掉时，按内容不一致拒绝并写出该原型的相对路径，暂存区为空", async () => {
   const w = await worldWithPrototypes();
-  await rm(join(w.worktree, prototypePath("命令行输出")));
+  w.git(w.worktree, "rm", "-q", "--", prototypePath("命令行输出")); w.git(w.worktree, "commit", "-qm", "删原型");
   const result = await deliverRequirement(w.facts, w.ui());
   expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
   const reason = result.status === "rejected" ? result.reason : "";
@@ -310,23 +328,15 @@ test("登记的原型 html 在工作区里不存在且从未被 Git 跟踪时，
   expect(w.remoteBranch()).toBeNull();
 });
 
-test("没有原型的需求交付与以往一样，只提交正文", async () => {
+test("没有原型的需求交付时，归档提交里只有正文，交付不新增提交", async () => {
   const w = await world();
-  const facts = { ...w.facts, archive: { ...w.facts.archive!, prototypes: [] } } as DeliveryFacts;
-  expect(await deliverRequirement(facts, w.ui(true, undefined))).toMatchObject({ status: "delivered" });
+  const before = w.git(w.worktree, "rev-parse", "HEAD");
+  expect(await deliverRequirement(w.facts, w.ui(true, undefined))).toMatchObject({ status: "delivered" });
+  expect(w.git(w.worktree, "rev-parse", "HEAD")).toBe(before);
   expect(w.git(w.worktree, "-c", "core.quotePath=false", "show", "--name-only", "--format=", "HEAD")).toBe(ARCHIVE);
-  expect(w.git(w.worktree, "log", "-1", "--format=%s")).toBe(`docs(prd): 归档需求 ${facts.requirementId}`);
+  expect(w.git(w.worktree, "log", "-1", "--format=%s")).toBe(`docs(prd): 归档需求 ${w.facts.requirementId}`);
+  expect(w.prompts[0]).toContain("归档已在分支中");
   expect(w.prompts[0]).not.toContain("原型");
-});
-
-test("目标仓库忽略 *.html 时，正文与原型 html 仍能一起提交，交付通过", async () => {
-  const w = await worldWithPrototypes();
-  await writeFile(join(w.worktree, ".gitignore"), "*.html\n");
-  w.git(w.worktree, "add", ".gitignore"); w.git(w.worktree, "commit", "-qm", "忽略 html");
-  const facts = { ...w.facts, codeHead: w.git(w.worktree, "rev-parse", "HEAD") };
-  expect(await deliverRequirement(facts, w.ui(true, undefined))).toMatchObject({ status: "delivered" });
-  const committed = w.git(w.worktree, "-c", "core.quotePath=false", "show", "--name-only", "--format=", "HEAD").split("\n").sort();
-  expect(committed).toEqual([ARCHIVE, prototypePath("命令行输出"), prototypePath("设置页")].sort());
 });
 
 test("原型名称含方括号且另有近似名称的原型时，按字面路径核对指纹，交付通过", async () => {
@@ -345,29 +355,11 @@ test("本需求编号开头、但不在登记清单里的 html 被提交到分�
   expect(w.remoteBranch()).toBeNull();
 });
 
-test("用户在确认窗口取消后暂存区留有登记文件，再删掉其中一个登记文件重新交付，按内容不一致拒绝并写出相对路径，暂存区清空", async () => {
-  for (const victim of [ARCHIVE, prototypePath("设置页")]) {
-    const w = await worldWithPrototypes();
-    expect(await deliverRequirement(w.facts, w.ui(false))).toMatchObject({ status: "cancelled" });
-    await rm(join(w.worktree, victim));
-    const result = await deliverRequirement(w.facts, w.ui());
-    expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
-    expect(result.status === "rejected" && result.reason).toContain(victim);
-    expect(w.git(w.worktree, "diff", "--cached", "--name-only")).toBe("");
-    expect(w.remoteBranch()).toBeNull();
-  }
-});
-
-test("登记的文件已提交进分支、之后在工作区被删时，按内容不一致拒绝并写出相对路径，暂存区为空", async () => {
+test("已提交的登记文件之后在工作区被删（未提交）时，按未提交改动拒绝，暂存区为空", async () => {
   for (const victim of [ARCHIVE, prototypePath("命令行输出")]) {
     const w = await worldWithPrototypes();
-    w.git(w.worktree, "add", "--", ARCHIVE, prototypePath("设置页"), prototypePath("命令行输出"));
-    w.git(w.worktree, "commit", "-qm", "归档");
-    const facts = { ...w.facts, codeHead: w.git(w.worktree, "rev-parse", "HEAD") };
     await rm(join(w.worktree, victim));
-    const result = await deliverRequirement(facts, w.ui());
-    expect(result).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
-    expect(result.status === "rejected" && result.reason).toContain(victim);
+    expect(await deliverRequirement(w.facts, w.ui())).toMatchObject({ status: "rejected", reason: expect.stringMatching(/未提交改动/) });
     expect(w.git(w.worktree, "diff", "--cached", "--name-only")).toBe("");
     expect(w.remoteBranch()).toBeNull();
   }
