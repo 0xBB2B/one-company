@@ -100,14 +100,19 @@ test("主会话规则要求回答功能或行为问题先查代码并写出文�
   expect(systemPrompt).toContain("归档、说明注释和代码说的不一样时，以代码为准，并说清哪里不一样");
 });
 
-test("主会话规则说明从代码查需求：查改过它的提交，按提交说明里的需求编号读 docs/prd 归档，没有编号或归档时照实说", async () => {
+test("主会话规则说明从代码查需求：先看提交说明里的编号，没有就看提交是否新增了 docs/prd 归档，再按编号读归档，没有编号或归档时照实说", async () => {
   const systemPrompt = await start(noWindow);
   expect(systemPrompt).toContain("git log --format='%h %s%n%b' -- <文件>");
   expect(systemPrompt).toContain("git log -L <起始行>,<结束行>:<文件>");
   expect(systemPrompt).toMatch(/末尾有一行 `Requirement: <编号>`[\s\S]*标题里可能带 `\[<编号>\]`/);
+  expect(systemPrompt).toMatch(/先看提交说明[\s\S]*说明里都没有时/);
+  expect(systemPrompt).toContain("git show --name-only --diff-filter=A <提交>");
+  expect(systemPrompt).toContain("git log --diff-filter=A --format='%h %s' -- 'docs/prd/<编号>.*'");
+  expect(systemPrompt).toContain("git log --grep <编号>");
+  expect(systemPrompt).toContain("实现记录");
   expect(systemPrompt).toContain("读 `docs/prd` 下以这个编号开头的归档文件");
   expect(systemPrompt).toMatch(/找不到归档[\s\S]*把编号告诉用户/);
-  expect(systemPrompt).toMatch(/提交里没有编号的[\s\S]*照实说查不到对应需求，只读提交说明/);
+  expect(systemPrompt).toMatch(/两个来源都没有编号的[\s\S]*照实说查不到对应需求，只读提交说明/);
 });
 
 test("M9：草稿被核验器拒绝时按原因删去不是用户原话的内容再保存，不算重复试错；草稿没保存成功前不请用户批准", async () => {
