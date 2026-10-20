@@ -16,6 +16,7 @@ import { acceptanceConfig, copyCredentials, installProduct, startInstalledHost }
 import type { InstalledHost } from "./helpers/installed-host.ts";
 import { createSampleProject } from "./helpers/sample-project.ts";
 import { driveUser } from "./helpers/user-driver.ts";
+import { stubOpen } from "./helpers/stub-open.ts";
 import type { DriverEvent, DriverOutcome, UserScript } from "./helpers/user-driver.ts";
 
 const exec = promisify(execFile);
@@ -71,6 +72,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一�
   const root = await mkdtemp(join(tmpdir(), "m9-"));
   const agentDir = join(root, "agent"), home = join(root, "home"), dataRoot = join(agentDir, "one-company");
   const previous = Object.fromEntries(["PI_CODING_AGENT_DIR", "HOME", "PI_TELEMETRY", "ONE_COMPANY_IDLE_TIMEOUT_MS"].map((key) => [key, process.env[key]]));
+  const restoreOpen = await stubOpen();
   const hosts: InstalledHost[] = [];
   let socketPath: string | undefined;
   const started = Date.now();
@@ -168,6 +170,7 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC2/AC3/AC11：同一�
     for (const [key, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
+    await restoreOpen();
     const sessions = await readdir(dataRoot, { recursive: true }).catch(() => [] as string[]);
     for (const path of sessions.filter((name) => name.endsWith("session.jsonl"))) {
       await mkdir(join(evidence, "runs"), { recursive: true });

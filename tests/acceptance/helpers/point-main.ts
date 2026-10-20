@@ -13,6 +13,7 @@ import { copyCredentials, installProduct, startInstalledHost } from "./installed
 import type { AcceptanceConfig, InstalledHost } from "./installed-host.ts";
 import { pointEvidence } from "./point-pm.ts";
 import { createSampleProject } from "./sample-project.ts";
+import { stubOpen } from "./stub-open.ts";
 
 const exec = promisify(execFile);
 export interface PointPlace { repo: string; dataRoot: string; repoId: string }
@@ -50,6 +51,7 @@ export async function startMainPoint(config: AcceptanceConfig, name: string, opt
   process.env.HOME = home;
   process.env.PI_TELEMETRY = "0";
   process.env.ONE_COMPANY_IDLE_TIMEOUT_MS = "2000";
+  const restoreOpen = await stubOpen();
   const host: InstalledHost = await startInstalledHost({ installed, repo, agentDir, config });
   const results = (since: number) => host.session.messages.slice(since).flatMap((message) => message.role === "toolResult"
     ? [{ tool: message.toolName, isError: message.isError === true, text: message.content.map((block) => block.type === "text" ? block.text : "").join("") }] : []);
@@ -72,6 +74,7 @@ export async function startMainPoint(config: AcceptanceConfig, name: string, opt
       let gone = await waitMissing(socket, 30_000);
       if (!gone) { await killUnder(root); gone = await waitMissing(socket, 10_000); }
       for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+      await restoreOpen();
       await rm(join(agentDir, "auth.json"), { force: true });
       await rm(join(agentDir, "models.json"), { force: true });
       if (gone) await rm(root, { recursive: true, force: true });
