@@ -25,7 +25,7 @@ const NAV_WIDTH = 20, WIDE = 60, KEY = 8, FILE = 18, MIN_COLUMN = 8;
 const WORD_CHAR = /[\w.~-]/u;
 const NAME_RULE = "小写字母、数字、连字符，最多 64 个字符；三层里不能重名";
 export const MODE_LABEL: Record<DeliveryMode, string> = { remote: "远程", local: "仅本地" };
-const MODE_FOOT = "Git 交付：远程＝推送需求分支、开 PR，在 GitHub/GitLab 上合并；仅本地＝在本机把需求分支合进主仓库当前分支，不推送";
+const MODE_FOOT = "Git 交付：远程＝推送并开 PR；仅本地＝合进主仓库当前分支";
 const METHODS_FOOT = "合并方式：远程和仅本地都只用勾了的方式，压缩合并是推荐方式";
 const METHODS_NOTE = "远程和仅本地都生效。远程时只列出仓库也允许的方式；交付窗口里压缩合并排第一、标推荐。";
 const METHOD_ROWS = [

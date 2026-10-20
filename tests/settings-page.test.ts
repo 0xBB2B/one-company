@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -60,7 +60,9 @@ async function run(ctx: SettingsExtensionContext, mainThinking = "high") {
 }
 
 /** 页面与程序窗口每次出现，按顺序交给下一步处理；两者都走 ui.custom。 */
-function scripted(steps: Step[], options: { trusted?: boolean; models?: unknown[]; authorized?: string[] } = {}): SettingsExtensionContext {
+function scripted(steps: Step[], options: { trusted?: false; models?: unknown[]; authorized?: string[] } = {}): SettingsExtensionContext {
+  const trustFile = join(agentDir(), "trust.json");
+  if (options.trusted !== false && !existsSync(trustFile)) { mkdirSync(agentDir(), { recursive: true }); writeFileSync(trustFile, JSON.stringify({ [repoDir()]: true })); }
   const models = options.models ?? [SOL, LUNA];
   const authorized = options.authorized ?? ["gpt-6.1-sol", "gpt-6-luna"];
   const ui = {
@@ -75,7 +77,7 @@ function scripted(steps: Step[], options: { trusted?: boolean; models?: unknown[
     },
     notify() {},
   };
-  return { hasUI: true, mode: "tui", cwd: repoDir(), ui: ui as unknown as SettingsExtensionContext["ui"], isProjectTrusted: () => options.trusted ?? true,
+  return { hasUI: true, mode: "tui", cwd: repoDir(), ui: ui as unknown as SettingsExtensionContext["ui"],
     modelRegistry: { getAll: () => models, hasConfiguredAuth: (model: { id: string }) => authorized.includes(model.id) }, model: SOL } as unknown as SettingsExtensionContext;
 }
 
@@ -148,6 +150,42 @@ test("项目未受信任时项目层选项变暗并写明原因，页面不列�
   ], { trusted: false });
   await run(ctx);
   expect(window).toMatch(/项目层 +项目未受信任，暂不能复制到这里/u);
+});
+
+async function writeTrust(entries: Record<string, boolean>) {
+  await writeSettings(join(agentDir(), "trust.json"), entries);
+}
+
+test("受信任与否按 trust.json 里离仓库最近的一条判断：父目录信任、仓库不信任时，项目层不生效", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await writeTrust({ [root]: true, [repoDir()]: false });
+  await writeSettings(userFile(), oneCompany({ "git-delivery": "remote" }));
+  await writeSettings(projectFile(), oneCompany({ "git-delivery": "local" }));
+  const ctx = scripted([
+    (s) => {
+      expect(s.now()).toContain("! 项目未受信任：项目层的定义和设定都没有生效");
+      goTo(s, "switches");
+      expect(s.now()).toMatch(/▸ Git 交付 +用户 +远程/u);
+      s.press(ESC, ESC);
+    },
+  ], {});
+  await run(ctx);
+});
+
+test("trust.json 里仓库记为信任时项目层生效", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await writeTrust({ [root]: false, [repoDir()]: true });
+  await writeSettings(userFile(), oneCompany({ "git-delivery": "remote" }));
+  await writeSettings(projectFile(), oneCompany({ "git-delivery": "local" }));
+  const ctx = scripted([
+    (s) => {
+      expect(s.now()).not.toContain("项目未受信任");
+      goTo(s, "switches");
+      expect(s.now()).toMatch(/▸ Git 交付 +项目 +仅本地/u);
+      s.press(ESC, ESC);
+    },
+  ]);
+  await run(ctx);
 });
 
 test("带引号的 model 与多行 description：设置页显示的内容与守护进程解析结果一致，不当成问题定义", async () => {

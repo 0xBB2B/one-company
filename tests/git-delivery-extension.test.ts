@@ -34,12 +34,14 @@ async function writeSettings(path: string, content: string) {
   await writeFile(path, content);
 }
 
-async function world(status: Record<string, unknown> = { status: "closed", reason: "completed", archive: null, delivery: null }, trusted = true) {
+async function world(status: Record<string, unknown> = { status: "closed", reason: "completed", archive: null, delivery: null }) {
   const root = await realpath(await mkdtemp("/tmp/pi-t-"));
   cleanups.push(root);
   const agentDir = join(root, "agent"), cwd = join(root, "repo");
   await mkdir(cwd, { recursive: true });
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  await mkdir(agentDir, { recursive: true });
+  await writeFile(join(agentDir, "trust.json"), JSON.stringify({ [join(root, "main")]: true }));
   let active = ["read", "bash"];
   const tools = new Map<string, Tool>(), commands: string[] = [], handlers = new Map<string, Handler>();
   const calls: unknown[] = [];
@@ -51,7 +53,7 @@ async function world(status: Record<string, unknown> = { status: "closed", reaso
   } as unknown as ExtensionAPI;
   const clients = { forRepo: () => ({ call: async (method: string, params: unknown) => { calls.push([method, params]); return { result: { close: status } }; } }) } as unknown as WorkspaceClientsHandle;
   registerGitDelivery(pi, () => ({ clients: () => clients }));
-  const ctx = { cwd, isProjectTrusted: () => trusted, hasUI: true, ui: { ...answeringUi(() => true), notify: () => {} } };
+  const ctx = { cwd, hasUI: true, ui: { ...answeringUi(() => true), notify: () => {} } };
   const start = async () => { await handlers.get("session_start")!({ type: "session_start", reason: "startup" }, ctx); };
   const run = async (params: unknown) => JSON.parse((await tools.get(GIT_DELIVER_TOOL)!.execute("t", params, undefined, undefined, ctx)).content[0]!.text) as Record<string, unknown>;
   const mainRepo = join(root, "main"), worktree = join(root, "req");
@@ -94,8 +96,9 @@ test.each([
 });
 
 test("项目不受信任、项目层写 local 时，工具列表里仍有交付工具", async () => {
-  const w = await world(undefined, false);
-  await writeSettings(w.projectPath, gitDeliverySettings("local"));
+  const w = await world();
+  await writeSettings(join(process.env.PI_CODING_AGENT_DIR!, "trust.json"), JSON.stringify({ [w.mainRoot]: false }));
+  await writeSettings(w.mainProjectPath, gitDeliverySettings("local"));
   await w.start();
   expect(w.active()).toEqual(["read", "bash", GIT_DELIVER_TOOL]);
 });
@@ -192,4 +195,47 @@ test("档位为 local 时调用仅本地交付，参数带主仓库根和合并�
   expect(remoteMock).not.toHaveBeenCalled();
   expect(localMock).toHaveBeenCalledTimes(1);
   expect(localMock.mock.calls[0]![2]).toEqual({ repositoryRoot: w.mainRoot, mergeMethods: ["merge", "rebase"] });
+});
+
+test.each([
+  ["父目录信任、主仓库不信任", false, "remote"],
+  ["主仓库信任、父目录不信任", true, "local"],
+])("交付工具按 trust.json 里离主仓库最近的一条判断项目层（%s）", async (_label, repoTrusted, expected) => {
+  const localDelivery = await import("../src/modules/delivery/local-delivery.ts");
+  const localMock = vi.mocked(localDelivery.deliverLocally), remoteMock = vi.mocked(gitDelivery.deliverRequirement);
+  const w = await world();
+  await w.makeDeliverable();
+  await writeSettings(join(process.env.PI_CODING_AGENT_DIR!, "trust.json"), JSON.stringify({ [dirname(w.mainRoot)]: !repoTrusted, [w.mainRoot]: repoTrusted }));
+  await writeSettings(w.userPath, gitDeliverySettings("remote"));
+  await writeSettings(w.mainProjectPath, gitDeliverySettings("local"));
+  await w.start();
+  localMock.mockClear(); remoteMock.mockClear();
+  await w.run(PARAMS);
+  if (expected === "remote") {
+    expect(localMock).not.toHaveBeenCalled();
+    expect(remoteMock.mock.calls[0]![2]).toMatchObject({ mode: "remote" });
+  } else {
+    expect(remoteMock).not.toHaveBeenCalled();
+    expect(localMock).toHaveBeenCalledTimes(1);
+  }
+});
+
+test("两次调用交付工具之间把主仓库从信任改成不信任，第二次按新记录走远程交付", async () => {
+  const localDelivery = await import("../src/modules/delivery/local-delivery.ts");
+  const localMock = vi.mocked(localDelivery.deliverLocally), remoteMock = vi.mocked(gitDelivery.deliverRequirement);
+  const w = await world();
+  await w.makeDeliverable();
+  const trustPath = join(process.env.PI_CODING_AGENT_DIR!, "trust.json");
+  await writeSettings(trustPath, JSON.stringify({ [w.mainRoot]: true }));
+  await writeSettings(w.userPath, gitDeliverySettings("remote"));
+  await writeSettings(w.mainProjectPath, gitDeliverySettings("local"));
+  await w.start();
+  localMock.mockClear(); remoteMock.mockClear();
+  await w.run(PARAMS);
+  expect(remoteMock).not.toHaveBeenCalled();
+  expect(localMock).toHaveBeenCalledTimes(1);
+  await writeSettings(trustPath, JSON.stringify({ [w.mainRoot]: false }));
+  await w.run(PARAMS);
+  expect(localMock).toHaveBeenCalledTimes(1);
+  expect(remoteMock.mock.calls[0]![2]).toMatchObject({ mode: "remote" });
 });

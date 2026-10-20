@@ -21,7 +21,7 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
   const registry = new ModelRegistry(w.runtime), model = w.runtime.getModels("team-model")[0]!;
   const windows: ShownWindow[] = [];
   let windowAnswer: WindowDecision = true;
-  const ctx = { cwd: w.fixture.repositoryRoot, mode: "tui", hasUI: true, isProjectTrusted: () => false, modelRegistry: registry, model,
+  const ctx = { cwd: w.fixture.repositoryRoot, mode: "tui", hasUI: true, modelRegistry: registry, model,
     ui: { notify: () => {}, confirm: () => { throw new Error("UI.confirm forbidden"); }, ...answeringUi((window) => { windows.push(window); return windowAnswer; }) },
     sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
   const interaction = new MainRequirementInteraction({ mainThinking: () => "off", dataRoot: w.fixture.dataRoot, authorization,

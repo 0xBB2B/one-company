@@ -3,7 +3,7 @@ import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { chooseWindow, mutedLines, openProgramWindow } from "../../core/host/question-window.ts";
 import type { WindowChoice } from "../../core/host/question-window.ts";
-import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { parseFrontmatter, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dataRoot } from "../../core/storage/data-root.ts";
 import { resolveRepoRoot } from "../../core/exec/git-read.ts";
@@ -15,21 +15,20 @@ import type { ClearSettingRequest, PageNotice, PageTheme, SaveSettingRequest, Se
 import { clearAgentSetting, clearGitDeliverySetting, clearMergeMethodsSetting, projectSettingsPath, readAgentSettings, saveAgentSetting, saveGitDeliverySetting, saveMergeMethodsSetting, SETTINGS_ROLES, userSettingsPath } from "./agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../agents/roles.ts";
 
-export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode" | "isProjectTrusted" | "modelRegistry" | "model">;
+export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode" | "modelRegistry" | "model">;
 
 /** /one:setting：查看内置、用户、项目三层的角色定义，C 复制为新定义；「模型」里改 PM、解释器、草稿核验器用的模型和思考等级；「开关」里改 Git 交付档位和允许的合并方式。 */
 export async function openSettingsPage(ctx: SettingsExtensionContext, options: { mainThinking: () => string }): Promise<void> {
-  const projectTrusted = ctx.isProjectTrusted();
   const agentDir = dirname(dataRoot(process.env));
   const repositoryRoot = await resolveRepoRoot(ctx.cwd);
+  const trusted = () => new ProjectTrustStore(agentDir).get(repositoryRoot) === true;
   const dirs = { defaultDir: defaultRoleDir(), userDir: userRoleDir(agentDir), projectDir: projectRoleDir(repositoryRoot) };
   const layers = [{ label: "内置层", dir: dirs.defaultDir }, { label: "用户层", dir: dirs.userDir }, { label: "项目层", dir: dirs.projectDir }];
   const fileOf = (dir: string, name: string) => join(dir, `${name}.md`);
   const nameTaken = (name: string) => layers.find((layer) => existsSync(fileOf(layer.dir, name)))?.label;
-  const untrustedProjectCount = projectTrusted ? 0 : await readdir(dirs.projectDir).then((files) => files.filter((file) => file.endsWith(".md")).length, () => 0);
   const settingsPaths: Record<SettingsLayerName, string> = { user: userSettingsPath(agentDir), project: projectSettingsPath(repositoryRoot) };
   const layerLabel: Record<SettingsLayerName, string> = { user: "用户层", project: "项目层" };
-  const readSettings = () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted });
+  const readSettings = () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: trusted() });
   const models = ctx.modelRegistry.getAll().filter((model) => ctx.modelRegistry.hasConfiguredAuth(model));
   type Picked = { state: PageState } & ({ copy: CopyRequest } | { save: SaveSettingRequest } | { clear: ClearSettingRequest } | { saveSwitch: SaveSwitchRequest } | { clearSwitch: ClearSwitchRequest });
   const applyChange = async (picked: Exclude<Picked, { copy: CopyRequest }>): Promise<{ text: string; fresh: string }> => {
@@ -68,6 +67,8 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
   };
   let state: PageState | undefined;
   for (;;) {
+    const projectTrusted = trusted();
+    const untrustedProjectCount = projectTrusted ? 0 : await readdir(dirs.projectDir).then((files) => files.filter((file) => file.endsWith(".md")).length, () => 0);
     const catalog = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted });
     const settings = await readSettings();
     const picked = await openProgramWindow<Picked>(ctx, (tui, theme, _keybindings, done) => {

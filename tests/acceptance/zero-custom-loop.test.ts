@@ -112,8 +112,8 @@ async function runLoop(name: string, script: UserScript, verify: (result: LoopRe
 }
 
 /**
- * M9-AC5、AC6：关闭后本机正文与私有版本库仍在；归档只有这一份完成需求，写进业务工作区等用户另行提交；
- * 模拟用户提交后，另起一份不带本机数据的克隆按这次提交读到同样的归档与验收记录。
+ * M9-AC5、AC6：关闭后本机正文与私有版本库仍在；归档只有这一份完成需求，关闭时已由程序提交进需求分支；
+ * 另起一份不带本机数据的克隆按这次提交读到同样的归档与验收记录。
  */
 async function expectArchiveDelivered(result: Pick<LoopResult, "agentDir" | "repoId" | "repo" | "worktree" | "archive" | "archives">) {
   const { agentDir, repoId, repo, worktree, archive, archives } = result;
@@ -123,9 +123,10 @@ async function expectArchiveDelivered(result: Pick<LoopResult, "agentDir" | "rep
   const versions = join(agentDir, "one-company", "repos", repoId, "requirements", requirementId);
   expect((await readFile(join(versions, "prd.md"), "utf8")).length).toBeGreaterThan(0);
   expect(Number((await exec("git", ["rev-list", "--count", "HEAD"], { cwd: versions })).stdout.trim())).toBeGreaterThan(0);
-  expect((await exec("git", ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all", "docs/prd"], { cwd: worktree! })).stdout).toContain(archiveName);
-  await exec("git", ["add", "docs/prd"], { cwd: worktree! });
-  await exec("git", ["-c", "user.name=sample", "-c", "user.email=sample@localhost", "commit", "-qm", "需求归档"], { cwd: worktree! });
+  expect((await exec("git", ["-c", "core.quotePath=false", "status", "--porcelain", "--untracked-files=all", "docs/prd"], { cwd: worktree! })).stdout).toBe("");
+  const message = (await exec("git", ["log", "-1", "--format=%B", "--", `docs/prd/${archiveName}`], { cwd: worktree! })).stdout;
+  expect(message.split("\n")[0]).toBe(`docs(prd): 归档需求 ${requirementId}`);
+  expect(message).toContain(`Requirement: ${requirementId}`);
   const head = (await exec("git", ["rev-parse", "HEAD"], { cwd: worktree! })).stdout.trim();
   const clone = join(dirname(repo), "member-clone");
   await exec("git", ["clone", "-q", repo, clone]);

@@ -18,7 +18,7 @@ const LONG = { provider: "some-long-provider", id: "claude-opus-5-5-extended-con
 const GRAY_NOTE = /gpt-6-luna 不支持/u;
 const NOTICE = "✓ 已复制到 ~/.pi/agent/agents/vue-engineer.md，打开它写专长、skills 和 mcp";
 const MODEL_HINT = "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层";
-const MODE_FOOT = "Git 交付：远程＝推送需求分支、开 PR，在 GitHub/GitLab 上合并；仅本地＝在本机把需求分支合进主仓库当前分支，不推送";
+const MODE_FOOT = "Git 交付：远程＝推送并开 PR；仅本地＝合进主仓库当前分支";
 const METHODS_FOOT = "合并方式：远程和仅本地都只用勾了的方式，压缩合并是推荐方式";
 const SPACE = " ";
 
@@ -1541,6 +1541,16 @@ test("修改开关的两步里，底部继续写 Git 交付的说明，按键提
     const p = await page();
     p.press(...toSection("switches", ...Array<string>(index + 1).fill(ENTER)));
     expect(squeeze(p.text()), `第 ${index + 1} 步`).toContain(squeeze(`${MODE_FOOT} · 内置默认值：没有 origin → 仅本地 · 立即生效`));
+    expect(p.text()).toContain(hint);
+  }
+});
+
+test("修改合并方式的两步里，底部显示合并方式的说明，按键提示是步骤自己的", async () => {
+  const hints = ["↑↓ 选择  空格 勾选  回车 下一步  Esc 取消", "↑↓ 选择  回车 保存  Esc 上一步"];
+  for (const [index, hint] of hints.entries()) {
+    const p = await page();
+    p.press(...toSection("switches", DOWN, ...Array<string>(index + 1).fill(ENTER)));
+    expect(squeeze(p.text()), `第 ${index + 1} 步`).toContain(squeeze(`${METHODS_FOOT} · 内置默认值：三种都勾 · 立即生效`));
     expect(p.text()).toContain(hint);
   }
 });

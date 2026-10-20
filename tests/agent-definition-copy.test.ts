@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -162,6 +162,8 @@ test("页面复制完成后底部提示：已复制到新文件路径，打开�
   savedAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = join(root, "agent");
   await mkdir(join(root, "repo"), { recursive: true });
+  await mkdir(join(root, "agent"), { recursive: true });
+  await writeFile(join(root, "agent", "trust.json"), JSON.stringify({ [await realpath(join(root, "repo"))]: true }));
   const screens: string[] = [];
   const steps: Array<(keys: (...k: string[]) => void, text: string) => void> = [
     (keys) => keys(RIGHT, "c", ...Array(11).fill(BACKSPACE), ..."vue-engineer", ENTER),
@@ -179,7 +181,7 @@ test("页面复制完成后底部提示：已复制到新文件路径，打开�
     },
     notify() {},
   };
-  const ctx = { hasUI: true, mode: "tui", cwd: join(root, "repo"), ui, isProjectTrusted: () => true, modelRegistry: { getAll: () => [], hasConfiguredAuth: () => false }, model: undefined } as unknown as SettingsExtensionContext;
+  const ctx = { hasUI: true, mode: "tui", cwd: join(root, "repo"), ui, modelRegistry: { getAll: () => [], hasConfiguredAuth: () => false }, model: undefined } as unknown as SettingsExtensionContext;
   await openSettingsPage(ctx, { mainThinking: () => "high" });
   expect(screens[0]).toContain(`✓ 已复制到 ${join(root, "agent", "agents", "vue-engineer.md")}，打开它写专长、skills 和 mcp`);
 });
