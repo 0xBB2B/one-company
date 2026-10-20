@@ -662,6 +662,55 @@ test("关闭已办完后再调 close 被拒并说明这次关闭已经办完，�
   expect(w.state.read(w.created.requirementId).version).toBe(closedVersion);
 });
 
+async function closeBlockedByArchiveConflict(w: Awaited<ReturnType<typeof world>>) {
+  await w.fullEvidence();
+  const main = await w.main();
+  const receiptId = await w.accept();
+  const archivePath = (await w.service.metadata(w.created.requirementId)).archivePath!;
+  const target = join(w.worktree.root, ...archivePath.split("/"));
+  await mkdir(join(w.worktree.root, "docs", "prd"), { recursive: true });
+  await writeFile(target, "别人的文件\n");
+  const closed = await main.execute({ action: "close", reason: "completed", receiptId }) as CloseResult;
+  expect(closed).toMatchObject({ status: "closed", archive: { status: "blocked" } });
+  return { main, receiptId, target };
+}
+
+test("关闭办完但归档被挡后，清掉冲突再用原原因和原决定编号调 close：归档成功，状态查询看到已归档", async () => {
+  const w = await world();
+  if (!darwin) return;
+  const { main, receiptId, target } = await closeBlockedByArchiveConflict(w);
+  await rm(target);
+  const retried = await main.execute({ action: "close", reason: "completed", receiptId });
+  expect(retried).toMatchObject({ status: "closed", archive: { status: "archived" } });
+  expect(await readFile(target, "utf8")).toContain("保留移动");
+  expect(w.closeService.status(w.created.requirementId)).toMatchObject({ status: "closed", archive: { status: "archived" } });
+});
+
+test("关闭办完但归档没完成时，换 reason 或 receiptId 再调 close 被拒，状态不变", async () => {
+  const w = await world();
+  if (!darwin) return;
+  const { main, receiptId, target } = await closeBlockedByArchiveConflict(w);
+  await rm(target);
+  const before = w.state.read(w.created.requirementId);
+  for (const changed of [{ reason: "completed", receiptId: w.receipt() }, { reason: "cancelled", receiptId }]) {
+    const again = await main.execute({ action: "close", ...changed });
+    expect(again).toMatchObject({ status: "rejected", missing: ["需求已有另一个关闭请求在办理"] });
+    expect(w.state.read(w.created.requirementId).version).toBe(before.version);
+  }
+  expect(w.closeService.status(w.created.requirementId)).toMatchObject({ archive: { status: "blocked" } });
+  await expect(readFile(target)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("没有归档的关闭办完后再调 close 被拒并说明这次关闭已经办完", async () => {
+  const w = await world();
+  const main = await w.main();
+  const receiptId = w.receipt();
+  expect(await main.execute({ action: "close", reason: "cancelled", receiptId })).toMatchObject({ status: "closed", archive: null });
+  const done = await main.execute({ action: "close", reason: "cancelled", receiptId });
+  expect(done).toMatchObject({ status: "rejected" });
+  expect(JSON.stringify(done)).toContain("这次关闭已经办完");
+});
+
 test("主窗口侧工具说明不含新生成、UUIDv7、照抄与 operationId，close 的参数里没有 operationId", () => {
   const tools: Array<{ name: string; description: string; parameters: unknown }> = [];
   registerWorkflowManageTool({ registerTool: (tool: never) => { tools.push(tool); } } as never, () => ({}) as never);

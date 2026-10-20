@@ -23,8 +23,8 @@ export class RequirementRecoveryError extends Error {
   readonly code: string;
   readonly restoreStatus = "needs_review" as const;
   readonly executable = false as const;
-  constructor(code: string, detail?: string) {
-    super(`需求备份恢复保持待审核：${detail ? `${code}：${detail}` : code}；没有恢复执行授权`);
+  constructor(code: string) {
+    super(`需求备份恢复保持待审核：${code}；没有恢复执行授权`);
     this.name = "RequirementRecoveryError";
     this.code = code;
   }
@@ -76,7 +76,7 @@ interface RestoreLog {
 
 interface ScannedFile extends RequirementBackupFile { path: string; dev: number; ino: number; uid: number; mtimeMs: number; ctimeMs: number }
 
-function fail(code: string, detail?: string): never { throw new RequirementRecoveryError(code, detail); }
+function fail(code: string): never { throw new RequirementRecoveryError(code); }
 function sha256(bytes: Uint8Array | string): string { return createHash("sha256").update(bytes).digest("hex"); }
 function contained(parent: string, child: string): boolean {
   const value = relative(parent, child);

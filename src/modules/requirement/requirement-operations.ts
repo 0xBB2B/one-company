@@ -194,7 +194,7 @@ export class RequirementOperations {
         if (existing.data.finalVersion === null) {
           const otherPending = db.list(NAMESPACE)
             .map((stored) => checkOperation(stored.data))
-            .find((operation) => operation.requirementId === input.requirementId && operation.operationId !== input.operationId && operation.finalVersion === null);
+            .some((operation) => operation.requirementId === input.requirementId && operation.operationId !== input.operationId && operation.finalVersion === null);
           if (otherPending) throw new RequirementServiceError("requirement_write_pending");
           claimRequirementWriteIn(db, { ...owner, repoId: this.repoId, requirementId: input.requirementId, operationId: input.operationId, acquiredAt: this.checkedNow() }, { allowDeadOriginalOperationRecovery: true });
         }
@@ -202,9 +202,8 @@ export class RequirementOperations {
       }
       const conflicting = db.list(NAMESPACE)
         .map((stored) => checkOperation(stored.data))
-        .find((operation) => operation.requirementId === input.requirementId && operation.finalVersion === null);
-      const claimed = readRequirementWriteClaimIn(db, this.repoId, input.requirementId);
-      if (conflicting || claimed) {
+        .some((operation) => operation.requirementId === input.requirementId && operation.finalVersion === null);
+      if (conflicting || readRequirementWriteClaimIn(db, this.repoId, input.requirementId)) {
         throw new RequirementServiceError("requirement_write_pending");
       }
       const requirementStored = db.read("requirements", input.requirementId);
@@ -239,7 +238,7 @@ export class RequirementOperations {
       if (stored.data.finalVersion !== null) return stored;
       const otherPending = db.list(NAMESPACE)
         .map((candidate) => checkOperation(candidate.data))
-        .find((operation) => operation.requirementId === stored.data.requirementId && operation.operationId !== operationId && operation.finalVersion === null);
+        .some((operation) => operation.requirementId === stored.data.requirementId && operation.operationId !== operationId && operation.finalVersion === null);
       if (otherPending) throw new RequirementServiceError("requirement_write_pending");
       claimRequirementWriteIn(db, { ...owner, repoId: this.repoId, requirementId: stored.data.requirementId, operationId, acquiredAt: this.checkedNow() }, { allowDeadOriginalOperationRecovery: true });
       return stored;
@@ -253,11 +252,22 @@ export class RequirementOperations {
       .find((operation) => operation.requirementId === requirementId && operation.finalVersion === null) ?? null);
   }
 
-  pendingCreate(intentHash: string): RequirementOperation | null {
+  pendingCreate(intentHash: string): Pick<RequirementOperation, "action" | "requestId"> & { operationId: string | null } | null {
     if (!existsSync(this.path)) return null;
-    return withDatabase(this.path, (db) => db.list(NAMESPACE)
-      .map((stored) => checkOperation(stored.data))
-      .find((operation) => operation.action === "create" && operation.finalVersion === null && operation.intentHash === intentHash) ?? null);
+    return withDatabase(this.path, (db) => {
+      const operations = db.list(NAMESPACE).map((stored) => checkOperation(stored.data));
+      const unfinished = operations.find((operation) => operation.action === "create" && operation.finalVersion === null && operation.intentHash === intentHash);
+      if (unfinished) return unfinished;
+      const reserved = db.list("requirement_requests")
+        .find((row) => {
+          const data = row.data as { requirementId: string; intentHash: string };
+          if (data.intentHash !== intentHash) return false;
+          const record = db.read("requirements", data.requirementId)?.data as RequirementRecord | undefined;
+          return record?.saved === null && record.lifecycle === "draft" && record.recovery === "ready"
+            && !operations.some((operation) => operation.requirementId === data.requirementId);
+        });
+      return reserved ? { action: "create" as const, requestId: reserved.key, operationId: null } : null;
+    });
   }
 
   assertOwned(operationId: string, owner: RequirementWriteOwner): RequirementOperation {

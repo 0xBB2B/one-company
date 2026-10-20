@@ -789,7 +789,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
           try {
             const result = params.action === "workspace-prepare"
               ? await workspace.prepare({ requirementId: params.requirementId })
-              : await workspace.recycle({ requirementId: params.requirementId, operationId: uuidv7() });
+              : await workspace.recycle({ requirementId: params.requirementId });
             return textResult({ action: params.action, requirementId: result.requirementId, status: result.status, branch: result.branch,
               path: result.path, baseCommit: result.baseCommit, version: workspace.requirementVersion(result.requirementId),
               operationId: params.action === "workspace-prepare" ? result.operationId : result.recycleOperationId });

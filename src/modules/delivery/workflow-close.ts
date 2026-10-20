@@ -74,7 +74,7 @@ export const CompletionReport = object({
 export type CompletionReport = Static<typeof CompletionReport>;
 
 export type CloseAction = "preflight" | "close" | "archive" | "delivery-check" | "status" | "report";
-export interface CloseAuthorization { readonly action: CloseAction; readonly requirementId: string; readonly reason?: CloseReason; readonly receiptId?: string; readonly operationId?: string }
+export interface CloseAuthorization { readonly action: CloseAction; readonly requirementId: string; readonly reason?: CloseReason; readonly receiptId?: string }
 export interface RequirementCloseServiceOptions {
   repositoryRoot: string;
   dataRoot: string;
@@ -334,7 +334,7 @@ export function decideReportIn(db: LocalDatabase, reportId: string, decision: { 
 }
 
 const PreflightInput = object({ requirementId: id, reason: CloseReason, receiptId: id });
-const CloseInput = object({ requirementId: id, reason: CloseReason, receiptId: id, operationId: Type.Optional(id) });
+const CloseInput = object({ requirementId: id, reason: CloseReason, receiptId: id });
 export interface ClosePreflight { eligible: boolean; missing: string[]; basis: CloseBasis | null; authorization?: string }
 export type CloseResult =
   | { status: "rejected"; missing: string[]; authorization?: string }
@@ -485,20 +485,21 @@ export class RequirementCloseService {
     let request: Static<typeof CloseInput>;
     try { request = checked(CloseInput, input); } catch (error) { throw new CloseError("invalid_shape", (error as Error).message); }
     let authorization: string | undefined;
-    try { this.authorize({ action: "close", requirementId: request.requirementId, reason: request.reason, receiptId: request.receiptId, operationId: request.operationId }); }
+    try { this.authorize({ action: "close", requirementId: request.requirementId, reason: request.reason, receiptId: request.receiptId }); }
     catch (error) { authorization = adviceOf(error)?.why ?? (error as Error).message; }
     const existing = withDatabase(this.database, (db) => ({ operation: this.operation(db, request.requirementId), record: requirementIn(db, this.options.repoId, request.requirementId) }));
     if (authorization !== undefined) return freeze({ status: "rejected" as const, missing: ["close_authorization_invalid"], authorization });
     const current = existing.record.data.close;
     if (current) {
-      if (existing.operation?.data.status === "closed") return freeze({ status: "rejected" as const, missing: ["close_finished"] });
+      const done = existing.operation?.data;
+      if (done?.status === "closed" && !(done.archive && done.archive.status !== "archived")) return freeze({ status: "rejected" as const, missing: ["close_finished"] });
       if (current.reason !== request.reason || current.receiptId !== request.receiptId) return freeze({ status: "rejected" as const, missing: ["close_intent_conflict"] });
     }
     if (!existing.record.data.close) {
       const preflight = await this.preflight({ requirementId: request.requirementId, reason: request.reason, receiptId: request.receiptId });
       if (!preflight.eligible || !preflight.basis) return freeze({ status: "rejected" as const, missing: preflight.missing, ...(preflight.authorization ? { authorization: preflight.authorization } : {}) });
       const basis = preflight.basis;
-      const intent = { operationId: request.operationId ?? uuidv7(), reason: request.reason, receiptId: request.receiptId };
+      const intent = { operationId: uuidv7(), reason: request.reason, receiptId: request.receiptId };
       const prototypes = request.reason === "completed"
         ? (await prototypesAtRevision(this.options, request.requirementId, basis.revision))
           .map((item) => ({ path: prototypeArchivePathFor(request.requirementId, item.name), name: item.name, version: item.version, hash: item.hash }))

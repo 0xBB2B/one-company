@@ -775,6 +775,37 @@ test("M8D-AC9：窗口里的回答只算回答：拿它批准时不弹批准窗�
   expect((adjudicated as Error).message).toContain("原因：用户是在提问窗口里选的，这只算回答，不能当作批准或裁决");
 });
 
+test("批准时解读已完成、之后一步失败：同一句用户原话下原样再调 reply，直接批准成功，不再调用解读模型", async () => {
+  const w = await world(), created = await w.create(), first = await w.request(created);
+  const storage = vi.spyOn(RequirementService.prototype, "confirmUpdate").mockRejectedValueOnce(new RequirementServiceError("stale_version", "模拟存储出错"));
+  const interpretations = () => w.provider.requests.filter((r) => r.systemPrompt?.includes("需求解释器")).length;
+  w.capture("同意"); scriptReview(w.provider, phoneReview);
+  try {
+    await expect(w.call({ action: "reply", ...first.input }, true)).rejects.toMatchObject({ code: "stale_version" });
+  } finally { storage.mockRestore(); }
+  const before = interpretations();
+  expect(before).toBeGreaterThan(0);
+  const retried = await w.call({ action: "reply", ...first.input }, true).then((r) => r, (e: unknown) => e);
+  expect(retried).toMatchObject({ prdActivated: true });
+  expect(retried).not.toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
+  expect(interpretations()).toBe(before);
+});
+
+test("A 批准失败后在同一句用户原话下批准另一个需求 B：B 的批准用新的操作编号，不沿用 A 的", async () => {
+  const w = await world(), created = await w.create(), other = await w.create();
+  const first = await w.request(created), second = await w.request(other);
+  const storage = vi.spyOn(RequirementService.prototype, "confirmUpdate").mockRejectedValueOnce(new RequirementServiceError("stale_version", "模拟存储出错"));
+  w.capture("同意"); scriptReview(w.provider, phoneReview);
+  let failedOperationId = "";
+  try {
+    await expect(w.call({ action: "reply", ...first.input }, true)).rejects.toMatchObject({ code: "stale_version" });
+    failedOperationId = (storage.mock.calls[0]![0] as { operationId: string }).operationId;
+  } finally { storage.mockRestore(); }
+  const approved = await w.call({ action: "reply", ...second.input }, true);
+  expect(approved).toMatchObject({ prdActivated: true });
+  expect(approved.operationId).not.toBe(failedOperationId);
+});
+
 const allPending = (loaded: Pick<ConfirmationContext, "candidate" | "partition">) => {
   const review = phoneReview(loaded);
   review.faithful = false;
@@ -1419,6 +1450,41 @@ describe("编号由程序生成", () => {
       expect(other.operationId).not.toBe(pending.operationId);
     }
     expect(creates(w)).toHaveLength(before + 2);
+  });
+
+  test("为某份内容占好了需求编号、保存还没开始时，原样再调 create：用占好的编号建出需求，库里只有这一个需求", async () => {
+    const w = await world();
+    allowDrafts(w);
+    const state = await stateOf(w);
+    const reserved = state.reserve({ requestId: uuidv7(), intentHash: requirementIntentHash({ title: "短信登录需求", body: BODY }) });
+    const rows = () => withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("requirements"));
+    expect(rows()).toHaveLength(1);
+    w.capture(); const resumed = await w.call(createParams());
+    expect(resumed).toMatchObject({ status: "created", requirementId: reserved.id });
+    expect(rows()).toHaveLength(1);
+  });
+
+  test("为某份内容占好的需求编号随后已被关闭，原样再调 create：不用这个编号，另建一个需求成功", async () => {
+    const w = await world();
+    allowDrafts(w);
+    const state = await stateOf(w);
+    const reserved = state.reserve({ requestId: uuidv7(), intentHash: requirementIntentHash({ title: "短信登录需求", body: BODY }) });
+    state.beginClose({ requirementId: reserved.id, version: state.read(reserved.id).version, intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
+    expect(state.read(reserved.id).data.lifecycle).not.toBe("draft");
+    w.capture(); const again = await w.call(createParams());
+    expect(again).toMatchObject({ status: "created" });
+    expect(again.requirementId).not.toBe(reserved.id);
+  });
+
+  test("占好编号但保存没开始时，内容不同的 create 照常新建另一个需求", async () => {
+    const w = await world();
+    allowDrafts(w);
+    const state = await stateOf(w);
+    const reserved = state.reserve({ requestId: uuidv7(), intentHash: requirementIntentHash({ title: "短信登录需求", body: BODY }) });
+    w.capture(); const other = await w.call(createParams({ title: "另一个标题" }));
+    expect(other).toMatchObject({ status: "created" });
+    expect(other.requirementId).not.toBe(reserved.id);
+    expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("requirements"))).toHaveLength(2);
   });
 
   test("pendingSave 与 pendingCreate：返回没做完的保存记录，没有或已做完返回 null", async () => {

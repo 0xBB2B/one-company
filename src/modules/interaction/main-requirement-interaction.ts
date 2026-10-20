@@ -125,6 +125,7 @@ export class MainRequirementInteraction {
   #ticket: InputTicket | undefined;
   #capability: InteractionCapability | undefined;
   #interpretation: InteractionInterpretation | undefined;
+  #interpreted: { repoId: string; requirementId: string; operationId: string } | undefined;
   #candidate: ConfirmationRequest | undefined;
   #adjudication: { requirementId: string; subject: AdjudicationSubject } | undefined;
   #resave: PendingResave | undefined;
@@ -574,7 +575,9 @@ export class MainRequirementInteraction {
     } finally { this.#adjudication = undefined; }
   }
   async confirm(ctx: ExtensionContext, request: ConfirmationRequest): Promise<Record<string, unknown>> {
-    const input = this.#currentInput(ctx); this.#candidate = { ...request };
+    const input = this.#currentInput(ctx);
+    if (this.#capability && this.#interpreted?.repoId === request.repoId && this.#interpreted.requirementId === request.requirementId) request = { ...request, operationId: this.#interpreted.operationId };
+    this.#candidate = { ...request };
     const loaded = await this.#load(ctx, request), core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
     const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);
     let docSpec = record.data.docSpec;
@@ -607,7 +610,7 @@ export class MainRequirementInteraction {
       if (pending && (!pending.complete || pending.requirementId !== request.requirementId || pending.operationId !== request.savedOperationId)) denied("resave_request_mismatch");
       const result = pending ? await core.reconsiderSavedCandidate(this.#ticket, request.requirementId, pending.permit) : await core.interpret(this.#ticket, request.requirementId);
       this.#resave = undefined;
-      this.#capability = result.capability; this.#interpretation = result.interpretation;
+      this.#capability = result.capability; this.#interpretation = result.interpretation; this.#interpreted = { repoId: request.repoId, requirementId: request.requirementId, operationId: request.operationId };
     }
     const capability = this.#capability, interpretation = this.#interpretation!;
     const review = interpretation.documentReview;

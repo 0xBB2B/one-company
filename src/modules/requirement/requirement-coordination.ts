@@ -157,12 +157,12 @@ export function assertNoRequirementWriteClaimIn(db: LocalDatabase, repoId: strin
 }
 
 export function assertNoUnfinishedRequirementOperationsIn(db: LocalDatabase, requirementId: string): void {
-  const unfinished = db.list(REQUIREMENT_OPERATION_NAMESPACE).filter((stored) => {
+  const unfinished = db.list(REQUIREMENT_OPERATION_NAMESPACE).some((stored) => {
     const raw = stored.data as { requirementId?: unknown };
     if (raw?.requirementId !== requirementId) return false;
     return operationStatus(stored.data, requirementId).unfinished;
-  }).map((stored) => operationStatus(stored.data, requirementId).operationId);
-  if (unfinished.length > 0) throw new RequirementServiceError("unfinished_requirement_operation");
+  });
+  if (unfinished) throw new RequirementServiceError("unfinished_requirement_operation");
 }
 
 /**

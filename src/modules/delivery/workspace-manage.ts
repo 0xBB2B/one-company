@@ -123,13 +123,13 @@ export class WorkspaceManageService {
     return (await service.read({ requirementId, source: "approved" })).title;
   }
 
-  async prepare(input: { requirementId: string; operationId?: string }): Promise<ManagedWorkspace> {
-    checked(id, input.requirementId); if (input.operationId !== undefined) checked(id, input.operationId);
+  async prepare(input: { requirementId: string }): Promise<ManagedWorkspace> {
+    checked(id, input.requirementId);
     const record = this.state.read(input.requirementId);
     if (record.data.lifecycle !== "active") throw new WorkspaceManageError("requirement_not_active", ["需求批准生效后才能创建工作区"]);
     const existing = this.read(input.requirementId);
     if (existing?.status === "ready") return existing;
-    const operationId = existing?.operationId ?? input.operationId ?? uuidv7();
+    const operationId = existing?.operationId ?? uuidv7();
     const location = workspaceLocation(this.options.repositoryRoot, input.requirementId);
     let baseCommit = existing?.baseCommit ?? await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
     const unbornBranch = baseCommit ? null : await gitOutput(this.options.repositoryRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
@@ -179,8 +179,8 @@ export class WorkspaceManageService {
     return commit;
   }
 
-  async recycle(input: { requirementId: string; operationId: string }): Promise<ManagedWorkspace> {
-    checked(id, input.requirementId); checked(id, input.operationId);
+  async recycle(input: { requirementId: string }): Promise<ManagedWorkspace> {
+    checked(id, input.requirementId);
     const plan = this.read(input.requirementId);
     if (!plan || plan.status === "preparing") throw new WorkspaceManageError("not_prepared");
     if (plan.status === "recycled") return plan;
@@ -200,7 +200,7 @@ export class WorkspaceManageService {
     if (await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", plan.branch]) !== null) {
       await writeGit(this.options.repositoryRoot, ["branch", "-d", plan.branch.slice("refs/heads/".length)]);
     }
-    const recycled = { ...plan, status: "recycled" as const, recycleOperationId: input.operationId };
+    const recycled = { ...plan, status: "recycled" as const, recycleOperationId: uuidv7() };
     this.save(recycled);
     return recycled;
   }

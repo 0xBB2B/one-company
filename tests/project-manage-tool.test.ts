@@ -665,7 +665,7 @@ describe("operationId 由程序生成：模型不填，中断后的续做由程�
     async function close() {
       const receipt = uuidv7();
       const closer = await RequirementCloseService.open({ ...paths, stopAgents: async () => {}, authorize: (request) => request.action !== "close" || request.receiptId === receipt });
-      try { await closer.close({ requirementId, reason: "cancelled", receiptId: receipt, operationId: uuidv7() }); } finally { closer.dispose(); }
+      try { await closer.close({ requirementId, reason: "cancelled", receiptId: receipt }); } finally { closer.dispose(); }
     }
     return { ...world, requirementId, runtime, ctx, record, close };
   }
