@@ -5,7 +5,7 @@
 <h1 align="center">OneCompany</h1>
 
 <p align="center">
-  One human. A team of AI workers. One governed autonomous company.
+  One human. A governed autonomous company.
 </p>
 
 <div align="center">
