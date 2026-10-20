@@ -13,6 +13,7 @@
   ],
   "files": [
     "agents",
+    "assets",
     "resources/tree-sitter",
     "role-rules",
     "rules",
