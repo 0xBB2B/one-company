@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/onecompany-banner.png" alt="OneCompany — A Governed Autonomous Company" width="100%" />
+  <img src="assets/onecompany-banner.webp" alt="OneCompany — A Governed Autonomous Company" width="100%" />
 </p>
 
 <h1 align="center">OneCompany</h1>
