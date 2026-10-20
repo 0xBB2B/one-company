@@ -1,12 +1,14 @@
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
+import type { DeliveryMode } from "../../core/exec/git-host.ts";
 import { fetchTargetBranch, gitIn, includesCommit } from "../../core/exec/target-branch.ts";
 
 export interface PmSyncOptions {
   repositoryRoot: string;
   worktree: string;
   branch: string;
+  deliveryMode: () => Promise<DeliveryMode>;
   /** 会话仍有效且持有当前租约时为真。 */
   alive(): boolean;
   checkPhaseActive(): boolean;
@@ -30,7 +32,7 @@ export async function syncTargetBranch(options: Omit<PmSyncOptions, "alive" | "c
   const head = (await git(["symbolic-ref", "--quiet", "HEAD"])).stdout.trim();
   if (head !== options.branch) throw new AdvisedError("branch_changed", { why: `当前分支 ${head} 不是需求分支 ${options.branch}`, next: "停止操作，不要自己切换分支；交用户处理" });
   if ((await git(["status", "--porcelain", "--untracked-files=all"])).stdout.trim()) throw new AdvisedError("worktree_dirty", { why: "需求 worktree 里有未提交的改动", next: "先用 git_commit 提交这些改动，再同步" });
-  const target = await fetchTargetBranch(options.repositoryRoot, options.worktree);
+  const target = await fetchTargetBranch(options.repositoryRoot, options.worktree, await options.deliveryMode());
   const previousHead = (await git(["rev-parse", "HEAD"])).stdout.trim();
   if (await includesCommit(options.worktree, target.sha)) return { status: "up_to_date", target: target.ref, head: previousHead };
   const rebased = await git(["rebase", "--no-autosquash", "--no-autostash", target.sha]).then(() => true, () => false);

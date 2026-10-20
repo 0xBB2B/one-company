@@ -148,7 +148,7 @@ test("M7-AC5：同一需求只有一个有效 PM；停止后再派出取得更�
   const firstLease = (await RequirementStateStore.open({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId,
     authorize: () => true })).pmOwner(w.requirementId)!.lease!;
   const record = w.state.read(w.requirementId).data;
-  const stale = await createPmTools({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId, lease: firstLease, workspace: record.workspace!,
+  const stale = await createPmTools({ deliveryMode: async () => "remote" as const, repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId, lease: firstLease, workspace: record.workspace!,
     epoch: record.epoch, alive: () => true, stopAgents: async () => {} });
   cleanups.push(() => stale.dispose());
   expect(await w.manager.stop(first.runId, { reason: "main_agent" })).toMatchObject({ confirmed: true });

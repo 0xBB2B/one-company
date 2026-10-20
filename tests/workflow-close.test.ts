@@ -27,6 +27,7 @@ import { resolveRepositoryRequirementDoc } from "../src/modules/requirement/requ
 import type { RequirementDocSpec } from "../src/modules/requirement/requirement-doc.ts";
 import { prdRequirementPath } from "../src/modules/requirement/prd-storage.ts";
 import { syncTargetBranch } from "../src/modules/pm/pm-sync.ts";
+import type { DeliveryMode } from "../src/core/exec/git-host.ts";
 import { createRepoFixture, addWorktree, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -86,6 +87,7 @@ async function world(custom: { body: string; docSpec: RequirementDocSpec } | nul
     await runs.update(created2.id, { state: "running" });
     return created2.id;
   }
+  const delivery = { mode: "remote" as DeliveryMode };
   const receipts = new Set<string>();
   const stopped: string[] = [];
   let stopBehaviour: "stop" | "leave" | "throw" = "stop";
@@ -99,7 +101,7 @@ async function world(custom: { body: string; docSpec: RequirementDocSpec } | nul
   async function tool(extra: Partial<WorkflowManageGrant> = {}, authorize = host) {
     const grant: WorkflowManageGrant = { role: "pm", callerId: uuidv7(), runId: lease.runId, requirementId: created.requirementId, repoId: options.repoId,
       workspaceId: workspace.workspaceId, branch: workspace.branch, lease: structuredClone(lease), ...extra };
-    const instance = await createWorkflowManageTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, grant, authorize, stopAgents });
+    const instance = await createWorkflowManageTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, grant, authorize, stopAgents, deliveryMode: async () => delivery.mode });
     cleanups.push(async () => instance.dispose()); return instance;
   }
   async function verification(role: "qa" | "worker", runId = uuidv7()) {
@@ -134,7 +136,7 @@ async function world(custom: { body: string; docSpec: RequirementDocSpec } | nul
   }
   const receipt = () => { const value = uuidv7(); receipts.add(value); return value; };
   async function main() {
-    const instance = await createWorkflowManageTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, authorize: host, stopAgents,
+    const instance = await createWorkflowManageTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, authorize: host, stopAgents, deliveryMode: async () => delivery.mode,
       grant: { role: "main", callerId: uuidv7(), runId: uuidv7(), requirementId: created.requirementId, repoId: options.repoId, workspaceId: workspace.workspaceId, branch: workspace.branch } });
     cleanups.push(async () => instance.dispose()); return instance;
   }
@@ -151,7 +153,7 @@ async function world(custom: { body: string; docSpec: RequirementDocSpec } | nul
   cleanups.push(async () => closeService.dispose());
   const prdFile = join(prdRequirementPath({ dataRoot: options.dataRoot, repoId: options.repoId, requirementId: created.requirementId }), "prd.md");
   return { ...options, state, service, created, lease, workspace, worktree, database, runs, run, tool, main, accept, verification, verdict, reader, changeApply, fullEvidence, receipt, receipts,
-    stopped, setStop: (mode: typeof stopBehaviour) => { stopBehaviour = mode; }, closeService, approve, prdFile };
+    delivery, stopped, setStop: (mode: typeof stopBehaviour) => { stopBehaviour = mode; }, closeService, approve, prdFile };
 }
 
 test("M6-AC3/AC21：completed 预检列出缺项且不改状态、不撤权；只缺关闭授权时等待；取消/拒绝只核对授权与停止条件", async () => {
@@ -430,8 +432,42 @@ test("M8-AC9：需求分支未包含目标分支当前提交时不能开启检�
   await runGit(["add", "."], w.repositoryRoot); await runGit(["commit", "-qm", "别的需求合入"], w.repositoryRoot);
   const pm = await w.tool();
   await expect(pm.execute({ action: "advance" })).rejects.toMatchObject({ code: "sync_required" });
-  expect(await syncTargetBranch({ repositoryRoot: w.repositoryRoot, worktree: w.worktree.root, branch: w.workspace.branch })).toMatchObject({ status: "rebased" });
+  expect(await syncTargetBranch({ repositoryRoot: w.repositoryRoot, worktree: w.worktree.root, branch: w.workspace.branch, deliveryMode: async () => "remote" })).toMatchObject({ status: "rebased" });
   expect(await pm.execute({ action: "advance" })).toMatchObject({ status: "open" });
+});
+
+test("仅本地档位且有 origin：需求分支未包含主仓库当前分支的最新提交时不能开启检查轮，按本地分支同步后可以，不要求包含 origin 上的提交", async () => {
+  const w = await world();
+  if (!darwin) return;
+  w.delivery.mode = "local";
+  const remote = join(await mkdtemp(join(temporaryRoot(), "close-origin-")), "remote.git");
+  cleanups.push(() => rm(join(remote, ".."), { recursive: true, force: true }));
+  await runGit(["init", "-q", "--bare", "-b", "main", remote], w.repositoryRoot);
+  await runGit(["remote", "add", "origin", remote], w.repositoryRoot);
+  await runGit(["push", "-q", "origin", "main"], w.repositoryRoot);
+  await runGit(["fetch", "-q", "origin"], w.repositoryRoot); await runGit(["remote", "set-head", "origin", "main"], w.repositoryRoot);
+  const other = join(await mkdtemp(join(temporaryRoot(), "close-other-")), "clone");
+  cleanups.push(() => rm(join(other, ".."), { recursive: true, force: true }));
+  await runGit(["clone", "-q", remote, other], w.repositoryRoot);
+  await writeFile(join(other, "remote-only.ts"), "export const r = 1;\n");
+  await runGit(["add", "."], other); await runGit(["commit", "-qm", "只在远端"], other); await runGit(["push", "-q", "origin", "main"], other);
+  await writeFile(join(w.repositoryRoot, "main-only.ts"), "export const m = 1;\n");
+  await runGit(["add", "."], w.repositoryRoot); await runGit(["commit", "-qm", "别的需求合入"], w.repositoryRoot);
+  await runGit(["remote", "set-url", "origin", join(remote, "不存在.git")], w.repositoryRoot);
+  const pm = await w.tool();
+  await expect(pm.execute({ action: "advance" })).rejects.toMatchObject({ code: "sync_required" });
+  expect(await syncTargetBranch({ repositoryRoot: w.repositoryRoot, worktree: w.worktree.root, branch: w.workspace.branch, deliveryMode: async () => "local" })).toMatchObject({ status: "rebased", target: "refs/heads/main" });
+  expect(await pm.execute({ action: "advance" })).toMatchObject({ status: "open" });
+  expect(await gitText(w.worktree.root, "ls-tree", "-r", "--name-only", "HEAD")).not.toContain("remote-only.ts");
+});
+
+test("仅本地档位且主仓库没检出分支：开检查轮报主仓库当前没有检出分支，不报目标分支未拉取", async () => {
+  const w = await world();
+  if (!darwin) return;
+  w.delivery.mode = "local";
+  await runGit(["checkout", "-q", "--detach"], w.repositoryRoot);
+  const pm = await w.tool();
+  await expect(pm.execute({ action: "advance" })).rejects.toMatchObject({ advice: { why: "主仓库当前没有检出分支", next: "请用户在主仓库检出要合进去的分支后再继续" } });
 });
 
 const PROTOTYPES = [{ name: "设置页", version: 3, html: "<html>设置页 v3</html>\n" }, { name: "命令行输出", version: 1, html: "<html>命令行输出 v1</html>\n" }];

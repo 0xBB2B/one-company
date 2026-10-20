@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createPmSyncTool, syncTargetBranch } from "../src/modules/pm/pm-sync.ts";
 import { localTargetBranch } from "../src/core/exec/target-branch.ts";
+import type { DeliveryMode } from "../src/core/exec/git-host.ts";
 
 const cleanups: string[] = [];
 afterEach(async () => { for (const dir of cleanups.splice(0)) await rm(dir, { recursive: true, force: true }); });
@@ -40,8 +41,10 @@ async function world(withOrigin = false) {
   if (!withOrigin) { await writeFile(join(main, "a.ts"), "a\n"); git(main, "add", "."); git(main, "commit", "-qm", "seed"); }
   git(main, "worktree", "add", "-q", "-b", "req", worktree);
   const commit = async (cwd: string, file: string, content: string, message: string) => { await writeFile(join(cwd, file), content); git(cwd, "add", file); git(cwd, "commit", "-qm", message); };
-  const options = { repositoryRoot: main, worktree, branch: "refs/heads/req" };
-  return { git, main, worktree, other, commit, options };
+  const delivery = { mode: "remote" as DeliveryMode };
+  const options = { repositoryRoot: main, worktree, branch: "refs/heads/req", deliveryMode: async () => delivery.mode };
+  const remoteRefs = () => git(main, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes");
+  return { git, main, worktree, other, remote, commit, options, delivery, remoteRefs };
 }
 
 test("M8-AC9：目标分支前进后能 rebase 就 rebase，需求分支包含目标最新提交；已包含时不做任何事；有未提交改动时拒绝", async () => {
@@ -106,7 +109,7 @@ test("M8-AC9：有 origin 时拉取远端默认分支再同步，不联网的检
   const result = await syncTargetBranch(w.options);
   expect(result).toMatchObject({ status: "rebased", target: "refs/remotes/origin/main" });
   expect(w.git(w.worktree, "log", "--format=%s", "-2").split("\n")).toEqual(["task-1", "远端前进"]);
-  expect(await localTargetBranch(w.options.repositoryRoot, w.worktree)).toMatchObject({ name: "main", ref: "refs/remotes/origin/main", sha: w.git(w.other, "rev-parse", "HEAD") });
+  expect(await localTargetBranch(w.options.repositoryRoot, w.worktree, "remote")).toMatchObject({ name: "main", ref: "refs/remotes/origin/main", sha: w.git(w.other, "rev-parse", "HEAD") });
 });
 
 test("origin 是从未推送过的空裸仓库时同步失败，原因写无法确定远端默认分支，建议让用户先推送目标分支或设好远端默认分支", async () => {
@@ -131,4 +134,69 @@ test("同步工具在会话失效、检查阶段或子代理执行期间拒绝",
   state.quiet = false; expectFailure(await failureOf(tool.execute("s", {})), "子代理执行或受管写入还没结束", "等子代理结束后再同步");
   state.check = true; expectFailure(await failureOf(tool.execute("s", {})), "检查阶段进行中，不能同步", "等检查轮结束后再同步");
   state.alive = false; expectFailure(await failureOf(tool.execute("s", {})), "PM 会话已失效，不能再同步", "停止操作，不要重试");
+});
+
+const alive = { alive: () => true, checkPhaseActive: () => false, quiescent: () => true };
+
+test("仅本地档位且有 origin：同步到主仓库当前分支的最新提交，不包含只在 origin 上的提交，也不更新 refs/remotes", async () => {
+  const w = await world(true);
+  w.delivery.mode = "local";
+  await w.commit(w.worktree, "b.ts", "b\n", "task-1");
+  await w.commit(w.other, "c.ts", "c\n", "只在远端"); w.git(w.other, "push", "-q", "origin", "main");
+  await w.commit(w.main, "d.ts", "d\n", "只在本地 main");
+  const refsBefore = w.remoteRefs();
+  const result = await syncTargetBranch(w.options);
+  expect(result).toMatchObject({ status: "rebased", target: "refs/heads/main", head: w.git(w.worktree, "rev-parse", "HEAD") });
+  expect(w.git(w.worktree, "log", "--format=%s", "-2").split("\n")).toEqual(["task-1", "只在本地 main"]);
+  expect(w.git(w.worktree, "merge-base", "--is-ancestor", w.git(w.main, "rev-parse", "main"), "HEAD")).toBe("");
+  expect(w.git(w.worktree, "ls-tree", "-r", "--name-only", "HEAD")).not.toContain("c.ts");
+  expect(w.remoteRefs()).toBe(refsBefore);
+});
+
+test("仅本地档位且 origin 比本地 main 多一个提交：需求分支已包含本地 main，同步什么都不做，不拉取", async () => {
+  const w = await world(true);
+  w.delivery.mode = "local";
+  await w.commit(w.worktree, "b.ts", "b\n", "task-1");
+  await w.commit(w.other, "c.ts", "c\n", "只在远端"); w.git(w.other, "push", "-q", "origin", "main");
+  const before = w.git(w.worktree, "rev-parse", "HEAD"), refsBefore = w.remoteRefs();
+  expect(await syncTargetBranch(w.options)).toMatchObject({ status: "up_to_date", target: "refs/heads/main", head: before });
+  expect(w.remoteRefs()).toBe(refsBefore);
+});
+
+test("仅本地档位时 origin 连不上也能同步，整个过程不联网", async () => {
+  const w = await world(true);
+  w.delivery.mode = "local";
+  await w.commit(w.worktree, "b.ts", "b\n", "task-1");
+  await w.commit(w.main, "d.ts", "d\n", "只在本地 main");
+  w.git(w.main, "remote", "set-url", "origin", join(dirname(w.main), "不存在.git"));
+  expect(await syncTargetBranch(w.options)).toMatchObject({ status: "rebased", target: "refs/heads/main" });
+});
+
+test("仅本地档位且没有 origin：同步到主仓库当前分支", async () => {
+  const w = await world();
+  w.delivery.mode = "local";
+  await w.commit(w.worktree, "b.ts", "b\n", "task-1");
+  await w.commit(w.main, "c.ts", "c\n", "main 前进");
+  expect(await syncTargetBranch(w.options)).toMatchObject({ status: "rebased", target: "refs/heads/main" });
+  expect(w.git(w.worktree, "log", "--format=%s", "-2").split("\n")).toEqual(["task-1", "main 前进"]);
+});
+
+test("档位每次用到时重新读：同一个同步工具先按仅本地、再按远程档位，目标分支随之变化", async () => {
+  const w = await world(true);
+  w.delivery.mode = "local";
+  await w.commit(w.worktree, "b.ts", "b\n", "task-1");
+  await w.commit(w.other, "c.ts", "c\n", "只在远端"); w.git(w.other, "push", "-q", "origin", "main");
+  const tool = createPmSyncTool({ ...w.options, ...alive }) as unknown as Tool;
+  expect(JSON.parse((await tool.execute("s", {})).content[0]!.text)).toMatchObject({ status: "up_to_date", target: "refs/heads/main" });
+  w.delivery.mode = "remote";
+  expect(JSON.parse((await tool.execute("s", {})).content[0]!.text)).toMatchObject({ status: "rebased", target: "refs/remotes/origin/main" });
+  expect(w.git(w.worktree, "log", "--format=%s", "-2").split("\n")).toEqual(["task-1", "只在远端"]);
+});
+
+test("仅本地档位下主仓库是 detached HEAD：同步失败，原因写主仓库当前没有检出分支，建议请用户在主仓库检出要合进去的分支", async () => {
+  const w = await world();
+  w.delivery.mode = "local";
+  w.git(w.main, "checkout", "-q", "--detach");
+  const tool = createPmSyncTool({ ...w.options, ...alive }) as unknown as Tool;
+  expectFailure(await failureOf(tool.execute("s", {})), "主仓库当前没有检出分支", "请用户在主仓库检出要合进去的分支后再继续");
 });

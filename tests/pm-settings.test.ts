@@ -7,7 +7,8 @@ import type { SettingsRoleKey } from "../src/modules/settings/agent-settings.ts"
 import { defaultRoleDir, loadRoleCatalog } from "../src/modules/agents/roles.ts";
 import { loadRoleRules } from "../src/modules/agents/package-rules.ts";
 import { registerControlledProvider } from "./helpers/controlled-provider.ts";
-import { createPmRunWorld } from "./helpers/run-manager-fixture.ts";
+import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
+import { runGit } from "./helpers/git-run.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -163,5 +164,41 @@ describe("PM 的提示词只由程序给", () => {
     const { roles, problems } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir, projectDir: join(root, "none"), parseFrontmatter, projectTrusted: false });
     expect(roles.find((entry) => entry.name === "pm")).toBeUndefined();
     expect(problems.some((problem) => problem.reason === "已不再使用定义文件，模型和思考等级改在「模型」里")).toBe(true);
+  });
+});
+
+describe("PM 的同步工具按设置里的 Git 交付档位取目标分支", () => {
+  const withMode = (mode: "remote" | "local") => async () => {
+    const none = { model: null, thinking: null, source: "default" as const };
+    return { values: { pm: none, interpreter: none, "draft-verifier": none } as never,
+      layers: { user: {}, project: {} }, gitDelivery: { mode, source: "user" as const },
+      mergeMethods: { methods: ["squash", "merge", "rebase"] as const, source: "default" as const }, problems: [] };
+  };
+
+  test.each([
+    ["local", "refs/heads/main", true, false],
+    ["remote", "refs/remotes/origin/main", false, true],
+  ] as const)("档位 %s：PM 调用 git_sync 后目标分支是 %s", async (mode, target, hasLocalCommit, hasRemoteCommit) => {
+    const w = await createPmRunWorld(cleanups, { review: false, loadAgentSettings: withMode(mode) });
+    const root = w.fixture.repositoryRoot, worktree = w.fixture.state.read(w.fixture.requirementId).data.workspace!.path;
+    const remote = join(await tempRoot(), "remote.git"), other = join(dirname(remote), "other");
+    await runGit(["init", "-q", "--bare", "-b", "main", remote], root);
+    await runGit(["remote", "add", "origin", remote], root);
+    await runGit(["push", "-q", "origin", "main"], root);
+    await runGit(["fetch", "-q", "origin"], root); await runGit(["remote", "set-head", "origin", "main"], root);
+    await runGit(["clone", "-q", remote, other], root);
+    await writeFile(join(other, "remote-only.ts"), "r\n");
+    await runGit(["add", "."], other); await runGit(["commit", "-qm", "只在远端"], other); await runGit(["push", "-q", "origin", "main"], other);
+    await writeFile(join(root, "local-only.ts"), "l\n");
+    await runGit(["add", "."], root); await runGit(["commit", "-qm", "只在本地"], root);
+    const files = async () => (await runGit(["ls-tree", "-r", "--name-only", "HEAD"], worktree)).split("\n");
+
+    w.provider.queue.push({ type: "toolcall", name: "one_company_git_sync", input: {} }, { type: "text", text: "同步完成" });
+    const before = w.provider.requests.length;
+    await w.review({ result: "passed", shortIssues: [] }, false);
+    await until(() => w.provider.requests.length === before + 2);
+    expect(JSON.stringify(w.provider.requests.at(-1)!.messages.at(-1))).toContain(target);
+    expect((await files()).includes("local-only.ts")).toBe(hasLocalCommit);
+    expect((await files()).includes("remote-only.ts")).toBe(hasRemoteCommit);
   });
 });

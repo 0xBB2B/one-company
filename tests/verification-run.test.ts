@@ -70,7 +70,7 @@ async function world() {
   const roundPermits = new Set<string>();
   const roundHost: CheckRoundServiceOptions["authorize"] = (request) => request.lease === undefined || roundPermits.has(request.lease.runId);
   roundPermits.add(lease.runId);
-  const rounds = await CheckRoundService.open({ ...options, authorize: roundHost });
+  const rounds = await CheckRoundService.open({ deliveryMode: async () => "remote" as const, ...options, authorize: roundHost });
   cleanups.push(async () => rounds.dispose());
   const permits = new Map<string, string>();
   function grant(extra: Partial<VerificationRunGrant> = {}): VerificationRunGrant {
@@ -335,7 +335,7 @@ test("M6-AC14：崩溃后重新打开服务把无进程的运行中验证标为�
     db.update(CHECK_ROUNDS, round.checkRoundId, stored.version, { ...stored.data, active: [passed.verificationId] });
   }));
   expect(() => w.rounds.release({ lease: w.lease, checkRoundId: round.checkRoundId })).toThrow(/verification_active/);
-  const reopened = await CheckRoundService.open({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId, authorize: () => true });
+  const reopened = await CheckRoundService.open({ deliveryMode: async () => "remote" as const, repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId, authorize: () => true });
   cleanups.push(async () => reopened.dispose());
   expect(reopened.status(round.checkRoundId).active).toEqual([]);
   expect((await qa.execute({ action: "status", verificationId: passed.verificationId }) as VerificationView).status).toBe("interrupted");

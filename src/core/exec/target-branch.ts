@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import type { DeliveryMode } from "./git-host.ts";
 import { AdvisedError } from "./tool-failure.ts";
 
 const exec = promisify(execFile);
@@ -18,9 +19,18 @@ async function hasOrigin(worktree: string): Promise<boolean> {
   return gitIn(worktree, ["remote", "get-url", "origin"]).then(() => true, () => false);
 }
 
-/** 目标分支：有 origin 时取远端默认分支并拉取最新提交，没有时取主仓库当前检出的分支。 */
-export async function fetchTargetBranch(repositoryRoot: string, worktree: string): Promise<TargetBranch> {
-  return await hasOrigin(worktree) ? fetchRemoteTarget(worktree) : localTargetBranch(repositoryRoot, worktree);
+export async function checkedOutBranch(repositoryRoot: string, worktree: string): Promise<TargetBranch> {
+  const ref = (await gitIn(repositoryRoot, ["symbolic-ref", "-q", "HEAD"]).catch((error: { code?: unknown }) => {
+    if (error.code === 1) return { stdout: "" };
+    throw error;
+  })).stdout.trim();
+  if (!ref) throw new AdvisedError("target_unknown", { why: "主仓库当前没有检出分支", next: "请用户在主仓库检出要合进去的分支后再继续" });
+  return { name: ref.slice("refs/heads/".length), ref, remote: null, sha: (await gitIn(worktree, ["rev-parse", ref])).stdout.trim() };
+}
+
+/** 目标分支：remote 档有 origin 时取远端默认分支并拉取最新提交，其余取主仓库当前检出的分支。 */
+export async function fetchTargetBranch(repositoryRoot: string, worktree: string, mode: DeliveryMode): Promise<TargetBranch> {
+  return mode === "remote" && await hasOrigin(worktree) ? fetchRemoteTarget(worktree) : checkedOutBranch(repositoryRoot, worktree);
 }
 
 /** 拉取 origin 的默认分支并记下它，供不联网的检查门槛使用。 */
@@ -34,15 +44,14 @@ export async function fetchRemoteTarget(worktree: string): Promise<TargetBranch>
   return { name, ref, remote: "origin", sha: (await gitIn(worktree, ["rev-parse", ref])).stdout.trim() };
 }
 
-/** 不联网的目标分支：有 origin 时取上次拉取记下的远端默认分支，从未拉取过则报需要同步。 */
-export async function localTargetBranch(repositoryRoot: string, worktree: string): Promise<TargetBranch> {
-  if (await hasOrigin(worktree)) {
+/** 不联网的目标分支：local 档取主仓库当前检出的分支；remote 档有 origin 时取上次拉取记下的远端默认分支，从未拉取过则报需要同步。 */
+export async function localTargetBranch(repositoryRoot: string, worktree: string, mode: DeliveryMode): Promise<TargetBranch> {
+  if (mode === "remote" && await hasOrigin(worktree)) {
     const ref = (await gitIn(worktree, ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"]).catch(() => ({ stdout: "" }))).stdout.trim();
     if (!ref) throw new Error("sync_required: 尚未拉取过目标分支");
     return { name: ref.slice("refs/remotes/origin/".length), ref, remote: "origin", sha: (await gitIn(worktree, ["rev-parse", ref])).stdout.trim() };
   }
-  const ref = (await gitIn(repositoryRoot, ["symbolic-ref", "HEAD"])).stdout.trim();
-  return { name: ref.slice("refs/heads/".length), ref, remote: null, sha: (await gitIn(worktree, ["rev-parse", ref])).stdout.trim() };
+  return checkedOutBranch(repositoryRoot, worktree);
 }
 
 export async function includesCommit(worktree: string, sha: string, head = "HEAD"): Promise<boolean> {

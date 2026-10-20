@@ -5,12 +5,12 @@
 | 02 | delivery-settings | done | 2026-10-20 |
 | 03 | archive-commit | done | 2026-10-20 |
 | 04 | recycle-merged-check | done | 2026-10-20 |
-| 05 | target-branch-mode | in-progress | — |
-| 06 | remote-delivery | pending | — |
+| 05 | target-branch-mode | done | 2026-10-20 |
+| 06 | remote-delivery | in-progress | — |
 | 07 | local-delivery | pending | — |
 | 08 | trace-rules | done | 2026-10-20 |
 | 09 | readme | pending | — |
 ## 当前
-01、02、03、04、08 完成。02 审查后自修一次：解释器和草稿核验器改用只读角色设定的 readRoleSettings，不再为探测档位调用 gh（性能）；测试名改成正面写法；PRD 03 AC-6 补一个空格对齐预览。实际界面与预览对比：选择过程中底部仍显示说明、合并方式行补了底部说明、Git 交付底部说明 80 列折成 3 行，其余一致。05-target-branch-mode 开始。
+01–05、08 完成。05 审查后自修一次：开检查轮时把"主仓库当前没有检出分支"原样报出（原来被吞成"目标分支未拉取"），只有 detached 才报这个原因、其他 git 失败报原始错误。06-remote-delivery 开始。
 ## 阻塞
 （无）
