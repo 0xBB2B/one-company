@@ -223,6 +223,7 @@ Git 交付有两档：
 - 设置存在 pi 设置文件 `one-company` 字段下，分用户层（`~/.pi/agent/settings.json`）和项目层（项目里 `.pi/settings.json`），项目层优先，项目在 pi 里受信任才生效：
   - `git-delivery`：`"remote"` 或 `"local"`。
   - `merge-methods`：由 `squash`（压缩合并）、`merge`（普通合并）、`rebase`（rebase 合并）组成的数组，至少一种，默认三种都勾。窗口里只列勾了的方式，压缩合并是推荐方式。
+- 在仓库的某个 worktree 里打开 pi 时，项目层读写的是主仓库目录里的 `.pi/settings.json`，是否受信任也按主仓库目录判断，和后台进程一致。
 
 <details>
 <summary>目标分支、同步与交付的细节</summary>
@@ -304,7 +305,7 @@ Git 交付有两档：
 
 | 来源 | 目录 | 说明 |
 |---|---|---|
-| 项目 | 仓库内 `.pi/agents/` | 优先级最高；项目在 pi 里设为受信任后才加载 |
+| 项目 | 仓库内 `.pi/agents/`（在 worktree 里打开 pi 时用主仓库目录里的） | 优先级最高；项目在 pi 里设为受信任后才加载 |
 | 用户 | `~/.pi/agent/agents/` | 对你的所有项目生效 |
 | 包内默认 | `agents/` | 随包提供 |
 
@@ -328,7 +329,7 @@ Git 交付有两档：
 
 所有角色默认跟随主窗口：PM、解释器、草稿核验器用主窗口当时的模型和思考等级；worker、reviewer、qa、explore、prototype 跟随派出它的一方（PM 派出的跟随这个 PM，主窗口直接派出的 explore 和 prototype 跟随主窗口）。
 
-- **PM、解释器、草稿核验器**：在 `/one:setting` 目录的「模型」里改。回车后依次选模型（只列配了凭据的模型，另有"跟随主会话"）、思考等级（另有"跟随主会话"，所选模型不支持的等级选不了）、存到用户层还是项目层；R 清除当前这一层的设定。设定存在 pi 设置文件 `~/.pi/agent/settings.json` 或项目里 `.pi/settings.json` 的 `one-company` 字段下，项目层优先，项目在 pi 里受信任才生效。PM 下次启动、内部代理下次调用时生效。
+- **PM、解释器、草稿核验器**：在 `/one:setting` 目录的「模型」里改。回车后依次选模型（只列配了凭据的模型，另有"跟随主会话"）、思考等级（另有"跟随主会话"，所选模型不支持的等级选不了）、存到用户层还是项目层；R 清除当前这一层的设定。设定存在 pi 设置文件 `~/.pi/agent/settings.json` 或项目里 `.pi/settings.json`（在 worktree 里打开 pi 时是主仓库目录里的）的 `one-company` 字段下，项目层优先，项目在 pi 里受信任才生效。PM 下次启动、内部代理下次调用时生效。
 - **worker、reviewer、qa、explore、prototype**：用 C 把定义复制到用户层或项目层，再在文件里写 `model` 和 `thinking`。`model` 写模型名（`gpt-6.1-sol`）或"提供方/模型名"（`5x/gpt-6.1-sol`）。
 
 解释器负责把你的原话解读成确认、裁决这类正式决定；草稿核验器检查需求草稿是否符合你的意思。主窗口用推理较重的模型和较高的思考等级时，批准需求会变慢，可以在目录的「模型」里单独给解释器换一个快的模型。

@@ -9,6 +9,7 @@ import type { SettingsExtensionContext } from "../src/modules/settings/settings-
 import { projectSettingsPath, readAgentSettings, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
 import { readRoleDefinition, userRoleDir } from "../src/modules/agents/roles.ts";
 import { initRepoWithOrigin, installFakeGh } from "./helpers/fake-gh.ts";
+import { runGit } from "./helpers/git-run.ts";
 
 const LEFT = "\x1b[D", RIGHT = "\x1b[C", UP = "\x1b[A", DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
 const theme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bg: (kind: string, text: string) => `[${kind}]${text}[/]`,
@@ -725,3 +726,83 @@ test("用户设置文件不是合法 JSON 时在开关里保存到用户层：�
   await run(ctx);
   expect(await readFile(userFile(), "utf8")).toBe("{ not json");
 }, 5000);
+
+const worktreeDir = () => join(root, "wt");
+async function openInWorktree(trust: { main: boolean; worktree: boolean }, steps: Step[]) {
+  await mkdir(repoDir(), { recursive: true });
+  await runGit(["init", "-q", "--initial-branch=main"], repoDir());
+  await writeFile(join(repoDir(), "README.md"), "x\n");
+  await runGit(["add", "README.md"], repoDir());
+  await runGit(["commit", "-q", "-m", "init"], repoDir());
+  await runGit(["worktree", "add", "-q", worktreeDir()], repoDir());
+  await writeTrust({ [repoDir()]: trust.main, [worktreeDir()]: trust.worktree });
+  await writeSettings(projectFile(), oneCompany({ "git-delivery": "remote", pm: { model: "gpt-6-luna", thinking: "high" } }));
+  await mkdir(join(repoDir(), ".pi", "agents"), { recursive: true });
+  await writeFile(join(repoDir(), ".pi", "agents", "main-reviewer.md"), "---\nname: main-reviewer\ndescription: d\nrole: reviewer\n---\n");
+  const ctx = scripted(steps);
+  (ctx as { cwd: string }).cwd = worktreeDir();
+  await run(ctx);
+}
+
+test("在 linked worktree 里打开：主仓库受信任、worktree 记为不信任时，Git 交付显示远程、来源项目", async () => {
+  await openInWorktree({ main: true, worktree: false }, [
+    (s) => {
+      expect(s.now()).not.toContain("项目未受信任");
+      goTo(s, "switches");
+      expect(s.now()).toMatch(/▸ Git 交付 +项目 +远程/u);
+      expect(s.now()).toContain("来自项目层");
+      s.press(ESC, ESC);
+    },
+  ]);
+}, 10000);
+
+test("在 linked worktree 里打开：模型分类的 PM 来源是主仓库的项目层", async () => {
+  await openInWorktree({ main: true, worktree: false }, [
+    (s) => {
+      goTo(s, "models");
+      expect(s.now()).toMatch(/▸ PM +项目 +gpt-6-luna +high/u);
+      s.press(ESC, ESC);
+    },
+  ]);
+}, 10000);
+
+test("在 linked worktree 里打开：项目层角色定义列表来自主仓库的项目层目录", async () => {
+  await openInWorktree({ main: true, worktree: false }, [
+    (s) => {
+      s.press(DOWN, RIGHT);
+      expect(s.now()).toMatch(/main-reviewer +项目/u);
+      s.press(ESC, ESC);
+    },
+  ]);
+}, 10000);
+
+test("在 linked worktree 里把 Git 交付存到项目层：写进主仓库的 .pi/settings.json，worktree 里不生成该文件", async () => {
+  await openInWorktree({ main: true, worktree: false }, [
+    (s) => {
+      goTo(s, "switches");
+      s.press(ENTER);
+      moveTo(s, "仅本地");
+      s.press(ENTER);
+      moveTo(s, "项目层");
+      s.press(ENTER);
+    },
+    (s) => s.press(ESC, ESC),
+  ]);
+  expect((await readJson(projectFile()))["one-company"]["git-delivery"]).toBe("local");
+  expect(existsSync(projectSettingsPath(worktreeDir()))).toBe(false);
+}, 10000);
+
+test("在 linked worktree 里打开：主仓库记为不信任、worktree 记为信任时，设置页不采用项目层设定和项目层角色定义", async () => {
+  await writeSettings(userFile(), oneCompany({ "git-delivery": "local" }));
+  await openInWorktree({ main: false, worktree: true }, [
+    (s) => {
+      expect(s.now()).toContain("! 项目未受信任：项目层的定义和设定都没有生效");
+      s.press(DOWN, RIGHT);
+      expect(s.now()).not.toMatch(/main-reviewer +项目/u);
+      s.press(LEFT, UP);
+      goTo(s, "switches");
+      expect(s.now()).toMatch(/▸ Git 交付 +用户 +仅本地/u);
+      s.press(ESC, ESC);
+    },
+  ]);
+}, 10000);

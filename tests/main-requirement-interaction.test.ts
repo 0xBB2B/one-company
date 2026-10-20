@@ -59,9 +59,9 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "m
     ui: { notify: (text: string) => notifications.push(text), confirm: () => { throw new Error("UI.confirm forbidden"); },
       ...answeringUi(async (window) => { windows.push(window); await beforeAnswer?.(); return windowAnswer; }) },
     sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
-  let reachable = true;
+  let reachable = true, hostPath = repositoryRoot;
   const interaction = new MainRequirementInteraction({ mainThinking: () => "off", ...options, dataRoot, authorization,
-    resolveHost: () => { if (!reachable) throw new HostAuthorizationError("host_unavailable"); return { windowId, sessionId, repositories: new Map([[repoId, { path: repositoryRoot }]]) }; } });
+    resolveHost: () => { if (!reachable) throw new HostAuthorizationError("host_unavailable"); return { windowId, sessionId, repositories: new Map([[repoId, { path: hostPath }]]) }; } });
   cleanup.push(async () => { interaction.dispose(); authorization.shutdown(); await rm(root, { recursive: true, force: true }); });
   const manage = createRequirementManageTool({ interaction }), user = createUserInteractTool({ interaction });
   const call = async (params: Record<string, unknown>, userTool = false) => {
@@ -83,7 +83,8 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "m
   const request = async (created: Record<string, unknown>) =>
     ({ input: { requirementId: String(created.requirementId), savedOperationId: String(created.operationId), version: Number(created.version) } });
   const setReachable = (value: boolean) => { reachable = value; };
-  return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage, setReachable,
+  const setHostPath = (value: string) => { hostPath = value; };
+  return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage, setReachable, setHostPath,
     windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; }, beforeAnswer: (hook: () => Promise<void>) => { beforeAnswer = hook; } };
 }
 /** 明确fixture语义输出；调用仍经过真实ModelRegistry/provider与生产解释适配器。 */
@@ -159,6 +160,43 @@ describe("主窗口共享控制器的真实服务路径", () => {
       const store = new ProjectTrustStore(w.root);
       store.set(w.root, parentTrusted); store.set(w.repositoryRoot, repositoryTrusted);
       (w.ctx as { isProjectTrusted: () => boolean }).isProjectTrusted = () => !repositoryTrusted;
+      return w;
+    };
+
+    test("解释器", async () => {
+      const w = await prepare("interpreter"), created = await w.create(), { input } = await w.request(created);
+      w.capture("同意"); scriptReview(w.provider, phoneReview);
+      const before = w.provider.models.length;
+      await w.call({ action: "confirmUpdate", ...input });
+      expect(w.provider.models.slice(before)).toEqual([expectedModel]);
+    });
+
+    test("草稿核验器", async () => {
+      const w = await prepare("draft-verifier");
+      w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+      const before = w.provider.models.length;
+      await w.call({ action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY });
+      expect(w.provider.models.slice(before)).toEqual([expectedModel]);
+    });
+  });
+
+  describe.each([
+    ["主仓库信任、worktree 不信任", true, false, "gpt-6.1-sol"],
+    ["主仓库不信任、worktree 信任", false, true, "controlled"],
+  ])("在 linked worktree 里打开 pi，项目层按主仓库目录判断（%s）", (_label, mainTrusted, worktreeTrusted, expectedModel) => {
+    const prepare = async (key: "interpreter" | "draft-verifier") => {
+      const w = await world();
+      vi.stubEnv("PI_CODING_AGENT_DIR", w.root);
+      cleanup.push(async () => { vi.unstubAllEnvs(); });
+      const worktree = join(w.root, "wt");
+      await git(w.repositoryRoot, ["worktree", "add", "-q", worktree]);
+      await writeFile(join(w.root, "settings.json"), JSON.stringify({ "one-company": { [key]: { model: `${w.provider.providerId}/controlled`, thinking: null } } }));
+      await mkdir(join(w.repositoryRoot, ".pi"), { recursive: true });
+      await writeFile(join(w.repositoryRoot, ".pi", "settings.json"), JSON.stringify({ "one-company": { [key]: { model: `${w.provider.providerId}/gpt-6.1-sol`, thinking: null } } }));
+      const store = new ProjectTrustStore(w.root);
+      store.set(w.repositoryRoot, mainTrusted); store.set(worktree, worktreeTrusted);
+      (w.ctx as { cwd: string }).cwd = worktree; w.setHostPath(worktree);
+      (w.ctx as { isProjectTrusted: () => boolean }).isProjectTrusted = () => worktreeTrusted;
       return w;
     };
 

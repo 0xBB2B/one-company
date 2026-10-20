@@ -6,7 +6,7 @@ import type { WindowChoice } from "../../core/host/question-window.ts";
 import { parseFrontmatter, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dataRoot } from "../../core/storage/data-root.ts";
-import { resolveRepoRoot } from "../../core/exec/git-read.ts";
+import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { defaultModeReason, methodsText, MODE_LABEL, SettingsPageView, tilde } from "./settings-page-ui.ts";
 import type { ClearSwitchRequest, CopyRequest, PageState, SaveSwitchRequest } from "./settings-page-ui.ts";
 import { AgentCopyError, copyAgentDefinition } from "../agents/agent-copy.ts";
@@ -20,7 +20,7 @@ export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | 
 /** /one:setting：查看内置、用户、项目三层的角色定义，C 复制为新定义；「模型」里改 PM、解释器、草稿核验器用的模型和思考等级；「开关」里改 Git 交付档位和允许的合并方式。 */
 export async function openSettingsPage(ctx: SettingsExtensionContext, options: { mainThinking: () => string }): Promise<void> {
   const agentDir = dirname(dataRoot(process.env));
-  const repositoryRoot = await resolveRepoRoot(ctx.cwd);
+  const repositoryRoot = await primaryWorktreeRoot(ctx.cwd);
   const trusted = () => new ProjectTrustStore(agentDir).get(repositoryRoot) === true;
   const dirs = { defaultDir: defaultRoleDir(), userDir: userRoleDir(agentDir), projectDir: projectRoleDir(repositoryRoot) };
   const layers = [{ label: "内置层", dir: dirs.defaultDir }, { label: "用户层", dir: dirs.userDir }, { label: "项目层", dir: dirs.projectDir }];

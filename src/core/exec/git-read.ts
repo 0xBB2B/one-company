@@ -40,12 +40,3 @@ export function versionAtLeast(version: string, min: string): boolean {
   }
   return true;
 }
-
-export async function resolveRepoRoot(cwd: string): Promise<string> {
-  try {
-    const { stdout } = await readGit(cwd, ["rev-parse", "--show-toplevel"]);
-    return stdout.trim();
-  } catch {
-    return cwd;
-  }
-}
