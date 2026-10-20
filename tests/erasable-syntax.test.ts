@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { execFileSync } from "node:child_process";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,22 +44,12 @@ function findBadRelativeImports(content: string): string[] {
 }
 
 // node --check 不对 .ts 输入套用类型剥离，只有 stripTypeScriptTypes 能给出宿主 Node 的真实判定。
-const STRIP_CHECK_SCRIPT =
-  'const{stripTypeScriptTypes}=require("node:module");' +
-  'const src=require("node:fs").readFileSync(process.argv[1],"utf8");' +
-  'try{stripTypeScriptTypes(src,{mode:"strip"});}' +
-  "catch(e){process.stderr.write(String(e&&e.message||e));process.exit(1);}";
-
-function checkNodeTypeStripping(path: string): string | null {
+function checkNodeTypeStripping(content: string): string | null {
   try {
-    execFileSync(process.execPath, ["--no-warnings", "-e", STRIP_CHECK_SCRIPT, path], {
-      timeout: 5_000,
-      stdio: ["ignore", "ignore", "pipe"],
-    });
+    stripTypeScriptTypes(content, { mode: "strip" });
     return null;
   } catch (error) {
-    const stderr = (error as { stderr?: Buffer }).stderr;
-    return stderr?.toString("utf8").trim() || (error as Error).message;
+    return (error as Error).message;
   }
 }
 
@@ -71,7 +61,7 @@ async function checkErasableSyntax(dir: string): Promise<{ checked: string[]; vi
     for (const spec of findBadRelativeImports(content)) {
       violations.push({ file, reason: `relative import 缺少显式扩展名: ${spec}` });
     }
-    const stripError = checkNodeTypeStripping(file);
+    const stripError = checkNodeTypeStripping(content);
     if (stripError) violations.push({ file, reason: /\benum\b/i.test(stripError) ? "enum" : /\bnamespace\b/i.test(stripError) ? "namespace" : `node 类型剥离检查失败: ${stripError}` });
   }
   return { checked: files, violations };
@@ -81,7 +71,7 @@ describe("src/ 的可剥离语法检查", () => {
   test("src/ 全部文件通过可剥离语法检查（目录不存在时以零文件通过）", async () => {
     const result = await checkErasableSyntax(join(PACKAGE_ROOT, "src"));
     expect(result.violations).toEqual([]);
-  });
+  }, 10_000);
 
   test("空临时目录以零文件通过", async () => {
     const dir = await mkdtemp(join(tmpdir(), "one-company-erasable-"));
