@@ -27,7 +27,7 @@ description: 设置文件和设置页：git-delivery 改为 remote/local 并按�
 - src/app/extension/commands.ts（修改）
 - src/modules/delivery/git-delivery-extension.ts（修改）
 - tests/agent-settings.test.ts、tests/settings-page-ui.test.ts、tests/settings-page.test.ts、tests/git-delivery-extension.test.ts、tests/commands.test.ts（修改）
-- tests/helpers/run-manager-fixture.ts（修改：默认 `loadAgentSettings` 返回值带上新形状）
+- tests/helpers/run-manager-fixture.ts、tests/pm-dispatch.test.ts、tests/pm-settings.test.ts（修改：注入的 `loadAgentSettings` 返回值带上新形状）
 
 ## 函数清单
 ### src/modules/settings/agent-settings.ts
@@ -71,4 +71,4 @@ description: 设置文件和设置页：git-delivery 改为 remote/local 并按�
 - [ ] 开关分类渲染两行、状态和底部文字逐字如业务规则（三种内置依据各一例）。
 - [ ] 改 Git 交付两步的标题、✓、光标、保存后文件内容和绿字提示如规则；改合并方式取消两项后保存，文件是 `["merge"]`、状态"普通合并"；全取消回车停在第 1 步并出现红字；Esc 两次提示"已取消修改"且文件不变。
 - [ ] R 清除项目层 `"local"` 后底部提示含"现在用内置默认值：远程（origin 在 github.com，gh 已登录）"；来源已是内置时只提示"已经是内置默认值"。
-- [ ] 不管设置是什么，session_start 后交付工具都在活动工具列表里；调用时不会因档位被拒。
+- [ ] 原来断言"开关关闭时交付工具不在列表里"的用例改为断言：不管设置是什么，session_start 后交付工具都在活动工具列表里；调用时不会因档位被拒。
