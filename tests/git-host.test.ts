@@ -74,6 +74,12 @@ describe("originHost", () => {
     expect(await originHost(await repoWithOrigin("ssh://git@github.com:acme/shop.git"))).toBeNull();
   });
 
+  test("origin 经 url.<前缀>.insteadOf 改写后，返回改写后地址的主机", async () => {
+    const repo = await repoWithOrigin("gh:team/app.git");
+    await runGit(["config", 'url.https://real.example.com/.insteadOf', "gh:"], repo);
+    expect(await originHost(repo)).toBe("real.example.com");
+  });
+
   test("origin 是本地路径返回 null", async () => {
     expect(await originHost(await repoWithOrigin(join(base, "somewhere", "bare.git")))).toBeNull();
   });

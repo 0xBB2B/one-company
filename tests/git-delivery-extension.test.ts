@@ -1,5 +1,6 @@
 import { answeringUi } from "./helpers/window-host.ts";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -7,6 +8,11 @@ import { GIT_DELIVER_TOOL, registerGitDelivery } from "../src/modules/delivery/g
 import * as gitDelivery from "../src/modules/delivery/git-delivery.ts";
 import { projectSettingsPath, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
 import type { WorkspaceClientsHandle } from "../src/core/host/daemon-client.ts";
+
+vi.mock("../src/modules/delivery/git-delivery.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/modules/delivery/git-delivery.ts")>()),
+  deliverRequirement: vi.fn(async () => ({ status: "rejected", reason: "测试替身", next: "无" })),
+}));
 
 const cleanups: string[] = [];
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -18,6 +24,7 @@ afterEach(async () => {
 type Tool = { execute(id: string, params: unknown, signal: undefined, update: undefined, ctx: unknown): Promise<{ content: Array<{ text: string }> }> };
 type Handler = (event: unknown, ctx: unknown) => void | Promise<void>;
 const gitDeliverySettings = (value: unknown) => JSON.stringify({ "one-company": { "git-delivery": value } });
+const oneCompanySettings = (value: Record<string, unknown>) => JSON.stringify({ "one-company": value });
 async function writeSettings(path: string, content: string) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content);
@@ -43,9 +50,20 @@ async function world(status: Record<string, unknown> = { status: "closed", reaso
   const ctx = { cwd, isProjectTrusted: () => trusted, hasUI: true, ui: { ...answeringUi(() => true), notify: () => {} } };
   const start = async () => { await handlers.get("session_start")!({ type: "session_start", reason: "startup" }, ctx); };
   const run = async (params: unknown) => JSON.parse((await tools.get(GIT_DELIVER_TOOL)!.execute("t", params, undefined, undefined, ctx)).content[0]!.text) as Record<string, unknown>;
+  const mainRepo = join(root, "main"), worktree = join(root, "req");
+  const git = (dir: string, ...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+  const makeDeliverable = async () => {
+    await mkdir(mainRepo, { recursive: true });
+    await mkdir(join(root, "elsewhere"), { recursive: true });
+    git(mainRepo, "init", "-q", "-b", "main");
+    git(mainRepo, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "seed");
+    git(mainRepo, "worktree", "add", "-q", "-b", "req/login", worktree);
+    Object.assign(status, { status: "closed", reason: "completed",
+      archive: { path: "docs/prd/a.md", archiveHash: "h", status: "archived", prototypes: [] }, delivery: { worktree, branch: "refs/heads/req/login", codeHead: "c" } });
+  };
   return {
-    pi, active: () => active, commands, start, run, calls,
-    userPath: userSettingsPath(agentDir), projectPath: projectSettingsPath(cwd),
+    pi, active: () => active, commands, start, run, calls, makeDeliverable,
+    userPath: userSettingsPath(agentDir), projectPath: projectSettingsPath(cwd), mainProjectPath: projectSettingsPath(mainRepo),
   };
 }
 const PARAMS = { repoId: "a".repeat(64), requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10" };
@@ -133,3 +151,27 @@ test("git-delivery 运行时模块不再导出数据库开关函数", () => {
   expect("gitDeliveryEnabled" in gitDelivery).toBe(false);
   expect("setGitDeliveryEnabled" in gitDelivery).toBe(false);
 });
+
+test("交付工具按需求工作区所在主仓库的设置，把交付档位和勾选的合并方式交给交付函数", async () => {
+  const deliverMock = vi.mocked(gitDelivery.deliverRequirement);
+  const w = await world();
+  await w.makeDeliverable();
+  await writeSettings(w.mainProjectPath, oneCompanySettings({ "git-delivery": "remote", "merge-methods": ["merge"] }));
+  await w.start();
+  deliverMock.mockClear();
+  await w.run(PARAMS);
+  expect(deliverMock).toHaveBeenCalledTimes(1);
+  expect(deliverMock.mock.calls[0]![2]).toEqual({ mode: "remote", mergeMethods: ["merge"] });
+});
+
+test("用户层设置 local 且没写合并方式时，交付函数收到 local 和三种默认合并方式", async () => {
+  const deliverMock = vi.mocked(gitDelivery.deliverRequirement);
+  const w = await world();
+  await w.makeDeliverable();
+  await writeSettings(w.userPath, gitDeliverySettings("local"));
+  await w.start();
+  deliverMock.mockClear();
+  await w.run(PARAMS);
+  expect(deliverMock.mock.calls[0]![2]).toEqual({ mode: "local", mergeMethods: ["squash", "merge", "rebase"] });
+});
+

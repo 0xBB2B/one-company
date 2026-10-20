@@ -1,9 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { dirname } from "node:path";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import type { WorkspaceClientsHandle } from "../../core/host/daemon-client.ts";
 import { deliverRequirement } from "./git-delivery.ts";
+import { gitIn } from "../../core/exec/target-branch.ts";
+import { dataRoot } from "../../core/storage/data-root.ts";
+import { readAgentSettings } from "../settings/agent-settings.ts";
 import type { DeliveryFacts } from "./git-delivery.ts";
 import { AdvisedError, toolFailure } from "../../core/exec/tool-failure.ts";
 import { shapeIssue } from "../../core/exec/tool-request.ts";
@@ -30,7 +34,7 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
   pi.registerTool({
     name: GIT_DELIVER_TOOL,
     label: "git_deliver",
-    description: "把已完成并归档的需求交付到 Git：核对完成凭据后提交归档、推送需求分支并建立或复用 PR/MR；推送前和合并方式都由界面直接询问用户。",
+    description: "按 Git 交付档位交付已完成并归档的需求：核对归档已在需求分支中后，远程档位推送并建立或复用 PR/MR，仅本地档位在本机合进主仓库当前分支；推送前和合并方式由界面直接询问用户。",
     parameters: PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams, _signal, _update, ctx: ExtensionContext) {
@@ -46,7 +50,11 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
       if (!close.delivery) fail(`需求没有以完成（completed）关闭并归档，当前状态 ${close.status}，关闭原因 ${close.reason ?? "无"}`,
         "只有用户验收通过并以完成关闭的需求才能交付；需求已取消或拒绝时不要交付");
       const facts: DeliveryFacts = { requirementId, closed: close.status === "closed", reason: close.reason ?? "", archive: close.archive ?? null, ...close.delivery };
-      try { return result(await deliverRequirement(facts, { confirm: (window) => confirmWindow(ctx, window), choose: (window) => chooseWindow(ctx, window) })); }
+      try {
+        const mainRoot = /^worktree (.+)$/mu.exec((await gitIn(facts.worktree, ["worktree", "list", "--porcelain"])).stdout)![1];
+        const { gitDelivery, mergeMethods } = await readAgentSettings({ agentDir: dirname(dataRoot(process.env)), repositoryRoot: mainRoot, projectTrusted: ctx.isProjectTrusted() });
+        return result(await deliverRequirement(facts, { confirm: (window) => confirmWindow(ctx, window), choose: (window) => chooseWindow(ctx, window) }, { mode: gitDelivery.mode, mergeMethods: mergeMethods.methods }));
+      }
       catch (error) { throw toolFailure(GIT_DELIVER_TOOL, error); }
     },
   });

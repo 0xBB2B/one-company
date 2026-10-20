@@ -6,11 +6,11 @@
 | 03 | archive-commit | done | 2026-10-20 |
 | 04 | recycle-merged-check | done | 2026-10-20 |
 | 05 | target-branch-mode | done | 2026-10-20 |
-| 06 | remote-delivery | in-progress | — |
-| 07 | local-delivery | pending | — |
+| 06 | remote-delivery | done | 2026-10-20 |
+| 07 | local-delivery | in-progress | — |
 | 08 | trace-rules | done | 2026-10-20 |
 | 09 | readme | pending | — |
 ## 当前
-01–05、08 完成。05 审查后自修一次：开检查轮时把"主仓库当前没有检出分支"原样报出（原来被吞成"目标分支未拉取"），只有 detached 才报这个原因、其他 git 失败报原始错误。06-remote-delivery 开始。
+01–06、08 完成。06 自修一次：测试改用假 ssh、originHost 保持 remote get-url（按 insteadOf 改写）；GitHub 仓库设置改用带 --hostname 的 GraphQL（只读用户也拿得到真实值）；合并后查真实状态；推送后建 PR 等失败不抛错并说明分支已推送；外部命令加超时；不支持 --separate-git-dir 布局（只靠 git 找不回主工作区，已删相关测试）。07-local-delivery 开始。
 ## 阻塞
 （无）
