@@ -10,6 +10,7 @@ import { snapshotBranchState } from "../../core/exec/branch-guard.ts";
 import { assertModificationAllowedIn, CheckRoundError } from "./check-round.ts";
 import { authorizeToolAction, classifyManagedWritePath, writePathAllowed } from "../../core/policy/core-permissions.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase } from "../../core/storage/database.ts";
 import { overlaps } from "../../core/policy/ranges.ts";
 import { checked, hash, id, object, positive } from "../requirement/requirement-contracts.ts";
 import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
@@ -56,6 +57,14 @@ const ChangeSet = object({
   files: Type.Array(FileState), createdAt: positive, updatedAt: positive,
 });
 export type ChangeSet = Static<typeof ChangeSet>;
+export function retireRunChangeSetsIn(db: LocalDatabase, runId: string): void {
+  for (const row of db.list<unknown>(CHANGE_SETS)) {
+    const set = checked(ChangeSet, row.data);
+    if (set.runId !== runId || (set.status !== "applying" && set.status !== "partial_failure")) continue;
+    const files = set.files.map((file) => file.status === "written" ? file : { ...file, status: "stale" as const, reason: "运行已结束，没写完" });
+    db.update(CHANGE_SETS, set.operationId, row.version, checked(ChangeSet, { ...set, status: "stale", files, updatedAt: Date.now() }));
+  }
+}
 const CHANGE_APPLY_ADVICE = {
   tool_closed: COMMON_ADVICE.tool_closed,
   action_not_allowed: COMMON_ADVICE.action_not_allowed,

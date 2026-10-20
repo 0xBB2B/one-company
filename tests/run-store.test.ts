@@ -880,3 +880,92 @@ describe("运行记录内容损坏", () => {
     await expect(store.update(run.id, { state: "running" })).rejects.toThrow();
   });
 });
+
+describe("RunStore onRunEnded", () => {
+  async function hookedStore(onRunEnded: NonNullable<ConstructorParameters<typeof RunStore>[0]["onRunEnded"]>) {
+    const { dataRoot, repoId, daemonStartedAt } = await makeStore();
+    return { store: new RunStore({ dataRoot, repoId, daemonStartedAt, onRunEnded }), dataRoot, repoId };
+  }
+
+  test.each([
+    ["queued", "failed"],
+    ["queued", "stopped"],
+    ["running", "completed"],
+    ["running", "failed"],
+    ["paused", "stopped"],
+  ] as const)("运行从 %s 进入 %s 时回调恰好一次，参数是更新后的记录", async (from, to) => {
+    const ended: Array<{ id: string; state: string; endedAt?: string }> = [];
+    const { store } = await hookedStore((_db, run) => { ended.push({ id: run.id, state: run.state, endedAt: run.endedAt }); });
+    const run = await store.create(requirementInput());
+    if (from !== "queued") await store.update(run.id, { state: "running" });
+    if (from === "paused") await store.update(run.id, { state: "paused" });
+    expect(ended).toEqual([]);
+
+    await store.update(run.id, { state: to });
+
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({ id: run.id, state: to });
+    expect(isValidUtcTimestamp(ended[0]!.endedAt)).toBe(true);
+  });
+
+  test("运行进入 running、paused、interrupted 这些非终态时不回调", async () => {
+    const ended: string[] = [];
+    const { store } = await hookedStore((_db, run) => { ended.push(run.id); });
+    const run = await store.create(requirementInput());
+    await store.update(run.id, { state: "running" });
+    await store.update(run.id, { state: "paused" });
+    await store.update(run.id, { state: "running" });
+    await store.markOwnRunsInterrupted();
+
+    expect((await store.get(run.id))).toMatchObject({ ok: true, run: { state: "interrupted" } });
+    expect(ended).toEqual([]);
+  });
+
+  test.each(["stopped", "failed"] as const)("运行先被标成 interrupted 再进入 %s 时回调恰好一次，参数是更新后的记录", async (to) => {
+    const ended: Array<{ id: string; state: string }> = [];
+    const { store } = await hookedStore((_db, run) => { ended.push({ id: run.id, state: run.state }); });
+    const run = await store.create(requirementInput());
+    await store.update(run.id, { state: "running" });
+    await store.markOwnRunsInterrupted();
+    expect(ended).toEqual([]);
+
+    await store.update(run.id, { state: to });
+
+    expect(ended).toEqual([{ id: run.id, state: to }]);
+  });
+
+  test("终态运行再次更新被拒绝，不再回调", async () => {
+    const ended: string[] = [];
+    const { store } = await hookedStore((_db, run) => { ended.push(run.id); });
+    const run = await store.create(requirementInput());
+    await store.update(run.id, { state: "stopped" });
+    await expect(store.update(run.id, { state: "failed" })).rejects.toThrow();
+
+    expect(ended).toHaveLength(1);
+  });
+
+  test("回调在运行状态改写的同一事务里执行：回调抛错则状态不变、回调写入的记录一并回滚", async () => {
+    const { store, dataRoot, repoId } = await hookedStore((db) => {
+      db.create("run_end_probe", "probe", { marker: 1 });
+      throw new Error("模拟收尾失败");
+    });
+    const run = await store.create(requirementInput());
+    await store.update(run.id, { state: "running" });
+
+    await expect(store.update(run.id, { state: "completed" })).rejects.toThrow("模拟收尾失败");
+
+    const after = await store.get(run.id);
+    expect(after).toMatchObject({ ok: true, run: { state: "running" } });
+    const ref: RecordRef = { database: repositoryDatabase(dataRoot, repoId), namespace: "run_end_probe", key: "probe" };
+    expect(readRecord(ref).exists).toBe(false);
+  });
+
+  test("回调写入的记录与运行终态同时提交", async () => {
+    const { store, dataRoot, repoId } = await hookedStore((db, run) => { db.create("run_end_probe", run.id, { marker: 1 }); });
+    const run = await store.create(requirementInput());
+    await store.update(run.id, { state: "stopped" });
+
+    const ref: RecordRef = { database: repositoryDatabase(dataRoot, repoId), namespace: "run_end_probe", key: run.id };
+    expect(readRecord(ref).exists).toBe(true);
+  });
+});

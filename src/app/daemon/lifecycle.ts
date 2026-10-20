@@ -14,6 +14,7 @@ import { NetworkPauseGate } from "../../core/host/network-pause.ts";
 import { probeExistingInstance, socketPathByteLimit } from "../../core/host/daemon-probe.ts";
 import { readAgentSettings } from "../../modules/settings/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../../modules/agents/roles.ts";
+import { retireRunChangeSetsIn } from "../../modules/verification/change-apply.ts";
 import { RunStore } from "../../modules/agents/run-store.ts";
 import type { RunState } from "../../modules/agents/run-store.ts";
 import { ShellRegistry } from "../../core/host/shell-registry.ts";
@@ -361,7 +362,8 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   const clock = createClock({ timeSource });
 
   const startedAt = new Date().toISOString();
-  const runStore = new RunStore({ dataRoot: capturedOptions.dataRoot, repoId, daemonStartedAt: startedAt });
+  const runStore = new RunStore({ dataRoot: capturedOptions.dataRoot, repoId, daemonStartedAt: startedAt,
+    onRunEnded: (db, run) => retireRunChangeSetsIn(db, run.id) });
   const runActivity = new RunActivityChecker({ clock, runStore });
 
   let idleExit: IdleExit | undefined;

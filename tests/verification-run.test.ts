@@ -13,7 +13,7 @@ import { draftApprover } from "./helpers/approval-fixture.ts";
 import type { WriteGrant } from "./helpers/approval-fixture.ts";
 import { claimRequirementWriteIn, releaseRequirementWriteIn } from "../src/modules/requirement/requirement-coordination.ts";
 import { RunStore } from "../src/modules/agents/run-store.ts";
-import { createChangeApplyTool } from "../src/modules/verification/change-apply.ts";
+import { createChangeApplyTool, retireRunChangeSetsIn } from "../src/modules/verification/change-apply.ts";
 import { activeCheckRoundIn, CheckRoundService, formalEvidence, CHECK_ROUNDS, VERIFICATION_RUNS } from "../src/modules/verification/check-round.ts";
 import type { CheckRoundServiceOptions } from "../src/modules/verification/check-round.ts";
 import { createVerificationRunTool } from "../src/modules/pm/verification-run.ts";
@@ -642,4 +642,54 @@ test("debug 命令写主仓库根下的项目设置文件失败、内容不变",
   const run = await worker.execute({ action: "run", kind: "debug", command: `echo x >> ${JSON.stringify(settings)}`, performance: NA }) as VerificationView;
   expect(run.status).toBe("failed");
   await expect(readFile(settings, "utf8")).resolves.toBe("{}\n");
+});
+
+async function endedRunWorld() {
+  const w = await world();
+  const hooked = new RunStore({ dataRoot: w.dataRoot, repoId: w.repoId, daemonStartedAt: new Date().toISOString(),
+    onRunEnded: (db, run) => retireRunChangeSetsIn(db, run.id) });
+  const run = await hooked.create({ kind: "role", role: "one-company.worker", requirement: w.created.requirementId, parentRunId: w.lease.runId, task: "实现", cwd: w.worktree.root,
+    writePaths: ["src/"], readPaths: [], model: { provider: "test", id: "test" }, thinking: "off", mcp: [] });
+  await hooked.update(run.id, { state: "running" });
+  const applier = await w.changeApply(run.id);
+  const original = store.writeFileAtomic;
+  vi.spyOn(store, "writeFileAtomic").mockImplementation(async (path, content) => { if (path.endsWith("b.ts")) throw new Error("模拟磁盘故障"); return original(path, content); });
+  const files = [{ path: "src/b.ts", baseHash: "absent", content: "b\n" }];
+  const partial = await applier.execute({ action: "apply", files }) as { status: string; operationId: string };
+  vi.restoreAllMocks();
+  expect(partial.status).toBe("partial_failure");
+  return { w, hooked, run, applier, files, partial };
+}
+
+test("写入失败的运行被停止后，它的未写完记录不再挡住检查轮，换新运行可以写别的文件", async () => {
+  const { w, hooked, run, partial } = await endedRunWorld();
+
+  await hooked.update(run.id, { state: "stopped" });
+
+  const set = withDatabase(w.database, (db) => db.read<{ status: string }>("change_sets", partial.operationId)!.data);
+  expect(set.status).toBe("stale");
+  const runB = await w.changeApply();
+  const applied = await runB.execute({ action: "apply", files: [{ path: "src/c.ts", baseHash: "absent", content: "c\n" }] }) as { status: string };
+  expect(applied.status).toBe("applied");
+  const round = await w.open();
+  expect(round.status).toBe("open");
+});
+
+test("运行失败或完成后同样放开检查轮", async () => {
+  for (const ending of ["failed", "completed"] as const) {
+    const { w, hooked, run } = await endedRunWorld();
+    await hooked.update(run.id, { state: ending });
+    expect((await w.open()).status).toBe("open");
+  }
+});
+
+test("运行只是中断时写入记录保持原样，恢复后同一运行带同样的文件能续写", async () => {
+  const { w, hooked, applier, files, partial } = await endedRunWorld();
+
+  await hooked.markOwnRunsInterrupted();
+
+  const set = withDatabase(w.database, (db) => db.read<{ status: string }>("change_sets", partial.operationId)!.data);
+  expect(set.status).toBe("partial_failure");
+  const resumed = await applier.execute({ action: "apply", files }) as { status: string; operationId: string };
+  expect(resumed).toMatchObject({ status: "applied", operationId: partial.operationId });
 });

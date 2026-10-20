@@ -206,3 +206,22 @@ test("M7-AC11：活动需求不能回收；关闭后有未交付内容默认保�
   expect(await w.workspace.recycle({ requirementId: w.requirementId })).toMatchObject({ status: "recycled", recycleOperationId: operationId });
   expect((await runGit(["rev-parse", "HEAD"], w.repo.root)).trim()).toMatch(/^[0-9a-f]{40}$/);
 }, 30000);
+
+async function closedWorldWithWrite(status: string) {
+  const w = await world();
+  await w.workspace.prepare({ requirementId: w.requirementId });
+  await w.close();
+  withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.create("change_sets", uuidv7(), { requirementId: w.requirementId, status }));
+  return w;
+}
+
+test.each(["applying", "partial_failure"])("回收被%s状态的受控写入记录拦住", async (status) => {
+  const w = await closedWorldWithWrite(status);
+  await expect(w.workspace.recycle({ requirementId: w.requirementId }))
+    .rejects.toMatchObject({ code: "recycle_blocked", blockers: ["存在未完成或待恢复的受控写入"] });
+}, 30000);
+
+test.each(["stale", "applied"])("只有%s状态的受控写入记录时回收不因写入记录被拦", async (status) => {
+  const w = await closedWorldWithWrite(status);
+  expect(await w.workspace.recycle({ requirementId: w.requirementId })).toMatchObject({ status: "recycled" });
+}, 30000);
