@@ -8,7 +8,6 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { LocalDatabase, uuidv7 } from "../src/core/storage/database.ts";
 import { withDatabaseMaintenance } from "../src/core/storage/database-maintenance.ts";
-import type { DatabaseManagementAuthorization } from "../src/core/storage/database-maintenance.ts";
 import { reconcileDatabaseRecovery } from "../src/core/storage/database-recovery.ts";
 import { DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, DATABASE_SNAPSHOT_FILE } from "../src/core/storage/database-paths.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
@@ -57,10 +56,6 @@ function reminders(requirement: RequirementFixture): Record<string, unknown> {
   };
 }
 
-function managementAuthorization(id = uuidv7()) {
-  const value: DatabaseManagementAuthorization = { authorized: true, writesStopped: true, authorizationId: id, principal: "test-trusted-management-fixture" };
-  return () => value;
-}
 const hash = async (path: string) => createHash("sha256").update(await readFile(path)).digest("hex");
 
 async function snapshotFixture(directory: string, requirements: RequirementFixture[]): Promise<string> {
@@ -178,8 +173,8 @@ test("已存在恢复操作的日志链接被拒绝且外部内容不被读写",
   expect(await readFile(outsideRecoveryLog, "utf8")).toBe("OUTSIDE_RECOVERY_LOG");
 });
 
-test("维护进程SIGKILL退出后仅同operationId和可信授权可接管续办", async () => {
-  const w = await world(), operationId = uuidv7(), script = join(w.root, "maintenance-owner.mjs"), preservedLog = join(w.directory, "preserved-operation.log");
+test("维护进程仍在时再开维护报maintenance_already_exists，SIGKILL后自动清掉残留标记并保留其写下的文件", async () => {
+  const w = await world(), operationId = uuidv7(), script = join(w.root, "maintenance-owner.mjs"), preservedLog = join(w.directory, "preserved-operation.log"), markerPath = join(w.directory, ".database-maintenance.json");
   createStore(join(w.directory, "data.db"), [], { applicationId: DATABASE_APPLICATION_IDS.data });
   await writeFile(script, `import fs from "node:fs";
 import {withDatabaseMaintenance} from ${JSON.stringify(new URL("../src/core/storage/database-maintenance.ts", import.meta.url).href)};
@@ -192,30 +187,22 @@ await withDatabaseMaintenance({...${JSON.stringify(w.scope)},operationId:${JSON.
       child.once("error", (error) => { clearTimeout(timer); reject(error); });
       child.stdout.once("data", (data) => { clearTimeout(timer); data.toString().includes("LOCKED") ? resolve() : reject(new Error("维护标记未确认")); });
     });
-    let activeAuthorizationCalls = 0;
-    const takeoverAuthorization = () => { activeAuthorizationCalls += 1; return managementAuthorization()(); };
-    await expect(withDatabaseMaintenance({ ...w.scope, operationId, takeover: { authorize: takeoverAuthorization } }, () => null)).rejects.toThrow(/maintenance_owner_active/);
-    expect(activeAuthorizationCalls).toBe(0);
+    await expect(withDatabaseMaintenance({ ...w.scope, operationId: uuidv7() }, () => null)).rejects.toThrow(/maintenance_already_exists/);
+    expect(JSON.parse(await readFile(markerPath, "utf8"))).toMatchObject({ operationId, owner: { pid: child.pid } });
     child.kill("SIGKILL"); await closed;
-    await expect(withDatabaseMaintenance({ ...w.scope, operationId: uuidv7(), takeover: { authorize: takeoverAuthorization } }, () => null)).rejects.toThrow(/maintenance_already_exists/);
-    await expect(withDatabaseMaintenance({ ...w.scope, operationId, takeover: { authorize: () => { throw new Error("no management authorization"); } } }, () => null)).rejects.toThrow(/maintenance_takeover_unauthorized/);
-    await withDatabaseMaintenance({ ...w.scope, operationId, takeover: { authorize: takeoverAuthorization } }, async (permit) => {
-      expect(await readFile(preservedLog, "utf8")).toBe("ORIGINAL_OPERATION_LOG");
-      const marker = JSON.parse(await readFile(join(w.directory, ".database-maintenance.json"), "utf8"));
-      expect(marker).toMatchObject({ operationId, ownershipEpoch: 2, takeover: { previousOwner: { pid: child.pid } } });
-      const result = reconcileDatabaseRecovery(permit, { operationId, mode: "current_restart" });
-      expect(result).toMatchObject({ mode: "current_restart", state: "restart_ready", executable: true });
-    });
-    expect(activeAuthorizationCalls).toBe(1);
-    expect(fs.existsSync(join(w.directory, ".database-maintenance.json"))).toBe(false);
+    const ownOperationId = uuidv7();
+    const result = await withDatabaseMaintenance({ ...w.scope, operationId: ownOperationId }, (permit) => reconcileDatabaseRecovery(permit, { operationId: ownOperationId, mode: "current_restart" }));
+    expect(result).toMatchObject({ mode: "current_restart", state: "restart_ready", executable: true });
+    expect(fs.existsSync(markerPath)).toBe(false);
+    expect(await readFile(preservedLog, "utf8")).toBe("ORIGINAL_OPERATION_LOG");
   } finally { child.kill("SIGKILL"); await closed; }
 });
 
-test("旧维护标记即使提供接管回调也保持needs_review", async () => {
-  const w = await world(), marker = join(w.directory, ".database-maintenance.json");
-  await writeFile(marker, JSON.stringify({ operationId: uuidv7(), state: "maintenance" }), { mode: 0o600 });
-  await expect(withDatabaseMaintenance({ ...w.scope, operationId: uuidv7(), takeover: { authorize: managementAuthorization() } }, () => null)).rejects.toThrow(/maintenance_needs_review/);
-  expect(fs.existsSync(marker)).toBe(true);
+test("格式不对的旧维护标记让withDatabaseMaintenance报maintenance_already_exists且标记不动", async () => {
+  const w = await world(), marker = join(w.directory, ".database-maintenance.json"), content = JSON.stringify({ operationId: uuidv7(), state: "maintenance" });
+  await writeFile(marker, content, { mode: 0o600 });
+  await expect(withDatabaseMaintenance({ ...w.scope, operationId: uuidv7() }, () => null)).rejects.toThrow(/maintenance_already_exists/);
+  expect(await readFile(marker, "utf8")).toBe(content);
 });
 
 test("归档枚举正文读取探针为零，并拒绝同UUID多路径冲突", async () => {

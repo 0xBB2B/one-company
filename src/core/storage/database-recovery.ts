@@ -239,7 +239,7 @@ function parseManifest(file: PrivateFileState): RecoveryManifest {
  */
 export function reconcileDatabaseRecovery(permit: DatabaseMaintenancePermit, request: DatabaseRecoveryRequest): DatabaseRecoveryReceipt {
   if (!UUID_V7_PATTERN.test(request.operationId) || !["current_restart", "backup_data"].includes(request.mode)) throw new DatabaseRecoveryError("invalid_request");
-  const directory = databaseMaintenanceDirectory(permit, request.operationId);
+  const directory = databaseMaintenanceDirectory(permit);
   const currentData = join(directory, "data.db");
 
   if (request.mode === "current_restart") {
@@ -284,7 +284,7 @@ export function reconcileDatabaseRecovery(permit: DatabaseMaintenancePermit, req
     manifestFile = replaceJson(manifestPath, operationDirectory, manifestFile, next);
     manifest = next;
   };
-  const recheckScope = () => { databaseMaintenanceDirectory(permit, request.operationId); assertOperationDirectories(); };
+  const recheckScope = () => { databaseMaintenanceDirectory(permit); assertOperationDirectories(); };
 
   try {
     if (manifest.state === "completed") {

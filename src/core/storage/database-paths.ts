@@ -1,5 +1,6 @@
 import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { releaseStaleMaintenanceMarker, staleMarkerMessage } from "./maintenance-marker.ts";
 
 export type DatabaseKind = "data" | "global" | "index";
 export const DATABASE_SCHEMA_VERSIONS: Readonly<Record<DatabaseKind, number>> = Object.freeze({ data: 4, global: 1, index: 2 });
@@ -56,7 +57,11 @@ export function assertDatabasePathReady(path: string): DatabaseKind {
   const kind = databaseKind(path);
   if (!kind) throw new DatabaseStorageError("wrong_database_kind", `本机数据库文件名只能是data.db、global.db或index.db，收到${basename(path)}`);
   const directory = dirname(resolve(path));
-  if (pathExists(join(directory, DATABASE_MAINTENANCE_FILE))) throw new DatabaseStorageError("maintenance_required", "维护范围尚未确认结束");
+  const marker = join(directory, DATABASE_MAINTENANCE_FILE);
+  if (pathExists(marker)) {
+    const released = releaseStaleMaintenanceMarker(marker);
+    if (!released.cleared) throw new DatabaseStorageError("maintenance_required", staleMarkerMessage(released));
+  }
   if (pathExists(join(directory, DATABASE_SNAPSHOT_FILE))) throw new DatabaseStorageError("snapshot_only", "备份或待审核副本不是活动运行库");
   return kind;
 }
