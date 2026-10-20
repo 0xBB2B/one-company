@@ -68,8 +68,15 @@ abstract class SwitchPicker {
   protected step = 0;
   protected cursor = 0;
 
-  constructor(protected readonly theme: PageTheme, protected readonly projectTrusted: boolean, private readonly key: ClearSwitchRequest["key"],
-    private readonly currentSource: () => RoleSource, private readonly onClear: (request: ClearSwitchRequest) => void) {}
+  protected readonly theme: PageTheme;
+  protected readonly projectTrusted: boolean;
+  private readonly key: ClearSwitchRequest["key"];
+  private readonly currentSource: () => RoleSource;
+  private readonly onClear: (request: ClearSwitchRequest) => void;
+
+  constructor(theme: PageTheme, projectTrusted: boolean, key: ClearSwitchRequest["key"], currentSource: () => RoleSource, onClear: (request: ClearSwitchRequest) => void) {
+    this.theme = theme; this.projectTrusted = projectTrusted; this.key = key; this.currentSource = currentSource; this.onClear = onClear;
+  }
 
   picking(): boolean { return this.step > 0; }
 
@@ -117,10 +124,15 @@ abstract class SwitchPicker {
 class DeliveryModePicker extends SwitchPicker {
   private chosen: DeliveryMode = "remote";
 
-  constructor(private readonly options: {
+  private readonly options: {
     theme: PageTheme; current: { mode: DeliveryMode; source: RoleSource }; projectTrusted: boolean;
     onSave(request: SaveSwitchRequest): void; onClear(request: ClearSwitchRequest): void;
-  }) { super(options.theme, options.projectTrusted, "git-delivery", () => options.current.source, options.onClear); }
+  };
+
+  constructor(options: DeliveryModePicker["options"]) {
+    super(options.theme, options.projectTrusted, "git-delivery", () => options.current.source, options.onClear);
+    this.options = options;
+  }
 
   start(): void { this.step = 1; this.cursor = this.options.current.mode === "remote" ? 1 : 0; }
 
@@ -143,10 +155,15 @@ class MergeMethodsPicker extends SwitchPicker {
   private checked: boolean[] = [];
   private empty = false;
 
-  constructor(private readonly options: {
+  private readonly options: {
     theme: PageTheme; current: { methods: readonly MergeMethod[]; source: RoleSource }; projectTrusted: boolean;
     onSave(request: SaveSwitchRequest): void; onClear(request: ClearSwitchRequest): void;
-  }) { super(options.theme, options.projectTrusted, "merge-methods", () => options.current.source, options.onClear); }
+  };
+
+  constructor(options: MergeMethodsPicker["options"]) {
+    super(options.theme, options.projectTrusted, "merge-methods", () => options.current.source, options.onClear);
+    this.options = options;
+  }
 
   start(): void {
     this.step = 1;
