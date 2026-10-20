@@ -151,7 +151,7 @@ test("不再注册 one:git-delivery 命令", async () => {
   expect(w.commands).not.toContain("one:git-delivery");
 });
 
-test("git-delivery 运行时模块不再导出数据库开关函数", () => {
+test("git-delivery 运行时模块不提供读写数据库开关的函数，档位只存在设置文件里", () => {
   expect("gitDeliveryEnabled" in gitDelivery).toBe(false);
   expect("setGitDeliveryEnabled" in gitDelivery).toBe(false);
 });
