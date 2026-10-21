@@ -209,9 +209,9 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
   w.provider.queue.push(submit("a 符合目标", [{ kind: "suggestion" }]), pmAck);
   const reviewer = await w.review("a");
   await until(() => w.task("a").status === "completed");
-  expect(w.task("a").reviews).toEqual([expect.objectContaining({ runId: reviewer.runId, attemptRunId: a.runId, outcome: "clear" })]);
+  expect(w.task("a").reviews).toEqual([expect.objectContaining({ runId: reviewer.runIds[0], attemptRunId: a.runId, outcome: "clear" })]);
   expect(await w.runStore.get(c.runId)).toMatchObject({ ok: true, run: { state: "running" } });
-  expect(await w.runStore.get(reviewer.runId)).toMatchObject({ ok: true, run: { role: "one-company.reviewer", writePaths: [], task: w.task("a").taskId } });
+  expect(await w.runStore.get(reviewer.runIds[0])).toMatchObject({ ok: true, run: { role: "one-company.reviewer", writePaths: [], task: w.task("a").taskId } });
   const reviewerRequest = w.provider.requests.find((request) => request.systemPrompt?.includes("审查任务：a（"))!;
   expect(reviewerRequest.tools?.map((tool) => tool.name)).not.toContain("one_company_change_apply");
   expect(reviewerRequest.systemPrompt).toContain(`- 第 1 次尝试 ${a.runId}（本次被审）：提交说明：完成 a；引用的验证记录：${redGreen.join("、")}`);
@@ -256,7 +256,7 @@ test("M7A-AC4：审查打回时 reviewer 任务仍算完成；返修须带原因
   w.provider.queue.push(submit("缺失败提示", [{ kind: "blocking" }]), pmAck);
   const rejected = await w.review("login");
   await until(() => w.task("login").status === "awaiting_rework");
-  expect(await w.runStore.get(rejected.runId)).toMatchObject({ ok: true, run: { state: "completed" } });
+  expect(await w.runStore.get(rejected.runIds[0])).toMatchObject({ ok: true, run: { state: "completed" } });
   expect(w.task("login").reviews[0]).toMatchObject({ attemptRunId: first.runId, outcome: "blocked" });
   await expect(w.dispatch("login")).rejects.toMatchObject({ code: "rework_required" });
   await expect(w.dispatch("login", { reason: "重试", maxTurns: 2 })).rejects.toMatchObject({ code: "retry_not_needed" });
@@ -276,7 +276,7 @@ test("M7A-AC4：审查打回时 reviewer 任务仍算完成；返修须带原因
   const secondRequest = w.provider.requests.find((request) => request.systemPrompt?.includes(`worker 尝试 ${fix.runId}`))!;
   expect(secondRequest.systemPrompt).toContain(`- 第 1 次尝试 ${first.runId}：提交说明：完成 login；引用的验证记录：无\n- 第 2 次尝试（返修） ${fix.runId}（本次被审）：提交说明：补上失败提示；引用的验证记录：无`);
   expect(secondRequest.systemPrompt).toContain("先红后绿可以出现在任意一次尝试里；返修改动了可测行为时，这次返修须有新的红");
-  expect(w.task("login").reviews[1]).toMatchObject({ runId: second.runId, attemptRunId: fix.runId, outcome: "unverified" });
+  expect(w.task("login").reviews[1]).toMatchObject({ runId: second.runIds[0], attemptRunId: fix.runId, outcome: "unverified" });
   await expect(w.rework("login")).rejects.toMatchObject({ code: "task_not_ready" });
   await expect(w.plan.execute({ action: "update", planVersion: 1, add: [spec("login-fix")] })).rejects.toMatchObject({ code: "goal_held" });
 });

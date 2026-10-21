@@ -17,8 +17,8 @@ import { createAgentRoleSession } from "../../modules/agents/agent-session.ts";
 import type { AgentSessionHandle } from "../../modules/agents/agent-session.ts";
 import { createPmTools } from "./pm-tools.ts";
 import { createSubagentTools } from "../../modules/pm/subagent-tools.ts";
-import { beginTaskAttempt, beginTaskReview, finishTaskAttempt, finishTaskReview } from "../../modules/pm/task-dispatch.ts";
-import { confirmedPlanKey, holdResumes, readPlanIn, readTaskDetail, replanPending, terminationPending } from "../../modules/pm/plan-manage.ts";
+import { beginTaskAttempt, beginTaskReview, finishTaskAttempt, finishTaskReview, reviewRoundMembers } from "../../modules/pm/task-dispatch.ts";
+import { confirmedPlanKey, holdResumes, latestRound, REVIEW_REJECTED, readPlanIn, readTaskDetail, replanPending, terminationPending } from "../../modules/pm/plan-manage.ts";
 import type { HoldRef } from "../../modules/pm/plan-manage.ts";
 import type { TaskAttempt, TaskRecord as PlanTask, TaskReview } from "../../modules/pm/plan-manage.ts";
 import { VERDICTS } from "../../modules/pm/verdicts.ts";
@@ -62,7 +62,7 @@ import { createPmSyncTool } from "../../modules/pm/pm-sync.ts";
 import { AgentResolveError, definitionHash, resolveAgent, resolveModelChoice } from "../../modules/agents/agent-resolve.ts";
 import type { AgentFingerprint, ResolvedAgent } from "../../modules/agents/agent-resolve.ts";
 import { readAgentSettings } from "../../modules/settings/agent-settings.ts";
-import { PM_DEFINITION } from "../../modules/agents/roles.ts";
+import { isGenericDefinition, PM_DEFINITION } from "../../modules/agents/roles.ts";
 import type { AgentRole } from "../../modules/agents/roles.ts";
 import { activeCheckRoundIn, assertWritersQuiescentIn } from "../../modules/verification/check-round.ts";
 import type { ProjectIndexHost } from "./project-index-host.ts";
@@ -106,7 +106,9 @@ const PM_MESSAGE_LABEL = "【主代理转述】下面是主代理根据用户的
 const PM_EVENT_POLL_MS = 500;
 const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "release-pm", "check-pm"];
 
-async function taskContext(task: PlanTask, maxTurns: number, prototypes: string, rejected: readonly Finding[] = [], reviews: readonly string[] = []): Promise<string> {
+const reviewRulesFor = (name: string) => loadRoleRules(isGenericDefinition(name) ? "reviewer" : "reviewer-specialist");
+
+async function taskContext(task: PlanTask, maxTurns: number, prototypes: string, rejected: ReadonlyArray<Finding & { agent: string }> = [], reviews: readonly string[] = []): Promise<string> {
   const detail = await readTaskDetail(task);
   return [
     `任务：${task.key}（${task.taskId}，版本 ${task.version}，职责 ${task.role}）`,
@@ -117,7 +119,7 @@ async function taskContext(task: PlanTask, maxTurns: number, prototypes: string,
     `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
     ...(task.writePaths.length ? [`可写范围：${task.writePaths.join("、")}`] : []),
     ...(prototypes ? [prototypes] : []),
-    ...(rejected.length ? [`本次是审查打回后的返修，须解决：\n${rejected.map((finding) => `- [${finding.kind}] ${finding.targetRef}：${finding.trigger} → ${finding.impact}`).join("\n")}`] : []),
+    ...(rejected.length ? [`本次是审查打回后的返修，须解决：\n${rejected.map((finding) => `- [${finding.kind}] ${finding.agent} · ${finding.targetRef}：${finding.trigger} → ${finding.impact}`).join("\n")}`] : []),
     ...(reviews.length ? [`已完成任务的审查结论（审查已核对各任务的改动范围）：\n${reviews.map((line) => `- ${line}`).join("\n")}`] : []),
     `对话轮次上限：${maxTurns}。用满后运行时会停止，请在额度内提交结果。`,
   ].join("\n");
@@ -439,7 +441,7 @@ export class RunManager {
 
   /** PM 按已冻结任务派出受限子代理（执行、返修或任务级审查）：门槛与尝试登记在同一事务，子代理带运行时轮次上限，结局自动上报直属 PM。 */
   async dispatchTask(input: { pmRunId: string; taskId: string; retry: { reason: string; maxTurns: number } | null;
-    rework?: { reason: string; maxTurns: number } | null; review?: { maxTurns: number } }): Promise<{ runId: string; maxTurns: number }> {
+    rework?: { reason: string; maxTurns: number } | null; review?: { maxTurns: number } }): Promise<{ runId: string; maxTurns: number } | { runIds: string[]; failed: Array<{ agent: string; reason: string }>; maxTurns: number }> {
     const pm = this.sessions.get(input.pmRunId);
     if (!pm?.pm) throw protocolError("pm_not_running", "派工的 PM 会话不存在");
     const lease = pm.pm.lease;
@@ -452,16 +454,52 @@ export class RunManager {
     if (task.role === "explore") throw protocolError("role_unavailable", "explore 派工由检索入口负责");
     const review = input.review !== undefined;
     const role = review ? "reviewer" : task.role;
-    const resolved = await this.resolveAgent(review ? "reviewer" : task.agent ?? task.role, role, { model: pmRun.run.model, thinking: pmRun.run.thinking });
-    const { definition, model: modelRef, thinking } = resolved;
     const workspace = record.workspace!;
     const ref = { dataRoot: this.options.dataRoot, repoId: this.repoId };
-    // 先过派工门槛再建运行记录：被门槛拒绝的派工不留下失败运行
-    const runId = uuidv7();
-    let maxTurns: number, attemptRunId: string | undefined;
-    ({ maxTurns, attemptRunId } = review
-      ? beginTaskReview({ ...ref, lease, taskId: task.taskId, maxTurns: input.review!.maxTurns, members: [{ agent: "reviewer", runId }] })
-      : { ...beginTaskAttempt({ ...ref, lease, taskId: task.taskId, runId, retry: input.retry, rework: input.rework ?? null }), attemptRunId: undefined });
+    const fallback = { model: pmRun.run.model, thinking: pmRun.run.thinking };
+    const launch = { pmRunId: input.pmRunId, lease, record, task, role, workspace, ref };
+    if (!review) {
+      const resolved = await this.resolveAgent(task.agent ?? task.role, role, fallback);
+      // 先过派工门槛再建运行记录：被门槛拒绝的派工不留下失败运行
+      const runId = uuidv7();
+      const { maxTurns } = beginTaskAttempt({ ...ref, lease, taskId: task.taskId, runId, retry: input.retry, rework: input.rework ?? null });
+      await this.launchSubagent({ ...launch, resolved, runId, maxTurns, attemptRunId: undefined });
+      return { runId, maxTurns };
+    }
+    const catalog = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
+    const plan: Array<{ agent: string; resolved?: ResolvedAgent; runId?: string; skipReason?: "disabled" | "missing" }> = [];
+    for (const agent of reviewRoundMembers(task).agents) {
+      try {
+        plan.push({ agent, resolved: await this.resolveAgent(agent, "reviewer", fallback), runId: uuidv7() });
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        if (code === "agent_disabled") plan.push({ agent, skipReason: "disabled" });
+        else if (code === "agent_unavailable" && !catalog.some((entry) => entry.name === agent)) plan.push({ agent, skipReason: "missing" });
+        else throw error;
+      }
+    }
+    const { maxTurns, attemptRunId } = beginTaskReview({ ...ref, lease, taskId: task.taskId, maxTurns: input.review!.maxTurns,
+      members: plan.map((member) => ({ agent: member.agent, ...(member.runId ? { runId: member.runId } : { skipReason: member.skipReason }) })) });
+    const started: string[] = [], failed: Array<{ agent: string; reason: string }> = [];
+    for (const member of plan) {
+      if (!member.resolved) continue;
+      try {
+        await this.launchSubagent({ ...launch, resolved: member.resolved, runId: member.runId!, maxTurns, attemptRunId });
+        started.push(member.runId!);
+      } catch (error) {
+        failed.push({ agent: member.agent, reason: (error as Error).message });
+      }
+    }
+    this.reportReviewRound(input.pmRunId, withDatabase(this.database, (db) => readPlanIn(db, lease.requirementId)!.tasks.find((candidate) => candidate.taskId === task.taskId)!));
+    return { runIds: started, failed, maxTurns };
+  }
+
+  private async launchSubagent(input: { pmRunId: string; lease: PmLease; record: RequirementRecord; task: PlanTask; role: string;
+    workspace: NonNullable<RequirementRecord["workspace"]>; ref: { dataRoot: string; repoId: string }; resolved: ResolvedAgent; runId: string; maxTurns: number;
+    attemptRunId: string | undefined }): Promise<void> {
+    const { lease, record, task, role, workspace, ref, resolved, runId, maxTurns, attemptRunId } = input;
+    const review = attemptRunId !== undefined;
+    const { definition, model: modelRef, thinking } = resolved;
     const fail = () => review ? finishTaskReview({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" })
       : finishTaskAttempt({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" });
     let run: RunRecord;
@@ -498,7 +536,7 @@ export class RunManager {
       const context = review ? await reviewContext(task, attemptRunId!, workspace.baseCommit, (runId) => this.workerReport(runId), maxTurns, workerDefinition, prototypes)
         : await taskContext(task, maxTurns, prototypes, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : []);
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        roleRules: loadRoleRules(review ? "reviewer" : role as "worker" | "qa"),
+        roleRules: review ? reviewRulesFor(definition.name) : loadRoleRules(role as "worker" | "qa"),
         context: withSkills(await this.withConventions(context), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
         ...(role === "qa" && prototypePaths.length ? { hostTools: [...QA_PROTOTYPE_HOST_TOOLS], readRoots: prototypePaths } : {}),
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
@@ -524,10 +562,8 @@ export class RunManager {
     handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishSubagent(run.id, "failed", reason); });
     await this.runStore.update(run.id, { state: "running" });
     handle.prompt(review ? "开始审查。" : "开始执行任务。");
-    return { runId: run.id, maxTurns };
   }
 
-  /** 最近一次审查打回的阻塞与未验证问题，交给返修的 worker；只取程序登记的裁决字段。 */
   private async withConventions(context: string): Promise<string> {
     const conventions = await agentConventionsContext({ agentDir: dirname(this.options.dataRoot), repositoryRoot: this.options.repositoryRoot });
     return conventions ? `${context}\n\n${conventions}` : context;
@@ -538,12 +574,15 @@ export class RunManager {
       .find((verdict) => verdict.role === "worker" && verdict.runId === attemptRunId));
   }
 
-  private rejectedFindings(task: PlanTask): Finding[] {
+  /** 最近一轮所有打回代理的阻塞与未验证问题，带代理名；只取程序登记的裁决字段。 */
+  private rejectedFindings(task: PlanTask): Array<Finding & { agent: string }> {
     if (task.status !== "awaiting_rework") return [];
-    const last = task.reviews.findLast((review) => review.outcome === "blocked" || review.outcome === "unverified");
-    if (!last) return [];
-    return withDatabase(this.database, (db) => db.list<Verdict>(VERDICTS).map((row) => row.data).find((verdict) => verdict.runId === last.runId)?.findings ?? [])
-      .filter((finding) => finding.kind !== "suggestion");
+    const rejected = latestRound(task).reviews.filter((review) => REVIEW_REJECTED.has(review.outcome));
+    return withDatabase(this.database, (db) => {
+      const verdicts = db.list<Verdict>(VERDICTS).map((row) => row.data);
+      return rejected.flatMap((review) => (verdicts.find((verdict) => verdict.runId === review.runId)?.findings ?? [])
+        .filter((finding) => finding.kind !== "suggestion").map((finding) => ({ ...finding, agent: review.agent })));
+    });
   }
 
   /** QA 用于核对"不做某事"类边界：各已完成 worker 任务最近一次通过审查的裁决摘要。 */
@@ -589,22 +628,59 @@ export class RunManager {
       await this.runStore.update(runId, { state: outcome === "completed" ? "completed" : outcome === "stopped" ? "stopped" : "failed", stateReason: outcomeReason(outcome, failure) });
     }
     const parent = this.sessions.get(parentRunId);
-    const next: Partial<Record<PlanTask["status"], string>> = {
-      awaiting_parent: `请核对已有成果与原因后决定：用 retry 给出原因和新的轮次上限重试一次；自己处理不了时用 workflow_manage action=escalate taskId=${taskId} 写明卡在哪、需要用户决定什么，交用户裁决。`,
-      awaiting_review: `任务待审查：用 agent_manage dispatch taskId=${taskId} 并带 review（轮次上限）派出 reviewer。`,
-      awaiting_rework: `审查打回：核对问题后用 agent_manage dispatch taskId=${taskId} 并带 rework（原因与新的轮次上限）派 worker 返修一次。`,
-      awaiting_user: "该任务已用完机会，进入等待用户裁决，不能再派工；请向主代理报告。",
-    };
+    const next = this.nextSteps(taskId);
     const qaFindings = !review && task.role === "qa" && report !== undefined && report.findings.some((finding) => finding.kind !== "suggestion");
     if (qaFindings && task.status === "awaiting_parent") {
       next.awaiting_parent = "QA 发现问题：不要原样重派 QA。先用 workflow_manage finish 结束本检查轮，按问题追加返修任务并经任务级审查，再开新检查轮后用 retry 重派 QA。";
     }
-    const lines = [`${review ? "审查" : "子代理"}运行 ${runId} 已结束：任务 ${task.key}，结局 ${effective}，已用 ${used?.turnsUsed ?? 0}/${used?.maxTurns ?? 0} 轮，任务状态 ${task.status}。`,
+    if (review) {
+      this.reportReviewRound(parentRunId, task);
+      return;
+    }
+    const lines = [`子代理运行 ${runId} 已结束：任务 ${task.key}，结局 ${effective}，已用 ${used?.turnsUsed ?? 0}/${used?.maxTurns ?? 0} 轮，任务状态 ${task.status}。`,
       report ? `提交结论 ${report.conclusion}：${report.summary}；验证引用 ${report.verificationIds.join("、") || "无"}；分级问题 ${report.findings.length} 项。`
         : `原因：${outcomeReason(outcome, failure)}。`,
       `建议：${next[task.status] ?? "请核对实际证据后再整合结果。"}`,
       `运行日志：${this.runLog(runId)}（证据不够判断时，读这份会话记录查看子代理的思考与工具调用）`];
     if (parent?.pm && ["running", "paused"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
+  }
+
+  private nextSteps(taskId: string): Partial<Record<PlanTask["status"], string>> {
+    return {
+      awaiting_parent: `请核对已有成果与原因后决定：用 retry 给出原因和新的轮次上限重试一次；自己处理不了时用 workflow_manage action=escalate taskId=${taskId} 写明卡在哪、需要用户决定什么，交用户裁决。`,
+      awaiting_review: `任务待审查：用 agent_manage dispatch taskId=${taskId} 并带 review（轮次上限）派出 reviewer。`,
+      awaiting_rework: `审查打回：核对问题后用 agent_manage dispatch taskId=${taskId} 并带 rework（原因与新的轮次上限）派 worker 返修一次。`,
+      awaiting_user: "该任务已用完机会，进入等待用户裁决，不能再派工；请向主代理报告。",
+    };
+  }
+
+  /** 本轮没有审查在跑时给 PM 发一次整轮汇总；结束发生在派出途中还是结束时，同一批审查记录只发一次。 */
+  private reportReviewRound(pmRunId: string, task: PlanTask): void {
+    const { reviews } = latestRound(task);
+    if (reviews.some((review) => review.outcome === "running")) return;
+    const key = reviews.map((review) => review.runId).join();
+    if (this.reportedReviewRounds.has(key)) return;
+    this.reportedReviewRounds.add(key);
+    const parent = this.sessions.get(pmRunId);
+    if (parent?.pm && ["running", "paused"].includes(parent.handle.state())) {
+      parent.handle.prompt(this.reviewRoundReport(task, this.nextSteps(task.taskId)[task.status] ?? "请核对实际证据后再整合结果。").join("\n"));
+    }
+  }
+
+  private reviewRoundReport(task: PlanTask, next: string): string[] {
+    const { round, reviews } = latestRound(task);
+    const verdicts = withDatabase(this.database, (db) => db.list<Verdict>(VERDICTS).map((row) => row.data));
+    const conclusion: Record<string, string> = { clear: "通过", blocked: "打回", unverified: "未验证", failed: "没交出结论（运行失败）",
+      turn_limit_reached: "没交出结论（轮次用满）", stopped: "没交出结论（被停止）", superseded: "被作废" };
+    const sections = reviews.map((review) => {
+      if (review.outcome === "skipped") return `- ${review.agent} ${review.skipReason === "disabled" ? "已关闭" : "已不存在"}，本轮未审`;
+      const verdict = verdicts.find((item) => item.runId === review.runId);
+      const count = (kind: string) => verdict?.findings.filter((finding) => finding.kind === kind).length ?? 0;
+      return [`- ${review.agent}：${conclusion[review.outcome] ?? review.outcome}，已用 ${review.turnsUsed}/${review.maxTurns} 轮`,
+        verdict ? `  summary：${verdict.summary}；分级问题 ${verdict.findings.length} 项（阻塞 ${count("blocking")}、未验证 ${count("unverified")}、建议 ${count("suggestion")}）` : "",
+        `  运行日志：${this.runLog(review.runId)}`].filter(Boolean).join("\n");
+    });
+    return [`任务 ${task.key} 第 ${round} 轮审查已全部结束，任务状态 ${task.status}。`, ...sections, `建议：${next}`];
   }
 
   /**
@@ -1122,6 +1198,7 @@ export class RunManager {
   private readonly overviewFingerprints = new Map<string, string>();
   /** 因计划变更被统一停止的子代理运行：其尝试记为因重新规划作废。 */
   private readonly supersededRuns = new Set<string>();
+  private readonly reportedReviewRounds = new Set<string>();
   private readonly headingCache = new Map<string, { hash: string; titles: Map<string, string> }>();
 
   private async headingTitles(record: RequirementRecord): Promise<Map<string, string>> {
