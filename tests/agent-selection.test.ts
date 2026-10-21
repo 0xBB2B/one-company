@@ -10,6 +10,7 @@ import { TASKS } from "../src/modules/pm/plan-manage.ts";
 import { CheckRoundService } from "../src/modules/verification/check-round.ts";
 import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../src/modules/agents/roles.ts";
+import { disabledAgentNames } from "../src/modules/settings/agent-settings.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -20,8 +21,9 @@ const spec = (key: string, patch: Partial<TaskSpec> = {}): TaskSpec => ({ key, r
   writePaths: ["src/"], blockedByQuestionIds: [], maxTurns: 3, objective: `实现 ${key}`, passCriteria: ["可观察通过"], scope: { in: [key], out: ["其他"] }, performance: NA, ...patch });
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
-async function world() {
-  const w = await createPmRunWorld(cleanups);
+async function world(initialDisabled: Set<string> = new Set<string>()) {
+  const disabled = initialDisabled;
+  const w = await createPmRunWorld(cleanups, { loadDisabledAgents: () => disabled });
   const root = await mkdtemp(join(tmpdir(), "agent-selection-")); cleanups.push(() => rm(root, { recursive: true, force: true }));
   const userDir = join(root, "agents"), skillDir = join(root, "skills");
   await mkdir(join(skillDir, "ui-kit"), { recursive: true });
@@ -39,7 +41,7 @@ async function world() {
   const task = (key: string) => withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) =>
     db.list<{ key: string; taskId: string; status: string }>(TASKS).map((row) => row.data).find((entry) => entry.key === key)!);
   const dispatch = (key: string) => w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task(key).taskId, retry: null });
-  return { ...w, userDir, skill, define, task, dispatch };
+  return { ...w, userDir, skill, define, task, dispatch, disabled };
 }
 const prompt = (request: Context | undefined) => request?.systemPrompt ?? "";
 
@@ -47,7 +49,8 @@ test("M7-AC22/AC23/AC24：能力目录有界；任务指定专业定义时按定
   const w = await world();
   const content = await w.define("ui-dev", "skills: [ui-kit]\n");
   const catalog = await w.manager.agentCatalog("worker", 0);
-  expect(catalog.items.map((item) => item.name).sort()).toEqual(["ui-dev", "worker"]);
+  expect(catalog.items.map((item) => item.name)).toEqual(expect.arrayContaining(["ui-dev", "worker"]));
+  expect(catalog.items.every((item) => item.role === "worker")).toBe(true);
   expect(JSON.stringify(catalog)).not.toContain("你是 ui-dev");
   expect(JSON.stringify(await w.manager.agentCatalog(undefined, 0))).not.toContain("\"pm\"");
   for (const internal of ["interpreter", "draft-verifier"]) expect(JSON.stringify(await w.manager.agentCatalog(undefined, 0))).not.toContain(`"${internal}"`);
@@ -146,4 +149,55 @@ test("M7-AC8：定义正文不含任何职责说明、模型也不遵守提示�
   const all = JSON.stringify(w.provider.requests);
   expect(all).toContain("Tool one_company_plan_manage not found");
   expect(all).toContain("原因：这个路径不允许写入");
+});
+
+test("关闭名单里的定义不出现在可用定义清单，名单改变后同一个 manager 立即生效", async () => {
+  const w = await world();
+  await w.define("py-worker", "");
+  const baseline = await w.manager.agentCatalog("worker", 0);
+  expect(baseline.items.map((item) => item.name)).toContain("py-worker");
+  w.disabled.add("py-worker");
+  const hidden = await w.manager.agentCatalog("worker", 0);
+  expect(hidden.items.map((item) => item.name)).not.toContain("py-worker");
+  expect(hidden.total).toBe(baseline.total - 1);
+  w.disabled.clear();
+  const shown = await w.manager.agentCatalog("worker", 0);
+  expect(shown.items.map((item) => item.name)).toContain("py-worker");
+  expect(shown.total).toBe(baseline.total);
+});
+
+test("任务指定的定义确认后被关闭，派工被拒为 agent_disabled，消息写明已关闭、建议原文，且不新增运行记录", async () => {
+  const w = await world();
+  await w.define("py-worker", "");
+  await w.plan.execute({ action: "propose", tasks: [spec("py", { agent: "py-worker" }), spec("rest", { goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.disabled.add("py-worker");
+  const before = (await w.runStore.list({ limit: 100 })).items.length;
+  await expect(w.dispatch("py")).rejects.toMatchObject({ code: "agent_disabled", message: expect.stringContaining("py-worker 已关闭"),
+    advice: { next: "改用开着的定义，或不指定（用通用 worker）后重新派；用户点名要这个定义时先问用户" } });
+  expect((await w.runStore.list({ limit: 100 })).items.length).toBe(before);
+});
+
+test("被关闭的原型定义不出现在原型设计师清单，名单清空后重新出现", async () => {
+  const w = await world();
+  await mkdir(w.userDir, { recursive: true });
+  await writeFile(join(w.userDir, "x-designer.md"), "---\nname: x-designer\ndescription: 原型\nrole: prototype\n---\n你是 x-designer。\n");
+  expect((await w.manager.prototypeDesigners()).map((item) => item.name)).toContain("x-designer");
+  w.disabled.add("x-designer");
+  expect((await w.manager.prototypeDesigners()).map((item) => item.name)).not.toContain("x-designer");
+  w.disabled.clear();
+  expect((await w.manager.prototypeDesigners()).map((item) => item.name)).toContain("x-designer");
+});
+
+test("关闭名单含通用 worker 与 py-worker 时：通用 worker 仍可派、py-worker 被拒为 agent_disabled，清单含 worker 不含 py-worker", async () => {
+  const w = await world(disabledAgentNames({ user: ["worker", "py-worker"], project: [] }));
+  await w.define("py-worker", "");
+  await w.plan.execute({ action: "propose", tasks: [spec("plain"), spec("py", { agent: "py-worker", goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push({ type: "text", text: "开工" }, { type: "text", text: "PM 收到" });
+  await expect(w.dispatch("plain")).resolves.toMatchObject({ runId: expect.any(String) });
+  await expect(w.dispatch("py")).rejects.toMatchObject({ code: "agent_disabled", message: expect.stringContaining("py-worker 已关闭") });
+  const names = (await w.manager.agentCatalog("worker", 0)).items.map((item) => item.name);
+  expect(names).toContain("worker");
+  expect(names).not.toContain("py-worker");
 });

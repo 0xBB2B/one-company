@@ -79,6 +79,8 @@ export interface RunManagerOptions {
   web?: { deps: WebDeps; getPage: PageGetter };
   /** 每次派出 PM 时重新读取模型与思考等级设定。 */
   loadAgentSettings: () => ReturnType<typeof readAgentSettings>;
+  /** 每次查清单、每次派工时读取当前生效的关闭名单。 */
+  loadDisabledAgents?: () => Set<string>;
   /** 每次派出时重新读取角色目录；缺省用启动时的 roleCatalog。 */
   loadRoleCatalog?: () => Promise<RoleCatalogEntry[]>;
   /** 按顺序查找 skill 的目录（项目、用户、安装资源）。 */
@@ -240,6 +242,7 @@ const PROTOCOL_NEXT: Record<string, string> = {
   model_unavailable: "指定的模型不可用：请用户检查模型配置或改选模型",
   thinking_unsupported: "请用户改选模型，或在 /one:setting 的「模型」里给这个角色设定该模型支持的思考等级",
   skill_unavailable: "指定的技能不可用：请用户检查技能安装，或调整角色定义",
+  agent_disabled: "改用开着的定义，或不指定（用通用 worker）后重新派；用户点名要这个定义时先问用户",
   stop_unconfirmed: "稍后重试停止，并核对进程是否已结束",
 };
 function protocolError(code: string, message: string, next?: string): Error & { code: string } {
@@ -868,14 +871,16 @@ export class RunManager {
 
   async prototypeDesigners(): Promise<Array<{ name: string; description: string; source: string }>> {
     const entries = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
-    return entries.filter((entry) => entry.available && entry.definition?.role === "prototype").sort((a, b) => a.name.localeCompare(b.name))
+    const disabled = this.disabledAgents();
+    return entries.filter((entry) => entry.available && entry.definition?.role === "prototype" && !disabled.has(entry.name)).sort((a, b) => a.name.localeCompare(b.name))
       .map((entry) => ({ name: entry.name, description: entry.definition!.description, source: entry.source }));
   }
 
   /** PM 的有界能力目录：每页最多 20 条，只含名称、职责、描述与来源。 */
   async agentCatalog(role: string | undefined, cursor: number) {
+    const disabled = this.disabledAgents();
     const entries = (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
-      .filter((entry) => entry.available && entry.definition && entry.definition.role !== "prototype" && (!role || entry.definition.role === role))
+      .filter((entry) => entry.available && entry.definition && !disabled.has(entry.name) && entry.definition.role !== "prototype" && (!role || entry.definition.role === role))
       .sort((a, b) => a.name.localeCompare(b.name));
     const items = entries.slice(cursor, cursor + 20).map((entry) => ({ name: entry.name, role: entry.definition!.role,
       description: entry.definition!.description, source: entry.source }));
@@ -884,6 +889,7 @@ export class RunManager {
 
   /** 每次派出按当前角色目录解析定义并核验模型、思考等级与 skills；不可用即报错，不静默换定义或模型。 */
   private async resolveAgent(name: string, role: AgentRole, fallback: { model: SelectedModel; thinking: string }): Promise<ResolvedAgent> {
+    if (this.disabledAgents().has(name)) throw protocolError("agent_disabled", `${name} 已关闭`);
     const catalog = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
     try {
       return await resolveAgent({ catalog, name, role, fallback, skillDirs: this.options.skillDirs ?? [], ...this.modelLookup() });
@@ -901,6 +907,10 @@ export class RunManager {
       if (error instanceof AgentResolveError) throw protocolError(error.code, error.message);
       throw error;
     }
+  }
+
+  private disabledAgents(): Set<string> {
+    return this.options.loadDisabledAgents?.() ?? new Set();
   }
 
   private modelLookup() {
@@ -1493,7 +1503,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
       try { return await handler(params, client); }
       catch (error) {
         if (error instanceof Error && ["stop_unconfirmed", "run_metadata_invalid", "not_found", "invalid_params",
-          "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "agent_unavailable", "thinking_unsupported", "skill_unavailable", "config_changed", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized", "pm_not_running", "task_not_ready", "subagent_session_failed",
+          "requirement_not_active", "workspace_not_ready", "role_unavailable", "model_unavailable", "agent_unavailable", "agent_disabled", "thinking_unsupported", "skill_unavailable", "config_changed", "pm_already_owned", "stale_fence", "acquire_failed", "pm_session_failed", "not_resumable", "implement_not_authorized", "pm_not_running", "task_not_ready", "subagent_session_failed",
           "intake_gate", "pending_update", "plan_not_confirmed", "dependency_pending", "question_pending", "check_phase_active", "retry_required", "retry_exhausted", "retry_not_needed", "requirement_halted"].includes((error as { code?: string }).code ?? "") || adviceOf(error)) throw error;
         throw protocolError("run_metadata_invalid", "运行状态不可读或操作尚未确认，未知记录已保全待核对", "用 status 重新查看运行状态；反复出现就把这段原因告诉用户");
       }

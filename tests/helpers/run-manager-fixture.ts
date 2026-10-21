@@ -29,7 +29,7 @@ export async function until(check: () => boolean | Promise<boolean>, limit = 600
  * review 为 false 时不做主代理核对，由用例自行调用 review()。
  */
 export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<unknown>>, options: { review?: boolean; web?: RunManagerOptions["web"]; index?: boolean; body?: string; userDir?: string; reloadCatalog?: boolean;
-  loadAgentSettings?: RunManagerOptions["loadAgentSettings"]; thinking?: string } = {}) {
+  loadAgentSettings?: RunManagerOptions["loadAgentSettings"]; thinking?: string; loadDisabledAgents?: () => Set<string> } = {}) {
   const fixture = await createPmIntakeFixture(options.body === undefined ? {} : { body: options.body }); cleanups.push(() => fixture.cleanup());
   const record = fixture.state.read(fixture.requirementId).data;
   const db = <T>(run: Parameters<typeof withDatabase<T>>[1]) => withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), run);
@@ -55,7 +55,8 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
     shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(fixture.dataRoot, fixture.repoId) }), networkGate: new NetworkPauseGate(),
     loadAgentSettings: options.loadAgentSettings ?? (() => readAgentSettings({ agentDir: join(fixture.root, "none-a"), repositoryRoot: join(fixture.root, "none-r"), projectTrusted: false })),
     roleCatalog: catalog.roles, ...(options.reloadCatalog ? { loadRoleCatalog: async () => (await loadCatalog()).roles } : {}),
-    runtime, clock, workspaceRepoIds: [fixture.repoId], emit, web: options.web, index });
+    runtime, clock, workspaceRepoIds: [fixture.repoId], emit, web: options.web, index,
+    loadDisabledAgents: options.loadDisabledAgents ?? (() => new Set<string>()) });
   manager.markStarted();
   cleanups.push(async () => { for (const run of (await runStore.list({ limit: 100 })).items) await manager.stop(run.id, { reason: "main_agent" }).catch(() => {}); });
 
