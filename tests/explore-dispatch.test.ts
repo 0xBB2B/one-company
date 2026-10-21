@@ -273,3 +273,12 @@ test("explore 定义声明 MCP 服务时按 mcp.json 装载 pi 自带的 MCP，�
   const run = await w.runStore.get(dispatched.runId);
   expect(run.ok && run.run.mcp).toEqual(["docs"]);
 });
+
+test("PM 派检索时运行记录写入派工的轮数上限 maxTurns", async () => {
+  const w = await world();
+  w.provider.queue.push({ type: "text", text: "PM 收到" });
+  const dispatched = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 7 });
+  const run = await w.runStore.get(dispatched.runId);
+  expect((run as { run: { maxTurns?: number } }).run.maxTurns).toBe(7);
+});

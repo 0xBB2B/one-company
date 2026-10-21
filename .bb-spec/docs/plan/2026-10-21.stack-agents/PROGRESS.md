@@ -13,11 +13,11 @@
 | 10 | review-round-state | done | 2026-10-21 |
 | 11 | review-round-dispatch | done | 2026-10-21 |
 | 12 | review-labels-adjudication | done | 2026-10-21 |
-| 13 | overview-task-rows | pending | — |
+| 13 | overview-task-rows | done | 2026-10-21 |
 | 14 | panel-tree-render | pending | — |
 | 15 | acceptance-p15-p16 | pending | — |
 ## 当前
-准备执行 `13-overview-task-rows.md`。12 号复审时自修：卡片结局改中文（与 PM 汇总共用 REVIEW_OUTCOME_LABEL）、名单为空不写括号；决策包加了每条审查记录的行（计划清单外，审查判定属于裁决卡片）。
+准备执行 `14-panel-tree-render.md`。13 号复审时自修：只有用时变化也广播概览、doing 里「派 X」写职责名；用户 2026-10-21 定了暂停时只显示暂停中一行、一个任务可占多行（PRD 已改，9fbef2d）。
 ## 待用户决定
 - 返修中途 PM 重试后，下一轮被当成重新执行、全部重审（多审一次，不漏审）；是否改成只重审打回的。
 - 放行的审查被作废后重派，轮数上限用 PM 传入的，没沿用用户裁决给的上限；是否沿用。

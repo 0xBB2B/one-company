@@ -479,3 +479,24 @@ test("E 正常派审查的返回值：runIds 含本轮启动的三个运行编�
   expect(result.failed).toEqual([]);
   for (const name of Object.keys(SUMMARIES)) await t.release(name);
 });
+
+test("派 worker 时运行记录写入任务的轮数上限 maxTurns", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("plain", { goalUnitIds: ["goal.login", "scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push({ type: "text", text: "开工" }, { type: "text", text: "PM 收到" });
+  const dispatched = await w.dispatch("plain");
+  const run = await w.runStore.get(dispatched.runId);
+  expect(run.ok && (run.run as { maxTurns?: number }).maxTurns).toBe(3);
+});
+
+test("派审查时每个审查代理的运行记录都写入派工的轮数上限 maxTurns", async () => {
+  const t = await reviewWorld();
+  const { runIds } = await t.review();
+  expect(runIds).toHaveLength(3);
+  for (const runId of runIds) {
+    const run = await t.runStore.get(runId);
+    expect(run.ok && (run.run as { maxTurns?: number }).maxTurns).toBe(12);
+  }
+  for (const name of Object.keys(SUMMARIES)) await t.release(name);
+});

@@ -505,7 +505,7 @@ export class RunManager {
     let run: RunRecord;
     try {
       run = await this.runStore.create({ id: runId, kind: "role", role: `one-company.${role}`, requirement: lease.requirementId, parentRunId: input.pmRunId, task: task.taskId,
-        cwd: workspace.path, readPaths: [workspace.path], writePaths: review ? [] : task.writePaths, model: modelRef, thinking, mcp: definition.mcp ?? [], agent: resolved.fingerprint });
+        cwd: workspace.path, readPaths: [workspace.path], writePaths: review ? [] : task.writePaths, model: modelRef, thinking, mcp: definition.mcp ?? [], agent: resolved.fingerprint, maxTurns });
     } catch (error) {
       fail();
       throw error;
@@ -708,7 +708,7 @@ export class RunManager {
       : { kind: "local_file", indexBaseline: "not_applicable", root: await realpath(root) };
     const runId = requirementId
       ? (await this.runStore.create({ kind: "role", role: "one-company.explore", requirement: requirementId, parentRunId: parent.parentRunId, task: "explore",
-        cwd: root, readPaths: source.kind === "local_file" ? [source.root] : [], writePaths: [], model: modelRef, thinking, mcp: definition.mcp ?? [], agent: resolved.fingerprint })).id
+        cwd: root, readPaths: source.kind === "local_file" ? [source.root] : [], writePaths: [], model: modelRef, thinking, mcp: definition.mcp ?? [], agent: resolved.fingerprint, maxTurns: input.maxTurns })).id
       : uuidv7();
     let explore: ExploreInput;
     try {
@@ -1260,7 +1260,10 @@ export class RunManager {
       if (overview.status !== "waiting" && pm.run.pausedAt) await this.runStore.recordResume(pmRunId, new Date().toISOString());
     }
     const { elapsedMs: _elapsed, ...stable } = overview;
-    const fingerprint = JSON.stringify(stable);
+    const fingerprint = JSON.stringify({ ...stable, taskRows: stable.taskRows.map((row) => {
+      const { elapsedMs: _rowElapsed, ...rest } = row as typeof row & { elapsedMs?: number };
+      return rest.kind === "review" ? { ...rest, reviewers: rest.reviewers.map(({ elapsedMs: _reviewerElapsed, ...reviewer }) => reviewer) } : rest;
+    }) });
     if (this.overviewFingerprints.get(pmRunId) === fingerprint) return;
     this.overviewFingerprints.set(pmRunId, fingerprint);
     this.emit("pm.overview.changed", { requirementId: overview.requirementId, pmRunId });

@@ -41,6 +41,7 @@ export interface RunRecord {
   mcp: string[];
   /** 实际运行所用角色定义与 skills 的来源和 hash。 */
   agent?: AgentFingerprint;
+  maxTurns?: number;
   state: RunState;
   stateReason?: string;
   stopCause?: StopCause;
@@ -71,6 +72,7 @@ export interface CreateRunInput {
   thinking: string;
   mcp: string[];
   agent?: AgentFingerprint;
+  maxTurns?: number;
 }
 
 export type GetRunResult = { ok: true; run: RunRecord } | { ok: false; reason: "not_found" | "unreadable" };
@@ -153,6 +155,7 @@ const RunRecordSchema = Type.Object({
   thinking: Type.String(), mcp: Type.Array(Type.String()),
   agent: Type.Optional(Type.Object({ name: Type.String(), source: Type.String(), path: Type.String(), hash: Type.String(),
     skills: Type.Array(Type.Object({ name: Type.String(), path: Type.String(), hash: Type.String() })) })),
+  maxTurns: Type.Optional(Type.Integer({ minimum: 1 })),
   state: Type.Union([...Object.keys(TRANSITIONS), ...TERMINAL_STATES].map((state) => Type.Literal(state))),
   stateReason: Type.Optional(Type.String()),
   stopCause: Type.Optional(Type.Object({ reason: Type.Union(STOP_REASONS.map((reason) => Type.Literal(reason))) },
@@ -216,6 +219,7 @@ export class RunStore {
       thinking: input.thinking,
       mcp: input.mcp,
       ...(input.agent ? { agent: input.agent } : {}),
+      ...(input.maxTurns === undefined ? {} : { maxTurns: input.maxTurns }),
       state: "queued",
       startedAt: now,
       updatedAt: now,

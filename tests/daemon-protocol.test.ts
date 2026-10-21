@@ -114,8 +114,8 @@ test("知识RPC严格拒绝模型身份/SQL/超限及非授权路径，仅接受
 });
 
 describe("协议常量", () => {
-  test("PROTOCOL_VERSION 为 3", () => {
-    expect(PROTOCOL_VERSION).toBe(3);
+  test("PROTOCOL_VERSION 为 4", () => {
+    expect(PROTOCOL_VERSION).toBe(4);
   });
 
   test("prototypes 方法的需求编号不是 UUIDv7 时以 bad_params 拒绝", () => {
