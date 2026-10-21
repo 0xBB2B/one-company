@@ -25,7 +25,7 @@ describe("职责规矩文件", () => {
   test.each([
     ["worker", ["只完成派工给出的任务", "不清楚就停下来在结果里说明", "外科手术式改动", "\"步骤 → 验证项\"", "只经 one_company_change_apply 写入，只写授权范围",
       "只经 one_company_verification_run（debug）运行", "时不要自己装、不要改依赖清单文件", "项目规范文件 AGENTS.md 不能改", "按 TDD 先红后绿",
-      "纯文档、配置等没有可测行为的改动", "测试名写明期望结果", "实现出来的界面须与它一致", "不伪造通过", "不读取 PRD 全文，不主动读取 docs/prd 归档或已关闭需求"],
+      "纯文档、配置等没有可测行为的改动", "测试名写明期望结果", "实现出来的界面须与它一致", "不伪造通过", "不读取 PRD 全文，不主动读取 docs/prd 归档或已关闭需求", "skills 的写法和项目规范冲突时按项目规范"],
       ["说明注释", "章节编号", "本次只做界面原型"]],
     ["reviewer", ["只审查派工给出的 worker 任务在其可写范围内的改动，不修改任何文件", "目标符合性、安全性、与目标直接相关的鲁棒性、预定的性能条件",
       "先按任务说明里的 git diff 命令查看本次改动", "核对项目规范", "核对 worker 定义的规范", "违反的列为阻塞", "核对界面原型", "核对第三方依赖",
@@ -33,11 +33,21 @@ describe("职责规矩文件", () => {
       "不自填 PASS，不新增验收门槛"], ["核对说明注释"]],
     ["qa", ["按测试名写明的期望结果", "对应不上的标未验证", "不读源码、不修改文件", "分为阻塞、建议、未验证"], []],
     ["explore", [EXPLORE_FIRST_LINE], []],
-    ["pm", [PM_FIRST_LINE], []],
+    ["pm", [PM_FIRST_LINE, "nextCursor 不为 null 时带上它继续查", "不可用或已关闭时", "写进任务的 reviewers", "由程序自动挂上", "全部通过任务才算完成", "依赖它的任务才能派出", "累计两轮打回"], ["reviewAgent"]],
   ] as const)("%s 的职责规矩含约定内容且不含已移除内容", (role, included, excluded) => {
     const rules = loadRoleRules(role);
     for (const phrase of included) expect(rules).toContain(phrase);
     for (const phrase of excluded) expect(rules).not.toContain(phrase);
+  });
+});
+
+describe("reviewer-specialist 职责规矩", () => {
+  test("含只按本任务 skills 核对、通用审查负责项不核对、不适用结论、修法写法、按项目规范，不含通用审查的条目开头", () => {
+    const rules = loadRoleRules("reviewer-specialist");
+    for (const phrase of ["只按本任务加载的 skills", "由通用审查负责，你不核对", "本次改动不涉及", "修法：", "按项目规范"]) {
+      expect(rules).toContain(phrase);
+    }
+    for (const phrase of ["核对界面原型", "核对需求边界", "核对先红后绿"]) expect(rules).not.toContain(phrase);
   });
 });
 

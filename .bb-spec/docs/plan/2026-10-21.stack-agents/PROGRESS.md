@@ -5,7 +5,7 @@
 | 02 | skills-frontend | in-progress | — |
 | 03 | skills-shared-services | in-progress | — |
 | 04 | stack-definitions | done | 2026-10-21 |
-| 05 | role-rules-texts | in-progress | — |
+| 05 | role-rules-texts | done | 2026-10-21 |
 | 06 | disabled-agents-settings | done | 2026-10-21 |
 | 07 | settings-page-switch | pending | — |
 | 08 | catalog-dispatch-gating | pending | — |

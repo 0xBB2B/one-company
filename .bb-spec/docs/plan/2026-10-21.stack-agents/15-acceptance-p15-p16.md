@@ -52,3 +52,4 @@ description: 新增 P15（Go）、P16（Vue）两条真实模型单点验收：�
 - [ ] 「内置定义声明的 skill 都在包内 skills/ 下」用例通过
 - [ ] 不配置模型时 `pnpm test` 和 `pnpm run typecheck` 通过；`vitest list tests/acceptance` 能列出 P15、P16
 - [ ] 配置模型后 P15、P16 通过
+- [ ] 合并前（不在本计划内执行，写进 exec 完成简报）：按 AGENTS.md 跑全部单点验收 P1–P16 和零自定义完整流程 M9-AC12；本分支改了 `role-rules/pm.md` 和 `plan-manage.ts`，还要加跑渐进需求完整流程 M9-AC2/AC3/AC11

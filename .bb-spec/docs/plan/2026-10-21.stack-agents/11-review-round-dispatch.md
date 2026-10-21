@@ -16,7 +16,7 @@ PM 派一次审查，守护进程按本轮名单同时启动多个审查会话�
 
 ## 涉及文件
 - 修改 `src/app/daemon/run-manager.ts`
-- 修改 `src/app/daemon/pm-tools.ts`（agent_manage 工具描述 :144 改成"带 review 派一次审查，程序同时派出通用和专项审查"）
+- 修改 `src/app/daemon/pm-tools.ts`（agent_manage 工具描述 :144：审查那句改成"带 review 派一次审查，程序同时派出通用和专项审查"；catalog 那句的"用户明确指定的定义不可用时"改成"不可用或已关闭时"，和 PM 规矩一致）
 - 修改 `tests/task-dispatch.test.ts`、`tests/agent-selection.test.ts`、`tests/role-rules.test.ts`（:167-200 审查上下文用例）
 
 ## 函数清单
