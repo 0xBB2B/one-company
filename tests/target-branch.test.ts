@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { checkedOutBranch, fetchTargetBranch, localTargetBranch } from "../src/core/exec/target-branch.ts";
+import { checkedOutBranch, fetchTargetBranch, gitIn, localTargetBranch } from "../src/core/exec/target-branch.ts";
 import { AdvisedError } from "../src/core/exec/tool-failure.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
@@ -100,4 +100,10 @@ test("checkedOutBranch：主仓库目录已不是 Git 仓库时报 Git 的原始
   expect(error).toBeInstanceOf(Error);
   expect(error?.advice?.why).not.toBe("主仓库当前没有检出分支");
   await rm(dir, { recursive: true, force: true });
+});
+
+test("gitIn：Git 不读完标准输入就退出时，照常返回 Git 的结果，写入出错不让进程崩溃", async () => {
+  const w = await world(false);
+  const result = await gitIn(w.main, ["rev-parse", "HEAD"], "x".repeat(4 * 1024 * 1024));
+  expect(result.stdout.trim()).toBe(w.git(w.main, "rev-parse", "HEAD"));
 });
