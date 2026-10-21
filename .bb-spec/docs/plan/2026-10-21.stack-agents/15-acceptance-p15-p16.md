@@ -17,6 +17,7 @@ description: 新增 P15（Go）、P16（Vue）两条真实模型单点验收：�
 - 新建 `tests/acceptance/points/p15-go-reviewer-pitfalls.test.ts`
 - 新建 `tests/acceptance/points/p16-vue-reviewer-pitfalls.test.ts`
 - 新建 `tests/acceptance/helpers/point-review.ts`
+- 修改 `tests/role-catalog.test.ts`：加一条纯代码用例「内置定义声明的 skill 都在包内 skills/ 下」——遍历 `defaultRoleDir()` 下全部定义的 skills，逐个断言 `skills/<名字>/SKILL.md` 存在（来源：内置专项定义那一步的合规审查，skill 名拼错时目录照样显示可用、要到派工才报 skill_unavailable）
 - 修改 `tests/helpers/run-manager-fixture.ts`（`createPmRunWorld` 新增 `skillDirs` 选项，默认包含包内 `skills/`；`loadRoleCatalog` 默认包含包内 `agents/`）
 
 ## 函数清单
@@ -48,5 +49,6 @@ description: 新增 P15（Go）、P16（Vue）两条真实模型单点验收：�
 - 测试输入：用例内联的样例文件；真实模型配置由用户提供
 - 预期结果：两条都按 2+1 规则判定通过；judgement.json 里列出 5 个坑各自命中的意见
 - 没有配置真实模型时：两条用例被跳过，`pnpm test` 不受影响；此时在 exec 结果里标为"未验证"，请用户提供模型配置后再跑
+- [ ] 「内置定义声明的 skill 都在包内 skills/ 下」用例通过
 - [ ] 不配置模型时 `pnpm test` 和 `pnpm run typecheck` 通过；`vitest list tests/acceptance` 能列出 P15、P16
 - [ ] 配置模型后 P15、P16 通过

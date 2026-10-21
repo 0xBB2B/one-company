@@ -16,7 +16,7 @@ description: 内置 12 个专项角色定义（6 个技术栈各一对 worker、
 ## 涉及文件
 - 新建 `agents/go-worker.md`、`agents/go-reviewer.md`、`agents/node-worker.md`、`agents/node-reviewer.md`、`agents/python-worker.md`、`agents/python-reviewer.md`、`agents/java-worker.md`、`agents/java-reviewer.md`、`agents/vue-worker.md`、`agents/vue-reviewer.md`、`agents/react-worker.md`、`agents/react-reviewer.md`
 - 修改 `src/modules/agents/roles.ts`
-- 修改 `tests/role-catalog.test.ts`（:31-43 "内置恰好 5 份" 的断言）、`tests/role-rules.test.ts`（:71 起只覆盖 5 个通用定义，保留；另加专项定义的用例）
+- 修改 `tests/role-catalog.test.ts`（:31-43 "内置恰好 5 份" 的断言改为 17 份，并加专项定义的用例）；`tests/role-rules.test.ts` :71 起只覆盖 5 个通用定义，保留不动
 
 ## 成品定义
 后端四栈的 skills 行：
@@ -45,12 +45,12 @@ mcp: []
 ```markdown
 ---
 name: <栈>-reviewer
-description: 审查 <代码> 改动的编码规范、安全和鲁棒性，只按预设的 skills 核对
+description: 审查 <代码>改动的编码规范、安全和鲁棒性，只按预设的 skills 核对
 role: reviewer
 <skills 行>
 mcp: []
 ---
-你负责审查 <代码> 的改动，专攻 <栈名>。逐项对照本任务加载的 skills（<编码规范>、<排查清单> 和其余各份清单）核对本次改动，找出违反规范和会出事的写法，并写出按 skill 给出的修法。
+你负责审查 <代码>的改动，专攻 <栈名>。逐项对照本任务加载的 skills（<编码规范>、<排查清单> 和其余各份清单）核对本次改动，找出违反规范和会出事的写法，并写出按 skill 给出的修法。
 ```
 
 | 栈 | 栈名 | 代码 | 编码规范 | 排查清单 |
