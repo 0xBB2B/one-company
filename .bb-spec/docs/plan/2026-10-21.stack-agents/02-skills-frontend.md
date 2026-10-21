@@ -42,10 +42,10 @@ description: <一句话：这份清单覆盖什么>
 
 ```ts
 const TOPICS: Record<string, string[]> = {
-  "vue-coding": ["多个单词", "prop", "key", "v-if", "<script setup lang=\"ts\">", "computed", "props"],
-  "vue-pitfalls": ["模板", "v-html", "javascript:", "style", "挂载", "reactive", "onUnmounted", "路由守卫"],
-  "react-coding": ["Hooks", "纯", "key", "state", "useEffect"],
-  "react-pitfalls": ["dangerouslySetInnerHTML", "javascript:", "清理", "竞态", "下标", "过期"],
+  "vue-coding": ["多个单词", "prop 定义", "v-for", "v-if", "<script setup lang=\"ts\">", "computed", "不直接改 props"],
+  "vue-pitfalls": ["组件模板", "v-html", "javascript:", ":style", "服务端渲染", "解构", "onUnmounted", "路由守卫"],
+  "react-coding": ["顶层调用", "保持纯", "列表 key", "不存 state", "useEffect"],
+  "react-pitfalls": ["dangerouslySetInnerHTML", "javascript:", "清理函数", "竞态", "下标当 key", "过期的 state"],
 };
 ```
 

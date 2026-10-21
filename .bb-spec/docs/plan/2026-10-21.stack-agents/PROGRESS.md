@@ -2,7 +2,7 @@
 | 序号 | Plan | 状态 | 完成时间 |
 |---|---|---|---|
 | 01 | skills-backend-languages | done | 2026-10-21 |
-| 02 | skills-frontend | in-progress | — |
+| 02 | skills-frontend | done | 2026-10-21 |
 | 03 | skills-shared-services | in-progress | — |
 | 04 | stack-definitions | done | 2026-10-21 |
 | 05 | role-rules-texts | done | 2026-10-21 |
@@ -17,6 +17,6 @@
 | 14 | panel-tree-render | pending | — |
 | 15 | acceptance-p15-p16 | pending | — |
 ## 当前
-第 2 组并行：02-skills-frontend、03-skills-shared-services、05-role-rules-texts、06-disabled-agents-settings，都在 Test·Red。02、03 的关键词表已按 01 的教训收紧（计划同步）。
+第 2 组：05、06 已完成。02-skills-frontend 自修第 1 次进行中——合规审查查出 8 处说法错误或比官方出处严、8 处出处只证一半、6 处单看 diff 认不出、3 处一项两件事、5 组重复、7 个术语未解释、1 处修法会抛异常，已退回实现工程师修订，修完复审。03-skills-shared-services 在 Impl。
 ## 阻塞
 （无）
