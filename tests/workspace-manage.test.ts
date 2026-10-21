@@ -13,6 +13,7 @@ import type { ProgramWindow } from "../src/core/host/question-window.ts";
 import { MANAGED_WORKSPACES, WorkspaceManageService, workspaceLocation } from "../src/modules/delivery/workspace-manage.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { runGit } from "./helpers/git-run.ts";
+import { parseGitVersion, versionAtLeast } from "../src/core/exec/git-read.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const cleanups: Array<() => Promise<unknown>> = [];
@@ -20,7 +21,7 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 const BODY = "# 目标 {#goals}\n保留移动。\n";
 const exists = (path: string) => lstat(path).then(() => true, () => false);
 
-async function world(options: { draft?: boolean; emptyRepo?: boolean } = {}) {
+async function world(options: { draft?: boolean; emptyRepo?: boolean; gitVersion?: () => Promise<string> } = {}) {
   const root = await mkdtemp(join(temporaryRoot(), "workspace-manage-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture({ empty: options.emptyRepo }); cleanups.push(() => removeRepoFixture(repo));
@@ -43,7 +44,7 @@ async function world(options: { draft?: boolean; emptyRepo?: boolean } = {}) {
   cleanups.push(() => rm(join(location.path, "..", ".."), { recursive: true, force: true }));
   const prompts: ProgramWindow[] = [];
   let answer = true;
-  const workspace = await WorkspaceManageService.open({ ...paths, confirm: async (window) => { prompts.push(window); return answer; } });
+  const workspace = await WorkspaceManageService.open({ ...paths, gitVersion: options.gitVersion, confirm: async (window) => { prompts.push(window); return answer; } });
   const setAnswer = (value: boolean) => { answer = value; };
   async function close() {
     const receipt = uuidv7();
@@ -187,7 +188,7 @@ test("M7-AC11：活动需求不能回收；关闭后有未交付内容默认保�
   await writeFile(join(ready.path, "未跟踪.txt"), "x");
   await expect(w.workspace.recycle({ requirementId: w.requirementId })).rejects.toMatchObject({ code: "recycle_blocked", blockers: ["存在未提交或未跟踪的文件"] });
   await runGit(["add", "."], ready.path); await runGit(["commit", "-qm", "未合并"], ready.path);
-  await expect(w.workspace.recycle({ requirementId: w.requirementId })).rejects.toMatchObject({ code: "recycle_blocked", blockers: ["分支存在未合并进主仓库当前分支的提交"] });
+  await expect(w.workspace.recycle({ requirementId: w.requirementId })).rejects.toMatchObject({ code: "recycle_blocked", blockers: [`需求分支 req/${w.requirementId} 还有改动没进主仓库当前分支 main`] });
   expect(await exists(ready.path)).toBe(true);
 
   await runGit(["merge", "-q", "--ff-only", `req/${w.requirementId}`], w.repo.root);
@@ -225,3 +226,135 @@ test.each(["stale", "applied"])("只有%s状态的受控写入记录时回收不
   const w = await closedWorldWithWrite(status);
   expect(await w.workspace.recycle({ requirementId: w.requirementId })).toMatchObject({ status: "recycled" });
 }, 30000);
+
+const mainState = async (root: string) => [await runGit(["status", "--porcelain"], root), await runGit(["for-each-ref"], root)];
+
+async function closedWithCommit(options: { gitVersion?: () => Promise<string> } = {}) {
+  const w = await world(options);
+  await writeFile(join(w.repo.root, "shared.txt"), "a\nb\n");
+  await runGit(["add", "shared.txt"], w.repo.root); await runGit(["commit", "-qm", "共享文件"], w.repo.root);
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await writeFile(join(ready.path, "shared.txt"), "x\nb\n");
+  await runGit(["commit", "-qam", "需求改动"], ready.path);
+  await w.close();
+  const branch = `req/${w.requirementId}`;
+  return { w, ready, branch };
+}
+
+const mergeMethods: Record<string, (branch: string, root: string) => Promise<unknown>> = {
+  "压缩合并": async (branch, root) => { await runGit(["merge", "-q", "--squash", branch], root); await runGit(["commit", "-qm", "压缩合并"], root); },
+  "普通合并": (branch, root) => runGit(["merge", "-q", "--no-ff", "-m", "普通合并", branch], root),
+  "快进": (branch, root) => runGit(["merge", "-q", "--ff-only", branch], root),
+  "逐个 cherry-pick": async (branch, root) => { await runGit(["commit", "--allow-empty", "-qm", "主分支先前进"], root); await runGit(["cherry-pick", branch], root); },
+};
+
+for (const [name, merge] of Object.entries(mergeMethods)) {
+  test(`回收按改动判断已合并：${name}之后回收成功，目录和本地需求分支都被删除`, async () => {
+    const { w, ready, branch } = await closedWithCommit();
+    await merge(branch, w.repo.root);
+    await expect(w.workspace.recycle({ requirementId: w.requirementId })).resolves.toMatchObject({ status: "recycled" });
+    expect(await exists(ready.path)).toBe(false);
+    await expect(runGit(["rev-parse", "--verify", branch], w.repo.root)).rejects.toThrow();
+  }, 30000);
+}
+
+test("回收按改动判断已合并：需求分支末端本来就在主分支历史里，回收成功", async () => {
+  const { w, ready, branch } = await closedWithCommit();
+  await runGit(["merge", "-q", "--ff-only", branch], w.repo.root);
+  await runGit(["commit", "--allow-empty", "-qm", "主分支继续前进"], w.repo.root);
+  await expect(w.workspace.recycle({ requirementId: w.requirementId })).resolves.toMatchObject({ status: "recycled" });
+  expect(await exists(ready.path)).toBe(false);
+}, 30000);
+
+test("回收按改动判断已合并：压缩合并后主分支无关改动不影响，回收成功", async () => {
+  const { w, branch } = await closedWithCommit();
+  await mergeMethods["压缩合并"]!(branch, w.repo.root);
+  await writeFile(join(w.repo.root, "other.txt"), "other\n");
+  await runGit(["add", "other.txt"], w.repo.root); await runGit(["commit", "-qm", "无关改动"], w.repo.root);
+  await expect(w.workspace.recycle({ requirementId: w.requirementId })).resolves.toMatchObject({ status: "recycled" });
+}, 30000);
+
+async function blockedError(w: Awaited<ReturnType<typeof closedWithCommit>>["w"]) {
+  const error = await w.workspace.recycle({ requirementId: w.requirementId }).catch((caught: unknown) => caught);
+  expect(error).toMatchObject({ code: "recycle_blocked" });
+  return (error as { advice: { why: string; next: string } }).advice;
+}
+
+test("回收按改动判断已合并：没合并时被拦，原因点名分支，下一步给三种办法，判断不改主仓库", async () => {
+  const { w, ready, branch } = await closedWithCommit();
+  const before = await mainState(w.repo.root);
+  const advice = await blockedError(w);
+  expect(w.prompts.filter((window) => window.title === "确认回收需求工作区")).toHaveLength(0);
+  expect(advice.why).toContain(`需求分支 ${branch} 还有改动没进主仓库当前分支 main`);
+  expect(advice.next).toContain("git pull");
+  expect(advice.next).toContain("先交付或自己合并");
+  expect(advice.next).toContain(`git worktree remove '${ready.path}'`);
+  expect(advice.next).toContain(`git branch -D ${branch}`);
+  expect(await mainState(w.repo.root)).toEqual(before);
+  expect(await exists(ready.path)).toBe(true);
+}, 30000);
+
+test("回收按改动判断已合并：压缩合并后主分支又改了同一行，被拦且判断不改主仓库", async () => {
+  const { w, ready, branch } = await closedWithCommit();
+  await mergeMethods["压缩合并"]!(branch, w.repo.root);
+  await writeFile(join(w.repo.root, "shared.txt"), "z\nb\n");
+  await runGit(["commit", "-qam", "主分支又改同一行"], w.repo.root);
+  const before = await mainState(w.repo.root);
+  const advice = await blockedError(w);
+  expect(advice.why).toContain(`需求分支 ${branch} 还有改动没进主仓库当前分支 main`);
+  expect(advice.next).toContain(`git worktree remove '${ready.path}'`);
+  expect(advice.next).toContain(`git branch -D ${branch}`);
+  expect(await mainState(w.repo.root)).toEqual(before);
+  expect(await exists(ready.path)).toBe(true);
+}, 30000);
+
+test("回收按改动判断已合并：本机 Git 低于 2.38 时被拦", async () => {
+  const { w, ready } = await closedWithCommit({ gitVersion: async () => "2.37.0" });
+  const advice = await blockedError(w);
+  expect(advice.why).toContain("本机 Git 版本 2.37.0 低于 2.38，判断不了需求是否已合并");
+  expect(advice.next).toContain("升级 Git 后再回收");
+  expect(await exists(ready.path)).toBe(true);
+}, 30000);
+
+test("回收按改动判断已合并：压缩合并后工作区有未跟踪文件，仍被拦", async () => {
+  const { w, ready, branch } = await closedWithCommit();
+  await mergeMethods["压缩合并"]!(branch, w.repo.root);
+  await writeFile(join(ready.path, "未跟踪.txt"), "x");
+  const advice = await blockedError(w);
+  expect(advice.why).toContain("存在未提交或未跟踪的文件");
+  expect(await exists(ready.path)).toBe(true);
+}, 30000);
+
+test("回收按改动判断已合并：主仓库没检出分支时原因写主仓库当前提交", async () => {
+  const { w, branch } = await closedWithCommit();
+  const head = (await runGit(["rev-parse", "--short", "HEAD"], w.repo.root)).trim();
+  await runGit(["checkout", "-q", "--detach"], w.repo.root);
+  const advice = await blockedError(w);
+  expect(advice.why).toContain(`需求分支 ${branch} 还有改动没进主仓库当前提交 ${head}`);
+}, 30000);
+
+test("回收按改动判断已合并：worktree 目录被删并 prune 后，没合并的分支仍被拦、不被删除", async () => {
+  const { w, ready, branch } = await closedWithCommit();
+  await rm(ready.path, { recursive: true, force: true });
+  await runGit(["worktree", "prune"], w.repo.root);
+  const advice = await blockedError(w);
+  expect(advice.why).toContain(`需求分支 ${branch} 还有改动没进主仓库当前分支 main`);
+  expect((await runGit(["rev-parse", "--verify", branch], w.repo.root)).trim()).toMatch(/^[0-9a-f]{40}$/);
+}, 30000);
+
+test("回收按改动判断已合并：worktree 目录被删并 prune 后，已压缩合并的分支照常回收", async () => {
+  const { w, ready, branch } = await closedWithCommit();
+  await mergeMethods["压缩合并"]!(branch, w.repo.root);
+  await rm(ready.path, { recursive: true, force: true });
+  await runGit(["worktree", "prune"], w.repo.root);
+  await expect(w.workspace.recycle({ requirementId: w.requirementId })).resolves.toMatchObject({ status: "recycled" });
+  await expect(runGit(["rev-parse", "--verify", branch], w.repo.root)).rejects.toThrow();
+}, 30000);
+
+test("Git 版本号：带后缀的输出也能取出数字并正确比较", () => {
+  expect(versionAtLeast("2.39.3", "2.38")).toBe(true);
+  expect(versionAtLeast("2.38.0", "2.38")).toBe(true);
+  expect(versionAtLeast("2.37.9", "2.38")).toBe(false);
+  expect(parseGitVersion("git version 2.39.3 (Apple Git-146)")).toBe("2.39.3");
+  expect(parseGitVersion("git version 2.45.1.windows.1")).toBe("2.45.1");
+});

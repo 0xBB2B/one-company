@@ -8,6 +8,7 @@ import { SettingsPageView } from "../src/modules/settings/settings-page-ui.ts";
 import { AgentCopyError, copyAgentDefinition } from "../src/modules/agents/agent-copy.ts";
 import { projectSettingsPath, readAgentSettings, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../src/modules/agents/roles.ts";
+import { initRepoWithOrigin, installFakeGh } from "./helpers/fake-gh.ts";
 
 const UP = "\x1b[A", DOWN = "\x1b[B", RIGHT = "\x1b[C", LEFT = "\x1b[D", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
 const SOL = { provider: "5x", id: "gpt-6.1-sol", reasoning: true, thinkingLevelMap: {} };
@@ -17,6 +18,9 @@ const LONG = { provider: "some-long-provider", id: "claude-opus-5-5-extended-con
 const GRAY_NOTE = /gpt-6-luna 不支持/u;
 const NOTICE = "✓ 已复制到 ~/.pi/agent/agents/vue-engineer.md，打开它写专长、skills 和 mcp";
 const MODEL_HINT = "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层";
+const MODE_FOOT = "Git 交付：远程＝推送并开 PR；仅本地＝合进主仓库当前分支";
+const METHODS_FOOT = "合并方式：远程和仅本地都只用勾了的方式，压缩合并是推荐方式";
+const SPACE = " ";
 
 const theme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bg: (kind: string, text: string) => `[${kind}]${text}[/]`,
   bold: (text: string) => `**${text}**`, inverse: (text: string) => `!!${text}!!` };
@@ -35,6 +39,7 @@ const oneCompany = (entries: Record<string, unknown>) => ({ "one-company": entri
 interface PageOptions {
   trusted?: boolean; state?: Record<string, unknown>; taken?: Record<string, string>; skills?: string; clean?: boolean; legacy?: boolean; longPath?: boolean; projectWorker?: boolean; noRole?: boolean;
   user?: unknown; project?: unknown; models?: unknown[]; mainModel?: unknown; mainThinking?: string;
+  origin?: string | null; ghHosts?: string[]; glabHosts?: string[];
 }
 async function page(options: PageOptions = {}) {
   const base = await mkdtemp(join(tmpdir(), "pi-t-")); roots.push(base);
@@ -55,7 +60,16 @@ async function page(options: PageOptions = {}) {
   if (options.project !== undefined) await writeJson(projectSettingsPath(repositoryRoot), options.project);
   const trusted = options.trusted ?? true;
   const catalog = await loadRoleCatalog({ ...roleDirs, parseFrontmatter, projectTrusted: trusted });
-  const settings = await readAgentSettings({ agentDir, repositoryRoot, projectTrusted: trusted });
+  const gh = await installFakeGh();
+  let settings: Awaited<ReturnType<typeof readAgentSettings>>;
+  try {
+    if (options.origin !== undefined) await initRepoWithOrigin(repositoryRoot, options.origin);
+    if (options.ghHosts) gh.ghLoggedIn(options.ghHosts);
+    if (options.glabHosts) await gh.glabLoggedIn(options.glabHosts);
+    settings = await readAgentSettings({ agentDir, repositoryRoot, projectTrusted: trusted });
+  } finally {
+    await gh.restore();
+  }
   const copies: Array<{ name: string; entry: string }> = [], saves: unknown[] = [], clears: unknown[] = [], switchSaves: unknown[] = [], switchClears: unknown[] = [];
   let closed = false;
   const view = new SettingsPageView({
@@ -113,7 +127,7 @@ test("80 列打开：边框、标题、目录顺序与份数、worker 行带 ▸
   expect(rows.find((row) => row.includes("┬"))).toBe(`${"─".repeat(20)}┬${"─".repeat(59)}`);
   expect(rows.find((row) => row.includes("┴"))).toBe(`${"─".repeat(20)}┴${"─".repeat(59)}`);
   const cells = navCells(rows);
-  expect(cells.slice(0, 10)).toEqual(["角色定义", "▸ worker 2", "reviewer 1", "qa 1", "explore 1", "prototype 1", "", "设定", "模型 3", "开关 1"]);
+  expect(cells.slice(0, 10)).toEqual(["角色定义", "▸ worker 2", "reviewer 1", "qa 1", "explore 1", "prototype 1", "", "设定", "模型 3", "开关 2"]);
   expect(cells.slice(10).every((cell) => cell === "")).toBe(true);
   expect(p.text()).not.toContain("问题");
   expect(p.lines().join("\n")).toContain("<muted>");
@@ -122,7 +136,7 @@ test("80 列打开：边框、标题、目录顺序与份数、worker 行带 ▸
 test("有写错的定义时目录出现「问题」和条数，与上面的「开关」隔一个空行，红字", async () => {
   const p = await page();
   const cells = navCells(p.rows());
-  expect(cells.slice(8, 12)).toEqual(["模型 3", "开关 1", "", "问题 1"]);
+  expect(cells.slice(8, 12)).toEqual(["模型 3", "开关 2", "", "问题 1"]);
   expect(p.lines().find((line) => /问题 +1/u.test(plain(line)))).toMatch(/<error>[^\n]*问题/u);
 });
 
@@ -293,7 +307,7 @@ test("右栏的按键提示都不含“Esc 退出”", async () => {
 
 test("八个分类的右栏第一行是分类名加两空格加说明", async () => {
   const expected = ["worker  写代码", "reviewer  代码审查：实现是否合理", "qa  功能验收：行为是否符合目标", "explore  只读查资料", "prototype  需求涉及界面时出 HTML 原型",
-    "模型  PM 和两个内部代理用哪个模型", "开关  可选功能，默认都关闭", "问题  这些文件写错了，没有生效"];
+    "模型  PM 和两个内部代理用哪个模型", "开关  Git 交付怎么交、用哪些合并方式", "问题  这些文件写错了，没有生效"];
   for (const [index, line] of expected.entries()) {
     const p = await page();
     p.press(...Array<string>(index).fill(DOWN));
@@ -305,7 +319,7 @@ test("八个分类的右栏第一行是分类名加两空格加说明", async ()
 
 test("焦点在目录时底部写分类说明；职责分类写定义份数和各层份数", async () => {
   const expected = ["worker：写代码 · 2 份定义（用户 1 · 内置 1）", "reviewer：代码审查：实现是否合理 · 1 份定义（项目 1）", "qa：功能验收：行为是否符合目标 · 1 份定义（内置 1）",
-    "explore：只读查资料 · 1 份定义（内置 1）", "prototype：需求涉及界面时出 HTML 原型 · 1 份定义（内置 1）", "模型：PM 和两个内部代理用哪个模型", "开关：可选功能，默认都关闭", "问题：这些文件写错了，没有生效"];
+    "explore：只读查资料 · 1 份定义（内置 1）", "prototype：需求涉及界面时出 HTML 原型 · 1 份定义（内置 1）", "模型：PM 和两个内部代理用哪个模型", "开关：Git 交付怎么交、用哪些合并方式", "问题：这些文件写错了，没有生效"];
   for (const [index, line] of expected.entries()) {
     const p = await page();
     p.press(...Array<string>(index).fill(DOWN));
@@ -848,71 +862,135 @@ test("模型来源是项目或用户时按 R，onClearSetting 收到带层的清
   expect(q.clears).toEqual([{ role: "interpreter", layer: "user" }]);
 });
 
-test("开关分类一行 Git 交付，没有设定时来源内置、状态关闭（灰色）；设为 true 时状态开启（绿色）", async () => {
+test("开关分类有 Git 交付和合并方式两行，没有设定时来源内置：Git 交付按探测结果，合并方式三种都勾", async () => {
   const p = await page();
   toSwitches(p);
   expect(p.pane()).toMatch(/名称 +来源 +状态/u);
-  expect(p.pane()).toMatch(/▸ Git 交付 +内置 +关闭/u);
-  expect(p.lines().join("\n")).toContain("<dim>关闭</>");
-  const q = await page({ user: oneCompany({ "git-delivery": true }) });
+  expect(p.pane()).toMatch(/▸ Git 交付 +内置 +仅本地/u);
+  expect(p.pane()).toMatch(/ 合并方式 +内置 +压缩 · 普通合并 · rebase/u);
+  const q = await page({ origin: "git@github.com:acme/shop.git", ghHosts: ["github.com"] });
   toSwitches(q);
-  expect(q.pane()).toMatch(/▸ Git 交付 +用户 +开启/u);
-  expect(q.lines().join("\n")).toContain("<success>开启</>");
+  expect(q.pane()).toMatch(/▸ Git 交付 +内置 +远程/u);
 });
 
-test("开关行底部写说明、来源和立即生效", async () => {
+test("开关分类的第一行写分类说明", async () => {
   const p = await page();
   toSwitches(p);
-  expect(p.text()).toContain("Git 交付：开启后主代理可以替你提交归档、推送并建 PR · 内置默认值 · 立即生效");
-  const u = await page({ user: oneCompany({ "git-delivery": true }) });
-  toSwitches(u);
-  expect(u.text()).toContain("来自用户层 · 立即生效");
-  const q = await page({ project: oneCompany({ "git-delivery": true }) });
-  toSwitches(q);
-  expect(q.text()).toContain("来自项目层 · 立即生效");
+  expect(paneParts(p.rows())[0]!.trim()).toBe("开关  Git 交付怎么交、用哪些合并方式");
 });
 
-test("修改开关第 1 步：标题、两个选项和说明，现值打勾，光标默认在另一项", async () => {
+test("开关分类按设定所在的层显示来源和状态：用户层远程、项目层仅本地", async () => {
+  const u = await page({ user: oneCompany({ "git-delivery": "remote" }) });
+  toSwitches(u);
+  expect(u.pane()).toMatch(/▸ Git 交付 +用户 +远程/u);
+  const q = await page({ project: oneCompany({ "git-delivery": "local" }), user: oneCompany({ "git-delivery": "remote" }) });
+  toSwitches(q);
+  expect(q.pane()).toMatch(/▸ Git 交付 +项目 +仅本地/u);
+});
+
+test("合并方式一行按压缩合并、普通合并、rebase 合并的顺序列出勾了的，用 · 隔开", async () => {
+  const cases: Array<[string[], RegExp]> = [
+    [["squash", "merge", "rebase"], /合并方式 +用户 +压缩 · 普通合并 · rebase\s*$/mu],
+    [["rebase", "squash"], /合并方式 +用户 +压缩合并 · rebase 合并\s*$/mu],
+    [["merge"], /合并方式 +用户 +普通合并\s*$/mu],
+    [["rebase"], /合并方式 +用户 +rebase 合并\s*$/mu],
+  ];
+  for (const [methods, expected] of cases) {
+    const p = await page({ user: oneCompany({ "merge-methods": methods }) });
+    toSwitches(p);
+    expect(p.pane(), methods.join()).toMatch(expected);
+  }
+});
+
+test("Git 交付底部写两档含义、来源说明和立即生效：用户层、项目层", async () => {
+  const u = await page({ user: oneCompany({ "git-delivery": "remote" }) });
+  toSwitches(u);
+  expect(squeeze(u.text())).toContain(squeeze(`${MODE_FOOT} · 来自用户层 · 立即生效`));
+  const q = await page({ project: oneCompany({ "git-delivery": "local" }) });
+  toSwitches(q);
+  expect(squeeze(q.text())).toContain(squeeze(`${MODE_FOOT} · 来自项目层 · 立即生效`));
+});
+
+test("Git 交付没设定时底部写内置依据：origin 主机 gh 登录过 → 远程", async () => {
+  const p = await page({ origin: "git@github.com:acme/shop.git", ghHosts: ["github.com"] });
+  toSwitches(p);
+  expect(squeeze(p.text())).toContain(squeeze(`${MODE_FOOT} · 内置默认值：origin 在 github.com，gh 已登录 → 远程 · 立即生效`));
+});
+
+test("Git 交付没设定时底部写内置依据：只有 glab 登录过 → 远程", async () => {
+  const p = await page({ origin: "https://code.example.com/acme/shop.git", glabHosts: ["code.example.com"] });
+  toSwitches(p);
+  expect(squeeze(p.text())).toContain(squeeze(`${MODE_FOOT} · 内置默认值：origin 在 code.example.com，glab 已登录 → 远程 · 立即生效`));
+});
+
+test("Git 交付没设定时底部写内置依据：origin 主机 gh 和 glab 都没登录 → 仅本地", async () => {
+  const p = await page({ origin: "https://git.example.com/acme/shop.git" });
+  toSwitches(p);
+  expect(squeeze(p.text())).toContain(squeeze(`${MODE_FOOT} · 内置默认值：origin 在 git.example.com，gh 和 glab 都没登录这台主机 → 仅本地 · 立即生效`));
+});
+
+test("Git 交付没设定时底部写内置依据：没有 origin → 仅本地", async () => {
+  const p = await page({ origin: null });
+  toSwitches(p);
+  expect(squeeze(p.text())).toContain(squeeze(`${MODE_FOOT} · 内置默认值：没有 origin → 仅本地 · 立即生效`));
+});
+
+test("选中合并方式时底部写规则、来源说明和立即生效", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(DOWN);
+  expect(squeeze(p.text())).toContain(squeeze(`${METHODS_FOOT} · 内置默认值：三种都勾 · 立即生效`));
+  const u = await page({ user: oneCompany({ "merge-methods": ["merge"] }) });
+  toSwitches(u);
+  u.press(DOWN);
+  expect(squeeze(u.text())).toContain(squeeze(`${METHODS_FOOT} · 来自用户层 · 立即生效`));
+  const q = await page({ project: oneCompany({ "merge-methods": ["squash"] }) });
+  toSwitches(q);
+  q.press(DOWN);
+  expect(squeeze(q.text())).toContain(squeeze(`${METHODS_FOOT} · 来自项目层 · 立即生效`));
+});
+
+test("修改 Git 交付第 1 步：标题、两个选项和说明，现值打勾，光标默认在另一项", async () => {
   const p = await page();
   toSwitches(p);
   p.press(ENTER);
   const text = p.pane();
   expect(text).toMatch(/修改 Git 交付 +第 1 步，共 2 步/u);
-  expect(text).toMatch(/开启 +主代理可以替你提交归档、推送并建 PR/u);
-  expect(text).toMatch(/关闭 +推送和合并由你自己做/u);
-  expect(text).toMatch(/✓ +关闭/u);
-  expect(selectedPaneLine(p)).toMatch(/开启/u);
-  const q = await page({ user: oneCompany({ "git-delivery": true }) });
+  expect(squeeze(text)).toContain(squeeze("远程 推送需求分支、开 PR，在 GitHub/GitLab 上合并"));
+  expect(squeeze(text)).toContain(squeeze("仅本地 在本机合进主仓库当前分支，不推送"));
+  expect(text).toMatch(/✓ +仅本地/u);
+  expect(selectedPaneLine(p)).toMatch(/远程/u);
+  const q = await page({ user: oneCompany({ "git-delivery": "remote" }) });
   toSwitches(q);
   q.press(ENTER);
-  expect(q.pane()).toMatch(/✓ +开启/u);
-  expect(selectedPaneLine(q)).toMatch(/关闭/u);
+  expect(q.pane()).toMatch(/✓ +远程/u);
+  expect(selectedPaneLine(q)).toMatch(/仅本地/u);
 });
 
-test("修改开关两步走完：第 2 步写标题、项目层和用户层说明，选用户层后 onSaveSwitch 收到 enabled 和 layer", async () => {
+test("修改 Git 交付两步走完：第 2 步写标题、项目层和用户层说明，选用户层后 onSaveSwitch 收到 mode 和 layer", async () => {
   const p = await page();
   toSwitches(p);
   p.press(ENTER, ENTER);
   const text = p.pane();
-  expect(text).toMatch(/Git 交付 改为开启，存到哪一层 +第 2 步，共 2 步/u);
+  expect(text).toMatch(/Git 交付 改为远程，存到哪一层 +第 2 步，共 2 步/u);
   expect(text).toMatch(/项目层 +\.pi\/settings\.json · 只对这个项目生效/u);
   expect(text).toMatch(/用户层 +~\/\.pi\/agent\/settings\.json · 所有项目/u);
   moveTo(p, "用户层");
   p.press(ENTER);
-  expect(p.switchSaves).toEqual([{ enabled: true, layer: "user" }]);
+  expect(p.switchSaves).toEqual([{ key: "git-delivery", mode: "remote", layer: "user" }]);
 });
 
-test("把已开启的开关改为关闭：第 2 步标题写改为关闭，保存 enabled 为 false", async () => {
-  const p = await page({ user: oneCompany({ "git-delivery": true }) });
+test("把远程改为仅本地：第 2 步标题写改为仅本地，保存 mode 为 local", async () => {
+  const p = await page({ user: oneCompany({ "git-delivery": "remote" }) });
   toSwitches(p);
   p.press(ENTER, ENTER);
-  expect(p.pane()).toMatch(/Git 交付 改为关闭，存到哪一层/u);
+  expect(p.pane()).toMatch(/Git 交付 改为仅本地，存到哪一层/u);
   moveTo(p, "项目层");
   p.press(ENTER);
-  expect(p.switchSaves).toEqual([{ enabled: false, layer: "project" }]);
+  expect(p.switchSaves).toEqual([{ key: "git-delivery", mode: "local", layer: "project" }]);
 });
 
-test("项目未受信任时开关第 2 步项目层不可选并写明原因，光标停在用户层", async () => {
+test("项目未受信任时 Git 交付第 2 步项目层不可选并写明原因，光标停在用户层", async () => {
   const p = await page({ trusted: false });
   toSwitches(p);
   p.press(ENTER, ENTER);
@@ -921,10 +999,10 @@ test("项目未受信任时开关第 2 步项目层不可选并写明原因，�
   p.press(UP);
   expect(selectedPaneLine(p)).toMatch(/用户层/u);
   p.press(ENTER);
-  expect(p.switchSaves).toEqual([{ enabled: true, layer: "user" }]);
+  expect(p.switchSaves).toEqual([{ key: "git-delivery", mode: "remote", layer: "user" }]);
 });
 
-test("开关 Esc 逐步退回，第 1 步 Esc 取消并提示已取消修改，什么也不保存", async () => {
+test("Git 交付 Esc 逐步退回，第 1 步 Esc 取消并提示已取消修改，什么也不保存", async () => {
   const p = await page();
   toSwitches(p);
   p.press(ENTER, ENTER);
@@ -937,20 +1015,138 @@ test("开关 Esc 逐步退回，第 1 步 Esc 取消并提示已取消修改，�
   expect(p.closed()).toBe(false);
 });
 
-test("开关来源是内置时按 R 提示已经是内置默认值，否则 onClearSwitch 收到当前来源层", async () => {
+test("修改合并方式第 1 步：标题、三行复选框按生效值勾好，压缩合并带推荐，下方写说明和按键提示", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(DOWN, ENTER);
+  const text = p.pane();
+  expect(text).toMatch(/修改合并方式 +第 1 步，共 2 步/u);
+  expect(squeeze(text)).toContain(squeeze("[x] 压缩合并 推荐 一个需求在主分支上是一个提交"));
+  expect(squeeze(text)).toContain(squeeze("[x] 普通合并 保留每个提交，另加一个合并提交"));
+  expect(squeeze(text)).toContain(squeeze("[x] rebase 合并 保留每个提交，历史是一条直线"));
+  expect(squeeze(text)).toContain(squeeze("远程和仅本地都生效。远程时只列出仓库也允许的方式；交付窗口里压缩合并排第一、标推荐。"));
+  expect(p.text()).toContain("↑↓ 选择  空格 勾选  回车 下一步  Esc 取消");
+  expect(squeeze(p.text())).toContain(squeeze(`${METHODS_FOOT} · 内置默认值：三种都勾 · 立即生效`));
+  const q = await page({ user: oneCompany({ "merge-methods": ["merge"] }) });
+  toSwitches(q);
+  q.press(DOWN, ENTER);
+  expect(squeeze(q.pane())).toContain(squeeze("[ ] 压缩合并"));
+  expect(squeeze(q.pane())).toContain(squeeze("[x] 普通合并"));
+  expect(squeeze(q.pane())).toContain(squeeze("[ ] rebase 合并"));
+});
+
+test("空格勾选或取消光标所在的方式", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(DOWN, ENTER, DOWN, SPACE);
+  expect(squeeze(p.pane())).toContain(squeeze("[ ] 普通合并"));
+  expect(squeeze(p.pane())).toContain(squeeze("[x] 压缩合并"));
+  p.press(SPACE);
+  expect(squeeze(p.pane())).toContain(squeeze("[x] 普通合并"));
+});
+
+test("合并方式取消普通合并后进第 2 步：标题用顿号列出勾了的，保存的数组按压缩、普通、rebase 的顺序", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(DOWN, ENTER, DOWN, SPACE, ENTER);
+  expect(p.pane()).toMatch(/合并方式 改为 压缩合并、rebase 合并，存到哪一层/u);
+  moveTo(p, "用户层");
+  p.press(ENTER);
+  expect(p.switchSaves).toEqual([{ key: "merge-methods", methods: ["squash", "rebase"], layer: "user" }]);
+});
+
+test("合并方式取消压缩合并和 rebase 合并后第 2 步标题写改为普通合并，保存 methods 为 merge", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(DOWN, ENTER, SPACE, DOWN, DOWN, SPACE, ENTER);
+  expect(p.pane()).toMatch(/合并方式 改为 普通合并，存到哪一层/u);
+  moveTo(p, "项目层");
+  p.press(ENTER);
+  expect(p.switchSaves).toEqual([{ key: "merge-methods", methods: ["merge"], layer: "project" }]);
+});
+
+test("合并方式全都没勾时回车停在第 1 步并出红字，不保存", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(DOWN, ENTER, SPACE, DOWN, SPACE, DOWN, SPACE, ENTER);
+  expect(p.pane()).toMatch(/第 1 步，共 2 步/u);
+  expect(p.text()).toContain("✗ 至少勾一种合并方式");
+  expect(p.lines().join("\n")).toMatch(/<error>[^\n]*✗ 至少勾一种合并方式/u);
+  expect(p.switchSaves).toEqual([]);
+});
+
+test("合并方式第 2 步 Esc 退回第 1 步并保留勾选，再 Esc 取消并提示已取消修改", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(DOWN, ENTER, SPACE, ENTER);
+  p.press(ESC);
+  expect(p.pane()).toMatch(/第 1 步，共 2 步/u);
+  expect(squeeze(p.pane())).toContain(squeeze("[ ] 压缩合并"));
+  p.press(ESC);
+  expect(p.text()).toContain("已取消修改");
+  expect(p.switchSaves).toEqual([]);
+  expect(p.closed()).toBe(false);
+});
+
+test("项目未受信任时合并方式第 2 步项目层不可选，保存到用户层", async () => {
+  const p = await page({ trusted: false });
+  toSwitches(p);
+  p.press(DOWN, ENTER, SPACE, ENTER);
+  expect(p.pane()).toMatch(/项目层 +项目未受信任，项目层的设定不会生效/u);
+  p.press(ENTER);
+  expect(p.switchSaves).toEqual([{ key: "merge-methods", methods: ["merge", "rebase"], layer: "user" }]);
+});
+
+test("来源是内置时按 R 提示已经是内置默认值，不调用清除：Git 交付和合并方式各一次", async () => {
   const p = await page();
   toSwitches(p);
   p.press("R");
   expect(p.rows().map((line) => line.trim())).toContain("已经是内置默认值");
+  p.press(DOWN, "r");
+  expect(p.rows().map((line) => line.trim())).toContain("已经是内置默认值");
   expect(p.switchClears).toEqual([]);
-  const u = await page({ user: oneCompany({ "git-delivery": true }) });
+});
+
+test("按 R 时 onClearSwitch 收到当前行的 key 和生效层", async () => {
+  const u = await page({ user: oneCompany({ "git-delivery": "remote" }) });
   toSwitches(u);
   u.press("r");
-  expect(u.switchClears).toEqual([{ layer: "user" }]);
-  const q = await page({ project: oneCompany({ "git-delivery": true }) });
+  expect(u.switchClears).toEqual([{ key: "git-delivery", layer: "user" }]);
+  const q = await page({ project: oneCompany({ "git-delivery": "local" }) });
   toSwitches(q);
   q.press("R");
-  expect(q.switchClears).toEqual([{ layer: "project" }]);
+  expect(q.switchClears).toEqual([{ key: "git-delivery", layer: "project" }]);
+  const m = await page({ user: oneCompany({ "merge-methods": ["merge"] }), project: oneCompany({ "merge-methods": ["squash"] }) });
+  toSwitches(m);
+  m.press(DOWN, "R");
+  expect(m.switchClears).toEqual([{ key: "merge-methods", layer: "project" }]);
+  const n = await page({ user: oneCompany({ "merge-methods": ["merge"] }) });
+  toSwitches(n);
+  n.press(DOWN, "R");
+  expect(n.switchClears).toEqual([{ key: "merge-methods", layer: "user" }]);
+});
+
+test("旧版写的 git-delivery: true 在问题里：原因、现在是 true，底部写现在的写法和处理办法", async () => {
+  const p = await page({ clean: true, user: oneCompany({ "git-delivery": true }) });
+  enterSection(p, "problems");
+  expect(paneParts(p.rows(200)).join("\n")).toMatch(/settings\.json +用户 +git-delivery 只能写 remote 或 local/u);
+  expect(squeeze(p.text())).toContain(squeeze("现在的写法：true · 删掉这一项或在开关里重新选一次即可"));
+  p.press(ENTER);
+  expect(squeeze(p.pane())).toMatch(/┊原因.*git-delivery只能写remote或local.*┊现在是true.*┊影响这一项没有生效，改用下一层/u);
+});
+
+test("merge-methods 写错在问题里：原因写一到三个且不能重复，现在的写法是原样", async () => {
+  const p = await page({ clean: true, project: oneCompany({ "merge-methods": ["squash", "squash"] }) });
+  enterSection(p, "problems");
+  expect(squeeze(p.text())).toContain(squeeze('现在的写法：["squash","squash"] · 删掉这一项或在开关里重新选一次即可'));
+  p.press(ENTER);
+  expect(squeeze(p.pane()).replaceAll("┊", "")).toMatch(/原因.*merge-methods只能是squash、merge、rebase里的一到三个，不能重复.*现在是\["squash","squash"\]/u);
+});
+
+test("该层写错的 git-delivery 不生效：项目层写 true 时开关行取用户层", async () => {
+  const p = await page({ user: oneCompany({ "git-delivery": "remote" }), project: oneCompany({ "git-delivery": true }) });
+  toSwitches(p);
+  expect(p.pane()).toMatch(/▸ Git 交付 +用户 +远程/u);
 });
 
 test("notice 代替底部说明显示：ok 绿色、muted 灰色、error 红色", async () => {
@@ -1044,6 +1240,9 @@ const SCREENS: Screen[] = [
   { label: "开关第 1 步", keys: toSection("switches", ENTER) },
   { label: "开关第 2 步", keys: toSection("switches", ENTER, ENTER) },
   { label: "未受信任的开关第 2 步", options: { trusted: false }, keys: toSection("switches", ENTER, ENTER) },
+  { label: "合并方式第 1 步", keys: toSection("switches", DOWN, ENTER) },
+  { label: "合并方式第 2 步", keys: toSection("switches", DOWN, ENTER, ENTER) },
+  { label: "合并方式全取消后的第 1 步", keys: toSection("switches", DOWN, ENTER, " ", DOWN, " ", DOWN, " ", ENTER) },
   { label: "问题展开含设置文件", options: { project: oneCompany({ "git-delivery": "yes" }) }, keys: toSection("problems", DOWN, ENTER) },
   { label: "带提示的目录", options: { state: { notice: { tone: "ok", text: NOTICE } } }, keys: [] },
 ];
@@ -1215,7 +1414,7 @@ test("复制内置 worker 生成的文件头部不含 model 和 thinking，仍�
 });
 
 test("80 列下在 PM 上回车改模型、在开关上回车改开关、在 worker 上按 C 命名时，目录仍完整显示，当前分类行是焦点在右栏的样式", async () => {
-  const cases: Array<[RegExp, string[], string]> = [[/模型 +3/u, toSection("models", ENTER), "模型"], [/开关 +1/u, toSection("switches", ENTER), "开关"], [/worker +2/u, [RIGHT, "c"], "worker"]];
+  const cases: Array<[RegExp, string[], string]> = [[/模型 +3/u, toSection("models", ENTER), "模型"], [/开关 +2/u, toSection("switches", ENTER), "开关"], [/worker +2/u, [RIGHT, "c"], "worker"]];
   for (const [cell, keys] of cases) {
     const p = await page();
     p.press(...keys);
@@ -1294,12 +1493,15 @@ test("宽布局模型表格：表头的来源、模型、思考与 PM 行同一�
 });
 
 test("宽布局开关表格：表头的来源、状态与 Git 交付行同一起始列", async () => {
-  const p = await page({ user: oneCompany({ "git-delivery": true }) });
+  const p = await page({ user: oneCompany({ "git-delivery": "remote", "merge-methods": ["merge"] }) });
   toSwitches(p);
   const rows = p.rows();
-  const head = rowWith(rows, "名称"), row = rows.find((r) => r.includes("Git 交付") && r.includes("│") && r.includes("开启"))!;
+  const head = rowWith(rows, "名称"), row = rows.find((r) => r.includes("Git 交付") && r.includes("│") && r.includes("远程"))!;
+  const methodRow = rows.find((r) => r.includes("合并方式") && r.includes("│") && r.includes("普通合并"))!;
   expect(startCol(head, "来源")).toBe(startCol(row, " 用户 "));
-  expect(startCol(head, "状态")).toBe(startCol(row, "开启"));
+  expect(startCol(head, "状态")).toBe(startCol(row, "远程"));
+  expect(startCol(head, "来源")).toBe(startCol(methodRow, " 用户 "));
+  expect(startCol(head, "状态")).toBe(startCol(methodRow, "普通合并"));
 });
 
 test("宽布局问题表格：表头的层、原因与数据行同一起始列", async () => {
@@ -1338,7 +1540,17 @@ test("修改开关的两步里，底部继续写 Git 交付的说明，按键提
   for (const [index, hint] of hints.entries()) {
     const p = await page();
     p.press(...toSection("switches", ...Array<string>(index + 1).fill(ENTER)));
-    expect(squeeze(p.text()), `第 ${index + 1} 步`).toContain(squeeze("Git 交付：开启后主代理可以替你提交归档、推送并建 PR · 内置默认值 · 立即生效"));
+    expect(squeeze(p.text()), `第 ${index + 1} 步`).toContain(squeeze(`${MODE_FOOT} · 内置默认值：没有 origin → 仅本地 · 立即生效`));
+    expect(p.text()).toContain(hint);
+  }
+});
+
+test("修改合并方式的两步里，底部显示合并方式的说明，按键提示是步骤自己的", async () => {
+  const hints = ["↑↓ 选择  空格 勾选  回车 下一步  Esc 取消", "↑↓ 选择  回车 保存  Esc 上一步"];
+  for (const [index, hint] of hints.entries()) {
+    const p = await page();
+    p.press(...toSection("switches", DOWN, ...Array<string>(index + 1).fill(ENTER)));
+    expect(squeeze(p.text()), `第 ${index + 1} 步`).toContain(squeeze(`${METHODS_FOOT} · 内置默认值：三种都勾 · 立即生效`));
     expect(p.text()).toContain(hint);
   }
 });

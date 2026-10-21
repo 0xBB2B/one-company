@@ -30,7 +30,7 @@ async function world(active: boolean) {
   const authorization = new HostAuthorizationManager({ dataRoot }); authorization.startWindow({ kind: "main", windowId, sessionId, repoIds: [repoId] });
   const runtime = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null, refreshOnCreate: false });
   const provider = registerControlledProvider(runtime, { providerId: uuidv7(), modelId: "fixture" });
-  const ctx = { cwd: repo, isProjectTrusted: () => false, modelRegistry: new ModelRegistry(runtime), model: runtime.getModels(provider.providerId)[0], sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
+  const ctx = { cwd: repo, modelRegistry: new ModelRegistry(runtime), model: runtime.getModels(provider.providerId)[0], sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
   let onResolve: (() => void) | undefined;
   const interaction = new MainRequirementInteraction({ mainThinking: () => "off", dataRoot, authorization,
     resolveHost: () => {

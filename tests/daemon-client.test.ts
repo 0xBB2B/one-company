@@ -990,6 +990,55 @@ describe("hello 阶段失败", () => {
       fake.close();
     }
   }, 15_000);
+
+  const STALE_DAEMON_MESSAGE = "后台进程是旧版本，和当前安装的 one-company 不一致：请关闭所有 pi 窗口后重新打开";
+  const staleCases: Array<[string, (frame: Extract<Frame, { t: "req" }>, socket: Socket, repoId: string) => void, string]> = [
+    ["旧守护进程以 protocol_version 错误拒绝 hello", (frame, socket) => {
+      socket.write(encodeFrame(createErrorResponse(frame.id, "protocol_version", "协议版本不一致: 期望 2，收到 3")));
+      socket.end();
+    }, STALE_DAEMON_MESSAGE],
+    ["hello 结果的 protocolVersion 与本端不同", (frame, socket, repoId) => {
+      socket.write(encodeFrame(createResponse(frame.id, {
+        daemonPid: process.pid, repoId, protocolVersion: PROTOCOL_VERSION - 1,
+        startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
+      })));
+    }, STALE_DAEMON_MESSAGE],
+    ["hello 结果的 repoId 不一致仍报身份字段错误", (frame, socket) => {
+      socket.write(encodeFrame(createResponse(frame.id, {
+        daemonPid: process.pid, repoId: "wrong-repo-id-injected-by-test", protocolVersion: PROTOCOL_VERSION,
+        startedAt: new Date().toISOString(), daemonInstanceId: randomUUID(), connectionId: randomUUID(),
+      })));
+    }, "hello 响应身份字段缺失或不一致"],
+  ];
+
+  test.each(staleCases)("%s", async (_label, reply, expectedMessage) => {
+    const repo = await createRepoFixture();
+    repoFixtures.push(repo);
+    const dataRoot = await mkdtemp(join(temporaryRoot(), "d"));
+    extraTempDirs.push(dataRoot);
+    const identity = await repositoryIdentity(repo.root);
+    const socketPath = daemonSocketPath(dataRoot, identity.repoId);
+    await mkdir(dirname(socketPath), { recursive: true });
+    const fake = createFakeDaemonServer(socketPath, (frame, socket) => reply(frame, socket, identity.repoId));
+
+    try {
+      await expect(
+        connectDaemon({
+          repoDir: repo.root,
+          dataRoot,
+          sdkDir: resolveSdkDir(),
+          execPath: resolveNodeExecutable(),
+          hello: { windowId: "window-stale", sessionId: "session-stale" },
+        }),
+      ).rejects.toThrow(expectedMessage);
+
+      const connectionsAfterReject = fake.connectionCount();
+      await delay(1_000);
+      expect(fake.connectionCount()).toBe(connectionsAfterReject);
+    } finally {
+      fake.close();
+    }
+  }, 15_000);
 });
 
 describe("失败帧转换为 DaemonCallError", () => {

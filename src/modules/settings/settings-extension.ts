@@ -3,33 +3,32 @@ import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { chooseWindow, mutedLines, openProgramWindow } from "../../core/host/question-window.ts";
 import type { WindowChoice } from "../../core/host/question-window.ts";
-import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { parseFrontmatter, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dataRoot } from "../../core/storage/data-root.ts";
-import { resolveRepoRoot } from "../../core/exec/git-read.ts";
-import { SettingsPageView, tilde } from "./settings-page-ui.ts";
+import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
+import { defaultModeReason, methodsText, MODE_LABEL, SettingsPageView, tilde } from "./settings-page-ui.ts";
 import type { ClearSwitchRequest, CopyRequest, PageState, SaveSwitchRequest } from "./settings-page-ui.ts";
 import { AgentCopyError, copyAgentDefinition } from "../agents/agent-copy.ts";
 import { describeSetting } from "./agent-settings-ui.ts";
 import type { ClearSettingRequest, PageNotice, PageTheme, SaveSettingRequest, SettingsLayerName } from "./agent-settings-ui.ts";
-import { clearAgentSetting, clearGitDeliverySetting, projectSettingsPath, readAgentSettings, saveAgentSetting, saveGitDeliverySetting, SETTINGS_ROLES, userSettingsPath } from "./agent-settings.ts";
+import { clearAgentSetting, clearGitDeliverySetting, clearMergeMethodsSetting, projectSettingsPath, readAgentSettings, saveAgentSetting, saveGitDeliverySetting, saveMergeMethodsSetting, SETTINGS_ROLES, userSettingsPath } from "./agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../agents/roles.ts";
 
-export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode" | "isProjectTrusted" | "modelRegistry" | "model">;
+export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode" | "modelRegistry" | "model">;
 
-/** /one:setting：查看内置、用户、项目三层的角色定义，C 复制为新定义；「模型」里改 PM、解释器、草稿核验器用的模型和思考等级；「开关」里开关 Git 交付。 */
-export async function openSettingsPage(ctx: SettingsExtensionContext, options: { mainThinking: () => string; onGitDeliveryChanged: (enabled: boolean) => void }): Promise<void> {
-  const projectTrusted = ctx.isProjectTrusted();
+/** /one:setting：查看内置、用户、项目三层的角色定义，C 复制为新定义；「模型」里改 PM、解释器、草稿核验器用的模型和思考等级；「开关」里改 Git 交付档位和允许的合并方式。 */
+export async function openSettingsPage(ctx: SettingsExtensionContext, options: { mainThinking: () => string }): Promise<void> {
   const agentDir = dirname(dataRoot(process.env));
-  const repositoryRoot = await resolveRepoRoot(ctx.cwd);
+  const repositoryRoot = await primaryWorktreeRoot(ctx.cwd);
+  const trusted = () => new ProjectTrustStore(agentDir).get(repositoryRoot) === true;
   const dirs = { defaultDir: defaultRoleDir(), userDir: userRoleDir(agentDir), projectDir: projectRoleDir(repositoryRoot) };
   const layers = [{ label: "内置层", dir: dirs.defaultDir }, { label: "用户层", dir: dirs.userDir }, { label: "项目层", dir: dirs.projectDir }];
   const fileOf = (dir: string, name: string) => join(dir, `${name}.md`);
   const nameTaken = (name: string) => layers.find((layer) => existsSync(fileOf(layer.dir, name)))?.label;
-  const untrustedProjectCount = projectTrusted ? 0 : await readdir(dirs.projectDir).then((files) => files.filter((file) => file.endsWith(".md")).length, () => 0);
   const settingsPaths: Record<SettingsLayerName, string> = { user: userSettingsPath(agentDir), project: projectSettingsPath(repositoryRoot) };
   const layerLabel: Record<SettingsLayerName, string> = { user: "用户层", project: "项目层" };
-  const readSettings = () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted });
+  const readSettings = () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: trusted() });
   const models = ctx.modelRegistry.getAll().filter((model) => ctx.modelRegistry.hasConfiguredAuth(model));
   type Picked = { state: PageState } & ({ copy: CopyRequest } | { save: SaveSettingRequest } | { clear: ClearSettingRequest } | { saveSwitch: SaveSwitchRequest } | { clearSwitch: ClearSwitchRequest });
   const applyChange = async (picked: Exclude<Picked, { copy: CopyRequest }>): Promise<{ text: string; fresh: string }> => {
@@ -47,19 +46,29 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
       return { fresh: role, text: `✓ 已清除${layerLabel[layer]}的 ${label} 设定，现在用${now.source === "user" ? `用户层的 ${describeSetting(role, now)}` : "内置默认值：跟随主会话"}` };
     }
     if ("saveSwitch" in picked) {
-      const { enabled, layer } = picked.saveSwitch;
-      await saveGitDeliverySetting({ path: settingsPaths[layer], enabled });
-      options.onGitDeliveryChanged((await readSettings()).gitDelivery.enabled);
-      return { fresh: "git-delivery", text: `✓ Git 交付 改为${enabled ? "开启" : "关闭"}，存到${layerLabel[layer]}，立即生效` };
+      const request = picked.saveSwitch, path = settingsPaths[request.layer];
+      if (request.key === "git-delivery") {
+        await saveGitDeliverySetting({ path, mode: request.mode });
+        return { fresh: "git-delivery", text: `✓ Git 交付 改为${MODE_LABEL[request.mode]}，存到${layerLabel[request.layer]}，立即生效` };
+      }
+      await saveMergeMethodsSetting({ path, methods: request.methods });
+      return { fresh: "merge-methods", text: `✓ 合并方式 改为 ${methodsText(request.methods)}，存到${layerLabel[request.layer]}，立即生效` };
     }
-    const { layer } = picked.clearSwitch;
-    await clearGitDeliverySetting({ path: settingsPaths[layer] });
-    const now = (await readSettings()).gitDelivery;
-    options.onGitDeliveryChanged(now.enabled);
-    return { fresh: "git-delivery", text: `✓ 已清除${layerLabel[layer]}的 Git 交付 设定，现在用${now.source === "default" ? "内置默认值：关闭" : `${layerLabel[now.source]}的值：${now.enabled ? "开启" : "关闭"}`}` };
+    const { key, layer } = picked.clearSwitch;
+    await (key === "git-delivery" ? clearGitDeliverySetting : clearMergeMethodsSetting)({ path: settingsPaths[layer] });
+    const settings = await readSettings();
+    if (key === "git-delivery") {
+      const now = settings.gitDelivery;
+      const current = now.source === "default" ? `内置默认值：${MODE_LABEL[now.mode]}（${defaultModeReason(now.detected)}）` : `${layerLabel[now.source]}的值：${MODE_LABEL[now.mode]}`;
+      return { fresh: key, text: `✓ 已清除${layerLabel[layer]}的 Git 交付 设定，现在用${current}` };
+    }
+    const now = settings.mergeMethods;
+    return { fresh: key, text: `✓ 已清除${layerLabel[layer]}的合并方式 设定，现在用${now.source === "default" ? "内置默认值" : `${layerLabel[now.source]}的值`}：${methodsText(now.methods)}` };
   };
   let state: PageState | undefined;
   for (;;) {
+    const projectTrusted = trusted();
+    const untrustedProjectCount = projectTrusted ? 0 : await readdir(dirs.projectDir).then((files) => files.filter((file) => file.endsWith(".md")).length, () => 0);
     const catalog = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted });
     const settings = await readSettings();
     const picked = await openProgramWindow<Picked>(ctx, (tui, theme, _keybindings, done) => {

@@ -48,6 +48,10 @@ export class DaemonCallError extends Error {
   }
 }
 
+function staleDaemonError(): Error {
+  return Object.assign(new Error("后台进程是旧版本，和当前安装的 one-company 不一致：请关闭所有 pi 窗口后重新打开"), { code: "protocol_version" });
+}
+
 export function resolveSdkDir(): string {
   return getPackageDir();
 }
@@ -545,13 +549,16 @@ class DaemonClientImpl implements DaemonClient {
       );
       this.link = link;
       const authToken = controlToken(this.ctx.dataRoot);
-      const result = await link.call("hello", { ...this.ctx.helloParams, authToken });
+      const result = await link.call("hello", { ...this.ctx.helloParams, authToken }).catch((error: unknown) => {
+        throw error instanceof DaemonCallError && error.code === "protocol_version" ? staleDaemonError() : error;
+      });
       if (this.closed) return;
       const handshakeFailure = link.handshakeFailure();
       if (handshakeFailure) throw new Error(handshakeFailure);
       if (this.link !== link) throw new Error("hello 完成前连接已关闭");
       const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
-      if (result.repoId !== this.ctx.repoId || result.protocolVersion !== PROTOCOL_VERSION
+      if (result.protocolVersion !== PROTOCOL_VERSION) throw staleDaemonError();
+      if (result.repoId !== this.ctx.repoId
         || typeof result.daemonPid !== "number" || !Number.isSafeInteger(result.daemonPid) || result.daemonPid <= 0
         || typeof result.startedAt !== "string" || result.startedAt.length === 0
         || typeof result.daemonInstanceId !== "string" || !uuid.test(result.daemonInstanceId)

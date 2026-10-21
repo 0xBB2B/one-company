@@ -2,12 +2,13 @@ import { homedir } from "node:os";
 import { basename } from "node:path";
 import { decodeKittyPrintable, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import {
-  fit, FOLLOW, layerRows, MARKER, pad, pickerHead, pickerList, SettingsTab, SOURCE, tableColumns, tableRow, untrustedLayerNote, wrapHint, wrapText,
+  checkList, fit, FOLLOW, layerRows, MARKER, pad, pickerHead, pickerList, SettingsTab, SOURCE, tableColumns, tableRow, untrustedLayerNote, wrapHint, wrapText,
 } from "./agent-settings-ui.ts";
 import type { ClearSettingRequest, PageNotice, PickerRow, PageTheme, SaveSettingRequest, SettingsLayerName } from "./agent-settings-ui.ts";
 import type { ModelLike } from "../agents/agent-resolve.ts";
-import { SETTINGS_ROLES } from "./agent-settings.ts";
-import type { readAgentSettings } from "./agent-settings.ts";
+import { MERGE_METHODS, SETTINGS_ROLES } from "./agent-settings.ts";
+import type { MergeMethod, readAgentSettings } from "./agent-settings.ts";
+import type { DeliveryMode } from "../../core/exec/git-host.ts";
 import { NAME_PATTERN } from "../agents/roles.ts";
 import type { RoleCatalog, RoleCatalogEntry, RoleDefinitionProblem, RoleSource } from "../agents/roles.ts";
 
@@ -16,14 +17,31 @@ type Section = (typeof ROLE_SECTIONS)[number] | "models" | "switches" | "problem
 const TITLE: Record<string, string> = { models: "模型", switches: "开关", problems: "问题" };
 const DESCRIPTION: Record<Section, string> = {
   worker: "写代码", reviewer: "代码审查：实现是否合理", qa: "功能验收：行为是否符合目标", explore: "只读查资料", prototype: "需求涉及界面时出 HTML 原型",
-  models: "PM 和两个内部代理用哪个模型", switches: "可选功能，默认都关闭", problems: "这些文件写错了，没有生效",
+  models: "PM 和两个内部代理用哪个模型", switches: "Git 交付怎么交、用哪些合并方式", problems: "这些文件写错了，没有生效",
 };
 const SOURCE_LABEL: Record<RoleSource, string> = { default: "内置", user: "用户", project: "项目" };
 const LAYER_ORDER: RoleSource[] = ["project", "user", "default"];
 const NAV_WIDTH = 20, WIDE = 60, KEY = 8, FILE = 18, MIN_COLUMN = 8;
 const WORD_CHAR = /[\w.~-]/u;
 const NAME_RULE = "小写字母、数字、连字符，最多 64 个字符；三层里不能重名";
-const GIT_DELIVERY_ON = "主代理可以替你提交归档、推送并建 PR";
+export const MODE_LABEL: Record<DeliveryMode, string> = { remote: "远程", local: "仅本地" };
+const MODE_FOOT = "Git 交付：远程＝推送并开 PR；仅本地＝合进主仓库当前分支";
+const METHODS_FOOT = "合并方式：远程和仅本地都只用勾了的方式，压缩合并是推荐方式";
+const METHODS_NOTE = "远程和仅本地都生效。远程时只列出仓库也允许的方式；交付窗口里压缩合并排第一、标推荐。";
+const METHOD_ROWS = [
+  { name: "压缩合并", badge: "推荐", note: "一个需求在主分支上是一个提交" },
+  { name: "普通合并", note: "保留每个提交，另加一个合并提交" },
+  { name: "rebase 合并", note: "保留每个提交，历史是一条直线" },
+];
+const SOURCE_NOTE = { user: "来自用户层", project: "来自项目层" };
+
+export const defaultModeReason = (detected: { host: string | null; provider: "gh" | "glab" | null } | undefined) =>
+  !detected?.host ? "没有 origin" : detected.provider ? `origin 在 ${detected.host}，${detected.provider} 已登录` : `origin 在 ${detected.host}，gh 和 glab 都没登录这台主机`;
+
+export const methodsText = (methods: readonly MergeMethod[], short = false) => {
+  const on = MERGE_METHODS.filter((method) => methods.includes(method.key));
+  return short && on.length === MERGE_METHODS.length ? "压缩 · 普通合并 · rebase" : on.map((method) => method.label).join(short ? " · " : "、");
+};
 
 export const tilde = (path: string) => { const home = homedir(); return path.startsWith(home) ? `~${path.slice(home.length)}` : path; };
 const fitTail = (text: string, width: number) => {
@@ -35,8 +53,10 @@ const fitTail = (text: string, width: number) => {
 
 export interface PageState { section?: string; focus?: "nav" | "pane"; selectName?: string; fresh?: string; notice?: PageNotice }
 export interface CopyRequest { entry: RoleCatalogEntry; name: string }
-export interface SaveSwitchRequest { enabled: boolean; layer: SettingsLayerName }
-export interface ClearSwitchRequest { layer: SettingsLayerName }
+export type SaveSwitchRequest =
+  | { key: "git-delivery"; mode: DeliveryMode; layer: SettingsLayerName }
+  | { key: "merge-methods"; methods: MergeMethod[]; layer: SettingsLayerName };
+export interface ClearSwitchRequest { key: "git-delivery" | "merge-methods"; layer: SettingsLayerName }
 type Settings = Awaited<ReturnType<typeof readAgentSettings>>;
 
 interface ProblemRow {
@@ -44,31 +64,32 @@ interface ProblemRow {
   detail: Array<{ key: string; value: string; error?: boolean }>; footer: string;
 }
 
-class SwitchPicker {
-  private step = 0;
-  private cursor = 0;
-  private chosen = false;
-  private readonly options: {
-    theme: PageTheme; current: { enabled: boolean; source: "project" | "user" | "default" }; projectTrusted: boolean;
-    onSave(request: SaveSwitchRequest): void; onClear(request: ClearSwitchRequest): void;
-  };
+abstract class SwitchPicker {
+  protected step = 0;
+  protected cursor = 0;
 
-  constructor(options: SwitchPicker["options"]) { this.options = options; }
+  protected readonly theme: PageTheme;
+  protected readonly projectTrusted: boolean;
+  private readonly key: ClearSwitchRequest["key"];
+  private readonly currentSource: () => RoleSource;
+  private readonly onClear: (request: ClearSwitchRequest) => void;
+
+  constructor(theme: PageTheme, projectTrusted: boolean, key: ClearSwitchRequest["key"], currentSource: () => RoleSource, onClear: (request: ClearSwitchRequest) => void) {
+    this.theme = theme; this.projectTrusted = projectTrusted; this.key = key; this.currentSource = currentSource; this.onClear = onClear;
+  }
 
   picking(): boolean { return this.step > 0; }
 
-  start(): void { this.step = 1; this.cursor = this.options.current.enabled ? 1 : 0; }
-
   clear(): PageNotice<"muted"> | undefined {
-    const { source } = this.options.current;
+    const source = this.currentSource();
     if (source === "default") return { tone: "muted", text: "已经是内置默认值" };
-    this.options.onClear({ layer: source });
+    this.onClear({ key: this.key, layer: source });
     return undefined;
   }
 
   handleInput(data: string): PageNotice<"muted"> | undefined {
     if (matchesKey(data, "escape")) {
-      if (this.step === 2) { this.step = 1; this.cursor = this.chosen ? 0 : 1; return undefined; }
+      if (this.step === 2) { this.step = 1; this.cursor = this.firstStepCursor(); return undefined; }
       this.step = 0;
       return { tone: "muted", text: "已取消修改" };
     }
@@ -77,31 +98,100 @@ class SwitchPicker {
     if (matchesKey(data, "up")) { const previous = rows.findLastIndex((row, index) => index < this.cursor && !row.disabled); if (previous >= 0) this.cursor = previous; return undefined; }
     if (!matchesKey(data, "enter")) return undefined;
     if (this.step === 1) {
-      this.chosen = this.cursor === 0;
-      this.step = 2;
-      this.cursor = this.options.projectTrusted ? 0 : 1;
+      if (this.confirmFirstStep()) { this.step = 2; this.cursor = this.projectTrusted ? 0 : 1; }
     } else {
       this.step = 0;
-      this.options.onSave({ enabled: this.chosen, layer: this.cursor === 0 ? "project" : "user" });
+      this.save(this.cursor === 0 ? "project" : "user");
     }
     return undefined;
   }
 
-  hint(): string { return this.step === 1 ? "↑↓ 选择  回车 下一步  Esc 取消" : "↑↓ 选择  回车 保存  Esc 上一步"; }
+  hint(): string { return this.step === 1 ? this.firstStepHint() : "↑↓ 选择  回车 保存  Esc 上一步"; }
 
-  private rows(): PickerRow[] {
-    if (this.step === 1) {
-      const enabled = this.options.current.enabled;
-      return [{ name: "开启", note: GIT_DELIVERY_ON, current: enabled }, { name: "关闭", note: "推送和合并由你自己做", current: !enabled }];
-    }
-    return layerRows(this.options.projectTrusted);
+  protected firstStepHint(): string { return "↑↓ 选择  回车 下一步  Esc 取消"; }
+  protected abstract firstStepRows(): PickerRow[];
+  protected abstract firstStepCursor(): number;
+  protected abstract confirmFirstStep(): boolean;
+  protected abstract save(layer: SettingsLayerName): void;
+  protected rows(): PickerRow[] { return this.step === 1 ? this.firstStepRows() : layerRows(this.projectTrusted); }
+  protected layerStep(width: number, title: string): string[] {
+    return [pickerHead(this.theme, title, "第 2 步，共 2 步", width), "", ...pickerList(this.theme, this.rows(), this.cursor, 10, width),
+      ...(this.projectTrusted ? [] : ["", ...untrustedLayerNote(this.theme, width)])];
+  }
+  abstract render(width: number): string[];
+}
+
+class DeliveryModePicker extends SwitchPicker {
+  private chosen: DeliveryMode = "remote";
+
+  private readonly options: {
+    theme: PageTheme; current: { mode: DeliveryMode; source: RoleSource }; projectTrusted: boolean;
+    onSave(request: SaveSwitchRequest): void; onClear(request: ClearSwitchRequest): void;
+  };
+
+  constructor(options: DeliveryModePicker["options"]) {
+    super(options.theme, options.projectTrusted, "git-delivery", () => options.current.source, options.onClear);
+    this.options = options;
+  }
+
+  start(): void { this.step = 1; this.cursor = this.options.current.mode === "remote" ? 1 : 0; }
+
+  protected firstStepCursor(): number { return this.chosen === "remote" ? 0 : 1; }
+  protected confirmFirstStep(): boolean { this.chosen = this.cursor === 0 ? "remote" : "local"; return true; }
+  protected save(layer: SettingsLayerName): void { this.options.onSave({ key: "git-delivery", mode: this.chosen, layer }); }
+  protected firstStepRows(): PickerRow[] {
+    const { mode } = this.options.current;
+    return [{ name: "远程", note: "推送需求分支、开 PR，在 GitHub/GitLab 上合并", current: mode === "remote" },
+      { name: "仅本地", note: "在本机合进主仓库当前分支，不推送", current: mode === "local" }];
   }
 
   render(width: number): string[] {
+    if (this.step === 1) return [pickerHead(this.theme, "修改 Git 交付", "第 1 步，共 2 步", width), "", ...pickerList(this.theme, this.rows(), this.cursor, 8, width)];
+    return this.layerStep(width, `Git 交付 改为${MODE_LABEL[this.chosen]}，存到哪一层`);
+  }
+}
+
+class MergeMethodsPicker extends SwitchPicker {
+  private checked: boolean[] = [];
+  private empty = false;
+
+  private readonly options: {
+    theme: PageTheme; current: { methods: readonly MergeMethod[]; source: RoleSource }; projectTrusted: boolean;
+    onSave(request: SaveSwitchRequest): void; onClear(request: ClearSwitchRequest): void;
+  };
+
+  constructor(options: MergeMethodsPicker["options"]) {
+    super(options.theme, options.projectTrusted, "merge-methods", () => options.current.source, options.onClear);
+    this.options = options;
+  }
+
+  start(): void {
+    this.step = 1;
+    this.cursor = 0;
+    this.empty = false;
+    this.checked = MERGE_METHODS.map((method) => this.options.current.methods.includes(method.key));
+  }
+
+  override handleInput(data: string): PageNotice<"muted"> | undefined {
+    if (this.step === 1 && (data === " " || matchesKey(data, "space"))) { this.checked[this.cursor] = !this.checked[this.cursor]; this.empty = false; return undefined; }
+    if (this.step === 1 && matchesKey(data, "enter") && !this.checked.some(Boolean)) { this.empty = true; return undefined; }
+    this.empty = false;
+    return super.handleInput(data);
+  }
+
+  protected override firstStepHint(): string { return "↑↓ 选择  空格 勾选  回车 下一步  Esc 取消"; }
+  protected firstStepCursor(): number { return 0; }
+  protected confirmFirstStep(): boolean { return true; }
+  protected firstStepRows(): PickerRow[] { return METHOD_ROWS.map((row) => ({ name: row.name, note: row.note })); }
+  protected save(layer: SettingsLayerName): void { this.options.onSave({ key: "merge-methods", methods: this.picked(), layer }); }
+  private picked(): MergeMethod[] { return MERGE_METHODS.filter((_, index) => this.checked[index]).map((method) => method.key); }
+
+  render(width: number): string[] {
+    if (this.step === 2) return this.layerStep(width, `合并方式 改为 ${methodsText(this.picked())}，存到哪一层`);
     const { theme } = this.options;
-    if (this.step === 1) return [pickerHead(theme, "修改 Git 交付", "第 1 步，共 2 步", width), "", ...pickerList(theme, this.rows(), this.cursor, 10, width)];
-    return [pickerHead(theme, `Git 交付 改为${this.chosen ? "开启" : "关闭"}，存到哪一层`, "第 2 步，共 2 步", width), "",
-      ...pickerList(theme, this.rows(), this.cursor, 10, width), ...(this.options.projectTrusted ? [] : ["", ...untrustedLayerNote(theme, width)])];
+    const note = this.empty ? [theme.fg("error", " ✗ 至少勾一种合并方式")] : wrapText(METHODS_NOTE, width - 1).map((line) => ` ${theme.fg("dim", line)}`);
+    return [pickerHead(theme, "修改合并方式", "第 1 步，共 2 步", width), "",
+      ...checkList(theme, METHOD_ROWS.map((row, index) => ({ ...row, checked: this.checked[index]! })), this.cursor, 14, width), "", ...note];
   }
 }
 
@@ -121,14 +211,17 @@ export class SettingsPageView {
     onSaveSwitch(request: SaveSwitchRequest): void; onClearSwitch(request: ClearSwitchRequest): void;
   };
   private readonly settingsTab: SettingsTab;
-  private readonly switchPicker: SwitchPicker;
+  private readonly deliveryPicker: DeliveryModePicker;
+  private readonly methodsPicker: MergeMethodsPicker;
 
   constructor(options: SettingsPageView["options"]) {
     this.options = options;
     const { theme, settings, projectTrusted } = options;
     this.settingsTab = new SettingsTab({ theme, settings, models: options.models, mainModel: options.mainModel, mainThinking: options.mainThinking, projectTrusted,
       sourceTag: (source) => this.sourceTag(source), onSave: options.onSaveSetting, onClear: options.onClearSetting });
-    this.switchPicker = new SwitchPicker({ theme, current: settings.gitDelivery, projectTrusted, onSave: options.onSaveSwitch, onClear: options.onClearSwitch });
+    const switchOptions = { theme, projectTrusted, onSave: options.onSaveSwitch, onClear: options.onClearSwitch };
+    this.deliveryPicker = new DeliveryModePicker({ ...switchOptions, current: settings.gitDelivery });
+    this.methodsPicker = new MergeMethodsPicker({ ...switchOptions, current: settings.mergeMethods });
     const state = options.state;
     const index = state?.section ? this.sections().indexOf(state.section as Section) : -1;
     if (index >= 0) this.sectionIndex = index;
@@ -157,13 +250,13 @@ export class SettingsPageView {
 
   private rowNames(): string[] {
     if (this.section === "models") return SETTINGS_ROLES.map((role) => role.key);
-    if (this.section === "switches") return ["git-delivery"];
+    if (this.section === "switches") return ["git-delivery", "merge-methods"];
     return this.isDefinitions() ? this.entries().map((entry) => entry.name) : [];
   }
 
   private rowCount(section: Section = this.section): number {
     if (section === "models") return SETTINGS_ROLES.length;
-    if (section === "switches") return 1;
+    if (section === "switches") return 2;
     return section === "problems" ? this.problemRows().length : this.entries(section).length;
   }
 
@@ -198,7 +291,8 @@ export class SettingsPageView {
       rows.push({ file: tilde(problem.path), tailFit: true, source: problem.layer, tone: "error", short: problem.display,
         detail: [{ key: "原因", value: problem.display }, ...(problem.value !== undefined ? [{ key: "现在是", value: problem.value, error: true }] : []),
           { key: "影响", value: problem.role || problem.key ? "这一项没有生效，改用下一层" : "这一层的设定都没有生效，改用下一层" }, { key: "文件", value: tilde(problem.path) }],
-        footer: "改正文件后重新打开本页" });
+        footer: problem.value !== undefined && (problem.key === "git-delivery" || problem.key === "merge-methods")
+          ? `现在的写法：${problem.value} · 删掉这一项或在开关里重新选一次即可` : "改正文件后重新打开本页" });
     }
     for (const entry of this.options.catalog.roles.filter((candidate) => !candidate.available)) {
       rows.push(invalid(basename(entry.path), entry.source, entry.path, entry.problem, entry.reason));
@@ -209,7 +303,7 @@ export class SettingsPageView {
   handleInput(data: string): void {
     if (this.naming) { this.handleNaming(data); return; }
     this.notice = undefined; this.fresh = undefined;
-    const picker = this.settingsTab.picking() ? this.settingsTab : this.switchPicker.picking() ? this.switchPicker : undefined;
+    const picker = this.settingsTab.picking() ? this.settingsTab : this.switchPicker();
     if (picker) { this.notice = picker.handleInput(data); return; }
     if (this.focus === "nav") {
       const last = this.sections().length - 1;
@@ -224,7 +318,7 @@ export class SettingsPageView {
     if (matchesKey(data, "up")) { this.cursor = Math.max(this.cursor - 1, 0); this.expanded = false; return; }
     if (matchesKey(data, "enter")) {
       if (this.section === "models") this.settingsTab.start(SETTINGS_ROLES[this.cursor]!.key);
-      else if (this.section === "switches") this.switchPicker.start();
+      else if (this.section === "switches") (this.cursor === 0 ? this.deliveryPicker : this.methodsPicker).start();
       else if (this.rowCount()) this.expanded = !this.expanded;
       return;
     }
@@ -233,8 +327,12 @@ export class SettingsPageView {
       if (entry?.definition) this.naming = { entry, text: `${entry.name}-copy` };
     } else if (data === "r" || data === "R") {
       if (this.section === "models") this.notice = this.settingsTab.clear(SETTINGS_ROLES[this.cursor]!.key);
-      else if (this.section === "switches") this.notice = this.switchPicker.clear();
+      else if (this.section === "switches") this.notice = (this.cursor === 0 ? this.deliveryPicker : this.methodsPicker).clear();
     }
+  }
+
+  private switchPicker(): DeliveryModePicker | MergeMethodsPicker | undefined {
+    return this.deliveryPicker.picking() ? this.deliveryPicker : this.methodsPicker.picking() ? this.methodsPicker : undefined;
   }
 
   private handleNaming(data: string): void {
@@ -262,7 +360,7 @@ export class SettingsPageView {
   render(width: number): string[] {
     const { theme } = this.options, wide = width >= WIDE;
     const edge = theme.fg("border", "─".repeat(width)), dim = (text: string) => theme.fg("dim", text);
-    const modal = this.naming !== undefined || this.settingsTab.picking() || this.switchPicker.picking();
+    const modal = this.naming !== undefined || this.settingsTab.picking() || this.switchPicker() !== undefined;
     const showPane = wide || this.focus === "pane" || modal;
     const paneWidth = wide ? width - NAV_WIDTH - 1 : width;
     const warning = this.options.projectTrusted ? [] : wrapText("! 项目未受信任：项目层的定义和设定都没有生效", width - 1).map((line) => ` ${theme.fg("warning", line)}`);
@@ -290,7 +388,8 @@ export class SettingsPageView {
     const label = this.isDefinitions() ? this.section : TITLE[this.section]!;
     if (this.naming) return ["设置", label, "复制"];
     if (this.settingsTab.picking()) return ["设置", label, SETTINGS_ROLES[this.cursor]!.label];
-    if (this.switchPicker.picking()) return ["设置", label, "Git 交付"];
+    if (this.deliveryPicker.picking()) return ["设置", label, "Git 交付"];
+    if (this.methodsPicker.picking()) return ["设置", label, "合并方式"];
     return ["设置", label];
   }
 
@@ -309,7 +408,7 @@ export class SettingsPageView {
 
   private paneLines(width: number, withTitle: boolean, modal: boolean): string[] {
     if (this.naming) return this.renderNaming(width);
-    if (modal) return [...(this.settingsTab.picking() ? this.settingsTab.renderPicker(width) : this.switchPicker.render(width)), ""];
+    if (modal) return [...(this.settingsTab.picking() ? this.settingsTab.renderPicker(width) : this.switchPicker()!.render(width)), ""];
     const { theme } = this.options, section = this.section;
     const table = section === "models" ? this.settingsTab.renderList(width, this.focus === "pane" ? this.cursor : -1, this.fresh)
       : section === "switches" ? this.switchPane(width) : section === "problems" ? this.problemPane(width) : this.definitionPane(width);
@@ -381,13 +480,18 @@ export class SettingsPageView {
   }
 
   private switchPane(width: number): string[] {
-    const { theme, settings } = this.options, cols = tableColumns(width), { enabled, source } = settings.gitDelivery, selected = this.selectedRow(0);
+    const { theme, settings } = this.options, cols = tableColumns(width);
+    const { mode, source: modeSource } = settings.gitDelivery, { methods, source: methodsSource } = settings.mergeMethods;
+    const row = (index: number, fresh: string, name: string, source: RoleSource, status: string, style?: (text: string) => string) => {
+      const selected = this.selectedRow(index);
+      return tableRow(theme, selected, width, [
+        [selected ? " ▸ " : "   ", (text) => theme.fg("accent", text)], [pad(name, cols.name), this.fresh === fresh ? (text) => theme.fg("success", text) : undefined],
+        [" ".repeat(6), undefined, this.sourceTag(source)], [" ".repeat(SOURCE - 6)], [fit(status, Math.max(0, width - MARKER - cols.name - SOURCE)), style],
+      ]);
+    };
     return [theme.fg("muted", `${" ".repeat(MARKER)}${pad("名称", cols.name)}${pad("来源", SOURCE)}状态`),
-      tableRow(theme, selected, width, [
-        [selected ? " ▸ " : "   ", (text) => theme.fg("accent", text)], [pad("Git 交付", cols.name), this.fresh === "git-delivery" ? (text) => theme.fg("success", text) : undefined],
-        [" ".repeat(6), undefined, this.sourceTag(source)], [" ".repeat(SOURCE - 6)],
-        [enabled ? "开启" : "关闭", (text) => theme.fg(enabled ? "success" : "dim", text)],
-      ])];
+      row(0, "git-delivery", "Git 交付", modeSource, MODE_LABEL[mode], (text) => theme.fg("accent", text)),
+      row(1, "merge-methods", "合并方式", methodsSource, methodsText(methods, true))];
   }
 
   private renderNaming(width: number): string[] {
@@ -417,8 +521,12 @@ export class SettingsPageView {
     }
     if (section === "models") return this.settingsTab.footer(SETTINGS_ROLES[this.cursor]!.key, width).map((line) => ` ${line}`);
     if (section === "switches") {
-      const source = this.options.settings.gitDelivery.source;
-      return wrap(`Git 交付：开启后${GIT_DELIVERY_ON} · ${source === "default" ? "内置默认值" : source === "user" ? "来自用户层" : "来自项目层"} · 立即生效`);
+      const { gitDelivery, mergeMethods } = this.options.settings;
+      if (this.cursor === 0) {
+        const origin = gitDelivery.source === "default" ? `内置默认值：${defaultModeReason(gitDelivery.detected)} → ${MODE_LABEL[gitDelivery.mode]}` : SOURCE_NOTE[gitDelivery.source];
+        return wrap(`${MODE_FOOT} · ${origin} · 立即生效`);
+      }
+      return wrap(`${METHODS_FOOT} · ${mergeMethods.source === "default" ? "内置默认值：三种都勾" : SOURCE_NOTE[mergeMethods.source]} · 立即生效`);
     }
     if (section === "problems") { const footer = this.problemRows()[this.cursor]?.footer; return footer ? wrap(footer) : []; }
     const definition = this.entries()[this.cursor]?.definition;
@@ -430,7 +538,7 @@ export class SettingsPageView {
     let hint: string;
     if (this.naming) hint = "回车 下一步  Esc 取消";
     else if (this.settingsTab.picking()) hint = this.settingsTab.hint();
-    else if (this.switchPicker.picking()) hint = this.switchPicker.hint();
+    else if (this.switchPicker()) hint = this.switchPicker()!.hint();
     else if (this.focus === "nav") hint = "↑↓ 选分类  → 进右栏  Esc 退出";
     else if (this.section === "models" || this.section === "switches") hint = "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层";
     else hint = `←/Esc 回左栏  ↑↓ 选择  回车 ${this.expanded ? "收起" : "详情"}${this.section === "problems" ? "" : "  C 复制"}`;

@@ -4,8 +4,10 @@ import { resolveInternalModel } from "../settings/internal-model.ts";
 import { askRecordText } from "./ask-question.ts";
 import type { AskQuestion } from "./ask-question.ts";
 import { randomBytes } from "node:crypto";
+import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { adviceOf } from "../../core/exec/tool-failure.ts";
 import type { Context } from "@earendil-works/pi-ai";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostAuthorizationError, HostAuthorizationManager } from "../requirement/host-authorization.ts";
 import { RequirementService } from "../requirement/requirement-service.ts";
@@ -212,11 +214,12 @@ export class MainRequirementInteraction {
     }
     return drafts.slice(0, 32);
   }
-  #internalModel(ctx: ExtensionContext, role: "interpreter" | "draft-verifier", repoId: string) {
+  async #internalModel(ctx: ExtensionContext, role: "interpreter" | "draft-verifier", repoId: string) {
     const repository = this.#host(ctx).repositories.get(repoId);
     if (!repository) return denied("foreign_repo");
-    return resolveInternalModel({ role, agentDir: dirname(this.#options.dataRoot), repositoryRoot: repository.path,
-      projectTrusted: ctx.isProjectTrusted(), registry: ctx.modelRegistry, mainModel: ctx.model, mainThinking: this.#options.mainThinking() });
+    const repositoryRoot = await primaryWorktreeRoot(repository.path);
+    return resolveInternalModel({ role, agentDir: dirname(this.#options.dataRoot), repositoryRoot,
+      projectTrusted: new ProjectTrustStore(dirname(this.#options.dataRoot)).get(repositoryRoot) === true, registry: ctx.modelRegistry, mainModel: ctx.model, mainThinking: this.#options.mainThinking() });
   }
   async #requirementTitle(host: RequirementManageHostContext, repoId: string, requirementId: string): Promise<string | undefined> {
     const hash = this.#authorization.snapshot(repoId, requirementId, host.sessionId).data.saved?.hash;

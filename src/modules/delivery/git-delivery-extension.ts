@@ -1,17 +1,18 @@
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { dirname } from "node:path";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
-import { dirname } from "node:path";
-import { dataRoot } from "../../core/storage/data-root.ts";
-import { readAgentSettings } from "../settings/agent-settings.ts";
 import type { WorkspaceClientsHandle } from "../../core/host/daemon-client.ts";
 import { deliverRequirement } from "./git-delivery.ts";
+import { deliverLocally } from "./local-delivery.ts";
+import { dataRoot } from "../../core/storage/data-root.ts";
+import { readAgentSettings } from "../settings/agent-settings.ts";
 import type { DeliveryFacts } from "./git-delivery.ts";
 import { AdvisedError, toolFailure } from "../../core/exec/tool-failure.ts";
 import { shapeIssue } from "../../core/exec/tool-request.ts";
 import { windowContext } from "../../core/host/extension-lifecycle.ts";
-import { resolveRepoRoot } from "../../core/exec/git-read.ts";
 import { chooseWindow, confirmWindow } from "../../core/host/question-window.ts";
 
 export const GIT_DELIVER_TOOL = "one_company_git_deliver";
@@ -21,33 +22,24 @@ const PARAMETERS = Type.Object({ repoId: Type.String({ pattern: "^[0-9a-f]{64}$"
 interface CloseStatus {
   status: string; reason?: string;
   archive?: DeliveryFacts["archive"];
-  delivery?: { worktree: string; branch: string; codeHead: string } | null;
+  delivery?: { repositoryRoot: string; worktree: string; branch: string; codeHead: string } | null;
 }
 export interface GitDeliveryDeps { clients: () => WorkspaceClientsHandle }
 
 function result(value: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} };
 }
-async function gitDeliveryOn(ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">): Promise<boolean> {
-  const settings = await readAgentSettings({ agentDir: dirname(dataRoot(process.env)), repositoryRoot: await resolveRepoRoot(ctx.cwd), projectTrusted: ctx.isProjectTrusted() });
-  return settings.gitDelivery.enabled;
-}
-export function showGitDeliveryTool(pi: Pick<ExtensionAPI, "getActiveTools" | "setActiveTools">, enabled: boolean): void {
-  const others = pi.getActiveTools().filter((name) => name !== GIT_DELIVER_TOOL);
-  pi.setActiveTools(enabled ? [...others, GIT_DELIVER_TOOL] : others);
-}
 
-/** 可选业务 Git 交付：默认关闭，在 /one:setting 的开关里开启后主窗口才出现交付工具；确认与合并方式都由界面直接问用户。 */
+/** 业务 Git 交付：主窗口始终有交付工具；确认与合并方式都由界面直接问用户。 */
 export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDeps): void {
   pi.registerTool({
     name: GIT_DELIVER_TOOL,
     label: "git_deliver",
-    description: "把已完成并归档的需求交付到 Git：核对完成凭据后提交归档、推送需求分支并建立或复用 PR/MR；推送前和合并方式都由界面直接询问用户。",
+    description: "按 Git 交付档位交付已完成并归档的需求：核对归档已在需求分支中后，远程档位推送并建立或复用 PR/MR，仅本地档位在本机合进主仓库当前分支；推送前和合并方式由界面直接询问用户。",
     parameters: PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams, _signal, _update, ctx: ExtensionContext) {
       const fail: (why: string, next: string) => never = (why, next) => { throw toolFailure(GIT_DELIVER_TOOL, new AdvisedError("git_deliver_failed", { why, next })); };
-      if (!(await gitDeliveryOn(ctx))) fail("Git 交付已关闭", "请用户在 /one:setting 的开关里开启 Git 交付后再交付");
       if (!Value.Check(PARAMETERS, rawParams)) fail(`参数不符合本工具的格式（${shapeIssue(PARAMETERS, rawParams)}）`, "按字段要求改正参数后重试");
       if (!ctx.hasUI) fail("推送前和选择合并方式都要在界面上直接问用户，当前会话没有界面", "在有界面的主窗口里再交付");
       const { repoId, requirementId } = rawParams as Static<typeof PARAMETERS>;
@@ -58,12 +50,23 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
       catch (error) { throw toolFailure(`${GIT_DELIVER_TOOL} 查询需求关闭状态这一步`, error); }
       if (!close.delivery) fail(`需求没有以完成（completed）关闭并归档，当前状态 ${close.status}，关闭原因 ${close.reason ?? "无"}`,
         "只有用户验收通过并以完成关闭的需求才能交付；需求已取消或拒绝时不要交付");
-      const facts: DeliveryFacts = { requirementId, closed: close.status === "closed", reason: close.reason ?? "", archive: close.archive ?? null, ...close.delivery };
-      try { return result(await deliverRequirement(facts, { confirm: (window) => confirmWindow(ctx, window), choose: (window) => chooseWindow(ctx, window) })); }
+      const { repositoryRoot: mainRoot, ...delivery } = close.delivery;
+      const facts: DeliveryFacts = { requirementId, closed: close.status === "closed", reason: close.reason ?? "", archive: close.archive ?? null, ...delivery };
+      try {
+        const agentDir = dirname(dataRoot(process.env));
+        const { gitDelivery, mergeMethods } = await readAgentSettings({ agentDir, repositoryRoot: mainRoot, projectTrusted: new ProjectTrustStore(agentDir).get(mainRoot) === true });
+        const ui = { confirm: (window: Parameters<typeof confirmWindow>[1]) => confirmWindow(ctx, window), choose: (window: Parameters<typeof chooseWindow>[1]) => chooseWindow(ctx, window) };
+        return result(gitDelivery.mode === "local"
+          ? await deliverLocally(facts, ui, { repositoryRoot: mainRoot, mergeMethods: mergeMethods.methods })
+          : await deliverRequirement(facts, ui, { mode: gitDelivery.mode, mergeMethods: mergeMethods.methods }));
+      }
       catch (error) { throw toolFailure(GIT_DELIVER_TOOL, error); }
     },
   });
-  pi.on("session_start", async (_event, ctx) => { showGitDeliveryTool(pi, await gitDeliveryOn(ctx)); });
+  pi.on("session_start", async () => {
+    const active = pi.getActiveTools();
+    if (!active.includes(GIT_DELIVER_TOOL)) pi.setActiveTools([...active, GIT_DELIVER_TOOL]);
+  });
 }
 
 export default function gitDeliveryExtension(pi: ExtensionAPI): void {

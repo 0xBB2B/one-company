@@ -3,7 +3,7 @@ import { adviceOf, COMMON_ADVICE, withDetail } from "../../core/exec/tool-failur
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { Type } from "typebox";
 import type { Static } from "typebox";
-import { CheckRoundService } from "../verification/check-round.ts";
+import { CheckRoundService, type CheckRoundServiceOptions } from "../verification/check-round.ts";
 import { authorizeToolAction } from "../../core/policy/core-permissions.ts";
 import { checked, hash, id, object, PmLease, positive } from "../requirement/requirement-contracts.ts";
 import { checkServiceInput } from "../requirement/requirement-manage-contracts.ts";
@@ -70,6 +70,7 @@ export interface WorkflowManageAuthorization { readonly grant: Readonly<Workflow
 export interface WorkflowManageToolOptions {
   repositoryRoot: string;
   dataRoot: string;
+  deliveryMode: CheckRoundServiceOptions["deliveryMode"];
   grant: WorkflowManageGrant;
   /** 必须由宿主核验当前物理会话/调用者及动作许可；关闭回执须对照真实用户交互核验。 */
   authorize: (request: Readonly<WorkflowManageAuthorization>) => boolean;
@@ -103,7 +104,7 @@ async function openWorkflowManageTool(options: WorkflowManageToolOptions) {
   }
   host("status");
   const config = { repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, repoId: grant.repoId };
-  const rounds = await CheckRoundService.open({ ...config, authorize: (request) => !disposed && request.requirementId === grant.requirementId &&
+  const rounds = await CheckRoundService.open({ ...config, deliveryMode: options.deliveryMode, authorize: (request) => !disposed && request.requirementId === grant.requirementId &&
     (request.lease === undefined || (grant.lease !== undefined && request.lease.runId === grant.lease.runId && request.lease.fence === grant.lease.fence)) });
   const close = await RequirementCloseService.open({ ...config, stopAgents: options.stopAgents, authorize: (request) => {
     if (disposed || request.requirementId !== grant.requirementId) return false;

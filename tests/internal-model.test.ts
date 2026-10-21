@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "vitest";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { resolveInternalModel } from "../src/modules/settings/internal-model.ts";
+import { initRepoWithOrigin, installFakeGh } from "./helpers/fake-gh.ts";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -99,4 +100,15 @@ test.each<Role>(["interpreter", "draft-verifier"])("用户层旧的%s定义文�
   await mkdir(join(w.agentDir, "agents"), { recursive: true });
   await writeFile(join(w.agentDir, "agents", `${role}.md`), `---\nname: ${role}\ndescription: d\nrole: ${role}\nmodel: 5x/gpt-6-luna\nthinking: low\n---\n`);
   expect(await w.resolve(role, { mainThinking: "high" })).toEqual({ model: MAIN, thinking: "high" });
+});
+
+test("取内部模型只读角色设定，不为探测 Git 交付档位去调用 gh", async () => {
+  const gh = await installFakeGh();
+  try {
+    const w = await world();
+    await initRepoWithOrigin(w.repo, "git@github.com:acme/shop.git");
+    gh.ghLoggedIn(["github.com"]);
+    expect(await w.resolve("interpreter", { mainThinking: "high" })).toEqual({ model: MAIN, thinking: "high" });
+    expect(await readFile(process.env.FAKE_GH_LOG!, "utf8").catch(() => "")).toBe("");
+  } finally { await gh.restore(); }
 });

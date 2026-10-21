@@ -162,7 +162,7 @@ export class QuestionWindowView {
     }
 
     const index = this.tab, question = this.options.questions[index]!, state = this.states[index]!;
-    if (!warning && question.caption) lines.push(...wrapPlain(question.caption, width - 1).map((piece) => ` ${muted(piece)}`), "");
+    if (question.caption) lines.push(...wrapPlain(question.caption, width - 1).map((piece) => ` ${muted(piece)}`), "");
     if (warning) lines.push(...wrap(theme.fg("warning", theme.bold(question.question)), 1), "");
     else lines.push(...wrapPlain(question.question, width - 1).map((piece) => ` ${theme.bold(piece)}`), "");
     if (!warning && question.rootCheck) {
@@ -283,8 +283,9 @@ export async function confirmWindow(host: WindowHost, window: ProgramWindow, sig
 }
 
 /** 程序选择窗口：返回用户选中的选项名，取消时为 undefined。 */
-export async function chooseWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; cancelNote?: string }, signal?: AbortSignal): Promise<string | undefined> {
-  const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices, ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}) }], "warning", signal);
+export async function chooseWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; cancelNote?: string; caption?: string }, signal?: AbortSignal): Promise<string | undefined> {
+  const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices, ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}),
+    ...(window.caption ? { caption: window.caption } : {}) }], "warning", signal);
   return answers?.[0]?.choices[0];
 }
 

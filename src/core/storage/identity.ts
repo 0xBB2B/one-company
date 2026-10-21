@@ -123,6 +123,14 @@ export async function discoverWorkspace(startDir: string): Promise<Workspace> {
   return { repos, skipped };
 }
 
+export async function primaryWorktreeRoot(dir: string): Promise<string> {
+  try {
+    return (await listWorktrees(dir))[0] ?? dir;
+  } catch {
+    return dir;
+  }
+}
+
 export async function listWorktrees(dir: string): Promise<string[]> {
   const capturedDir = dir;
   let stdout: string;

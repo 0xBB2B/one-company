@@ -1,5 +1,4 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { showGitDeliveryTool } from "../../modules/delivery/git-delivery-extension.ts";
 import { openSettingsPage } from "../../modules/settings/settings-extension.ts";
 import type { SettingsExtensionContext } from "../../modules/settings/settings-extension.ts";
 import { openShellUiPage } from "../../modules/shell/shell-ui-extension.ts";
@@ -18,8 +17,7 @@ export interface CommandsPi {
 }
 
 export interface RegisterCommandsOptions {
-  openSettingsPage: (ctx: SettingsExtensionContext, options: { mainThinking: () => string; onGitDeliveryChanged: (enabled: boolean) => void }) => Promise<void>;
-  onGitDeliveryChanged: (enabled: boolean) => void;
+  openSettingsPage: (ctx: SettingsExtensionContext, options: { mainThinking: () => string }) => Promise<void>;
   openShellPage: (ctx: OpenShellPageCtx) => Promise<void>;
 }
 
@@ -29,7 +27,7 @@ async function openSettingOrReport(
   ctx: CommandsCtx,
 ): Promise<void> {
   try {
-    await options.openSettingsPage(ctx, { mainThinking: () => pi.getThinkingLevel(), onGitDeliveryChanged: options.onGitDeliveryChanged });
+    await options.openSettingsPage(ctx, { mainThinking: () => pi.getThinkingLevel() });
   } catch (error) {
     ctx.ui.notify((error as Error).message);
   }
@@ -70,6 +68,5 @@ export default function commandsExtension(pi: ExtensionAPI): void {
   registerCommands(pi, {
     openSettingsPage,
     openShellPage: openShellUiPage,
-    onGitDeliveryChanged: (enabled) => showGitDeliveryTool(pi, enabled),
   });
 }

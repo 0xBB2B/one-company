@@ -179,7 +179,7 @@ test("M9：QA 只验已确认的实施目标段与验收段，未验证项指向
   await w.assess([[w.byKey(w.first, "login"), "unaffected"], [w.byKey(w.first, "failure"), "affected"]]);
   for (const task of w.first.tasks) w.setStatus(task.taskId, "completed");
   const { fixture } = w, record = w.revision();
-  const rounds = await CheckRoundService.open({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, authorize: () => true });
+  const rounds = await CheckRoundService.open({ deliveryMode: async () => "remote" as const, repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, repoId: fixture.repoId, authorize: () => true });
   clean.push(() => rounds.dispose());
   const round = await rounds.openRound({ lease: fixture.lease });
   const qaRunId = uuidv7();

@@ -59,9 +59,9 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "m
     ui: { notify: (text: string) => notifications.push(text), confirm: () => { throw new Error("UI.confirm forbidden"); },
       ...answeringUi(async (window) => { windows.push(window); await beforeAnswer?.(); return windowAnswer; }) },
     sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
-  let reachable = true;
+  let reachable = true, hostPath = repositoryRoot;
   const interaction = new MainRequirementInteraction({ mainThinking: () => "off", ...options, dataRoot, authorization,
-    resolveHost: () => { if (!reachable) throw new HostAuthorizationError("host_unavailable"); return { windowId, sessionId, repositories: new Map([[repoId, { path: repositoryRoot }]]) }; } });
+    resolveHost: () => { if (!reachable) throw new HostAuthorizationError("host_unavailable"); return { windowId, sessionId, repositories: new Map([[repoId, { path: hostPath }]]) }; } });
   cleanup.push(async () => { interaction.dispose(); authorization.shutdown(); await rm(root, { recursive: true, force: true }); });
   const manage = createRequirementManageTool({ interaction }), user = createUserInteractTool({ interaction });
   const call = async (params: Record<string, unknown>, userTool = false) => {
@@ -83,7 +83,8 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "m
   const request = async (created: Record<string, unknown>) =>
     ({ input: { requirementId: String(created.requirementId), savedOperationId: String(created.operationId), version: Number(created.version) } });
   const setReachable = (value: boolean) => { reachable = value; };
-  return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage, setReachable,
+  const setHostPath = (value: string) => { hostPath = value; };
+  return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage, setReachable, setHostPath,
     windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; }, beforeAnswer: (hook: () => Promise<void>) => { beforeAnswer = hook; } };
 }
 /** 明确fixture语义输出；调用仍经过真实ModelRegistry/provider与生产解释适配器。 */
@@ -143,6 +144,77 @@ describe("主窗口共享控制器的真实服务路径", () => {
     await expect(w.call({ action: "create", summary: "简介", title: "另一个", body: BODY }))
       .rejects.toMatchObject({ code: "internal_model_unavailable", message: expect.stringContaining("草稿核验器配置的模型 nowhere/missing 不可用：本机的模型配置里找不到模型 nowhere/missing") });
     expect(w.provider.requests.length).toBe(calls);
+  });
+
+  describe.each([
+    ["父目录信任、仓库不信任", true, false, "controlled"],
+    ["父目录不信任、仓库信任", false, true, "gpt-6.1-sol"],
+  ])("按 trust.json 里离仓库最近的一条判断项目层（%s）", (_label, parentTrusted, repositoryTrusted, expectedModel) => {
+    const prepare = async (key: "interpreter" | "draft-verifier") => {
+      const w = await world();
+      vi.stubEnv("PI_CODING_AGENT_DIR", w.root);
+      cleanup.push(async () => { vi.unstubAllEnvs(); });
+      await writeFile(join(w.root, "settings.json"), JSON.stringify({ "one-company": { [key]: { model: `${w.provider.providerId}/controlled`, thinking: null } } }));
+      await mkdir(join(w.repositoryRoot, ".pi"), { recursive: true });
+      await writeFile(join(w.repositoryRoot, ".pi", "settings.json"), JSON.stringify({ "one-company": { [key]: { model: `${w.provider.providerId}/gpt-6.1-sol`, thinking: null } } }));
+      const store = new ProjectTrustStore(w.root);
+      store.set(w.root, parentTrusted); store.set(w.repositoryRoot, repositoryTrusted);
+      (w.ctx as { isProjectTrusted: () => boolean }).isProjectTrusted = () => !repositoryTrusted;
+      return w;
+    };
+
+    test("解释器", async () => {
+      const w = await prepare("interpreter"), created = await w.create(), { input } = await w.request(created);
+      w.capture("同意"); scriptReview(w.provider, phoneReview);
+      const before = w.provider.models.length;
+      await w.call({ action: "confirmUpdate", ...input });
+      expect(w.provider.models.slice(before)).toEqual([expectedModel]);
+    });
+
+    test("草稿核验器", async () => {
+      const w = await prepare("draft-verifier");
+      w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+      const before = w.provider.models.length;
+      await w.call({ action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY });
+      expect(w.provider.models.slice(before)).toEqual([expectedModel]);
+    });
+  });
+
+  describe.each([
+    ["主仓库信任、worktree 不信任", true, false, "gpt-6.1-sol"],
+    ["主仓库不信任、worktree 信任", false, true, "controlled"],
+  ])("在 linked worktree 里打开 pi，项目层按主仓库目录判断（%s）", (_label, mainTrusted, worktreeTrusted, expectedModel) => {
+    const prepare = async (key: "interpreter" | "draft-verifier") => {
+      const w = await world();
+      vi.stubEnv("PI_CODING_AGENT_DIR", w.root);
+      cleanup.push(async () => { vi.unstubAllEnvs(); });
+      const worktree = join(w.root, "wt");
+      await git(w.repositoryRoot, ["worktree", "add", "-q", worktree]);
+      await writeFile(join(w.root, "settings.json"), JSON.stringify({ "one-company": { [key]: { model: `${w.provider.providerId}/controlled`, thinking: null } } }));
+      await mkdir(join(w.repositoryRoot, ".pi"), { recursive: true });
+      await writeFile(join(w.repositoryRoot, ".pi", "settings.json"), JSON.stringify({ "one-company": { [key]: { model: `${w.provider.providerId}/gpt-6.1-sol`, thinking: null } } }));
+      const store = new ProjectTrustStore(w.root);
+      store.set(w.repositoryRoot, mainTrusted); store.set(worktree, worktreeTrusted);
+      (w.ctx as { cwd: string }).cwd = worktree; w.setHostPath(worktree);
+      (w.ctx as { isProjectTrusted: () => boolean }).isProjectTrusted = () => worktreeTrusted;
+      return w;
+    };
+
+    test("解释器", async () => {
+      const w = await prepare("interpreter"), created = await w.create(), { input } = await w.request(created);
+      w.capture("同意"); scriptReview(w.provider, phoneReview);
+      const before = w.provider.models.length;
+      await w.call({ action: "confirmUpdate", ...input });
+      expect(w.provider.models.slice(before)).toEqual([expectedModel]);
+    });
+
+    test("草稿核验器", async () => {
+      const w = await prepare("draft-verifier");
+      w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+      const before = w.provider.models.length;
+      await w.call({ action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY });
+      expect(w.provider.models.slice(before)).toEqual([expectedModel]);
+    });
   });
 
   test("设定没写思考等级时，解释器用主窗口当前的思考等级", async () => {
@@ -364,6 +436,33 @@ describe("主窗口共享控制器的真实服务路径", () => {
     w.capture("批准这版。"); scriptReview(w.provider, (c) => wholeReview(c, "goal.A"));
     expect(await w.call({ action: "confirmUpdate", ...next.input })).toMatchObject({ prdActivated: true });
     expect(state.read(first.input.requirementId).data.docSpec).toEqual(snapshot);
+  });
+  describe.each([
+    ["主仓库信任、worktree 不信任", true, false, ["goal", "build", "check"]],
+    ["主仓库不信任、worktree 信任", false, true, ["background", "requirements", "features", "implementation", "acceptance"]],
+  ])("在 linked worktree 里打开 pi，批准时存下的规范按主仓库目录判断项目层（%s）", (_label, mainTrusted, worktreeTrusted, expectedIds) => {
+    test("存下的规范板块", async () => {
+      const w = await world(), worktree = join(w.root, "wt");
+      await git(w.repositoryRoot, ["worktree", "add", "-q", worktree]);
+      const skillFile = (ids: [string, string, string]) => `---\nname: requirement-doc\ndescription: 三板块\nsections:\n  - { id: ${ids[0]}, title: 目标, goal: true }\n` +
+        `  - { id: ${ids[1]}, title: 实现, record: implementation }\n  - { id: ${ids[2]}, title: 验收, record: acceptance }\n---\n三板块写法。\n`;
+      for (const [root, ids] of [[w.repositoryRoot, ["goal", "build", "check"]], [worktree, ["aim", "make", "verify"]]] as const) {
+        const dir = join(root, ".pi", "skills", "requirement-doc");
+        await mkdir(dir, { recursive: true }); await writeFile(join(dir, "SKILL.md"), skillFile([...ids]));
+      }
+      const store = new ProjectTrustStore(w.root);
+      store.set(w.repositoryRoot, mainTrusted); store.set(worktree, worktreeTrusted);
+      vi.stubEnv("PI_CODING_AGENT_DIR", w.root);
+      cleanup.push(async () => { vi.unstubAllEnvs(); });
+      (w.ctx as { cwd: string }).cwd = worktree; w.setHostPath(worktree);
+      (w.ctx as { isProjectTrusted: () => boolean }).isProjectTrusted = () => worktreeTrusted;
+      const body = mainTrusted ? "## 目标 {#goal}\n登录需求。\n### 手机号 {#goal.A}\n增加手机号登录。\n## 实现 {#build}\n由 PM 规划。\n## 验收 {#check}\n手机号能登录。\n" : BODY;
+      const created = await w.create(body), { input } = await w.request(created);
+      w.capture("同意"); scriptReview(w.provider, (c) => wholeReview(c, mainTrusted ? "goal.A" : "A"));
+      expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ prdActivated: true });
+      const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+      expect((state.read(input.requirementId).data.docSpec as { sections: Array<{ id: string }> }).sections.map((section) => section.id)).toEqual(expectedIds);
+    });
   });
   test("M8O-AC2：需求存下的规范快照没有标出实施目标板块时，批准直接报错写明原因，不调用模型、不激活", async () => {
     const w = await world(), created = await w.create(), first = await w.request(created), before = w.provider.requests.length;

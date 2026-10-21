@@ -276,6 +276,8 @@ export class RunManager {
     this.started = true; this.resolveStarted();
   }
   async awaitStarted(): Promise<void> { if (!this.started) await this.startedPromise; }
+  private async deliveryMode() { return (await this.options.loadAgentSettings()).gitDelivery.mode; }
+
   private async pmState(): Promise<RequirementStateStore> {
     const { repositoryRoot, dataRoot, repoId } = this.options;
     return RequirementStateStore.open({ repositoryRoot, dataRoot, repoId, authorize: (request) => request.repoId === repoId && PM_STATE_ACTIONS.includes(request.action) });
@@ -329,7 +331,7 @@ export class RunManager {
     let tools: PmTools | undefined;
     let handle: AgentSessionHandle;
     try {
-      tools = await createPmTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, lease, workspace,
+      tools = await createPmTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, deliveryMode: () => this.deliveryMode(), lease, workspace,
         epoch: record.data.epoch, alive, checkLease: () => state.checkPm(lease),
         currentBaseline: () => {
           const current = state.read(input.requirementId).data;
@@ -351,7 +353,7 @@ export class RunManager {
         context: await this.withConventions(pmContext(record.data, lease, pmSourceDirectory({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
           pmDecisionNotes({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
           await prototypesAtRevision({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId, record.data.revision))), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ requirementId: input.requirementId, worktree: workspace.path, branch: workspace.branch, alive,
-          checkPhaseActive, writeScope: () => withDatabase(this.database, (db) => readPlanIn(db, input.requirementId)?.tasks ?? []).flatMap((task) => task.writePaths) }), createPmSyncTool({ repositoryRoot: this.options.repositoryRoot, worktree: workspace.path, branch: workspace.branch, alive, checkPhaseActive,
+          checkPhaseActive, writeScope: () => withDatabase(this.database, (db) => readPlanIn(db, input.requirementId)?.tasks ?? []).flatMap((task) => task.writePaths) }), createPmSyncTool({ repositoryRoot: this.options.repositoryRoot, worktree: workspace.path, branch: workspace.branch, deliveryMode: () => this.deliveryMode(), alive, checkPhaseActive,
           quiescent: () => this.metadataRows().every((row) => row.requirement !== input.requirementId || row.kind !== "role" || isTerminalState(row.state)) &&
             withDatabase(this.database, (db) => { try { assertWritersQuiescentIn(db, this.repoId, input.requirementId); return true; } catch { return false; } }) })],
         runtime: this.options.runtime, modelRef, thinking,
@@ -1280,7 +1282,7 @@ export class RunManager {
     const ref = { dataRoot: this.options.dataRoot, repoId: this.repoId };
     let tool: Awaited<ReturnType<typeof createWorkflowManageTool>>;
     try {
-      tool = await createWorkflowManageTool({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot,
+      tool = await createWorkflowManageTool({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, deliveryMode: () => this.deliveryMode(),
         stopAgents: (id) => this.stopRequirement(id, { reason: "requirement_closing" }),
         grant: { role: "main", callerId: uuidv7(), runId: uuidv7(), requirementId, repoId: this.repoId, workspaceId: record.workspace.workspaceId, branch: record.workspace.branch },
         authorize: (check) => {

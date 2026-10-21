@@ -87,6 +87,13 @@ describe("README 必需句", () => {
     "pi install git:github.com/0xBB2B/one-company",
     "pi remove",
     "Node",
+    "Git ≥ 2.38",
+    "仅本地",
+    "merge-methods",
+    "Default to pull request title and description",
+    "Allow auto-merge",
+    "Squash commit message template",
+    "--diff-filter=A",
   ];
   for (const phrase of REQUIRED) {
     test(`含: ${phrase}`, async () => {
@@ -97,7 +104,7 @@ describe("README 必需句", () => {
 });
 
 describe("README 禁止句", () => {
-  const FORBIDDEN = ["pi-subagents", "符号链接", "/spec-new"];
+  const FORBIDDEN = ["pi-subagents", "符号链接", "/spec-new", "推荐用 rebase", "PR 用哪种方式合并", "开启 Git 交付", "`true` 或 `false`"];
   for (const phrase of FORBIDDEN) {
     test(`不含: ${phrase}`, async () => {
       const body = await readText(README);
@@ -105,6 +112,16 @@ describe("README 禁止句", () => {
     });
   }
 
+});
+
+describe("README 仓库合并设置提示框", () => {
+  test("提示框放在「前置条件」之后、「安装」之前", async () => {
+    const body = await readText(README);
+    const box = body.indexOf("> [!IMPORTANT]");
+    expect(box).toBeGreaterThan(body.indexOf("## 前置条件"));
+    expect(box).toBeLessThan(body.indexOf("## 安装"));
+    expect(body.slice(box, body.indexOf("## 安装"))).toContain("Squash commit message template");
+  });
 });
 
 describe("README 常量与实际代码一致", () => {
@@ -169,8 +186,12 @@ describe("旧命令与旧页面已清除", () => {
     });
   }
 
-  test("主代理提示词写在 /one:setting 的开关里开启 Git 交付", async () => {
-    expect(await readText(join(PACKAGE_ROOT, "rules/01-main-session.md"))).toContain("在 /one:setting 的开关里开启 Git 交付");
+  test("主代理提示词按远程档位和仅本地档位两档说 Git 交付", async () => {
+    const rules = await readText(join(PACKAGE_ROOT, "rules/01-main-session.md"));
+    expect(rules).toContain("Git 交付在远程档位时");
+    expect(rules).toContain("仅本地档位");
+    expect(rules).not.toContain("开关里开启 Git 交付");
+    expect(rules).not.toContain("未开启时推送与合并由用户在外部操作");
   });
 
   test("主代理提示词的提问条目写明问题等文字不用我、你、您，指人写用户或角色，指自己写 AI", async () => {
@@ -200,6 +221,18 @@ describe("旧命令与旧页面已清除", () => {
 
   test("旧的角色定义页源文件已不存在", () => {
     expect(existsSync(join(PACKAGE_ROOT, "src/modules/settings/agent-catalog-ui.ts"))).toBe(false);
+  });
+});
+
+describe("验收单点数量", () => {
+  test("AGENTS.md 和 CONTRIBUTING.md 里搜不到旧的单点数量，CONTRIBUTING.md 的编号表有 P14", async () => {
+    const agents = await readText(join(PACKAGE_ROOT, "AGENTS.md"));
+    const contributing = await readText(CONTRIBUTING);
+    for (const text of [agents, contributing]) {
+      expect(text).not.toContain("P1–P13");
+      expect(text).not.toContain("13 个单点");
+    }
+    expect(contributing).toMatch(/^\| P14 \|/m);
   });
 });
 

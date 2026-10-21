@@ -119,7 +119,7 @@ test("M7-AC26：专业 worker 运行中不能开启正式检查；换专业名�
   w.provider.queue.push({ type: "text", text: "慢慢做", chunkDelayMs: 3_000 });
   const run = await w.dispatch("ui");
   await until(async () => { const current = await w.runStore.get(run.runId); return current.ok && current.run.state === "running"; });
-  const rounds = await CheckRoundService.open({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, authorize: () => true });
+  const rounds = await CheckRoundService.open({ deliveryMode: async () => "remote" as const, repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, authorize: () => true });
   cleanups.push(() => rounds.dispose());
   await expect(rounds.openRound({ lease: w.lease })).rejects.toMatchObject({ code: "workers_active" });
   await w.manager.stopRequirement(w.fixture.requirementId, { reason: "requirement_closing" });

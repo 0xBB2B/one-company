@@ -24,7 +24,7 @@ const spec = (key: string, goal: string, patch: Partial<TaskSpec> = {}): TaskSpe
 
 async function pmEscalator(w: Awaited<ReturnType<typeof createPmRunWorld>>) {
   const record = w.fixture.state.read(w.fixture.requirementId).data;
-  const pmTools = await createPmTools({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
+  const pmTools = await createPmTools({ deliveryMode: async () => "remote" as const, repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
     workspace: record.workspace!, epoch: record.epoch, alive: () => true, checkLease: async () => {},
     currentBaseline: () => ({ approvedRevision: 1, approvedPrdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
     agents: { dispatch: async () => ({}), control: async () => ({}) } });
@@ -486,7 +486,7 @@ test("M7-AC35：用户原话取消需求后主代理以该决定关闭需求，P
 
   expect(await close("cancelled", uuidv7())).toMatchObject({ status: "rejected", missing: ["关闭依据的用户决定无效：找不到这个决定编号对应的用户决定"] });
   const record = w.fixture.state.read(w.fixture.requirementId).data;
-  const pmTools = await createPmTools({ repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
+  const pmTools = await createPmTools({ deliveryMode: async () => "remote" as const, repositoryRoot: w.fixture.repositoryRoot, dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease,
     workspace: record.workspace!, epoch: record.epoch, alive: () => true, checkLease: async () => {},
     currentBaseline: () => ({ approvedRevision: 1, approvedPrdHash: record.approved!.hash, approvalManifestHash: record.approvalManifest!.reference.manifestHash }),
     agents: { dispatch: async () => ({}), control: async () => ({}) } });

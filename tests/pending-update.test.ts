@@ -56,7 +56,7 @@ async function world() {
   const lease = await state.acquirePm({ requirementId: created.requirementId, version: state.read(created.requirementId).version, runId: uuidv7(), expectedFence: 0 });
   const record = state.read(created.requirementId).data;
   const workspace = record.workspace!;
-  const rounds = await CheckRoundService.open({ ...options, authorize: () => true });
+  const rounds = await CheckRoundService.open({ deliveryMode: async () => "remote" as const, ...options, authorize: () => true });
   cleanups.push(async () => rounds.dispose());
   async function verification(role: "qa" | "reviewer" | "worker", runId = uuidv7()) {
     const instance = await createVerificationRunTool({ repositoryRoot: options.repositoryRoot, dataRoot: options.dataRoot, authorize: () => true,

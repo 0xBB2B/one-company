@@ -15,7 +15,7 @@ import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failur
 import type { CoreToolRuntime } from "../../modules/agents/role-tools.ts";
 import { createPlanManageTool, PLAN_MANAGE_PARAMETERS } from "../../modules/pm/plan-manage.ts";
 import { createVerificationRunTool, VERIFICATION_RUN_PARAMETERS } from "../../modules/pm/verification-run.ts";
-import { createWorkflowManageTool, WORKFLOW_MANAGE_PARAMETERS } from "../../modules/delivery/workflow-manage.ts";
+import { createWorkflowManageTool, WORKFLOW_MANAGE_PARAMETERS, type WorkflowManageToolOptions } from "../../modules/delivery/workflow-manage.ts";
 import { EXPLORE_WEB_QUERY, exploreSource } from "../../modules/explore/explore-dispatch.ts";
 import type { ExploreSourceRequest } from "../../modules/explore/explore-dispatch.ts";
 
@@ -23,6 +23,7 @@ export interface PmToolsInput {
   repositoryRoot: string;
   dataRoot: string;
   repoId: string;
+  deliveryMode: WorkflowManageToolOptions["deliveryMode"];
   lease: PmLease;
   workspace: WorkspaceBinding;
   epoch: number;
@@ -82,7 +83,7 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
   const track = <T extends CoreToolRuntime>(runtime: T): T => { runtimes.push(runtime); return runtime; };
   try {
     const read = track(await createRequirementReadTool({ ...shared, authorize, binding: { ...identity(), lease: input.lease } }));
-    const workflow = track(await createWorkflowManageTool({ ...shared, authorize, grant: { ...identity(), lease: input.lease } }));
+    const workflow = track(await createWorkflowManageTool({ ...shared, deliveryMode: input.deliveryMode, authorize, grant: { ...identity(), lease: input.lease } }));
     const verification = track(await createVerificationRunTool({ ...shared, authorize, grant: { ...identity(), epoch: input.epoch } }));
     const { branch: _branch, ...planIdentity } = identity();
     const plan = track(await createPlanManageTool({ ...shared, authorize, grant: { ...planIdentity, lease: input.lease } }));

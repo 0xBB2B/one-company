@@ -168,6 +168,22 @@ test("chooseWindow 返回选中项的名字，Esc 返回 undefined", async () =>
   expect(await chooseWindow(fakeUi((c) => c.handleInput(ESC)), request)).toBeUndefined();
 });
 
+test("程序选择窗口：警告色调的 caption 画在顶部边框之下、标题之上，灰色，后面空一行", () => {
+  const lines = view({ tone: "warning", questions: [{ caption: "交付到本地分支", question: "合进 main，怎么合并？", choices: [{ label: "压缩合并" }] }] }).text().split("\n");
+  expect(lines[0]).toBe("<warning>" + "─".repeat(80) + "</>");
+  expect(lines[1]).toBe(" <muted>交付到本地分支</>");
+  expect(lines[2]).toBe("");
+  expect(lines[3]).toBe(" <warning><b>合进 main，怎么合并？</b></>");
+});
+
+test("chooseWindow 带 caption 时把灰字画在标题之上", async () => {
+  let rendered: string[] = [];
+  await chooseWindow(fakeUi((c) => { rendered = (c as unknown as { render(width: number): string[] }).render(80); c.handleInput(ENTER); }),
+    { title: "合进 main，怎么合并？", caption: "交付到本地分支", lines: [], choices: [{ label: "压缩合并" }] });
+  expect(rendered.indexOf(" <muted>交付到本地分支</>")).toBeGreaterThan(0);
+  expect(rendered.indexOf(" <muted>交付到本地分支</>")).toBeLessThan(rendered.findIndex((line) => line.includes("合进 main，怎么合并？")));
+});
+
 test("M8D-AC8：不可选的选项整行变暗并写明原因，光标跳过它，停在它上面也按不下去", async () => {
   const { window, text, done } = view({ tone: "warning", questions: [{ question: "复制解释器到哪一层？",
     choices: [{ label: "用户层", disabled: "已有 ~/.pi/agent/agents/interpreter.md" }, { label: "项目层", description: "~/p/.pi/agents/interpreter.md" }, { label: "别处", disabled: "项目未受信任" }] }] });

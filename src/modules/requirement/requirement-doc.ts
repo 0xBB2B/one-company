@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseFrontmatter, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
+import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { PRD_SECTION_ID_PATTERN } from "./prd-view.ts";
 import type { RequirementDocSpecSchema } from "./requirement-contracts.ts";
 
@@ -49,10 +50,11 @@ export async function resolveRequirementDoc(input: { repoRoot?: string; agentDir
   throw new RequirementDocError(`找不到需求文档规范 requirement-doc/SKILL.md（包内默认 ${packageSkillsDir()} 缺失）`);
 }
 
-/** 产品里需求所在仓库的规范：agentDir 与 daemon 一致取数据根的上级目录，项目层只在该仓库受信任时生效。 */
-export function resolveRepositoryRequirementDoc(dataRoot: string, repoRoot: string): Promise<ResolvedRequirementDoc> {
+/** 产品里需求所在仓库的规范：agentDir 与 daemon 一致取数据根的上级目录，项目层只在该仓库受信任时生效；信任和文件都按主工作区取，这样在 worktree 里打开时和设置页、守护进程的结果一致。 */
+export async function resolveRepositoryRequirementDoc(dataRoot: string, repoRoot: string): Promise<ResolvedRequirementDoc> {
   const agentDir = dirname(dataRoot);
-  return resolveRequirementDoc({ repoRoot, agentDir, projectTrusted: new ProjectTrustStore(agentDir).get(repoRoot) === true });
+  const primaryRoot = await primaryWorktreeRoot(repoRoot);
+  return resolveRequirementDoc({ repoRoot: primaryRoot, agentDir, projectTrusted: new ProjectTrustStore(agentDir).get(primaryRoot) === true });
 }
 
 function checkSections(value: unknown, invalid: (reason: string) => never): RequirementDocSection[] {

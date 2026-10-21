@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { COMMON_ADVICE, withDetail } from "../../core/exec/tool-failure.ts";
+import { AdvisedError, COMMON_ADVICE, withDetail } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { lstat, readFile, readlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -17,6 +17,7 @@ import { RequirementStateStore } from "../requirement/requirement-state.ts";
 import { verifyRequirementWorkspace } from "../requirement/requirement-workspace.ts";
 import { isTerminalState } from "../agents/run-store.ts";
 import type { RunRecord } from "../agents/run-store.ts";
+import type { DeliveryMode } from "../../core/exec/git-host.ts";
 import { includesCommit, localTargetBranch } from "../../core/exec/target-branch.ts";
 
 export const CHECK_ROUNDS = "check_rounds";
@@ -179,6 +180,7 @@ export interface CheckRoundServiceOptions {
   repositoryRoot: string;
   dataRoot: string;
   repoId: string;
+  deliveryMode: () => Promise<DeliveryMode>;
   /** 必须由宿主核验当前物理 PM 会话/调用者；不能从模型参数或角色文本构造 true。 */
   authorize: (request: Readonly<CheckRoundAuthorization>) => boolean;
   now?: () => number;
@@ -264,7 +266,10 @@ export class CheckRoundService {
     await verifyRequirementWorkspace(this.options.dataRoot, record.workspace);
     await this.state.checkPm(lease);
     const manifest = await collectInputManifest(record.workspace.path);
-    const target = await localTargetBranch(this.options.repositoryRoot, record.workspace.path).catch(() => null);
+    const target = await localTargetBranch(this.options.repositoryRoot, record.workspace.path, await this.options.deliveryMode()).catch((error: unknown) => {
+      if (error instanceof AdvisedError) throw error;
+      return null;
+    });
     if (!target || !(await includesCommit(record.workspace.path, target.sha))) throw new CheckRoundError("sync_required", target?.ref ?? "目标分支未拉取");
     const workspace = record.workspace, approved = record.approved, revision = record.revision;
     this.authorize({ action: "open", requirementId: lease.requirementId, lease });
