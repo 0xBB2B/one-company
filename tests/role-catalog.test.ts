@@ -66,6 +66,15 @@ describe("内置默认团队", () => {
     expect(problems).toEqual([]);
   });
 
+  test("内置定义声明的 skill 都在包内 skills/ 下", async () => {
+    const { roles: entries } = await loadDefaults();
+    const declared = entries.flatMap((entry) => (entry.definition?.skills ?? []));
+    expect(declared.length).toBeGreaterThan(0);
+    for (const skill of new Set(declared)) {
+      await expect(readFile(join(defaultRoleDir(), "..", "skills", skill, "SKILL.md"), "utf8"), `缺少 skills/${skill}/SKILL.md`).resolves.toBeTruthy();
+    }
+  });
+
   test.each(SPECIALIZED)("$name 的职责是 $role，skills 按约定顺序，description 与正文都写明「$label」，不写 model、thinking，mcp 为空", async ({ name, role, label, skills }) => {
     const definition = await readRoleDefinition(join(defaultRoleDir(), `${name}.md`), parseFrontmatter);
     expect(definition.name).toBe(name);

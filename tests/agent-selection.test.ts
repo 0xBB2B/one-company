@@ -194,10 +194,11 @@ test("被关闭的原型定义不出现在原型设计师清单，名单清空�
 });
 
 test("关闭名单含通用 worker 与 py-worker 时：通用 worker 仍可派、py-worker 被拒为 agent_disabled，清单含 worker 不含 py-worker", async () => {
-  const w = await world(disabledAgentNames({ user: ["worker", "py-worker"], project: [] }));
+  const w = await world(disabledAgentNames({ user: ["worker"], project: [] }));
   await w.define("py-worker", "");
   await w.plan.execute({ action: "propose", tasks: [spec("plain"), spec("py", { agent: "py-worker", goalUnitIds: ["scenario.failure"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.disabled.add("py-worker");
   w.provider.queue.push({ type: "text", text: "开工" }, { type: "text", text: "PM 收到" });
   await expect(w.dispatch("plain")).resolves.toMatchObject({ runId: expect.any(String) });
   await expect(w.dispatch("py")).rejects.toMatchObject({ code: "agent_disabled", message: expect.stringContaining("py-worker 已关闭") });
