@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "vitest";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deliverLocally } from "../src/modules/delivery/local-delivery.ts";
@@ -228,6 +228,156 @@ test("合并窗口上方有灰字交付到本地分支", async () => {
   expect(w.windows[0]!.caption).toBe("交付到本地分支");
 });
 
+test("合并窗口正文依次是需求、编号、分支、归档已在分支中、目标分支状态", async () => {
+  const w = await world();
+  await w.run(undefined);
+  const texts = w.windows[0]!.lines.map((line) => line.text);
+  const branch = texts.findIndex((text) => text.startsWith("分支："));
+  expect(texts.slice(0, 2)).toEqual([`需求：手机号登录`, `编号：${REQUIREMENT}`]);
+  expect(texts[branch]).toBe("分支：req/login → main（仅本地，不推送）");
+  expect(texts.slice(branch + 1)).toEqual(["归档已在分支中", "目标分支未变化"]);
+  expect(w.windows[0]!.lines[branch + 1]!.tone).toBe("muted");
+});
+
+test("main 在验收后前进时，归档已在分支中一行在目标分支状态之前", async () => {
+  const w = await world();
+  await w.advanceMain("other.ts", "o\n");
+  await w.run(undefined);
+  const texts = w.windows[0]!.lines.map((line) => line.text);
+  const archive = texts.indexOf("归档已在分支中");
+  expect(archive).toBeGreaterThan(texts.findIndex((text) => text.startsWith("分支：")));
+  expect(texts[archive + 1]).toBe("目标分支在验收后前进，已自动 rebase，这部分未重新验证");
+});
+
+test.each<[string, string, boolean]>([
+  ["压缩合并", "能快进", false], ["普通合并", "能快进", false], ["rebase 合并", "能快进", false],
+  ["压缩合并", "已分叉", true], ["普通合并", "已分叉", true], ["rebase 合并", "已分叉", true],
+])("%s（主仓库%s）遇到主仓库里被忽略、需求分支却跟踪的同名文件：合并失败，main 不变，本地文件内容不变，需求分支保留", async (label, _state, diverged) => {
+  const w = await world();
+  const ignoreFile = join(w.git(w.main, "rev-parse", "--absolute-git-dir"), "info", "exclude");
+  await writeFile(ignoreFile, ".env\n");
+  await writeFile(join(w.main, ".env"), "SECRET=本地\n");
+  await writeFile(join(w.worktree, ".env"), "SECRET=需求分支\n");
+  w.git(w.worktree, "add", "-f", ".env"); w.git(w.worktree, "commit", "-qm", "task-2: 提交 .env");
+  w.facts.codeHead = w.reqSha();
+  if (diverged) await w.advanceMain("other.ts", "o\n");
+  expect(w.git(w.main, "status", "--porcelain")).toBe("");
+  const oldMain = w.mainSha();
+  const result = await w.run(label);
+  expect(result).toMatchObject({ status: "rejected", next: "处理后再交付" });
+  expect((result as { reason: string }).reason).toContain(".env");
+  expect(w.mainSha()).toBe(oldMain);
+  expect(await readFile(join(w.main, ".env"), "utf8")).toBe("SECRET=本地\n");
+  expect(w.git(w.main, "rev-parse", "refs/heads/req/login")).toBe(w.reqSha());
+  expect(w.git(w.main, "show", "refs/heads/req/login:.env")).toBe("SECRET=需求分支");
+  expect(existsSync(w.worktree)).toBe(true);
+});
+
+const METHODS: Array<[string]> = [["压缩合并"], ["普通合并"], ["rebase 合并"]];
+
+async function ignoreInMain(w: Awaited<ReturnType<typeof world>>, pattern: string) {
+  const ignoreFile = join(w.git(w.main, "rev-parse", "--absolute-git-dir"), "info", "exclude");
+  await writeFile(ignoreFile, `${pattern}\n`);
+}
+
+async function expectRejected(w: Awaited<ReturnType<typeof world>>, label: string, path: string, localFile: string, localContent: string) {
+  const oldMain = w.mainSha(), tip = w.reqSha();
+  const result = await w.run(label);
+  expect(result).toMatchObject({ status: "rejected", next: "处理后再交付" });
+  expect((result as { reason: string }).reason).toContain(path);
+  expect(w.mainSha()).toBe(oldMain);
+  expect(await readFile(join(w.main, localFile), "utf8")).toBe(localContent);
+  expect(w.reqSha()).toBe(tip);
+  expect(w.git(w.main, "rev-parse", "refs/heads/req/login")).toBe(tip);
+  expect(existsSync(w.worktree)).toBe(true);
+}
+
+test.each(METHODS)("%s遇到需求分支把已跟踪的 .env.example 改名成 .env、主仓库有被忽略的本地 .env：合并失败，main 不变，本地文件不变，需求分支和工作区仍在", async (label) => {
+  const w = await world();
+  await w.advanceMain(".env.example", "SECRET=\n");
+  w.git(w.worktree, "rebase", "-q", "main");
+  await ignoreInMain(w, ".env");
+  await writeFile(join(w.main, ".env"), "SECRET=本地\n");
+  w.git(w.worktree, "mv", ".env.example", ".env"); w.git(w.worktree, "commit", "-qm", "task-2: 改名");
+  w.facts.codeHead = w.reqSha();
+  await expectRejected(w, label, ".env", ".env", "SECRET=本地\n");
+});
+
+test.each(METHODS)("%s遇到需求分支新增主仓库里被忽略目录下的同名文件：合并失败，main 不变，本地文件不变，需求分支和工作区仍在", async (label) => {
+  const w = await world();
+  await ignoreInMain(w, "build/");
+  await mkdir(join(w.main, "build"));
+  await writeFile(join(w.main, "build", "x.txt"), "本地产物\n");
+  await mkdir(join(w.worktree, "build"));
+  await writeFile(join(w.worktree, "build", "x.txt"), "需求分支产物\n");
+  w.git(w.worktree, "add", "-f", "build/x.txt"); w.git(w.worktree, "commit", "-qm", "task-2: 提交 build");
+  w.facts.codeHead = w.reqSha();
+  await expectRejected(w, label, "build/x.txt", "build/x.txt", "本地产物\n");
+});
+
+test.each(METHODS)("%s遇到需求分支一次新增数千个长路径文件、其中一个与主仓库被忽略的本地 .env 同名：合并失败，main 不变，本地文件不变", async (label) => {
+  const w = await world();
+  await ignoreInMain(w, ".env");
+  await writeFile(join(w.main, ".env"), "SECRET=本地\n");
+  await writeFile(join(w.worktree, ".env"), "SECRET=需求分支\n");
+  const dir = ["a", "b", "c"].map((c) => c.repeat(120)).join("/");
+  await mkdir(join(w.worktree, dir), { recursive: true });
+  for (let i = 0; i < 3000; i += 1) await writeFile(join(w.worktree, dir, `f${String(i).padStart(5, "0")}-${"p".repeat(30)}`), "x\n");
+  w.git(w.worktree, "add", "-f", "."); w.git(w.worktree, "commit", "-qm", "task-2: 大量新增");
+  w.facts.codeHead = w.reqSha();
+  await expectRejected(w, label, ".env", ".env", "SECRET=本地\n");
+}, 60_000);
+
+const ignoreCase = (() => {
+  const dir = mkdtempSync(join(tmpdir(), "pi-t-"));
+  try {
+    execFileSync("git", ["init", "-q", dir]);
+    return execFileSync("git", ["config", "--type=bool", "core.ignorecase"], { cwd: dir, encoding: "utf8" }).trim() === "true";
+  } catch { return false; } finally { rmSync(dir, { recursive: true, force: true }); }
+})();
+
+test.skipIf(!ignoreCase).each(METHODS)("%s在不区分大小写的文件系统上遇到需求分支新增 .ENV、主仓库有被忽略的本地 .env：合并失败，本地文件不变", async (label) => {
+  const w = await world();
+  expect(w.git(w.main, "config", "--type=bool", "core.ignorecase")).toBe("true");
+  await ignoreInMain(w, ".env");
+  await writeFile(join(w.main, ".env"), "SECRET=本地\n");
+  await writeFile(join(w.worktree, ".ENV"), "SECRET=需求分支\n");
+  w.git(w.worktree, "add", "-f", ".ENV"); w.git(w.worktree, "commit", "-qm", "task-2: 提交 .ENV");
+  w.facts.codeHead = w.reqSha();
+  await expectRejected(w, label, ".ENV", ".env", "SECRET=本地\n");
+});
+
+test.each(METHODS)("%s遇到需求分支在主仓库被忽略的本地文件 foo 下新增 foo/bar.txt：合并失败，main 不变，foo 仍是普通文件，需求分支和工作区仍在", async (label) => {
+  const w = await world();
+  await ignoreInMain(w, "foo");
+  await writeFile(join(w.main, "foo"), "LOCAL");
+  await mkdir(join(w.worktree, "foo"));
+  await writeFile(join(w.worktree, "foo", "bar.txt"), "需求分支\n");
+  w.git(w.worktree, "add", "-f", "foo/bar.txt"); w.git(w.worktree, "commit", "-qm", "task-2: 新增 foo/bar.txt");
+  w.facts.codeHead = w.reqSha();
+  await expectRejected(w, label, "foo", "foo", "LOCAL");
+  expect((await lstat(join(w.main, "foo"))).isFile()).toBe(true);
+});
+
+test.each(METHODS)("%s遇到需求分支把被跟踪的符号链接 notes 换成真目录：照常合并成功，主仓库 notes/a.md 是需求分支的内容", async (label) => {
+  const w = await world();
+  const outside = join(w.main, "..", "outside");
+  await mkdir(outside);
+  await symlink(outside, join(w.main, "notes"));
+  w.git(w.main, "add", "notes"); w.git(w.main, "commit", "-qm", "main: 跟踪符号链接 notes");
+  w.git(w.worktree, "rebase", "-q", "main");
+  w.git(w.worktree, "rm", "-q", "notes");
+  await mkdir(join(w.worktree, "notes"));
+  await writeFile(join(w.worktree, "notes", "a.md"), "需求分支\n");
+  w.git(w.worktree, "add", "-f", "notes/a.md"); w.git(w.worktree, "commit", "-qm", "task-2: notes 换成真目录");
+  w.facts.codeHead = w.reqSha();
+  const oldMain = w.mainSha();
+  const result = await w.run(label);
+  expect(result).toMatchObject({ status: "merged-locally" });
+  expect(w.mainSha()).not.toBe(oldMain);
+  expect(await readFile(join(w.main, "notes", "a.md"), "utf8")).toBe("需求分支\n");
+});
+
 test("选方式期间用户在主仓库暂存了别的改动：拒绝，不把它压进需求的提交，main 不变", async () => {
   const w = await world();
   const before = w.mainSha();
@@ -253,4 +403,46 @@ test("main 在验收后前进、同时归档被改过：在 rebase 之前就拒�
   const req = w.reqSha();
   expect(await w.run("压缩合并")).toMatchObject({ status: "rejected", reason: expect.stringMatching(/^归档文件与关闭时登记的内容不一致/) });
   expect(w.reqSha()).toBe(req);
+});
+
+const ALREADY = { status: "rejected", reason: "需求分支的改动已经全部在 main 里，这个需求可能已经交付过", next: "不用再交付；要清理需求工作区就用回收工作区" };
+
+test.each(METHODS)("%s合并之后再交付同一个需求：不弹窗，拒绝并说明已经交付过，main 的提交和提交数不变", async (label) => {
+  const w = await world();
+  expect(await w.run(label)).toMatchObject({ status: "merged-locally" });
+  const windowsBefore = w.windows.length, head = w.mainSha(), count = w.git(w.main, "rev-list", "--count", "main");
+  expect(await w.run(label)).toEqual(ALREADY);
+  expect(w.windows).toHaveLength(windowsBefore);
+  expect(w.mainSha()).toBe(head);
+  expect(w.git(w.main, "rev-list", "--count", "main")).toBe(count);
+});
+
+test.each(METHODS)("%s：选方式期间别人往主仓库 main 提交了无关文件，拒绝，main 停在那个新提交上，other.txt 还在", async (label) => {
+  const w = await world();
+  let other = "";
+  w.whileChoosing(async () => { await w.advanceMain("other.txt", "o\n"); other = w.mainSha(); });
+  expect(await w.run(label)).toMatchObject({ status: "rejected", reason: "选合并方式期间主仓库当前分支变了" });
+  expect(w.mainSha()).toBe(other);
+  expect(await readFile(join(w.main, "other.txt"), "utf8")).toBe("o\n");
+  expect(existsSync(join(w.main, "login.ts"))).toBe(false);
+});
+
+test.each(METHODS)("%s遇到需求分支在主仓库被忽略的符号链接 data 下新增 data/x.txt：合并失败，main 不变，data 仍是符号链接，链接指向的目录里没有新文件", async (label) => {
+  const w = await world();
+  const target = join(w.main, "..", "elsewhere");
+  await mkdir(target);
+  await ignoreInMain(w, "data");
+  await symlink(target, join(w.main, "data"));
+  await mkdir(join(w.worktree, "data"));
+  await writeFile(join(w.worktree, "data", "x.txt"), "需求分支\n");
+  w.git(w.worktree, "add", "-f", "data/x.txt"); w.git(w.worktree, "commit", "-qm", "task-2: 新增 data/x.txt");
+  w.facts.codeHead = w.reqSha();
+  const oldMain = w.mainSha(), tip = w.reqSha();
+  const result = await w.run(label);
+  expect(result).toMatchObject({ status: "rejected" });
+  expect((result as { reason: string }).reason).toContain("data");
+  expect(w.mainSha()).toBe(oldMain);
+  expect(w.reqSha()).toBe(tip);
+  expect((await lstat(join(w.main, "data"))).isSymbolicLink()).toBe(true);
+  expect(existsSync(join(target, "x.txt"))).toBe(false);
 });

@@ -162,7 +162,7 @@ export class QuestionWindowView {
     }
 
     const index = this.tab, question = this.options.questions[index]!, state = this.states[index]!;
-    if (!warning && question.caption) lines.push(...wrapPlain(question.caption, width - 1).map((piece) => ` ${muted(piece)}`), "");
+    if (question.caption) lines.push(...wrapPlain(question.caption, width - 1).map((piece) => ` ${muted(piece)}`), "");
     if (warning) lines.push(...wrap(theme.fg("warning", theme.bold(question.question)), 1), "");
     else lines.push(...wrapPlain(question.question, width - 1).map((piece) => ` ${theme.bold(piece)}`), "");
     if (!warning && question.rootCheck) {

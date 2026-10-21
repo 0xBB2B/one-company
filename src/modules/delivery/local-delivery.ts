@@ -27,18 +27,18 @@ function localMergeChoices(methods: readonly MergeMethod[], target: string, titl
     ({ method, choice: { label: LABELS[method], description: descriptions[method], ...(method === "squash" ? { recommended: true } : {}) } }));
 }
 
-async function mergeLocally(repositoryRoot: string, method: MergeMethod, input: { tip: string; title: string; body: string }): Promise<Rejected | null> {
-  const { tip, title, body } = input;
-  const git = (args: string[]) => gitIn(repositoryRoot, args);
+async function mergeLocally(repositoryRoot: string, method: MergeMethod, input: { tip: string; base: string; title: string; body: string }): Promise<Rejected | null> {
+  const { tip, base, title, body } = input;
+  const git = async (args: string[]) => (await gitIn(repositoryRoot, args)).stdout.trim();
   try {
-    if (method === "squash") {
-      await git(["merge", "--squash", tip]);
-      await git(["commit", "-m", title, "-m", body]);
-    } else if (method === "merge") await git(["merge", "--no-ff", "-m", title, "-m", body, tip]);
-    else await git(["merge", "--ff-only", tip]);
+    // Git 生成合并提交时会悄悄覆盖被忽略的本地文件，只有快进时 --no-overwrite-ignore 才拦得住，所以先造好提交再快进。
+    // 父提交用核对过的 base：主分支若又前进，快进会被拒绝，不会丢掉新提交。
+    let commit = tip;
+    if (method === "squash") commit = await git(["commit-tree", `${tip}^{tree}`, "-p", base, "-m", title, "-m", body]);
+    else if (method === "merge") commit = await git(["commit-tree", `${tip}^{tree}`, "-p", base, "-p", tip, "-m", title, "-m", body]);
+    await git(["merge", "--ff-only", "--no-overwrite-ignore", commit]);
     return null;
   } catch (error) {
-    await git(method === "squash" ? ["reset", "--merge"] : ["merge", "--abort"]).catch(() => undefined);
     return rejected(`本地合并失败：${commandOutputTail(error, 8, 600)}`, "处理后再交付");
   }
 }
@@ -58,12 +58,14 @@ export async function deliverLocally(facts: DeliveryFacts, ui: DeliveryUi, optio
   if (prepared.status === "conflict") return { ...prepared, target: target.name };
   if (prepared.status !== "ready") return prepared;
   const { head: tip, rebased } = prepared;
+  if (tip === target.sha) return rejected(`需求分支的改动已经全部在 ${target.name} 里，这个需求可能已经交付过`, "不用再交付；要清理需求工作区就用回收工作区");
 
   const title = deliveryTitle(facts);
   const entries = localMergeChoices(options.mergeMethods, target.name, title, facts.requirementId);
   const picked = await ui.choose({ title: `合进 ${target.name}，怎么合并？`,
     lines: [{ text: `需求：${requirementTitle(facts)}` }, ...mutedLines([`编号：${facts.requirementId}`,
       `分支：${facts.branch.slice("refs/heads/".length)} → ${target.name}（仅本地，不推送）`,
+      "归档已在分支中",
       rebased ? "目标分支在验收后前进，已自动 rebase，这部分未重新验证" : "目标分支未变化"])],
     choices: entries.map((entry) => entry.choice), cancelNote: "取消就不合并，需求分支保留", caption: "交付到本地分支" });
   const selected = entries.find((entry) => entry.choice.label === picked);
@@ -73,7 +75,7 @@ export async function deliverLocally(facts: DeliveryFacts, ui: DeliveryUi, optio
   const dirtyNow = await mainRepositoryCheck(repositoryRoot);
   if (dirtyNow) return dirtyNow;
 
-  const failure = await mergeLocally(repositoryRoot, selected.method, { tip, title, body: deliveryBody(facts, tip, rebased) });
+  const failure = await mergeLocally(repositoryRoot, selected.method, { tip, base: target.sha, title, body: deliveryBody(facts, tip, rebased) });
   if (failure) return failure;
   return { status: "merged-locally", method: selected.method, target: target.name, head: (await gitIn(repositoryRoot, ["rev-parse", target.ref])).stdout.trim(), rebasedAfterAcceptance: rebased };
 }
