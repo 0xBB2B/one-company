@@ -26,7 +26,7 @@ async function world() {
   const w = await createPmRunWorld(cleanups);
   const task = (key: string) => withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) =>
     db.list<{ key: string; taskId: string; status: string; attempts: Array<{ runId: string; outcome: string; turnsUsed: number; maxTurns: number; reason: string | null; rework?: true }>;
-      reviews: Array<{ runId: string; attemptRunId: string; outcome: string }> }>(TASKS)
+      reviews: Array<{ runId: string; attemptRunId: string; outcome: string; agent: string; round: number }> }>(TASKS)
       .map((row) => row.data).find((entry) => entry.key === key)!);
   const dispatch = (key: string, retry: { reason: string; maxTurns: number } | null = null) => w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task(key).taskId, retry });
   const review = (key: string, maxTurns = 2) => w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task(key).taskId, retry: null, review: { maxTurns } });
@@ -278,6 +278,30 @@ test("M7A-AC4：审查打回时 reviewer 任务仍算完成；返修须带原因
   expect(w.task("login").reviews[1]).toMatchObject({ runId: second.runId, attemptRunId: fix.runId, outcome: "unverified" });
   await expect(w.rework("login")).rejects.toMatchObject({ code: "task_not_ready" });
   await expect(w.plan.execute({ action: "update", planVersion: 1, add: [spec("login-fix")] })).rejects.toMatchObject({ code: "goal_held" });
+});
+
+test("审查记录带审查定义名与轮次：第一次审查是 reviewer、第 1 轮；同一被审尝试再审轮次不变；返修后新尝试的审查是第 2 轮", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push(submit("完成 login"), pmAck);
+  await w.dispatch("login");
+  await until(() => w.task("login").status === "awaiting_review");
+  w.provider.queue.push(read(1), pmAck);
+  await w.review("login", 1);
+  await until(() => w.task("login").reviews.length === 1);
+  w.provider.queue.push(submit("缺失败提示", [{ kind: "blocking" }]), pmAck);
+  await until(() => w.task("login").status === "awaiting_review");
+  await w.review("login");
+  await until(() => w.task("login").status === "awaiting_rework");
+  expect(w.task("login").reviews).toEqual([expect.objectContaining({ agent: "reviewer", round: 1 }), expect.objectContaining({ agent: "reviewer", round: 1 })]);
+  w.provider.queue.push(submit("补上失败提示"), pmAck);
+  await w.rework("login", "补失败提示", 3);
+  await until(() => w.task("login").status === "awaiting_review");
+  w.provider.queue.push(submit("仍缺失败提示", [{ kind: "unverified" }]), pmAck);
+  await w.review("login");
+  await until(() => w.task("login").reviews.length === 3);
+  expect(w.task("login").reviews[2]).toMatchObject({ agent: "reviewer", round: 2 });
 });
 
 test("M7A-AC4：审查未交出结论按被审尝试计数；用户再给一次机会后经打回、返修，新尝试的审查仍可派出", async () => {

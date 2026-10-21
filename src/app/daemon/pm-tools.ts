@@ -29,6 +29,7 @@ export interface PmToolsInput {
   epoch: number;
   /** 宿主核验本 PM 物理会话仍存活；模型参数不能让它返回 true。 */
   alive: () => boolean;
+  agentDirectory?: Parameters<typeof createPlanManageTool>[0]["agentDirectory"];
   /** 核验本运行仍持有当前 PM 租约。 */
   checkLease: () => Promise<void>;
   /** 提交时的批准基线，由宿主读取当前记录，写入工具结果供接手核对比对。 */
@@ -86,7 +87,7 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
     const workflow = track(await createWorkflowManageTool({ ...shared, deliveryMode: input.deliveryMode, authorize, grant: { ...identity(), lease: input.lease } }));
     const verification = track(await createVerificationRunTool({ ...shared, authorize, grant: { ...identity(), epoch: input.epoch } }));
     const { branch: _branch, ...planIdentity } = identity();
-    const plan = track(await createPlanManageTool({ ...shared, authorize, grant: { ...planIdentity, lease: input.lease } }));
+    const plan = track(await createPlanManageTool({ ...shared, authorize, agentDirectory: input.agentDirectory, grant: { ...planIdentity, lease: input.lease } }));
     return {
       tools: [
         toPiTool("requirement_manage", "读取本需求已批准的 PRD 正文、章节（read）或两个批准版本之间的准确差异（diff，按 fromRevision/toRevision 查，可重复查）；metadata 看状态；结果的 coverage.nextCursor 不为空时用 next 带上它读下一页；不能读取草稿、其他需求或已关闭需求。", REQUIREMENT_READ_PARAMETERS, read),

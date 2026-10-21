@@ -18,7 +18,16 @@ function spec(key: string, patch: Partial<TaskSpec> = {}): TaskSpec {
     maxTurns: 30, objective: `TASK-DETAIL-SENTINEL ${key}`, passCriteria: ["正确验证码可登录"], scope: { in: ["登录接口"], out: ["微信登录"] }, performance: NA, ...patch };
 }
 
-async function world(options: { review?: boolean; body?: string } = {}) {
+type DirectoryEntry = { name: string; role: string; disabled: boolean };
+const DIRECTORY: DirectoryEntry[] = [
+  { name: "reviewer", role: "reviewer", disabled: false }, { name: "go-worker", role: "worker", disabled: false },
+  { name: "go-reviewer", role: "reviewer", disabled: false }, { name: "vue-reviewer", role: "reviewer", disabled: false },
+  { name: "py-worker", role: "worker", disabled: true }, { name: "acme-worker", role: "worker", disabled: false },
+  { name: "off-reviewer", role: "reviewer", disabled: true }, { name: "ops-worker", role: "worker", disabled: false },
+  { name: "ops-reviewer", role: "reviewer", disabled: true },
+];
+
+async function world(options: { review?: boolean; body?: string; directory?: DirectoryEntry[] } = {}) {
   const fixture: PmIntakeFixture = await createPmIntakeFixture(options.body ? { body: options.body } : {});
   clean.push(() => fixture.cleanup());
   const kit = await pmIntakeReviewKit(fixture);
@@ -26,6 +35,7 @@ async function world(options: { review?: boolean; body?: string } = {}) {
   const record = fixture.state.read(fixture.requirementId).data;
   async function tool(role: "pm" | "reviewer" = "pm") {
     const instance = await createPlanManageTool({ repositoryRoot: fixture.repositoryRoot, dataRoot: fixture.dataRoot, authorize: () => true,
+      agentDirectory: async () => options.directory ?? DIRECTORY,
       grant: { role, callerId: uuidv7(), runId: role === "pm" ? fixture.lease.runId : uuidv7(), requirementId: fixture.requirementId, repoId: fixture.repoId,
         workspaceId: record.workspace!.workspaceId, ...(role === "pm" ? { lease: fixture.lease } : {}) } });
     clean.push(() => instance.dispose());
@@ -268,4 +278,190 @@ test("M7-AC30：已有尝试的任务修改时须保留原有目标，不能先�
   const widened = await pm.execute({ action: "update", planVersion: 1, modify: [{ taskId: login.taskId, version: 1,
     spec: spec("login", { goalUnitIds: ["goal.login", "scenario.failure"] }) }] }) as PlanView;
   expect(widened.tasks[0]).toMatchObject({ version: 2 });
+}, 30000);
+
+const rejectedDetail = async (promise: Promise<unknown>) => {
+  const error = await promise.then(() => null, (e: Error & { code?: string; detail?: string[] }) => e);
+  expect(error).toMatchObject({ code: "agent_invalid" });
+  return ((error as unknown as { detail: string[] }).detail).join("\n");
+};
+const reviewersOf = async (w: Awaited<ReturnType<typeof world>>, key: string) => {
+  const read = await (await w.tool("reviewer")).execute({ action: "read" }) as PlanView & { tasks: Array<{ key: string; reviewers?: unknown[] }> };
+  return read.tasks.find((task) => task.key === key)!.reviewers ?? [];
+};
+
+test("专项审查：任务写了理由为空的专项审查时提交被拒，详情写明原因", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const detail = await rejectedDetail(pm.execute({ action: "propose", tasks: [spec("login", { reviewers: [{ agent: "vue-reviewer", reason: "" }] } as Partial<TaskSpec>)] }));
+  expect(detail).toContain("vue-reviewer");
+  expect(detail).toContain("理由");
+  expect(w.db((db) => db.read(PLANS, w.fixture.requirementId))).toBeNull();
+}, 30000);
+
+test("专项审查：同一任务重复写同一个定义时提交被拒，详情写明重复", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const detail = await rejectedDetail(pm.execute({ action: "propose", tasks: [spec("login", { reviewers: [{ agent: "vue-reviewer", reason: "前端" }, { agent: "vue-reviewer", reason: "再看一遍" }] } as Partial<TaskSpec>)] }));
+  expect(detail).toContain("vue-reviewer");
+  expect(detail).toContain("重复");
+}, 30000);
+
+test("专项审查：写了通用 reviewer 时提交被拒，详情说明通用审查不用写", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const detail = await rejectedDetail(pm.execute({ action: "propose", tasks: [spec("login", { reviewers: [{ agent: "reviewer", reason: "通用" }] } as Partial<TaskSpec>)] }));
+  expect(detail).toContain("reviewer");
+  expect(detail).toContain("不用写");
+}, 30000);
+
+test("专项审查：写的定义职责是 worker 时提交被拒，详情写明职责不是 reviewer", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const detail = await rejectedDetail(pm.execute({ action: "propose", tasks: [spec("login", { reviewers: [{ agent: "go-worker", reason: "错放" }] } as Partial<TaskSpec>)] }));
+  expect(detail).toContain("go-worker");
+  expect(detail).toContain("职责");
+}, 30000);
+
+test("专项审查：写了已关闭的定义时提交被拒，详情写明已关闭", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const detail = await rejectedDetail(pm.execute({ action: "propose", tasks: [spec("login", { reviewers: [{ agent: "off-reviewer", reason: "前端" }] } as Partial<TaskSpec>)] }));
+  expect(detail).toContain("off-reviewer 已关闭");
+}, 30000);
+
+test("专项审查：写了目录里不存在的定义时提交被拒，详情写明不存在", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const detail = await rejectedDetail(pm.execute({ action: "propose", tasks: [spec("login", { reviewers: [{ agent: "x-reviewer", reason: "未知栈" }] } as Partial<TaskSpec>)] }));
+  expect(detail).toContain("x-reviewer");
+  expect(detail).toContain("不存在");
+}, 30000);
+
+test("专项审查：qa 任务写了 reviewers 时提交被拒，详情写明只有 worker 任务可写", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const detail = await rejectedDetail(pm.execute({ action: "propose", tasks: [spec("qa", { role: "qa", writePaths: [], reviewers: [{ agent: "vue-reviewer", reason: "前端" }] } as Partial<TaskSpec>)] }));
+  expect(detail).toContain("qa");
+  expect(detail).toContain("worker");
+}, 30000);
+
+test("专项审查：更新计划新增或修改任务时同样校验 reviewers", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login")] });
+  await rejectedDetail(pm.execute({ action: "update", planVersion: 1, add: [spec("failure", { goalUnitIds: ["scenario.failure"], reviewers: [{ agent: "go-worker", reason: "错放" }] } as Partial<TaskSpec>)] }));
+}, 30000);
+
+test("专项审查：reviewers 超过 16 项时提交被拒为参数格式错误", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const many = Array.from({ length: 17 }, (_, i) => ({ agent: `r${i}-reviewer`, reason: "多" }));
+  await expect(pm.execute({ action: "propose", tasks: [spec("login", { reviewers: many } as Partial<TaskSpec>)] })).rejects.toMatchObject({ code: "invalid_shape" });
+}, 30000);
+
+test("专项审查：合法的专项审查被接受并原样读回，不带 auto 标记", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login", { reviewers: [{ agent: "vue-reviewer", reason: "前端改动" }] } as Partial<TaskSpec>)] });
+  expect(await reviewersOf(w, "login")).toEqual([{ agent: "vue-reviewer", reason: "前端改动" }]);
+}, 30000);
+
+test("任务的执行定义已关闭时提交被拒，原因含「py-worker 已关闭」", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const detail = await rejectedDetail(pm.execute({ action: "propose", tasks: [spec("login", { agent: "py-worker", agentReason: "后端" })] }));
+  expect(detail).toContain("py-worker 已关闭");
+}, 30000);
+
+test("同栈自动挂上：执行定义是 go-worker 且没写 reviewers 时，读回 reviewers 是带 auto 标记的 go-reviewer", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login", { agent: "go-worker", agentReason: "Go 服务" })] });
+  expect(await reviewersOf(w, "login")).toEqual([{ agent: "go-reviewer", reason: "同栈自动挂上", auto: true }]);
+}, 30000);
+
+test("同栈自动挂上：go-reviewer 已关闭时提交仍成功且照样挂上", async () => {
+  const directory = DIRECTORY.map((entry) => entry.name === "go-reviewer" ? { ...entry, disabled: true } : entry);
+  const w = await world({ directory });
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login", { agent: "go-worker", agentReason: "Go 服务" })] });
+  expect(await reviewersOf(w, "login")).toEqual([{ agent: "go-reviewer", reason: "同栈自动挂上", auto: true }]);
+}, 30000);
+
+test("同栈自动挂上：目录里没有 acme-reviewer 时 acme-worker 任务的 reviewers 为空", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login", { agent: "acme-worker", agentReason: "内部栈" })] });
+  expect(await reviewersOf(w, "login")).toEqual([]);
+}, 30000);
+
+test("同栈自动挂上：PM 自己也写了 go-reviewer 时只出现一次", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login", { agent: "go-worker", agentReason: "Go 服务", reviewers: [{ agent: "go-reviewer", reason: "Go 惯用法" }] } as Partial<TaskSpec>)] });
+  const reviewers = await reviewersOf(w, "login") as Array<{ agent: string }>;
+  expect(reviewers.filter((entry) => entry.agent === "go-reviewer")).toHaveLength(1);
+}, 30000);
+
+test("同栈自动挂上：PM 另写了别的专项审查时两者并存", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login", { agent: "go-worker", agentReason: "Go 服务", reviewers: [{ agent: "vue-reviewer", reason: "带前端" }] } as Partial<TaskSpec>)] });
+  const reviewers = await reviewersOf(w, "login") as Array<{ agent: string }>;
+  expect(reviewers.map((entry) => entry.agent).sort()).toEqual(["go-reviewer", "vue-reviewer"]);
+}, 30000);
+
+test("同栈自动挂上：执行定义对应的 reviewer 已关闭仍挂上（ops-reviewer 关闭）", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login", { agent: "ops-worker", agentReason: "运维栈" })] });
+  expect(await reviewersOf(w, "login")).toEqual([{ agent: "ops-reviewer", reason: "同栈自动挂上", auto: true }]);
+}, 30000);
+
+test("用户给的再一次机会还没用时，只改 reviewers 的理由（定义名不变）视为只改说明文字，被接受", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  const view = await pm.execute({ action: "propose", tasks: [spec("login", { reviewers: [{ agent: "vue-reviewer", reason: "前端" }] } as Partial<TaskSpec>)] }) as PlanView;
+  const login = view.tasks[0]!;
+  w.db((db) => {
+    const row = db.read<Record<string, unknown>>(TASKS, login.taskId)!;
+    db.update(TASKS, login.taskId, row.version, { ...row.data, status: "awaiting_parent",
+      userDecision: { decisionId: uuidv7(), choice: "retry", maxTurns: 40, revision: 1, taskVersion: 1, usedByRunId: null, notified: true } });
+  });
+  const changed = await pm.execute({ action: "update", planVersion: 1, modify: [{ taskId: login.taskId, version: 1,
+    spec: spec("login", { reviewers: [{ agent: "vue-reviewer", reason: "前端，改了说法" }] } as Partial<TaskSpec>) }] }) as PlanView;
+  expect(changed.tasks[0]).toMatchObject({ version: 2 });
+  await expect(pm.execute({ action: "update", planVersion: 2, modify: [{ taskId: login.taskId, version: 2,
+    spec: spec("login", { reviewers: [{ agent: "go-reviewer", reason: "换了定义" }] } as Partial<TaskSpec>) }] }))
+    .rejects.toThrow(/login 有用户给的再一次机会还没用，这时只能改任务说明文字.*reviewers 的理由/);
+}, 30000);
+
+test("同栈自动挂上只认职责为 reviewer 的定义：go-reviewer 的职责是 worker 时 go-worker 任务的 reviewers 为空", async () => {
+  const directory = DIRECTORY.map((entry) => entry.name === "go-reviewer" ? { ...entry, role: "worker" } : entry);
+  const w = await world({ directory });
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login", { agent: "go-worker", agentReason: "Go 服务" })] });
+  expect(await reviewersOf(w, "login")).toEqual([]);
+}, 30000);
+
+test("读回的计划原样交回不报错：reviewers 连同 auto 标记原样放进 update 只改 objective 成功，读回仍是一项带 auto 的 go-reviewer", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login", { agent: "go-worker", agentReason: "Go 服务" })] });
+  const read = await pm.execute({ action: "read" }) as PlanView & { tasks: Array<{ key: string; taskId: string; version: number; reviewers: unknown[] }> };
+  const login = read.tasks[0]!;
+  expect(login.reviewers).toEqual([{ agent: "go-reviewer", reason: "同栈自动挂上", auto: true }]);
+  const updated = await pm.execute({ action: "update", planVersion: 1, modify: [{ taskId: login.taskId, version: login.version,
+    spec: spec("login", { agent: "go-worker", agentReason: "Go 服务", objective: "改了说明", reviewers: login.reviewers } as Partial<TaskSpec>) }] }) as PlanView;
+  expect(updated.tasks[0]).toMatchObject({ version: 2 });
+  expect(await reviewersOf(w, "login")).toEqual([{ agent: "go-reviewer", reason: "同栈自动挂上", auto: true }]);
+}, 30000);
+
+test("PM 手写的专项审查带 auto: true 交上来时按程序规则重算：不是同栈的 vue-reviewer 被丢弃，读回不含伪造的 auto 项", async () => {
+  const w = await world();
+  const pm = await w.tool();
+  await pm.execute({ action: "propose", tasks: [spec("login", { agent: "go-worker", agentReason: "Go 服务",
+    reviewers: [{ agent: "vue-reviewer", reason: "伪造", auto: true }] } as Partial<TaskSpec>)] });
+  expect(await reviewersOf(w, "login")).toEqual([{ agent: "go-reviewer", reason: "同栈自动挂上", auto: true }]);
 }, 30000);

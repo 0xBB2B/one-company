@@ -336,6 +336,12 @@ export class RunManager {
     try {
       tools = await createPmTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, deliveryMode: () => this.deliveryMode(), lease, workspace,
         epoch: record.data.epoch, alive, checkLease: () => state.checkPm(lease),
+        agentDirectory: async () => {
+          const disabled = this.disabledAgents();
+          return (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
+            .filter((entry) => entry.available && entry.definition)
+            .map((entry) => ({ name: entry.name, role: entry.definition!.role, disabled: disabled.has(entry.name) }));
+        },
         currentBaseline: () => {
           const current = state.read(input.requirementId).data;
           if (!current.approved || !current.approvalManifest) throw new Error("approval_baseline_missing");
@@ -447,7 +453,7 @@ export class RunManager {
     if (task.role === "explore") throw protocolError("role_unavailable", "explore 派工由检索入口负责");
     const review = input.review !== undefined;
     const role = review ? "reviewer" : task.role;
-    const resolved = await this.resolveAgent(review ? task.reviewAgent ?? "reviewer" : task.agent ?? task.role, role, { model: pmRun.run.model, thinking: pmRun.run.thinking });
+    const resolved = await this.resolveAgent(review ? "reviewer" : task.agent ?? task.role, role, { model: pmRun.run.model, thinking: pmRun.run.thinking });
     const { definition, model: modelRef, thinking } = resolved;
     const workspace = record.workspace!;
     const ref = { dataRoot: this.options.dataRoot, repoId: this.repoId };

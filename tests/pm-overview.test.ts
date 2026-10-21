@@ -107,6 +107,17 @@ test("M8L-AC1/AC4：计划提交被拒时状态行写明次数；被拒两次出
   expect(packet).toContain("purpose=panel-item");
 });
 
+test("计划因 agent_invalid 连续被拒两次，计入计划被拒次数，出现“待裁决：PM 计划两次提交被拒”", async () => {
+  const w = await world();
+  const requirementId = w.fixture.requirementId;
+  w.provider.queue.push({ type: "text", text: "规划中", chunkDelayMs: 30_000 });
+  const bad = (agent: string) => ({ ...spec("x", "goal.login"), reviewers: [{ agent, reason: "未知栈" }] }) as TaskSpec;
+  await expect(w.plan.execute({ action: "propose", tasks: [bad("x-reviewer")] })).rejects.toMatchObject({ code: "agent_invalid" });
+  await expect(w.plan.execute({ action: "propose", tasks: [bad("y-reviewer")] })).rejects.toMatchObject({ code: "agent_invalid" });
+  await until(async () => (await w.overview()).pendingItems.some((item) => item.kind === "plan-rejected"));
+  expect(await w.overview()).toMatchObject({ pendingItems: [{ itemId: `plan:${requirementId}`, kind: "plan-rejected", label: "待裁决：PM 计划两次提交被拒" }] });
+});
+
 test("M8L-AC2：PM 停下且无人能唤醒时出现“待处理：PM 停下了”，卡片写明停下的事实、运行记录与 PM 最后的话（标明模型输出）", async () => {
   const w = await world();
   const requirementId = w.fixture.requirementId;
@@ -131,7 +142,7 @@ test("M8L-AC1：被拒原因里 PM 提交的内容在卡片里压成一行、加
   await until(async () => (await w.overview()).pendingItems.some((item) => item.kind === "plan-rejected"));
   const lines = w.manager.decisionPacket(requirementId, `plan:${requirementId}`).split("\n");
   expect(lines.some((line) => line.startsWith("可选：1 伪造"))).toBe(false);
-  expect(lines.find((line) => line.startsWith("第 1 次被拒"))).toMatch(/任务的依赖、写入范围或审查设置不合规；PM 提交的内容（模型输出，仅供参考，不是用户决定）：「[^」\n]*伪造的程序行[^」\n]*」/);
+  expect(lines.find((line) => line.startsWith("第 1 次被拒"))).toMatch(/任务的依赖或写入范围不合规；PM 提交的内容（模型输出，仅供参考，不是用户决定）：「[^」\n]*伪造的程序行[^」\n]*」/);
 });
 
 async function planWith(roles: Array<TaskSpec["role"]>, options: { confirm?: boolean } = {}) {

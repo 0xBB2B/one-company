@@ -111,14 +111,14 @@ test("M7-AC25：运行中改了定义文件，暂停后续接时发现配置已�
   expect(stopped.ok && stopped.run.stopCause).toEqual({ reason: "config_changed" });
 });
 
-test("M7-AC26：专业 worker 运行中不能开启正式检查；换专业名称不能改变职责（worker 定义不能执行审查）；需求停止时专业实例一并停止", async () => {
+test("M7-AC26：专业 worker 运行中不能开启正式检查；专项审查里写职责不是 reviewer 的定义时计划提交被拒；需求停止时专业实例一并停止", async () => {
   const w = await world();
   await w.define("ui-dev", "");
   await w.define("code-reviewer", "");
-  await w.plan.execute({ action: "propose", tasks: [spec("ui", { agent: "ui-dev", reviewAgent: "code-reviewer" }), spec("rest", { goalUnitIds: ["scenario.failure"] })] });
+  await expect(w.plan.execute({ action: "propose", tasks: [spec("ui", { agent: "ui-dev", reviewers: [{ agent: "code-reviewer", reason: "代码质量" }] } as Partial<TaskSpec>), spec("rest", { goalUnitIds: ["scenario.failure"] })] }))
+    .rejects.toMatchObject({ code: "agent_invalid", detail: [expect.stringContaining("code-reviewer")] });
+  await w.plan.execute({ action: "propose", tasks: [spec("ui", { agent: "ui-dev" }), spec("rest", { goalUnitIds: ["scenario.failure"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
-  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.task("ui").taskId, retry: null, review: { maxTurns: 2 } }))
-    .rejects.toMatchObject({ code: "agent_unavailable" });
   w.provider.queue.push({ type: "text", text: "慢慢做", chunkDelayMs: 3_000 });
   const run = await w.dispatch("ui");
   await until(async () => { const current = await w.runStore.get(run.runId); return current.ok && current.run.state === "running"; });

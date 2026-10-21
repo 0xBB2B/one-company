@@ -187,7 +187,9 @@ export function beginTaskReview(request: Omit<TaskDispatchRequest, "retry" | "re
     const granted = failures >= 2 && userRetryGranted(task);
     if (failures >= 2 && !granted) deny("retry_exhausted");
     const maxTurns = granted ? task.userDecision!.maxTurns! : request.maxTurns;
-    const review: TaskReview = { runId: request.runId, attemptRunId: attempt!.runId, maxTurns, turnsUsed: 0, outcome: "running" };
+    const sameAttempt = task.reviews.find((candidate) => candidate.attemptRunId === attempt!.runId);
+    const round = sameAttempt?.round ?? Math.max(0, ...task.reviews.map((candidate) => candidate.round)) + 1;
+    const review: TaskReview = { runId: request.runId, attemptRunId: attempt!.runId, agent: "reviewer", round, maxTurns, turnsUsed: 0, outcome: "running" };
     const row = db.read<unknown>(TASKS, task.taskId)!;
     db.update(TASKS, task.taskId, row.version, { ...task, status: "reviewing", reviews: [...task.reviews, review],
       ...(granted ? { userDecision: { ...task.userDecision!, usedByRunId: request.runId } } : {}), updatedAt: request.now ?? Date.now() });
