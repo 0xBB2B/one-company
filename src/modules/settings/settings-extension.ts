@@ -12,7 +12,8 @@ import type { ClearSwitchRequest, CopyRequest, PageState, SaveSwitchRequest } fr
 import { AgentCopyError, copyAgentDefinition } from "../agents/agent-copy.ts";
 import { describeSetting } from "./agent-settings-ui.ts";
 import type { ClearSettingRequest, PageNotice, PageTheme, SaveSettingRequest, SettingsLayerName } from "./agent-settings-ui.ts";
-import { clearAgentSetting, clearGitDeliverySetting, clearMergeMethodsSetting, projectSettingsPath, readAgentSettings, saveAgentSetting, saveGitDeliverySetting, saveMergeMethodsSetting, SETTINGS_ROLES, userSettingsPath } from "./agent-settings.ts";
+import { agentSwitchOf, clearAgentSetting, clearGitDeliverySetting, clearMergeMethodsSetting, disabledAgentProblems, projectSettingsPath, readAgentSettings, saveAgentSetting, saveDisabledAgentsSetting, saveGitDeliverySetting, saveMergeMethodsSetting, SETTINGS_ROLES, userSettingsPath } from "./agent-settings.ts";
+import type { RoleCatalogEntry } from "../agents/roles.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../agents/roles.ts";
 
 export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode" | "modelRegistry" | "model">;
@@ -30,8 +31,17 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
   const layerLabel: Record<SettingsLayerName, string> = { user: "用户层", project: "项目层" };
   const readSettings = () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: trusted() });
   const models = ctx.modelRegistry.getAll().filter((model) => ctx.modelRegistry.hasConfiguredAuth(model));
-  type Picked = { state: PageState } & ({ copy: CopyRequest } | { save: SaveSettingRequest } | { clear: ClearSettingRequest } | { saveSwitch: SaveSwitchRequest } | { clearSwitch: ClearSwitchRequest });
-  const applyChange = async (picked: Exclude<Picked, { copy: CopyRequest }>): Promise<{ text: string; fresh: string }> => {
+  type Picked = { state: PageState } & ({ copy: CopyRequest } | { save: SaveSettingRequest } | { clear: ClearSettingRequest } | { saveSwitch: SaveSwitchRequest } | { clearSwitch: ClearSwitchRequest } | { toggle: RoleCatalogEntry });
+  const applyChange = async (picked: Exclude<Picked, { copy: CopyRequest }>): Promise<{ text: string; fresh: string; tone?: PageNotice["tone"] }> => {
+    if ("toggle" in picked) {
+      const { name, source } = picked.toggle, layer: SettingsLayerName = source === "project" ? "project" : "user";
+      const disabled = (await readSettings()).disabledAgents, names = disabled[layer];
+      const enabled = agentSwitchOf(name, disabled).enabled;
+      await saveDisabledAgentsSetting(settingsPaths[layer], enabled ? [...names, name] : names.filter((item) => item !== name));
+      const now = agentSwitchOf(name, (await readSettings()).disabledAgents);
+      if (!enabled && !now.enabled) return { fresh: name, tone: "warning", text: `${name} 仍是关闭：${layerLabel[now.from!]}设置文件里也写了关闭` };
+      return { fresh: name, text: `${enabled ? "已关闭" : "已开启"} ${name} · ${layer === "project" ? "本项目生效" : "全局生效"}` };
+    }
     if ("save" in picked) {
       const { role, layer, model, thinking } = picked.save;
       const { label, effect } = SETTINGS_ROLES.find((item) => item.key === role)!;
@@ -71,11 +81,12 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     const untrustedProjectCount = projectTrusted ? 0 : await readdir(dirs.projectDir).then((files) => files.filter((file) => file.endsWith(".md")).length, () => 0);
     const catalog = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted });
     const settings = await readSettings();
+    settings.problems.push(...disabledAgentProblems(settings.disabledAgents, { user: settingsPaths.user, project: settingsPaths.project }, catalog));
     const picked = await openProgramWindow<Picked>(ctx, (tui, theme, _keybindings, done) => {
       const view: SettingsPageView = new SettingsPageView({ catalog, theme: theme as unknown as PageTheme, projectTrusted, untrustedProjectCount, nameTaken,
         settings, models, mainModel: ctx.model, mainThinking: options.mainThinking(), ...(state ? { state } : {}),
         onCopy: (copy) => done({ copy, state: view.state() }), onSaveSetting: (save) => done({ save, state: view.state() }), onClearSetting: (clear) => done({ clear, state: view.state() }),
-        onSaveSwitch: (saveSwitch) => done({ saveSwitch, state: view.state() }), onClearSwitch: (clearSwitch) => done({ clearSwitch, state: view.state() }),
+        onSaveSwitch: (saveSwitch) => done({ saveSwitch, state: view.state() }), onClearSwitch: (clearSwitch) => done({ clearSwitch, state: view.state() }), onToggleAgent: (toggle) => done({ toggle, state: view.state() }),
         onClose: () => done(undefined) });
       return { render: (width: number) => view.render(width), invalidate: () => view.invalidate(),
         handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); } };
@@ -83,8 +94,8 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     if (!picked) return;
     if (!("copy" in picked)) {
       try {
-        const { text, fresh } = await applyChange(picked);
-        state = { ...picked.state, fresh, notice: { tone: "ok", text } };
+        const { text, fresh, tone = "ok" } = await applyChange(picked);
+        state = { ...picked.state, fresh, notice: { tone, text } };
       } catch (error) {
         const message = (error instanceof Error ? error.message : String(error)).split("\n")[0];
         state = { ...picked.state, notice: { tone: "error", text: `✗ 没有保存：${message}` } };

@@ -17,11 +17,12 @@ export interface PageTheme {
   bold(text: string): string;
   inverse(text: string): string;
 }
-export interface PageNotice<Tone extends "ok" | "muted" | "error" = "ok" | "muted" | "error"> { tone: Tone; text: string }
+export interface PageNotice<Tone extends "ok" | "muted" | "error" | "warning" = "ok" | "muted" | "error" | "warning"> { tone: Tone; text: string }
 
 export const MARKER = 3, SOURCE = 8;
 const THINKING = 8;
-const NAME = 14, MIN_NAME = 8, MIN_MODEL = 6, MAX_MODEL = 24, CHECK = 2;
+export const STATE = 6;
+const DEFINITION_NAME = 16, NAME = 14, MIN_NAME = 8, MIN_MODEL = 6, MAX_MODEL = 24, CHECK = 2;
 export const FOLLOW = "跟随主会话";
 
 export const pad = (text: string, width: number) => text + " ".repeat(Math.max(0, width - visibleWidth(text)));
@@ -71,6 +72,15 @@ export function tableColumns(width: number) {
   if (total() > width) model = Math.max(MIN_MODEL, model - (total() - width));
   if (total() > width) name = Math.max(MIN_NAME, name - (total() - width));
   return { name, model };
+}
+
+export function definitionColumns(width: number) {
+  const thinking = MARKER + MIN_NAME + SOURCE + STATE + MIN_MODEL + THINKING <= width;
+  let name = DEFINITION_NAME, model = MAX_MODEL;
+  const total = () => MARKER + name + SOURCE + STATE + model + (thinking ? THINKING : 0);
+  if (total() > width) model = Math.max(MIN_MODEL, model - (total() - width));
+  if (total() > width) name = Math.max(MIN_NAME, name - (total() - width));
+  return { name, model, thinking };
 }
 
 type Segment = [text: string, style?: (text: string) => string, styled?: string];

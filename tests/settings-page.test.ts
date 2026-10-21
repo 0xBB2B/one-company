@@ -118,7 +118,7 @@ test("页内输入新名称，程序窗口列出两层与完整路径，复制�
   await mkdir(repoDir(), { recursive: true });
   let window = "";
   const ctx = scripted([
-    (s) => s.press(RIGHT, "c", ...Array(11).fill(BACKSPACE), ...typed("api-worker"), ENTER),
+    (s) => { s.press(RIGHT); moveTo(s, "worker"); s.press("c", ...Array(11).fill(BACKSPACE), ...typed("api-worker"), ENTER); },
     (s) => { window = s.now(); s.press(ENTER); },
     (s) => {
       expect(s.now()).toMatch(/▸ api-worker +用户/u);
@@ -806,3 +806,146 @@ test("在 linked worktree 里打开：主仓库记为不信任、worktree 记为
     },
   ]);
 }, 10000);
+
+const SPACE = " ";
+const toggleAt = (name: string) => (s: Screen) => { goTo(s, "worker"); moveTo(s, name); s.press(SPACE); };
+const disabledOf = async (path: string) => (await readJson(path))["one-company"]?.["disabled-agents"];
+
+test("在 go-worker 上按空格写用户设置文件 disabled-agents 并保留原有键，底部绿字已关闭；再按一次删掉这个键，底部绿字已开启", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await writeSettings(userFile(), { theme: "dark" });
+  const ctx = scripted([
+    toggleAt("go-worker"),
+    (s) => {
+      expect(s.now()).toMatch(/▸ go-worker +内置 +关闭/u);
+      expect(s.raw()).toContain("<success>已关闭 go-worker · 全局生效</>");
+      moveTo(s, "go-worker");
+      s.press(SPACE);
+    },
+    (s) => {
+      expect(s.now()).toMatch(/▸ go-worker +内置 +开启/u);
+      expect(s.raw()).toContain("<success>已开启 go-worker · 全局生效</>");
+      s.press(ESC, ESC);
+    },
+  ]);
+  await run(ctx);
+  const saved = await readJson(userFile());
+  expect(saved.theme).toBe("dark");
+  expect(saved["one-company"]?.["disabled-agents"]).toBeUndefined();
+}, 5000);
+
+test("按空格关闭 go-worker 后用户设置文件 disabled-agents 是 [go-worker]，原有键保留", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await writeSettings(userFile(), { theme: "dark" });
+  const ctx = scripted([toggleAt("go-worker"), (s) => s.press(ESC, ESC)]);
+  await run(ctx);
+  const saved = await readJson(userFile());
+  expect(saved.theme).toBe("dark");
+  expect(saved["one-company"]["disabled-agents"]).toEqual(["go-worker"]);
+}, 5000);
+
+test("受信任项目里的项目层定义 acme-worker 按空格只写项目设置文件，底部绿字写本项目生效", async () => {
+  await mkdir(join(repoDir(), ".pi", "agents"), { recursive: true });
+  await writeFile(join(repoDir(), ".pi", "agents", "acme-worker.md"), "---\nname: acme-worker\ndescription: 项目专项\nrole: worker\n---\n正文\n");
+  const ctx = scripted([
+    toggleAt("acme-worker"),
+    (s) => {
+      expect(s.now()).toMatch(/▸ acme-worker +项目 +关闭/u);
+      expect(s.raw()).toContain("<success>已关闭 acme-worker · 本项目生效</>");
+      s.press(ESC, ESC);
+    },
+  ]);
+  await run(ctx);
+  expect(await disabledOf(projectFile())).toEqual(["acme-worker"]);
+  expect(existsSync(userFile())).toBe(false);
+}, 5000);
+
+test("项目层手写 [go-worker] 后在 go-worker 上开启：用户设置文件不新增内容，这一行仍是关闭，底部黄字写项目层也写了关闭", async () => {
+  await writeSettings(projectFile(), oneCompany({ "disabled-agents": ["go-worker"] }));
+  const ctx = scripted([
+    toggleAt("go-worker"),
+    (s) => {
+      expect(s.now()).toMatch(/▸ go-worker +内置 +关闭/u);
+      expect(s.raw()).toContain("<warning>go-worker 仍是关闭：项目层设置文件里也写了关闭</>");
+      s.press(ESC, ESC);
+    },
+  ]);
+  await run(ctx);
+  expect(existsSync(userFile())).toBe(false);
+  expect(await disabledOf(projectFile())).toEqual(["go-worker"]);
+}, 5000);
+
+test("用户设置文件只读时按空格：底部红字以没有保存开头，文件内容不变", async (context) => {
+  if (process.getuid?.() === 0) context.skip();
+  await mkdir(repoDir(), { recursive: true });
+  await writeSettings(userFile(), { theme: "dark" });
+  const before = await readFile(userFile(), "utf8");
+  const ctx = scripted([
+    (s) => { chmodSync(userFile(), 0o444); toggleAt("go-worker")(s); },
+    (s) => {
+      const line = s.now().split("\n").find((row) => row.includes("✗ 没有保存："));
+      expect(line).toBeDefined();
+      expect(s.raw()).toContain("<error>✗ 没有保存：");
+      expect(s.now()).toMatch(/go-worker +内置 +开启/u);
+      s.press(ESC, ESC);
+    },
+  ]);
+  try { await run(ctx); } finally { chmodSync(userFile(), 0o644); }
+  expect(await readFile(userFile(), "utf8")).toBe(before);
+}, 5000);
+
+test("用户层 disabled-agents 写成字符串时在 go-worker 上按空格，这一层被新列表 [go-worker] 替换", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await writeSettings(userFile(), oneCompany({ "disabled-agents": "x" }));
+  const ctx = scripted([toggleAt("go-worker"), (s) => s.press(ESC, ESC)]);
+  await run(ctx);
+  expect(await disabledOf(userFile())).toEqual(["go-worker"]);
+}, 5000);
+
+test("在通用定义 reviewer 上按空格不写任何设置文件，底部黄字写通用定义不能关闭", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "reviewer");
+      moveTo(s, "reviewer");
+      s.press(SPACE);
+      expect(s.raw()).toContain("<warning>reviewer 是通用定义，流程离不开它，不能关闭</>");
+      s.press(ESC, ESC);
+    },
+  ]);
+  await run(ctx);
+  expect(existsSync(userFile())).toBe(false);
+  expect(existsSync(projectFile())).toBe(false);
+}, 5000);
+
+test("用户层 disabled-agents 写 [reviewer, nope] 时问题分类列出通用定义不能关闭和没有叫 nope 的角色定义", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await writeSettings(userFile(), oneCompany({ "disabled-agents": ["reviewer", "nope"] }));
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "problems");
+      expect(s.now()).toContain("reviewer 是通用定义，不能关闭");
+      expect(s.now()).toContain("没有叫 nope 的角色定义");
+      s.press(ESC, ESC);
+    },
+  ]);
+  await run(ctx);
+}, 5000);
+
+test("项目层定义 acme-worker 同时被用户层关闭：开启后项目层列表不含它，行仍是关闭，底部黄字写用户层设置文件里也写了关闭", async () => {
+  await mkdir(join(repoDir(), ".pi", "agents"), { recursive: true });
+  await writeFile(join(repoDir(), ".pi", "agents", "acme-worker.md"), "---\nname: acme-worker\ndescription: 项目专项\nrole: worker\n---\n正文\n");
+  await writeSettings(userFile(), oneCompany({ "disabled-agents": ["acme-worker"] }));
+  const ctx = scripted([
+    toggleAt("acme-worker"),
+    (s) => {
+      expect(s.now()).toMatch(/▸ acme-worker +项目 +关闭/u);
+      expect(s.raw()).toContain("<warning>acme-worker 仍是关闭：用户层设置文件里也写了关闭</>");
+      s.press(ESC, ESC);
+    },
+  ]);
+  await run(ctx);
+  const project = existsSync(projectFile()) ? await disabledOf(projectFile()) : undefined;
+  expect(project ?? []).not.toContain("acme-worker");
+  expect(await disabledOf(userFile())).toEqual(["acme-worker"]);
+}, 5000);
