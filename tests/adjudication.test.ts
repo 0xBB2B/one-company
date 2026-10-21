@@ -688,3 +688,90 @@ test("用户再给一次机会后，那次运行因批准新版本、任务被�
   const fourth = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.login, retry: null });
   expect(fourth.maxTurns).toBe(4);
 });
+
+type StuckReview = { agent: string; round: number; outcome: TaskRecord["reviews"][number]["outcome"] };
+async function reviewStuckWorld(reviews: StuckReview[]) {
+  const w = await pendingWorld();
+  const id = w.task("login").taskId, attemptRunId = uuidv7();
+  w.db((db) => {
+    const row = db.read<TaskRecord>(TASKS, id)!;
+    db.update(TASKS, id, row.version, { ...row.data, status: "awaiting_user",
+      attempts: [{ runId: attemptRunId, maxTurns: 1, turnsUsed: 1, reason: null, outcome: "completed" }],
+      reviews: reviews.map((review) => ({ runId: uuidv7(), attemptRunId, maxTurns: 1, turnsUsed: 1, ...review })) });
+  });
+  return { w, id, itemId: `task:${id}` };
+}
+
+test("审查卡住的待裁决任务：待处理事项、决策包带审查代理名，裁决卡片每条审查记录写出“第 N 轮 代理名：结局”，打回写“打回”", async () => {
+  const { w, itemId } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "vue-reviewer", round: 1, outcome: "clear" },
+    { agent: "reviewer", round: 2, outcome: "blocked" }]);
+  const label = "待裁决：任务 login 两次未通过审查（go-reviewer、reviewer）";
+  expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label })]);
+  const packet = w.manager.decisionPacket(w.fixture.requirementId, itemId);
+  expect(packet).toContain(`[待处理事项] ${label}`);
+  const lines = packet.split("\n");
+  expect(lines).toContain("第 1 轮 go-reviewer：打回");
+  expect(lines).toContain("第 2 轮 reviewer：打回");
+  expect(lines).toContain("第 1 轮 vue-reviewer：通过");
+  const summary = adjudicationSubject({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, itemId).summary;
+  expect(summary).toContain("第 1 轮 go-reviewer：打回");
+});
+
+test("审查没交出结论卡住时，事项文字与卡片都写出代理名；用户选再给一次机会后任务回到 awaiting_review，告知 PM 的文字带上审查代理名", async () => {
+  const { w, id, itemId } = await reviewStuckWorld([
+    { agent: "vue-reviewer", round: 1, outcome: "failed" }, { agent: "vue-reviewer", round: 1, outcome: "failed" }]);
+  expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label: "待裁决：任务 login 两次审查未完成（vue-reviewer）" })]);
+  expect(w.manager.decisionPacket(w.fixture.requirementId, itemId).split("\n").filter((line) => line.startsWith("第 1 轮 vue-reviewer："))).toHaveLength(2);
+  const version = `task:${id}:${w.db((db) => db.read<TaskRecord>(TASKS, id)!.version)}`;
+  const main = mainAdjudication(w, cleanups);
+  const result = await main.adjudicate("再给一次机会，3 轮", [main.entry([`item:${itemId}`, `version:${version}`, "choice:retry", "max-turns:3"],
+    { conclusion: "用户对任务 login 的裁决", scope: "任务 login" })], itemId, version);
+  expect(result).toMatchObject({ status: "recorded", choice: "retry", taskStatus: "awaiting_review" });
+  expect(w.task("login").status).toBe("awaiting_review");
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
+  await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("再给一次机会，轮数上限 3")));
+  const notice = JSON.stringify(w.provider.requests.findLast((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("再给一次机会，轮数上限 3"))!.messages.at(-1));
+  expect(notice).toContain("再派审查（vue-reviewer）");
+});
+
+test("返修卡住的待裁决任务：用户选再给一次机会后回到 awaiting_rework", async () => {
+  const { w, id, itemId } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "go-reviewer", round: 2, outcome: "blocked" }]);
+  const version = `task:${id}:${w.db((db) => db.read<TaskRecord>(TASKS, id)!.version)}`;
+  const main = mainAdjudication(w, cleanups);
+  const result = await main.adjudicate("再给一次机会，3 轮", [main.entry([`item:${itemId}`, `version:${version}`, "choice:retry", "max-turns:3"],
+    { conclusion: "用户对任务 login 的裁决", scope: "任务 login" })], itemId, version);
+  expect(result).toMatchObject({ status: "recorded", choice: "retry", taskStatus: "awaiting_rework" });
+});
+
+test("裁决卡片里审查记录的结局全部写中文，不出现英文枚举", async () => {
+  const { w, itemId } = await reviewStuckWorld([
+    { agent: "a-reviewer", round: 1, outcome: "clear" }, { agent: "b-reviewer", round: 1, outcome: "blocked" }, { agent: "c-reviewer", round: 1, outcome: "unverified" },
+    { agent: "d-reviewer", round: 1, outcome: "failed" }, { agent: "e-reviewer", round: 1, outcome: "turn_limit_reached" }, { agent: "f-reviewer", round: 1, outcome: "stopped" },
+    { agent: "g-reviewer", round: 1, outcome: "superseded" }, { agent: "h-reviewer", round: 1, outcome: "skipped" }, { agent: "i-reviewer", round: 1, outcome: "running" }]);
+  const expected = ["第 1 轮 a-reviewer：通过", "第 1 轮 b-reviewer：打回", "第 1 轮 c-reviewer：未验证", "第 1 轮 d-reviewer：没交出结论（运行失败）",
+    "第 1 轮 e-reviewer：没交出结论（轮次用满）", "第 1 轮 f-reviewer：没交出结论（被停止）", "第 1 轮 g-reviewer：被作废", "第 1 轮 h-reviewer：已跳过", "第 1 轮 i-reviewer：进行中"];
+  const packetLines = w.manager.decisionPacket(w.fixture.requirementId, itemId).split("\n");
+  const summaryLines = adjudicationSubject({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, itemId).summary.split("\n");
+  for (const lines of [packetLines, summaryLines]) {
+    for (const line of expected) expect(lines).toContain(line);
+    expect(lines.filter((line) => line.startsWith("第 ")).join("\n")).not.toMatch(/clear|blocked|unverified|failed|turn_limit_reached|stopped|superseded|skipped|running/);
+  }
+});
+
+test("名单为空时事项文字、决策包和告知 PM 的文字都不带空括号", async () => {
+  const { w, id, itemId } = await reviewStuckWorld([{ agent: "vue-reviewer", round: 1, outcome: "failed" }]);
+  const label = "待裁决：任务 login 两次审查未完成";
+  expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label })]);
+  expect(w.manager.decisionPacket(w.fixture.requirementId, itemId)).not.toContain("（）");
+  const version = `task:${id}:${w.db((db) => db.read<TaskRecord>(TASKS, id)!.version)}`;
+  const main = mainAdjudication(w, cleanups);
+  await main.adjudicate("再给一次机会，3 轮", [main.entry([`item:${itemId}`, `version:${version}`, "choice:retry", "max-turns:3"],
+    { conclusion: "用户对任务 login 的裁决", scope: "任务 login" })], itemId, version);
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
+  await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("再给一次机会，轮数上限 3")));
+  const notice = JSON.stringify(w.provider.requests.findLast((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("再给一次机会，轮数上限 3"))!.messages.at(-1));
+  expect(notice).toContain("再派审查");
+  expect(notice).not.toContain("（）");
+});

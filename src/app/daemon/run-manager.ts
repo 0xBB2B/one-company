@@ -18,7 +18,7 @@ import type { AgentSessionHandle } from "../../modules/agents/agent-session.ts";
 import { createPmTools } from "./pm-tools.ts";
 import { createSubagentTools } from "../../modules/pm/subagent-tools.ts";
 import { beginTaskAttempt, beginTaskReview, finishTaskAttempt, finishTaskReview, reviewRoundMembers } from "../../modules/pm/task-dispatch.ts";
-import { confirmedPlanKey, holdResumes, latestRound, REVIEW_REJECTED, readPlanIn, readTaskDetail, replanPending, terminationPending } from "../../modules/pm/plan-manage.ts";
+import { confirmedPlanKey, holdResumes, latestRound, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, readPlanIn, readTaskDetail, replanPending, terminationPending } from "../../modules/pm/plan-manage.ts";
 import type { HoldRef } from "../../modules/pm/plan-manage.ts";
 import type { TaskAttempt, TaskRecord as PlanTask, TaskReview } from "../../modules/pm/plan-manage.ts";
 import { VERDICTS } from "../../modules/pm/verdicts.ts";
@@ -670,13 +670,11 @@ export class RunManager {
   private reviewRoundReport(task: PlanTask, next: string): string[] {
     const { round, reviews } = latestRound(task);
     const verdicts = withDatabase(this.database, (db) => db.list<Verdict>(VERDICTS).map((row) => row.data));
-    const conclusion: Record<string, string> = { clear: "通过", blocked: "打回", unverified: "未验证", failed: "没交出结论（运行失败）",
-      turn_limit_reached: "没交出结论（轮次用满）", stopped: "没交出结论（被停止）", superseded: "被作废" };
     const sections = reviews.map((review) => {
       if (review.outcome === "skipped") return `- ${review.agent} ${review.skipReason === "disabled" ? "已关闭" : "已不存在"}，本轮未审`;
       const verdict = verdicts.find((item) => item.runId === review.runId);
       const count = (kind: string) => verdict?.findings.filter((finding) => finding.kind === kind).length ?? 0;
-      return [`- ${review.agent}：${conclusion[review.outcome] ?? review.outcome}，已用 ${review.turnsUsed}/${review.maxTurns} 轮`,
+      return [`- ${review.agent}：${REVIEW_OUTCOME_LABEL[review.outcome]}，已用 ${review.turnsUsed}/${review.maxTurns} 轮`,
         verdict ? `  summary：${verdict.summary}；分级问题 ${verdict.findings.length} 项（阻塞 ${count("blocking")}、未验证 ${count("unverified")}、建议 ${count("suggestion")}）` : "",
         `  运行日志：${this.runLog(review.runId)}`].filter(Boolean).join("\n");
     });

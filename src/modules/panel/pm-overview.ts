@@ -1,7 +1,7 @@
 import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
 import { activeCheckRoundIn } from "../verification/check-round.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
-import { implementScope, readPlanIn, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
+import { implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
 import type { TaskRecord } from "../pm/plan-manage.ts";
 import { latestPmSubmission } from "../pm/pm-intake-runtime.ts";
 import { PmIntakeStore } from "../pm/pm-intake-store.ts";
@@ -86,6 +86,27 @@ function requirementRow(db: LocalDatabase, requirementId: string) {
   return db.read<RequirementRecord>("requirements", requirementId)!;
 }
 
+/** 最近一轮里没交出结论达到 2 次的审查代理。 */
+export function unfinishedReviewers(task: TaskRecord): string[] {
+  return latestRound(task).reviews.map((review) => review.agent).filter((agent) => reviewFailures(task.reviews, agent) >= 2);
+}
+
+export function reviewLine(review: TaskRecord["reviews"][number]): string {
+  return `第 ${review.round} 轮 ${review.agent}：${REVIEW_OUTCOME_LABEL[review.outcome]}`;
+}
+
+export function namesIn(names: string[]): string {
+  return names.length ? `（${names.join("、")}）` : "";
+}
+
+function stallCauseOf(task: TaskRecord): string {
+  const stage = stalledStage(task);
+  if (stage === "execute") return "两次未完成";
+  if (stage === "review") return `两次审查未完成${namesIn(unfinishedReviewers(task))}`;
+  const rejectors = [...new Set(task.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome)).map((review) => review.agent))];
+  return `两次未通过审查${namesIn(rejectors)}`;
+}
+
 /** 待处理事项只取自已有持久记录：终止后待调整的需求、待用户裁决的任务、待核对的接手理解、阻塞任务的未决问题。 */
 export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId" | "db" | "record" | "lease">, tasks: TaskRecord[]): PendingItem[] {
   const items: PendingItem[] = [];
@@ -99,7 +120,7 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
     const row = input.db.read<TaskRecord>("tasks", task.taskId)!;
     const cause = task.sizeHold && unsentTask(task) ? task.sizeHold.join("；")
       : task.attempts.at(-1)?.escalation !== undefined || task.holdNote !== undefined && unsentTask(task) ? "PM 上报需要决定"
-      : ({ execute: "两次未完成", review: "两次审查未完成", rework: "两次未通过审查" } as const)[stalledStage(task)];
+      : stallCauseOf(task);
     items.push({ itemId: `task:${task.taskId}`, kind: "adjudicate", label: `待裁决：任务 ${task.key} ${cause}`, version: `task:${task.taskId}:${row.version}` });
   }
   if (input.record.approved && !reviewPassedFor(input)) {

@@ -3,7 +3,7 @@ import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
 import { confirmedPlanKey, readPlanIn, stalledStage, TASKS, terminationPending, unsentTask } from "../pm/plan-manage.ts";
 import type { TaskRecord, UserDecision } from "../pm/plan-manage.ts";
-import { pendingItemsIn } from "./pm-overview.ts";
+import { namesIn, pendingItemsIn, reviewLine, unfinishedReviewers } from "./pm-overview.ts";
 import { checked } from "../requirement/requirement-contracts.ts";
 import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
 import { checkDecisionRecord } from "../requirement/short-decision-format.ts";
@@ -68,7 +68,7 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
     const lines = [`任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`,
       ...(task.sizeHold && unsentTask(task) ? [`拆分上限：${task.sizeHold.join("；")}`] : []),
       ...task.attempts.map((attempt, index) => `${attempt.rework ? "返修" : "尝试"} ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}${attempt.escalation ? " · PM 已上报" : ""}`),
-      ...task.reviews.map((review, index) => `审查 ${index + 1}：${review.turnsUsed}/${review.maxTurns} 轮 · 结局 ${review.outcome}`),
+      ...task.reviews.map(reviewLine),
       `依据：PRD r${record.revision}`];
     return { itemId, version: item.version, summary: lines.join("\n").slice(0, 2000) };
   });
@@ -190,7 +190,7 @@ export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string
       db.update(TASKS, task.taskId, row.version, { ...row.data, userDecision: { ...decision, notified: true } });
       messages.push(decision.choice === "retry"
         ? `用户决定：任务 ${task.key} 再给一次机会，轮数上限 ${decision.maxTurns}。${task.status === "awaiting_rework" ? "可用 agent_manage dispatch 直接派 worker 返修，不带 rework"
-          : task.status === "awaiting_review" ? "可用 agent_manage dispatch 带 review 再派审查，轮数按用户决定" : "可用 agent_manage dispatch 直接派出，不带 retry"}；这次不占你的重试机会。`
+          : task.status === "awaiting_review" ? `可用 agent_manage dispatch 带 review 再派审查${namesIn(unfinishedReviewers(task))}，轮数按用户决定` : "可用 agent_manage dispatch 直接派出，不带 retry"}；这次不占你的重试机会。`
         : decision.choice === "adjust" && task.sizeHold && unsentTask(task)
           ? `用户决定：任务 ${task.key} 由你拆分或精简（${task.sizeHold.join("；")}）。用 plan_manage update 修改该任务，或取消后另加任务，不需要等新的批准版本；改完仍超出上限会再次交用户裁决。`
         : decision.choice === "adjust" && task.holdNote && unsentTask(task)

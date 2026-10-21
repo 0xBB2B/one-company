@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { repositoryDatabase, withDatabase } from "../src/core/storage/database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import { TASKS } from "../src/modules/pm/plan-manage.ts";
 import type { TaskRecord, TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import type { PmOverview } from "../src/modules/panel/pm-overview.ts";
@@ -197,4 +197,88 @@ test("任务进度 AC-4/AC-6/AC-7：没有计划为 null；提交未确认的计
   expect((await w.overview()).taskProgress).toEqual({ completed: 2, total: 3 });
   setStatus("a", "needs_update");
   expect((await w.overview()).taskProgress).toEqual({ completed: 1, total: 3 });
+});
+
+type StuckReview = { agent: string; round: number; outcome: TaskRecord["reviews"][number]["outcome"] };
+async function reviewStuckWorld(reviews: StuckReview[]) {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("T3", "goal.login"), spec("other", "scenario.failure")] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const id = w.taskId("T3");
+  const attemptRunId = uuidv7();
+  w.db((db) => {
+    const row = db.read<TaskRecord>(TASKS, id)!;
+    db.update(TASKS, id, row.version, { ...row.data, status: "awaiting_user",
+      attempts: [{ runId: attemptRunId, maxTurns: 1, turnsUsed: 1, reason: null, outcome: "completed" }],
+      reviews: reviews.map((review) => ({ runId: uuidv7(), attemptRunId, maxTurns: 1, turnsUsed: 1, ...review })) } as TaskRecord);
+  });
+  const version = () => w.db((db) => db.read<TaskRecord>(TASKS, id)!.version);
+  return { w, id, version };
+}
+const pendingLabels = async (w: Awaited<ReturnType<typeof world>>) => (await w.overview()).pendingItems.map((item) => item.label);
+
+test("审查打回累计两轮：待裁决事项写明两次未通过审查和打回过的审查代理名，按第一次打回的先后排；itemId 与 version 不变", async () => {
+  const { w, id, version } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "reviewer", round: 2, outcome: "blocked" }]);
+  expect(await w.overview()).toMatchObject({ pendingItems: [{ itemId: `task:${id}`, kind: "adjudicate",
+    label: "待裁决：任务 T3 两次未通过审查（go-reviewer、reviewer）", version: `task:${id}:${version()}` }] });
+});
+
+test("同一轮多个审查代理打回、后一轮同一代理再打回：名单不重复", async () => {
+  const { w } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "vue-reviewer", round: 1, outcome: "blocked" },
+    { agent: "go-reviewer", round: 2, outcome: "blocked" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次未通过审查（go-reviewer、vue-reviewer）"]);
+});
+
+test("未验证也算打回：名单里包含给出 unverified 的审查代理", async () => {
+  const { w } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "unverified" }, { agent: "reviewer", round: 2, outcome: "blocked" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次未通过审查（go-reviewer、reviewer）"]);
+});
+
+test("名单只含打回过的代理：通过的代理和没交结论的代理不进名单", async () => {
+  const { w } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "vue-reviewer", round: 1, outcome: "clear" }, { agent: "sec-reviewer", round: 1, outcome: "failed" },
+    { agent: "go-reviewer", round: 2, outcome: "blocked" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次未通过审查（go-reviewer）"]);
+});
+
+test("同一审查代理在同一轮里两次没交出结论：待裁决事项写明两次审查未完成和该代理名", async () => {
+  const { w, id, version } = await reviewStuckWorld([
+    { agent: "vue-reviewer", round: 1, outcome: "failed" }, { agent: "vue-reviewer", round: 1, outcome: "failed" }]);
+  expect(await w.overview()).toMatchObject({ pendingItems: [{ itemId: `task:${id}`, kind: "adjudicate",
+    label: "待裁决：任务 T3 两次审查未完成（vue-reviewer）", version: `task:${id}:${version()}` }] });
+});
+
+test("名单为空时事项文字不带括号：最近一轮只有一条没交结论", async () => {
+  const { w } = await reviewStuckWorld([{ agent: "vue-reviewer", round: 1, outcome: "failed" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次审查未完成"]);
+});
+
+test("只算最近一轮：第 1 轮 go-reviewer 两次没交结论、第 2 轮 vue-reviewer 两次没交结论，名单只有 vue-reviewer", async () => {
+  const { w } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "failed" }, { agent: "go-reviewer", round: 1, outcome: "failed" },
+    { agent: "vue-reviewer", round: 2, outcome: "failed" }, { agent: "vue-reviewer", round: 2, outcome: "failed" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次审查未完成（vue-reviewer）"]);
+});
+
+test("同一轮 go-reviewer、vue-reviewer 都两次没交结论、sec-reviewer 只有一次：名单只含前两者", async () => {
+  const { w } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "failed" }, { agent: "go-reviewer", round: 1, outcome: "failed" },
+    { agent: "vue-reviewer", round: 1, outcome: "failed" }, { agent: "vue-reviewer", round: 1, outcome: "failed" },
+    { agent: "sec-reviewer", round: 1, outcome: "failed" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次审查未完成（go-reviewer、vue-reviewer）"]);
+});
+
+test("三轮打回：名单按第一次打回的先后排出三个代理", async () => {
+  const { w } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "reviewer", round: 2, outcome: "blocked" }, { agent: "vue-reviewer", round: 3, outcome: "blocked" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次未通过审查（go-reviewer、reviewer、vue-reviewer）"]);
+});
+
+test("轮次用满和被停止也算没交出结论：同一代理同一轮各一次即两次审查未完成", async () => {
+  const { w } = await reviewStuckWorld([
+    { agent: "vue-reviewer", round: 1, outcome: "turn_limit_reached" }, { agent: "vue-reviewer", round: 1, outcome: "stopped" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次审查未完成（vue-reviewer）"]);
 });
