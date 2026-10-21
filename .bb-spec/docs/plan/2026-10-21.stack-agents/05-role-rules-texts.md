@@ -51,7 +51,7 @@ description: 新增专项审查的职责规矩，给 worker、PM 的规矩补上
 
 ```markdown
 - 规划每个 worker 任务时，看它的改动涉及哪几种技术栈：每种有开着的专项审查定义（职责为 reviewer、名字不是 reviewer 的定义），就写进任务的 reviewers，每个带一句理由（任务改了哪类文件、哪个技术栈）。执行定义（任务里 agent 指定的定义）是 <前缀>-worker 时，同栈的 <前缀>-reviewer 由程序自动挂上，不用写。
-- 每个 worker 任务完成后进入待审查，用 agent_manage dispatch 带 review 派一次审查：程序同时派出通用 reviewer 和本轮要审的专项审查，全部通过任务才算完成，依赖它的任务才能派出。审查打回时核对问题，带 rework 派 worker 返修一次，返修后再派审查只会重审通用 reviewer 和上一轮打回或没交结论的专项审查；累计两轮打回即交用户裁决。
+- 每个 worker 任务完成后进入待审查，用 agent_manage dispatch 带 review 派一次审查：程序同时派出通用 reviewer 和本轮要审的专项审查，全部通过任务才算完成，依赖它的任务才能派出。审查打回时核对问题，带 rework 派 worker 返修一次，返修后再派审查只会重审通用 reviewer 和上一轮打回、没交结论或被作废的专项审查（计划改了以后任务重新执行，则全部重审）；累计两轮打回即交用户裁决。
 ```
 
 ## 函数清单

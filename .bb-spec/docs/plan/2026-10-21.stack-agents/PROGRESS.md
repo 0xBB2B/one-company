@@ -10,15 +10,15 @@
 | 07 | settings-page-switch | done | 2026-10-21 |
 | 08 | catalog-dispatch-gating | done | 2026-10-21 |
 | 09 | review-plan-fields | done | 2026-10-21 |
-| 10 | review-round-state | pending | — |
+| 10 | review-round-state | in-progress | — |
 | 11 | review-round-dispatch | pending | — |
 | 12 | review-labels-adjudication | pending | — |
 | 13 | overview-task-rows | pending | — |
 | 14 | panel-tree-render | pending | — |
 | 15 | acceptance-p15-p16 | pending | — |
 ## 当前
-09 完成。下一步：10-review-round-state。
+用户 2026-10-21 定了 4 项（没交结论按轮计数、裁决只多给一次；作废的审查下一轮补派；重新执行后全部重审；派工被拒建议按职责写），PRD 01/02 与计划 05/08/10 已改。10-review-round-state 按新规则修订中（补测试 → 修实现 → 复审），完成后继续 11。
 ## 待用户决定
-- 派出被关闭的原型设计师被拒时，建议文字沿用 PRD 给 worker 场景的原文「改用开着的定义，或不指定（用通用 worker）后重新派…」，原型场景下"通用 worker"不贴切（实际回退是通用 prototype）。改成按职责写"通用 <职责>"需要改 PRD 原文，等用户决定。（来源：08 合规审查）
+（无）
 ## 阻塞
 （无）

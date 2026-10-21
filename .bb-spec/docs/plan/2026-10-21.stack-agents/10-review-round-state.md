@@ -11,18 +11,22 @@ description: 任务的审查改成按轮流转：一次登记整轮，全轮结�
 - 一轮审查：worker 交出一次改动（一次完成的尝试）后，PM 派一次审查时登记的那一批审查。第 1 轮之后，每次返修完再派审查算下一轮；同一次改动因为有代理没交结论而重派，仍算同一轮。
 - 本轮成员：
   - 新一轮的第 1 轮：通用 reviewer + 任务 reviewers 里的全部专项审查。
-  - 返修后的新一轮：通用 reviewer + 上一轮打回（blocked / unverified）或没交出结论（failed / turn_limit_reached / stopped）的专项审查；上一轮通过的这一轮不派。
+  - 返修后的新一轮（新尝试带 rework）：通用 reviewer + 上一轮打回（blocked / unverified）、没交出结论（failed / turn_limit_reached / stopped）或被作废（superseded）的专项审查；上一轮通过或被跳过的这一轮不派。
+  - 不是返修的重新执行（新尝试不带 rework，例如计划改了以后重做）后的新一轮：像第 1 轮一样派通用 reviewer + 任务 reviewers 全部。
   - 同一轮重派：只派这一轮里最近一次没交出结论或被 superseded 的代理。
 - 派的时候已关闭的专项审查记为 skipped（skipReason `disabled`），文件被删的记为 skipped（`missing`）；skipped 不算打回、不算没交结论。专项审查全都没派时，本轮只有通用审查。
 - 判定时机：一轮里每个代理的最近一条记录都已结束（不是 running）才判定，否则任务保持 reviewing。
 - 判定结果：
   - 有任何打回 → 本任务累计"有打回的轮数"达到 2 时转 awaiting_user，否则 awaiting_rework。
-  - 没有打回、但有代理没交出结论 → 同一个代理累计没交出结论达到 2 次时转 awaiting_user，否则回到 awaiting_review。
+  - 没有打回、但有代理没交出结论 → 同一轮里同一个代理没交出结论达到 2 次时转 awaiting_user，否则回到 awaiting_review。新一轮重新计数。用户裁决"再给一次机会"只多放一次：放行的那次审查再没交出结论，就再转 awaiting_user（不重新计数）。
+  - 本轮成员全部被跳过（没有一条要派的）时，登记后立即按上面的规则判定，不能停在 reviewing。
+  - 派审查的门槛与判定用同一套计数，awaiting_review 必须是能派出去的状态（不能出现门槛拒绝、而任务又停在 awaiting_review 的情况）。
   - 只有 superseded 的情况沿用现在的处理（回到 awaiting_review）。
   - 其余（都通过或被跳过）→ completed。
 - 任务已不在 reviewing（被影响复核改成别的状态）时，只记结局、不改状态（沿用 task-dispatch.ts:253 的做法）。
 - 用户裁决"再给一次机会"后重新计数的现有规则保留。
-- 需求关闭前的检查：worker 任务算审查通过 = 最近一轮里每个代理的最近一条记录都是 clear 或 skipped，且通用 reviewer 有 clear。
+- 需求关闭前的检查：worker 任务算审查通过 = 最近一轮里每个代理的最近一条记录都是 clear 或 skipped，且通用 reviewer 有 clear，并且通用 reviewer 那条 clear 在结论表（VERDICTS）里有同 runId、epoch 一致的结论记录（保留原有的 epoch 核对：旧流程与旧记录不产生授权）。
+- 被打回、没交结论这两组结局的集合只定义一处（plan-manage.ts 导出，task-dispatch.ts 引用）。
 
 ## 涉及文件
 - 修改 `src/modules/pm/plan-manage.ts`（计数函数）
