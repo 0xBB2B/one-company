@@ -48,14 +48,14 @@ description: <一句话：这份清单覆盖什么>
 
 ```ts
 const TOPICS: Record<string, string[]> = {
-  "go-coding": ["%w", "errors.Is", "context.Context", "接口", "defer", "panic"],
-  "go-pitfalls": ["nil map", "concurrent map", "-race", "goroutine", "DefaultClient", "Body.Close", "1.22", "WaitGroup"],
-  "typescript-coding": ["strict", "unknown", "as", "never", "readonly"],
-  "node-pitfalls": ["运行时校验", "多余字段", "__proto__", "unhandledRejection", "事件循环", "child_process"],
-  "python-coding": ["PEP 8", "PEP 484", "except:", "with", "logging"],
-  "python-pitfalls": ["pickle", "yaml.load", "可变默认参数", "asyncio", "shell=True", "eval"],
+  "go-coding": ["%w", "errors.Is", "errors.As", "context.Context", "不存进结构体", "使用方", "包名", "defer", "panic("],
+  "go-pitfalls": ["nil map", "concurrent map", "-race", "goroutine 泄漏", "DefaultClient", "Body.Close", "1.22", "WaitGroup"],
+  "typescript-coding": ["strict", "不用 any", "unknown", "`as` 断言", "never", "readonly"],
+  "node-pitfalls": ["运行时校验", "多余字段", "__proto__", "unhandledRejection", "Node 15", "事件循环", "child_process"],
+  "python-coding": ["PEP 8", "PEP 484", "except:", "with open", "logging"],
+  "python-pitfalls": ["pickle", "yaml.load", "可变默认参数", "asyncio", "shell=True", "eval(", "exec("],
   "java-coding": ["Google Java Style", "Throwable", "hashCode", "try-with-resources", "Optional"],
-  "java-pitfalls": ["ObjectInputStream", "@Transactional", "Executors", "close", "Actuator", "SimpleDateFormat"],
+  "java-pitfalls": ["ObjectInputStream", "Jackson", "@Transactional", "自调用", "rollbackFor", "Executors", "close", "Actuator", "SimpleDateFormat"],
 };
 ```
 
@@ -63,7 +63,7 @@ const TOPICS: Record<string, string[]> = {
 ### tests/helpers/skill-lint.ts
 | 函数名 | 职责 |
 |---|---|
-| `readSkill` | 读包内 `skills/<名字>/SKILL.md`，切出设置段（name、description）、正文和总行数 |
+| `parseSkillText` | 从 SKILL.md 全文切出设置段（name、description）、正文和总行数 |
 | `skillItems` | 把正文按 `### ` 标题切成检查项，取出问题、怎么认出、修法、出处四行 |
 | `skillLintErrors` | 汇总一份 skill 的格式错误：name 与目录名不一致、description 为空、超过 200 行、检查项缺四行之一、出处没有 `https://` 链接、缺少给定的主题关键词 |
 

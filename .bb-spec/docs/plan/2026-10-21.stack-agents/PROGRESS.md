@@ -1,7 +1,7 @@
 # 执行进度
 | 序号 | Plan | 状态 | 完成时间 |
 |---|---|---|---|
-| 01 | skills-backend-languages | in-progress | — |
+| 01 | skills-backend-languages | done | 2026-10-21 |
 | 02 | skills-frontend | pending | — |
 | 03 | skills-shared-services | pending | — |
 | 04 | stack-definitions | done | 2026-10-21 |
@@ -17,6 +17,6 @@
 | 14 | panel-tree-render | pending | — |
 | 15 | acceptance-p15-p16 | pending | — |
 ## 当前
-第 1 组并行：01-skills-backend-languages（Impl·按扩充要求返工中）；04-stack-definitions 已完成。
+第 1 组完成（01 自修 1 次后通过复审）。下一组并行：02-skills-frontend、03-skills-shared-services、05-role-rules-texts、06-disabled-agents-settings。
 ## 阻塞
 （无）
