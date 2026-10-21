@@ -9,7 +9,11 @@ const exec = promisify(execFile);
 export function gitIn(cwd: string, args: string[], input?: string) {
   const child = exec("git", ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "-c", "maintenance.auto=false", "-c", "gc.auto=0", ...args],
     { cwd, maxBuffer: 1 << 26, timeout: 120_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: "true", LC_ALL: "C" } });
-  if (input !== undefined) { child.child.stdin!.end(input); }
+  if (input !== undefined) {
+    // Git 提前退出时写标准输入会报 EPIPE；不监听就成了进程级未捕获异常，成败交给 Git 的退出码判断
+    child.child.stdin!.on("error", () => undefined);
+    child.child.stdin!.end(input);
+  }
   return child;
 }
 
