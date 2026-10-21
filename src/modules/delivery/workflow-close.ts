@@ -25,7 +25,7 @@ import { resolveRealRepoPath } from "../verification/write-guard.ts";
 import { writeFileAtomic } from "../../core/storage/store.ts";
 import { readVerdictsIn } from "../pm/verdicts.ts";
 import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
-import { implementScope, readPlanIn, terminationPending } from "../pm/plan-manage.ts";
+import { implementScope, latestRound, readPlanIn, terminationPending } from "../pm/plan-manage.ts";
 import type { TaskRecord, TaskStatus } from "../pm/plan-manage.ts";
 import { endRequirementExploreSessionsIn } from "../explore/explore-session.ts";
 import { readGit } from "../../core/exec/git-read.ts";
@@ -211,16 +211,18 @@ function deliveryFactsIn(db: LocalDatabase, repoId: string, requirementId: strin
   const suggestions = evidence.reduce((total, verdict) => total + verdict.findings.filter((finding) => finding.kind === "suggestion").length, 0);
   return { record, round, verifications, verdicts: evidence, blockers: [...new Set(blockers)], suggestions, writes: managedWritesIn(db, repoId, requirementId) };
 }
-/** 每个未取消的 worker 任务都须已完成，且有绑定其最后一次完成尝试、无阻塞无未验证项的任务级审查；缺任一项返回 null。 */
+/** 每个未取消的 worker 任务都须已完成，且最近一轮审查里每个代理的最近一条记录都是通过或跳过、绑定其最后一次完成尝试，通用 reviewer 通过并在结论表里有同运行、同 epoch 的结论；缺任一项返回 null。 */
 function taskReviewsIn(db: LocalDatabase, repoId: string, requirementId: string, epoch: number): ReturnType<typeof readVerdictsIn> | null {
   const workers = (readPlanIn(db, requirementId)?.tasks ?? []).filter((task) => task.role === "worker" && task.status !== "cancelled");
-  const verdicts = readVerdictsIn(db, repoId, requirementId).filter((verdict) => verdict.role === "reviewer" && verdict.epoch === epoch && verdict.conclusion === "clear");
+  const verdicts = readVerdictsIn(db, repoId, requirementId).filter((verdict) => verdict.role === "reviewer" && verdict.epoch === epoch);
   const found: ReturnType<typeof readVerdictsIn> = [];
   for (const task of workers) {
     const attempt = task.attempts.findLast((candidate) => candidate.outcome === "completed");
-    const review = attempt && verdicts.find((verdict) => verdict.review?.taskId === task.taskId && verdict.review.attemptRunId === attempt.runId);
-    if (task.status !== "completed" || !review) return null;
-    found.push(review);
+    const { reviews } = latestRound(task);
+    const general = reviews.find((review) => review.agent === "reviewer" && review.outcome === "clear");
+    const passed = general !== undefined && verdicts.some((verdict) => verdict.runId === general.runId) && reviews.every((review) => (review.outcome === "clear" || review.outcome === "skipped") && review.attemptRunId === attempt?.runId);
+    if (task.status !== "completed" || !passed) return null;
+    found.push(...verdicts.filter((verdict) => reviews.some((review) => review.runId === verdict.runId)));
   }
   return found;
 }

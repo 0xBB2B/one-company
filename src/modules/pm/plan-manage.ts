@@ -95,20 +95,29 @@ export function countedAttempts(task: { attempts: readonly TaskAttempt[] }): num
 export function unsentTask(task: { attempts: readonly TaskAttempt[] }): boolean {
   return countedAttempts(task) === 0;
 }
-/** 审查打回次数：返修机会按此单独计数。 */
+export const REVIEW_REJECTED: ReadonlySet<TaskReview["outcome"]> = new Set(["blocked", "unverified"]);
+export const REVIEW_UNFINISHED: ReadonlySet<TaskReview["outcome"]> = new Set(["failed", "turn_limit_reached", "stopped"]);
+/** 最近一轮的轮次，以及这一轮每个代理的最近一条记录。 */
+export function latestRound(task: { reviews: readonly TaskReview[] }): { round: number; reviews: TaskReview[] } {
+  const round = Math.max(0, ...task.reviews.map((review) => review.round));
+  const byAgent = new Map<string, TaskReview>();
+  for (const review of task.reviews) if (review.round === round) byAgent.set(review.agent, review);
+  return { round, reviews: [...byAgent.values()] };
+}
+/** 有打回的轮数：返修机会按此单独计数，同一轮多个代理打回只算一轮。 */
 export function reviewRejections(task: { reviews: readonly TaskReview[] }): number {
-  return task.reviews.filter((review) => review.outcome === "blocked" || review.outcome === "unverified").length;
+  return new Set(task.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome)).map((review) => review.round)).size;
 }
-/** 审查同一次 worker 尝试时未交出结论的次数：与执行尝试同样允许一次再派，换了被审尝试重新计数。 */
-export function reviewFailures(reviews: readonly TaskReview[], attemptRunId: string): number {
-  return reviews.filter((review) => review.attemptRunId === attemptRunId &&
-    (review.outcome === "failed" || review.outcome === "turn_limit_reached" || review.outcome === "stopped")).length;
+/** 某个审查代理在最近一轮里没交出结论的次数：与执行尝试同样允许一次再派，新一轮重新数。 */
+export function reviewFailures(reviews: readonly TaskReview[], agent: string): number {
+  const { round } = latestRound({ reviews });
+  return reviews.filter((review) => review.round === round && review.agent === agent && REVIEW_UNFINISHED.has(review.outcome)).length;
 }
-/** 任务停在哪一环：最近完成的尝试已被审查时看最近一次审查，打回即返修、未交出结论即再审；否则是执行。 */
+/** 任务停在哪一环：最近完成的尝试已被审查时看最近一轮，有打回即返修、否则再审；否则是执行。 */
 export function stalledStage(task: Pick<TaskRecord, "attempts" | "reviews">): "execute" | "review" | "rework" {
-  const attempt = task.attempts.at(-1), review = task.reviews.at(-1);
-  if (attempt?.outcome !== "completed" || review?.attemptRunId !== attempt.runId) return "execute";
-  return review.outcome === "blocked" || review.outcome === "unverified" ? "rework" : "review";
+  const attempt = task.attempts.at(-1), { reviews } = latestRound(task);
+  if (attempt?.outcome !== "completed" || reviews.length === 0 || reviews.some((review) => review.attemptRunId !== attempt.runId)) return "execute";
+  return reviews.some((review) => REVIEW_REJECTED.has(review.outcome)) ? "rework" : "review";
 }
 /** 用户对待裁决任务的决定：只由可信登记写入，PM 不能构造；revision/taskVersion 为登记时的批准版本与任务版本。 */
 const UserDecision = object({

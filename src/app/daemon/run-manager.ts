@@ -242,7 +242,6 @@ const PROTOCOL_NEXT: Record<string, string> = {
   model_unavailable: "指定的模型不可用：请用户检查模型配置或改选模型",
   thinking_unsupported: "请用户改选模型，或在 /one:setting 的「模型」里给这个角色设定该模型支持的思考等级",
   skill_unavailable: "指定的技能不可用：请用户检查技能安装，或调整角色定义",
-  agent_disabled: "改用开着的定义，或不指定（用通用 worker）后重新派；用户点名要这个定义时先问用户",
   stop_unconfirmed: "稍后重试停止，并核对进程是否已结束",
 };
 function protocolError(code: string, message: string, next?: string): Error & { code: string } {
@@ -461,7 +460,7 @@ export class RunManager {
     const runId = uuidv7();
     let maxTurns: number, attemptRunId: string | undefined;
     ({ maxTurns, attemptRunId } = review
-      ? beginTaskReview({ ...ref, lease, taskId: task.taskId, runId, maxTurns: input.review!.maxTurns })
+      ? beginTaskReview({ ...ref, lease, taskId: task.taskId, maxTurns: input.review!.maxTurns, members: [{ agent: "reviewer", runId }] })
       : { ...beginTaskAttempt({ ...ref, lease, taskId: task.taskId, runId, retry: input.retry, rework: input.rework ?? null }), attemptRunId: undefined });
     const fail = () => review ? finishTaskReview({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" })
       : finishTaskAttempt({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" });
@@ -895,7 +894,7 @@ export class RunManager {
 
   /** 每次派出按当前角色目录解析定义并核验模型、思考等级与 skills；不可用即报错，不静默换定义或模型。 */
   private async resolveAgent(name: string, role: AgentRole, fallback: { model: SelectedModel; thinking: string }): Promise<ResolvedAgent> {
-    if (this.disabledAgents().has(name)) throw protocolError("agent_disabled", `${name} 已关闭`);
+    if (this.disabledAgents().has(name)) throw protocolError("agent_disabled", `${name} 已关闭`, `改用开着的定义，或不指定（用通用 ${role}）后重新派；用户点名要这个定义时先问用户`);
     const catalog = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
     try {
       return await resolveAgent({ catalog, name, role, fallback, skillDirs: this.options.skillDirs ?? [], ...this.modelLookup() });

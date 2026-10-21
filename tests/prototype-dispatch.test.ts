@@ -134,7 +134,8 @@ test("指定的原型定义在关闭名单里时被拒为 agent_disabled，没�
   const w = await world({ disabled: new Set(["x-designer"]) });
   await writeFile(join(w.userDir, "x-designer.md"), "---\nname: x-designer\ndescription: 原型\nrole: prototype\n---\n你是 x-designer。\n");
   const before = w.provider.requests.length;
-  await expect(w.dispatch({ agent: "x-designer" })).rejects.toMatchObject({ code: "agent_disabled", message: expect.stringContaining("x-designer 已关闭") });
+  await expect(w.dispatch({ agent: "x-designer" })).rejects.toMatchObject({ code: "agent_disabled", message: expect.stringContaining("x-designer 已关闭"),
+    advice: { next: expect.stringContaining("用通用 prototype") } });
   expect(w.provider.requests.length).toBe(before);
   expect((await w.board()).entries).toEqual([]);
 });
