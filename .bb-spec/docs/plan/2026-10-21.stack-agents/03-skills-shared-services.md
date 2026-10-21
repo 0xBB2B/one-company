@@ -44,13 +44,13 @@ description: <一句话：这份清单覆盖什么>
 
 ```ts
 const TOPICS: Record<string, string[]> = {
-  "web-api-security": ["OWASP Top 10:2025", "IDOR", "SSRF", "169.254.169.254", "XSS", "批量赋值", "报错"],
-  "auth-session": ["alg", "HttpOnly", "SameSite", "CSRF", "localStorage", "argon2id", "失效"],
-  "supply-chain": ["--ignore-scripts", "lockfile", "save-exact", "冷却期", "同意", "Shai-Hulud"],
+  "web-api-security": ["OWASP Top 10:2025", "IDOR", "SSRF", "169.254.169.254", "DNS 重绑定", "输出编码", "批量赋值", "内部细节"],
+  "auth-session": ["alg: none", "HttpOnly", "SameSite", "CSRF", "localStorage", "argon2id", "旧 token"],
+  "supply-chain": ["--ignore-scripts", "lockfile", "save-exact", "冷却期", "经用户同意", "Shai-Hulud"],
   "relational-db": ["占位符", "白名单", "keyset", "死锁", "N+1", "连接池"],
-  "redis": ["穿透", "布隆过滤器", "击穿", "singleflight", "雪崩", "抖动", "NX", "Lua", "Redlock", "fencing", "UNLINK"],
-  "message-queue": ["幂等", "offset", "Outbox", "死信", "顺序"],
-  "service-runtime": ["超时", "退避", "抖动", "幂等键", "限流", "SIGTERM", "脱敏", "密钥"],
+  "redis": ["穿透", "布隆过滤器", "击穿", "singleflight", "逻辑过期", "雪崩", "抖动", "NX", "Lua", "Redlock", "fencing", "UNLINK"],
+  "message-queue": ["幂等", "offset", "Outbox", "死信", "按 key 分区"],
+  "service-runtime": ["超时", "退避", "抖动", "重试预算", "幂等键", "限流", "SIGTERM", "脱敏", "密钥"],
 };
 ```
 
