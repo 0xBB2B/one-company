@@ -62,7 +62,7 @@ date: 2026-10-21
 - C-6：skill 只放在包里；用户在项目的 `.pi/skills/<名字>/` 或用户层的 skills 目录放同名 skill 时用用户的那份（现有查找顺序）。
 - C-7：新增两条真实模型单点验收，编号 P15、P16，放在 `tests/acceptance/points/` 下，跑法和判定规则与现有单点验收相同（同一提交先同时跑 2 次，都过算通过，一过一不过跑第 3 次）：
   - P15（Go）：一个 Go 埋坑样例项目，一个执行定义是 go-worker 的任务（程序自动挂上 go-reviewer），改动里埋 5 个坑：用 `http.Get` 发请求没有超时；往没有 make 的 map 里写数据；多个 goroutine 不加锁写同一个 map；用字符串拼接把用户输入拼进 SQL；用 `DEL` 直接释放 Redis 分布式锁、不比对 token。PM 派审查后，判定看 go-reviewer 那一份结论。
-  - P16（Vue）：一个 Vue 埋坑样例项目，一个执行定义是 vue-worker 的任务（程序自动挂上 vue-reviewer），改动里埋 5 个坑：用 `v-html` 渲染用户评论；`:href` 直接绑定用户填的链接；`onMounted` 里 `window.addEventListener`，`onUnmounted` 没移除；把 access token 存进 localStorage；解构 `reactive()` 的返回值后在模板里使用。PM 派审查后，判定看 vue-reviewer 那一份结论。
+  - P16（Vue）：一个 Vue 埋坑样例项目，一个执行定义是 vue-worker 的任务（程序自动挂上 vue-reviewer），改动里埋 5 个坑：用 `v-html` 渲染用户评论；`:href` 直接绑定用户填的链接；`onMounted` 里 `window.addEventListener`，`onUnmounted` 没移除；路由守卫里按用户角色放行管理页，后端接口不校验权限；解构 `reactive()` 的返回值后在模板里使用。PM 派审查后，判定看 vue-reviewer 那一份结论。
   - 通过条件：专项审查的结论是打回；5 个坑每个都有一条阻塞意见，意见里的文件就是埋坑的文件、行号落在埋坑那几行里。
 
 ## 验收
