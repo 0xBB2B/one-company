@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import {
   SETTINGS_ROLES, clearAgentSetting, clearGitDeliverySetting, clearMergeMethodsSetting, projectSettingsPath, readAgentSettings, saveAgentSetting, saveGitDeliverySetting, saveMergeMethodsSetting, userSettingsPath,
 } from "../src/modules/settings/agent-settings.ts";
+import * as settings from "../src/modules/settings/agent-settings.ts";
 import { initRepoWithOrigin, installFakeGh } from "./helpers/fake-gh.ts";
 
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -164,7 +165,7 @@ describe("读取设定", () => {
     expect(problems).toHaveLength(1);
     expect(problems[0]).toMatchObject({
       path: w.user,
-      display: "不认识的设定 boss，只能是 pm、interpreter、draft-verifier、git-delivery、merge-methods",
+      display: "不认识的设定 boss，只能是 pm、interpreter、draft-verifier、git-delivery、merge-methods、disabled-agents",
     });
   });
 
@@ -347,7 +348,7 @@ describe("读写异常文件时和 pi 一致", () => {
 });
 
 const ALL_METHODS = ["squash", "merge", "rebase"];
-const ONE_COMPANY_KEYS = "pm、interpreter、draft-verifier、git-delivery、merge-methods";
+const ONE_COMPANY_KEYS = "pm、interpreter、draft-verifier、git-delivery、merge-methods、disabled-agents";
 
 describe("读取 git-delivery", () => {
   test("两层都没写且 origin 主机 gh 登录过：生效 remote，来源默认，带探测结果", async () => {
@@ -644,5 +645,176 @@ describe("写入和清除 merge-methods", () => {
     await clearMergeMethodsSetting({ path: w.user });
     expect(await readFile(w.user, "utf8")).toBe(original);
     expect((await stat(w.user)).mtimeMs).toBe(before);
+  });
+});
+
+const api = settings;
+const CATALOG = { roles: [{ name: "go-worker" }, { name: "ts-worker" }] };
+const has = (names: Iterable<string>, name: string) => [...names].includes(name);
+
+describe("定义开关", () => {
+  test("用户层列表原样读出，关闭名单含该名字，开关为用户层关闭", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "disabled-agents": ["go-worker"] } });
+    const { disabledAgents, problems } = await w.read(true);
+    expect(disabledAgents).toEqual({ user: ["go-worker"], project: [] });
+    expect(problems).toEqual([]);
+    expect(has(api.disabledAgentNames(disabledAgents), "go-worker")).toBe(true);
+    expect(api.agentSwitchOf("go-worker", disabledAgents)).toEqual({ generic: false, enabled: false, from: "user" });
+  });
+
+  test("两层都没写时全部开启，来源为 null", async () => {
+    const w = await world();
+    const { disabledAgents } = await w.read(true);
+    expect(disabledAgents).toEqual({ user: [], project: [] });
+    expect(api.agentSwitchOf("go-worker", disabledAgents)).toEqual({ generic: false, enabled: true, from: null });
+  });
+
+  test("只在项目层写且项目受信任时关闭，来源为项目层", async () => {
+    const w = await world();
+    await w.write(w.project, { "one-company": { "disabled-agents": ["go-worker"] } });
+    const { disabledAgents } = await w.read(true);
+    expect(disabledAgents).toEqual({ user: [], project: ["go-worker"] });
+    expect(has(api.disabledAgentNames(disabledAgents), "go-worker")).toBe(true);
+    expect(api.agentSwitchOf("go-worker", disabledAgents)).toEqual({ generic: false, enabled: false, from: "project" });
+  });
+
+  test("项目不受信任时项目层列表不生效，project 为空", async () => {
+    const w = await world();
+    await w.write(w.project, { "one-company": { "disabled-agents": ["go-worker"] } });
+    const { disabledAgents } = await w.read(false);
+    expect(disabledAgents.project).toEqual([]);
+    expect(api.agentSwitchOf("go-worker", disabledAgents).enabled).toBe(true);
+  });
+
+  test("两层都写了同一个名字时来源报用户层，关闭名单并集", () => {
+    const d = { user: ["go-worker"], project: ["go-worker", "ts-worker"] };
+    expect(api.agentSwitchOf("go-worker", d)).toEqual({ generic: false, enabled: false, from: "user" });
+    expect(api.agentSwitchOf("ts-worker", d).from).toBe("project");
+    const names = [...api.disabledAgentNames(d)];
+    expect(names.sort()).toEqual(["go-worker", "ts-worker"]);
+  });
+
+  test("通用定义永远不算关闭：关闭名单不含，开关为通用且开启", () => {
+    const d = { user: ["reviewer", "go-worker"], project: ["worker", "qa", "explore", "prototype"] };
+    const names = api.disabledAgentNames(d);
+    for (const g of ["worker", "reviewer", "qa", "explore", "prototype"]) {
+      expect(has(names, g)).toBe(false);
+      expect(api.agentSwitchOf(g, d)).toMatchObject({ generic: true, enabled: true });
+    }
+    expect(has(names, "go-worker")).toBe(true);
+  });
+
+  test("写成字符串而不是列表：记「只能写定义名列表」问题，原样写法带引号，这一层列表为空", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "disabled-agents": "go-worker" } });
+    const { disabledAgents, problems } = await w.read(true);
+    expect(disabledAgents.user).toEqual([]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatchObject({ path: w.user, layer: "user", key: "disabled-agents", display: "disabled-agents 只能写定义名列表", value: '"go-worker"' });
+  });
+
+  test.each([
+    ["数字", 1, "1"],
+    ["null", null, "null"],
+    ["含非字符串元素的列表", ["go-worker", 2], '["go-worker",2]'],
+  ])("写成%s：这一层不生效并记问题", async (_label, written, shown) => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "disabled-agents": written } });
+    const { disabledAgents, problems } = await w.read(true);
+    expect(disabledAgents.user).toEqual([]);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatchObject({ key: "disabled-agents", display: "disabled-agents 只能写定义名列表", value: shown });
+  });
+
+  test("项目层写错时不影响用户层的列表", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "disabled-agents": ["go-worker"] } });
+    await w.write(w.project, { "one-company": { "disabled-agents": "ts-worker" } });
+    const { disabledAgents, problems } = await w.read(true);
+    expect(disabledAgents).toEqual({ user: ["go-worker"], project: [] });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatchObject({ path: w.project, layer: "project" });
+  });
+
+  test("列表里有通用定义名和不存在的定义名：各记一条问题，目录里的名字不出问题", () => {
+    const paths = { user: "/u/settings.json", project: "/p/settings.json" };
+    const problems = api.disabledAgentProblems({ user: ["reviewer", "nope", "go-worker"], project: [] }, paths, CATALOG);
+    expect(problems.map((p) => [p.key, p.display, p.value])).toEqual([
+      ["disabled-agents", "reviewer 是通用定义，不能关闭", "reviewer"],
+      ["disabled-agents", "没有叫 nope 的角色定义", "nope"],
+    ]);
+  });
+
+  test("项目层的坏名字问题指向项目层文件", () => {
+    const paths = { user: "/u/settings.json", project: "/p/settings.json" };
+    const problems = api.disabledAgentProblems({ user: [], project: ["nope"] }, paths, CATALOG);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatchObject({ path: paths.project, layer: "project" });
+  });
+
+  test("列表全是有效名字时没有问题", () => {
+    expect(api.disabledAgentProblems({ user: ["go-worker"], project: ["ts-worker"] }, { user: "/u", project: "/p" }, CATALOG)).toEqual([]);
+  });
+
+  test("通用定义名在列表里时关闭名单不含它，开关仍是通用且开启", () => {
+    const d = { user: ["reviewer", "nope"], project: [] };
+    expect(has(api.disabledAgentNames(d), "reviewer")).toBe(false);
+    expect(api.agentSwitchOf("reviewer", d)).toMatchObject({ generic: true, enabled: true });
+  });
+
+  test("one-company 下出现不认识的键时允许键清单含 disabled-agents", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { foo: 1 } });
+    const { problems } = await w.read(true);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.display).toContain("disabled-agents");
+  });
+
+  test("保存名单后 one-company 下其他键保留，再读出所写名单", async () => {
+    const w = await world();
+    await w.write(w.user, { theme: "dark", "one-company": { "git-delivery": "remote" } });
+    await api.saveDisabledAgentsSetting(w.user, ["go-worker"]);
+    expect(JSON.parse(await readFile(w.user, "utf8"))).toEqual({ theme: "dark", "one-company": { "git-delivery": "remote", "disabled-agents": ["go-worker"] } });
+    expect((await w.read(true)).disabledAgents.user).toEqual(["go-worker"]);
+  });
+
+  test("保存空名单时删掉 disabled-agents 键，其他键保留", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "git-delivery": "remote", "disabled-agents": ["go-worker"] } });
+    await api.saveDisabledAgentsSetting(w.user, []);
+    expect(JSON.parse(await readFile(w.user, "utf8"))).toEqual({ "one-company": { "git-delivery": "remote" } });
+  });
+
+  test("保存到不存在的文件时自动建目录和文件", async () => {
+    const w = await world();
+    await api.saveDisabledAgentsSetting(w.project, ["go-worker", "ts-worker"]);
+    expect(JSON.parse(await readFile(w.project, "utf8"))).toEqual({ "one-company": { "disabled-agents": ["go-worker", "ts-worker"] } });
+  });
+
+  test("保存是整层写入：新名单替换旧名单", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "disabled-agents": ["go-worker", "ts-worker"] } });
+    await api.saveDisabledAgentsSetting(w.user, ["ts-worker"]);
+    expect(JSON.parse(await readFile(w.user, "utf8"))["one-company"]["disabled-agents"]).toEqual(["ts-worker"]);
+  });
+
+  test("轻量读取返回两层各自的列表，未受信任时项目层为空", async () => {
+    const w = await world();
+    await w.write(w.user, { "one-company": { "disabled-agents": ["go-worker"] } });
+    await w.write(w.project, { "one-company": { "disabled-agents": ["ts-worker"] } });
+    const input = { agentDir: w.agentDir, repositoryRoot: w.repositoryRoot };
+    expect(await api.readDisabledAgents({ ...input, projectTrusted: true })).toEqual({ user: ["go-worker"], project: ["ts-worker"] });
+    expect(await api.readDisabledAgents({ ...input, projectTrusted: false })).toEqual({ user: ["go-worker"], project: [] });
+  });
+
+  test("轻量读取在两层都没写 git-delivery 时不调用 gh", async () => {
+    const w = await world();
+    await initRepoWithOrigin(w.repositoryRoot, "git@github.com:acme/shop.git");
+    gh.ghLoggedIn(["github.com"]);
+    await w.write(w.user, { "one-company": { "disabled-agents": ["go-worker"] } });
+    await api.readDisabledAgents({ agentDir: w.agentDir, repositoryRoot: w.repositoryRoot, projectTrusted: true });
+    const log = process.env.FAKE_GH_LOG!;
+    expect(existsSync(log) ? await readFile(log, "utf8") : "").toBe("");
   });
 });

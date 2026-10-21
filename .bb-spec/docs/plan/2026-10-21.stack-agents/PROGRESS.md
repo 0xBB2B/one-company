@@ -2,11 +2,11 @@
 | 序号 | Plan | 状态 | 完成时间 |
 |---|---|---|---|
 | 01 | skills-backend-languages | done | 2026-10-21 |
-| 02 | skills-frontend | pending | — |
-| 03 | skills-shared-services | pending | — |
+| 02 | skills-frontend | in-progress | — |
+| 03 | skills-shared-services | in-progress | — |
 | 04 | stack-definitions | done | 2026-10-21 |
-| 05 | role-rules-texts | pending | — |
-| 06 | disabled-agents-settings | pending | — |
+| 05 | role-rules-texts | in-progress | — |
+| 06 | disabled-agents-settings | done | 2026-10-21 |
 | 07 | settings-page-switch | pending | — |
 | 08 | catalog-dispatch-gating | pending | — |
 | 09 | review-plan-fields | pending | — |
@@ -17,6 +17,6 @@
 | 14 | panel-tree-render | pending | — |
 | 15 | acceptance-p15-p16 | pending | — |
 ## 当前
-第 1 组完成（01 自修 1 次后通过复审）。下一组并行：02-skills-frontend、03-skills-shared-services、05-role-rules-texts、06-disabled-agents-settings。
+第 2 组并行：02-skills-frontend、03-skills-shared-services、05-role-rules-texts、06-disabled-agents-settings，都在 Test·Red。02、03 的关键词表已按 01 的教训收紧（计划同步）。
 ## 阻塞
 （无）

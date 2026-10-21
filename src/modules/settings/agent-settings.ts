@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { detectDeliveryMode } from "../../core/exec/git-host.ts";
 import type { DeliveryMode, GitProvider } from "../../core/exec/git-host.ts";
-import { MODEL_PATTERN, THINKING_LEVELS, type ThinkingLevel } from "../agents/roles.ts";
+import { MODEL_PATTERN, THINKING_LEVELS, isGenericDefinition, type ThinkingLevel } from "../agents/roles.ts";
 
 export const SETTINGS_ROLES = [
   { key: "pm", label: "PM", purpose: "活动需求的负责人，拆任务、派工、调度", effect: "下次启动 PM 时生效", failure: "启动 PM 会失败", model: null, thinking: null },
@@ -21,6 +21,7 @@ export type SettingsRoleKey = (typeof SETTINGS_ROLES)[number]["key"];
 export interface RoleSetting { model: string | null; thinking: ThinkingLevel | null }
 export type SettingsLayer = Partial<Record<SettingsRoleKey, RoleSetting>>;
 export interface SettingsProblem { path: string; layer: "user" | "project"; role?: SettingsRoleKey; key?: string; display: string; value?: string }
+export interface DisabledAgents { user: string[]; project: string[] }
 export interface EffectiveSetting extends RoleSetting { source: "project" | "user" | "default" }
 
 export function userSettingsPath(agentDir: string): string {
@@ -47,7 +48,7 @@ const isMergeMethods = (value: unknown): value is MergeMethod[] =>
   Array.isArray(value) && value.length >= 1 && value.length <= MERGE_METHODS.length && new Set(value).size === value.length
   && value.every((item) => MERGE_METHODS.some((method) => method.key === item));
 
-export function parseSettingsLayer(path: string, layer: "user" | "project"): { entries: SettingsLayer; gitDelivery?: DeliveryMode; mergeMethods?: MergeMethod[]; problems: SettingsProblem[] } {
+export function parseSettingsLayer(path: string, layer: "user" | "project"): { entries: SettingsLayer; gitDelivery?: DeliveryMode; mergeMethods?: MergeMethod[]; disabledAgents?: string[]; problems: SettingsProblem[] } {
   const entries: SettingsLayer = {};
   const problems: SettingsProblem[] = [];
   if (!existsSync(path)) return { entries, problems };
@@ -69,9 +70,10 @@ export function parseSettingsLayer(path: string, layer: "user" | "project"): { e
   if (!isObject(section)) {
     return { entries, problems: [{ path, layer, display: "one-company 要写成对象，这一层的设定都没有生效" }] };
   }
-  const keys = [...SETTINGS_ROLES.map((r) => r.key), "git-delivery", "merge-methods"];
+  const keys = [...SETTINGS_ROLES.map((r) => r.key), "git-delivery", "merge-methods", "disabled-agents"];
   let gitDelivery: DeliveryMode | undefined;
   let mergeMethods: MergeMethod[] | undefined;
+  let disabledAgents: string[] | undefined;
   for (const [name, value] of Object.entries(section)) {
     if (name === "git-delivery") {
       if (value === "remote" || value === "local") gitDelivery = value;
@@ -81,6 +83,11 @@ export function parseSettingsLayer(path: string, layer: "user" | "project"): { e
     if (name === "merge-methods") {
       if (isMergeMethods(value)) mergeMethods = value;
       else problems.push({ path, layer, key: name, display: "merge-methods 只能是 squash、merge、rebase 里的一到三个，不能重复", value: JSON.stringify(value) });
+      continue;
+    }
+    if (name === "disabled-agents") {
+      if (Array.isArray(value) && value.every((item) => typeof item === "string")) disabledAgents = value;
+      else problems.push({ path, layer, key: name, display: "disabled-agents 只能写定义名列表", value: JSON.stringify(value) });
       continue;
     }
     const role = SETTINGS_ROLES.find((r) => r.key === name);
@@ -104,7 +111,7 @@ export function parseSettingsLayer(path: string, layer: "user" | "project"): { e
     }
     entries[role.key] = { model, thinking: thinking as ThinkingLevel | null };
   }
-  return { entries, gitDelivery, mergeMethods, problems };
+  return { entries, gitDelivery, mergeMethods, disabledAgents, problems };
 }
 
 type Settings = Awaited<ReturnType<typeof readAgentSettings>>;
@@ -113,7 +120,7 @@ function readLayers(input: { agentDir: string; repositoryRoot: string; projectTr
   const user = parseSettingsLayer(userSettingsPath(input.agentDir), "user");
   const project = input.projectTrusted
     ? parseSettingsLayer(projectSettingsPath(input.repositoryRoot), "project")
-    : { entries: {} as SettingsLayer, gitDelivery: undefined as DeliveryMode | undefined, mergeMethods: undefined as MergeMethod[] | undefined, problems: [] as SettingsProblem[] };
+    : { entries: {} as SettingsLayer, gitDelivery: undefined as DeliveryMode | undefined, mergeMethods: undefined as MergeMethod[] | undefined, disabledAgents: [] as string[], problems: [] as SettingsProblem[] };
   const values = {} as Record<SettingsRoleKey, EffectiveSetting>;
   for (const role of SETTINGS_ROLES) {
     const fromProject = project.entries[role.key];
@@ -136,6 +143,7 @@ export async function readAgentSettings(input: { agentDir: string; repositoryRoo
   layers: { user: SettingsLayer; project: SettingsLayer };
   gitDelivery: { mode: DeliveryMode; source: "project" | "user" | "default"; detected?: { host: string | null; provider: GitProvider | null } };
   mergeMethods: { methods: readonly MergeMethod[]; source: "project" | "user" | "default" };
+  disabledAgents: DisabledAgents;
   problems: SettingsProblem[];
 }> {
   const { user, project, values } = readLayers(input);
@@ -155,6 +163,7 @@ export async function readAgentSettings(input: { agentDir: string; repositoryRoo
     values,
     gitDelivery,
     mergeMethods,
+    disabledAgents: { user: user.disabledAgents ?? [], project: project.disabledAgents ?? [] },
     layers: { user: user.entries, project: project.entries },
     problems: [...user.problems, ...project.problems],
   };
@@ -222,4 +231,37 @@ export async function saveMergeMethodsSetting(input: { path: string; methods: re
 
 export async function clearMergeMethodsSetting(input: { path: string }): Promise<void> {
   clearOneCompanyKey(input.path, "merge-methods");
+}
+
+export function readDisabledAgents(input: { agentDir: string; repositoryRoot: string; projectTrusted: boolean }): DisabledAgents {
+  const { user, project } = readLayers(input);
+  return { user: user.disabledAgents ?? [], project: project.disabledAgents ?? [] };
+}
+
+export function disabledAgentNames(disabled: DisabledAgents): Set<string> {
+  return new Set([...disabled.user, ...disabled.project].filter((name) => !isGenericDefinition(name)));
+}
+
+export function agentSwitchOf(name: string, disabled: DisabledAgents): { generic: boolean; enabled: boolean; from: "user" | "project" | null } {
+  if (isGenericDefinition(name)) return { generic: true, enabled: true, from: null };
+  const from = disabled.user.includes(name) ? "user" : disabled.project.includes(name) ? "project" : null;
+  return { generic: false, enabled: from === null, from };
+}
+
+export function disabledAgentProblems(disabled: DisabledAgents, paths: { user: string; project: string }, catalog: { roles: readonly { name: string }[] }): SettingsProblem[] {
+  const problems: SettingsProblem[] = [];
+  for (const layer of ["user", "project"] as const) {
+    for (const name of disabled[layer]) {
+      const display = isGenericDefinition(name)
+        ? `${name} 是通用定义，不能关闭`
+        : catalog.roles.some((role) => role.name === name) ? undefined : `没有叫 ${name} 的角色定义`;
+      if (display) problems.push({ path: paths[layer], layer, key: "disabled-agents", display, value: name });
+    }
+  }
+  return problems;
+}
+
+export async function saveDisabledAgentsSetting(path: string, names: readonly string[]): Promise<void> {
+  if (names.length === 0) clearOneCompanyKey(path, "disabled-agents");
+  else saveOneCompanyKey(path, "disabled-agents", [...names]);
 }
