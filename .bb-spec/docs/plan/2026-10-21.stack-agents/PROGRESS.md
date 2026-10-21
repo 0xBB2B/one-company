@@ -14,10 +14,10 @@
 | 11 | review-round-dispatch | done | 2026-10-21 |
 | 12 | review-labels-adjudication | done | 2026-10-21 |
 | 13 | overview-task-rows | done | 2026-10-21 |
-| 14 | panel-tree-render | pending | — |
+| 14 | panel-tree-render | done | 2026-10-22 |
 | 15 | acceptance-p15-p16 | pending | — |
 ## 当前
-准备执行 `14-panel-tree-render.md`。13 号复审时自修：只有用时变化也广播概览、doing 里「派 X」写职责名；用户 2026-10-21 定了暂停时只显示暂停中一行、一个任务可占多行（PRD 已改，9fbef2d）。
+准备执行 `15-acceptance-p15-p16.md`。14 号复审时自修：窄屏（≤10 列）切进转义序列导致行超宽、在跑和打回的审查代理行被刷灰、缺轮数时显示 undefined；颜色按已确认预览（通过行文字 muted、连线 dim）。预览 ⑦～⑭ 对照一致。
 ## 待用户决定
 - 返修中途 PM 重试后，下一轮被当成重新执行、全部重审（多审一次，不漏审）；是否改成只重审打回的。
 - 放行的审查被作废后重派，轮数上限用 PM 传入的，没沿用用户裁决给的上限；是否沿用。
