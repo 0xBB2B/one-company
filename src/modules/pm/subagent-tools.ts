@@ -66,7 +66,7 @@ export async function createSubagentTools(input: SubagentToolsInput): Promise<{ 
         ...(input.review ? { review: { taskId: input.task.taskId, attemptRunId: input.review.attemptRunId } } : {}),
         ...(role === "worker" ? { workerTaskId: input.task.taskId } : {}) } });
     runtimes.push(result);
-    tools.push(toPiTool("result_submit", role === "worker" ? "提交本任务结果（action=verdict）：summary 写做了什么，verificationIds 列本运行的调试验证编号，checkRoundId 填 null；未完成或有问题时在 findings 按阻塞、未验证分级列出，没有就给空数组；结果不是通过证明。"
+    tools.push(toPiTool("result_submit", role === "worker" ? "提交本任务结果（action=verdict）：summary 写做了什么，verificationIds 列本运行自己跑的调试验证编号，重试时可以加上同一任务前一次尝试跑出的红，checkRoundId 填 null；未完成或有问题时在 findings 按阻塞、未验证分级列出，没有就给空数组；结果不是通过证明。"
       : role === "reviewer" ? "提交对被审任务改动的审查裁决（action=verdict，checkRoundId 为 null）：只能引用本运行的测试，按阻塞、建议、未验证分级。"
         : "提交引用本检查轮正式验证结果的裁决（action=verdict），按阻塞、建议、未验证分级。", VERDICT_SUBMIT_PARAMETERS, result));
     return { tools, dispose() { for (const runtime of runtimes) runtime.dispose(); } };

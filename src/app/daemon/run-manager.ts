@@ -604,7 +604,7 @@ export class RunManager {
     });
   }
 
-  /** QA 用于核对"不做某事"类边界：各已完成 worker 任务最近一次通过审查的裁决摘要。 */
+  /** QA 用于核对"不做某事"类边界：各已完成 worker 任务最近一次通过通用审查的裁决摘要。 */
   private reviewConclusions(requirementId: string): string[] {
     return withDatabase(this.database, (db) => {
       const verdicts = db.list<Verdict>(VERDICTS).map((row) => row.data);
