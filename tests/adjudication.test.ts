@@ -751,7 +751,7 @@ test("裁决卡片里审查记录的结局全部写中文，不出现英文枚�
     { agent: "d-reviewer", round: 1, outcome: "failed" }, { agent: "e-reviewer", round: 1, outcome: "turn_limit_reached" }, { agent: "f-reviewer", round: 1, outcome: "stopped" },
     { agent: "g-reviewer", round: 1, outcome: "superseded" }, { agent: "h-reviewer", round: 1, outcome: "skipped" }, { agent: "i-reviewer", round: 1, outcome: "running" }]);
   const expected = ["第 1 轮 a-reviewer：通过", "第 1 轮 b-reviewer：打回", "第 1 轮 c-reviewer：未验证", "第 1 轮 d-reviewer：没交出结论（运行失败）",
-    "第 1 轮 e-reviewer：没交出结论（轮次用满）", "第 1 轮 f-reviewer：没交出结论（被停止）", "第 1 轮 g-reviewer：被作废", "第 1 轮 h-reviewer：已跳过", "第 1 轮 i-reviewer：进行中"];
+    "第 1 轮 e-reviewer：没交出结论（轮数用满）", "第 1 轮 f-reviewer：没交出结论（被停止）", "第 1 轮 g-reviewer：被作废", "第 1 轮 h-reviewer：已跳过", "第 1 轮 i-reviewer：进行中"];
   const packetLines = w.manager.decisionPacket(w.fixture.requirementId, itemId).split("\n");
   const summaryLines = adjudicationSubject({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, itemId).summary.split("\n");
   for (const lines of [packetLines, summaryLines]) {

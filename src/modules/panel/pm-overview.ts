@@ -3,6 +3,7 @@ import { activeCheckRoundIn } from "../verification/check-round.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
 import { implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
 import type { TaskRecord } from "../pm/plan-manage.ts";
+import { reviewDispatchable } from "../pm/task-dispatch.ts";
 import { latestPmSubmission } from "../pm/pm-intake-runtime.ts";
 import { PmIntakeStore } from "../pm/pm-intake-store.ts";
 import { planRejectionsIn, stallIn } from "../pm/pm-attention.ts";
@@ -25,8 +26,15 @@ export interface PendingItem {
 
 export interface PanelRunStats { turns: number; maxTurns: number | null; elapsedMs: number }
 
-export type PanelReviewerState = "running" | "clear" | "blocked" | "ended" | "skipped_disabled" | "skipped_missing" | "passed_earlier";
-export interface PanelReviewerRow extends Partial<PanelRunStats> { agent: string; state: PanelReviewerState }
+export type PanelReviewerState = "running" | "clear" | "blocked" | "awaiting_retry" | "exhausted" | "skipped_disabled" | "skipped_missing" | "passed_earlier";
+export interface PanelReviewerRow extends Partial<PanelRunStats> {
+  agent: string;
+  state: PanelReviewerState;
+  /** 本轮第几次派这个代理；只在大于 1 时给出。 */
+  attempt?: number;
+  /** awaiting_retry 时没交出结论的原因。 */
+  reason?: "turn_limit_reached" | "failed" | "stopped" | "superseded";
+}
 
 export type PanelTaskRow =
   | ({ kind: "execute"; taskKey: string; agent: string; attempt: number } & PanelRunStats)
@@ -208,8 +216,9 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
 }
 
 function runStatsOf(run: RunRecord, now: number): PanelRunStats {
-  const pausedNow = run.pausedAt ? Math.max(0, now - Date.parse(run.pausedAt)) : 0;
-  return { turns: run.turns, maxTurns: run.maxTurns ?? null, elapsedMs: Math.max(0, now - Date.parse(run.startedAt) - (run.pausedMs ?? 0) - pausedNow) };
+  const end = run.endedAt ? Date.parse(run.endedAt) : now;
+  const pausedNow = run.pausedAt ? Math.max(0, end - Date.parse(run.pausedAt)) : 0;
+  return { turns: run.turns, maxTurns: run.maxTurns ?? null, elapsedMs: Math.max(0, end - Date.parse(run.startedAt) - (run.pausedMs ?? 0) - pausedNow) };
 }
 
 function reviewerRowsOf(task: TaskRecord, round: number, runs: ReadonlyMap<string, RunRecord>, now: number): PanelReviewerRow[] {
@@ -217,11 +226,16 @@ function reviewerRowsOf(task: TaskRecord, round: number, runs: ReadonlyMap<strin
     const { outcome } = review;
     if (outcome === "running") {
       const run = runs.get(review.runId);
-      return { agent: review.agent, state: "running", ...(run ? runStatsOf(run, now) : {}) };
+      const attempt = task.reviews.filter((entry) => entry.round === round && entry.agent === review.agent).length;
+      return { agent: review.agent, state: "running", ...(attempt > 1 ? { attempt } : {}), ...(run ? runStatsOf(run, now) : {}) };
     }
-    const state: PanelReviewerState = outcome === "clear" ? "clear" : REVIEW_REJECTED.has(outcome) ? "blocked"
-      : outcome === "skipped" ? (review.skipReason === "missing" ? "skipped_missing" : "skipped_disabled") : "ended";
-    return { agent: review.agent, state };
+    const run = runs.get(review.runId);
+    const stats = run ? runStatsOf(run, now) : { turns: review.turnsUsed, maxTurns: review.maxTurns };
+    if (outcome === "failed" || outcome === "turn_limit_reached" || outcome === "stopped" || outcome === "superseded") {
+      return { agent: review.agent, state: outcome !== "superseded" && !reviewDispatchable(task, review.agent) ? "exhausted" : "awaiting_retry", reason: outcome, ...stats };
+    }
+    if (outcome === "skipped") return { agent: review.agent, state: review.skipReason === "missing" ? "skipped_missing" : "skipped_disabled" };
+    return { agent: review.agent, state: outcome === "clear" ? "clear" : "blocked", ...stats };
   });
   const present = new Set(rows.map((row) => row.agent));
   const earlier = new Map<string, TaskRecord["reviews"][number]>();

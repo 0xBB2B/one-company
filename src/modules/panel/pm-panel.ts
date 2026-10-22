@@ -22,6 +22,7 @@ export interface PmPanelOptions {
 type Row = { kind: "pm"; entry: PmPanelEntry } | { kind: "item"; entry: PmPanelEntry; item: PendingItem };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const RETRY_TEXT = { turn_limit_reached: "没交出结论（轮数用满）", failed: "没交出结论（运行失败）", stopped: "没交出结论（被停止）", superseded: "被作废" } as const;
 const HINT = "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框";
 
 export function formatTokens(value: number): string {
@@ -90,16 +91,17 @@ export class PmPanel {
   private reviewerLine(prefix: string, row: PanelReviewerRow, entry: PmPanelEntry, width: number): string {
     const suffix = this.runSuffix(row, row.state === "running", entry.fetchedAt);
     const text: Record<PanelReviewerState, string> = {
-      running: `${SPINNER[this.frame]} ${row.agent}${suffix}`,
+      running: `${SPINNER[this.frame]} ${row.agent}${row.attempt ? `（第 ${row.attempt} 次）${suffix.trimStart()}` : suffix}`,
       clear: ` ${row.agent} 通过${suffix}`,
       blocked: `✗ ${row.agent} 打回${suffix}`,
-      ended: `– ${row.agent} 没交出结论${suffix}`,
+      awaiting_retry: `– ${row.agent} ${row.reason ? RETRY_TEXT[row.reason] : ""}，等 PM 重派${suffix}`,
+      exhausted: `– ${row.agent} 两次没交出结论，本轮结束后交你裁决${suffix}`,
       skipped_disabled: `– ${row.agent} 已关闭，本轮未审`,
       skipped_missing: `– ${row.agent} 已不存在，本轮未审`,
       passed_earlier: `✓ ${row.agent} 上一轮已通过`,
     };
     const body = text[row.state];
-    const kind = row.state === "ended" || row.state === "passed_earlier" ? "dim" : row.state === "skipped_disabled" || row.state === "skipped_missing" ? "warning" : undefined;
+    const kind = row.state === "awaiting_retry" || row.state === "passed_earlier" ? "dim" : row.state === "exhausted" || row.state === "skipped_disabled" || row.state === "skipped_missing" ? "warning" : undefined;
     return this.segments(row.state === "clear" ? [["dim", prefix], ["success", "✓"], ["muted", body]] : [["dim", prefix], [kind, body]], width);
   }
 

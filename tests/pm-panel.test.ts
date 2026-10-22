@@ -300,7 +300,7 @@ test("任务行 AC-1/AC-2：审查任务带审查代理子行，用 │ ├ └ 
 test("任务行 AC-2/AC-3：审查代理各状态的文字与颜色：打回 ✗、没交出结论 dim、跳过 warning、上一轮已通过整行 dim、通过的 ✓ 为 success", () => {
   const { instance, calls } = taskPanel({ taskRows: [review("T1", [
     { agent: "a-reviewer", state: "blocked", turns: 6, maxTurns: 10, elapsedMs: 9_000 },
-    { agent: "b-reviewer", state: "ended", turns: 7, maxTurns: 10, elapsedMs: 9_000 },
+    { agent: "b-reviewer", state: "awaiting_retry", reason: "turn_limit_reached", turns: 7, maxTurns: 10, elapsedMs: 9_000 },
     { agent: "go-reviewer", state: "skipped_disabled" },
     { agent: "c-reviewer", state: "skipped_missing" },
     { agent: "vue-reviewer", state: "passed_earlier" },
@@ -308,13 +308,13 @@ test("任务行 AC-2/AC-3：审查代理各状态的文字与颜色：打回 ✗
   ])] });
   const lines = instance.render(200).slice(3).map(body);
   expect(lines[0]).toMatch(/^✗ a-reviewer 打回 · ↻6\/10/);
-  expect(lines[1]).toMatch(/^– b-reviewer 没交出结论 · ↻7\/10/);
+  expect(lines[1]).toMatch(/^– b-reviewer 没交出结论（轮数用满），等 PM 重派 · ↻7\/10/);
   expect(lines[2]).toBe("– go-reviewer 已关闭，本轮未审");
   expect(lines[3]).toBe("– c-reviewer 已不存在，本轮未审");
   expect(lines[4]).toBe("✓ vue-reviewer 上一轮已通过");
   expect(lines[5]).toMatch(/^✓ d-reviewer 通过 · ↻4\/10/);
   const has = (kind: string, part: string) => calls.some(([k, text]) => k === kind && text.includes(part));
-  expect(has("dim", "b-reviewer 没交出结论")).toBe(true);
+  expect(has("dim", "b-reviewer 没交出结论（轮数用满），等 PM 重派")).toBe(true);
   expect(has("warning", "go-reviewer 已关闭，本轮未审")).toBe(true);
   expect(has("warning", "c-reviewer 已不存在，本轮未审")).toBe(true);
   expect(has("dim", "✓ vue-reviewer 上一轮已通过")).toBe(true);
@@ -438,8 +438,11 @@ test("任务行 AC-7：带 ANSI 着色时，宽度 1 到 12 列逐个渲染，�
       review("T2", [
         { agent: "run-reviewer", state: "running", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
         { agent: "blk-reviewer", state: "blocked", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
-        { agent: "end-reviewer", state: "ended", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
+        { agent: "end-reviewer", state: "awaiting_retry", reason: "failed", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
         { agent: "clr-reviewer", state: "clear", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
+        { agent: "retry-reviewer", state: "running", attempt: 2, turns: 2, maxTurns: 10, elapsedMs: 5_000 },
+        { agent: "exh-reviewer", state: "exhausted", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
+        { agent: "sup-reviewer", state: "awaiting_retry", reason: "superseded", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
         { agent: "go-reviewer", state: "skipped_disabled" },
         { agent: "vue-reviewer", state: "passed_earlier" },
       ]),
@@ -460,7 +463,7 @@ test("任务行 AC-2：在跑和打回的审查代理行不着灰；没交出结
   const { instance, calls } = taskPanel({ taskRows: [review("T1", [
     { agent: "run-reviewer", state: "running", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
     { agent: "blk-reviewer", state: "blocked", turns: 6, maxTurns: 10, elapsedMs: 9_000 },
-    { agent: "end-reviewer", state: "ended", turns: 7, maxTurns: 10, elapsedMs: 9_000 },
+    { agent: "end-reviewer", state: "awaiting_retry", reason: "failed", turns: 7, maxTurns: 10, elapsedMs: 9_000 },
     { agent: "vue-reviewer", state: "passed_earlier" },
     { agent: "clr-reviewer", state: "clear", turns: 4, maxTurns: 10, elapsedMs: 30_000 },
     { agent: "go-reviewer", state: "skipped_disabled" },
@@ -470,7 +473,7 @@ test("任务行 AC-2：在跑和打回的审查代理行不着灰；没交出结
   expect(grey.some(([, text]) => text.includes("run-reviewer"))).toBe(false);
   expect(grey.some(([, text]) => text.includes("blk-reviewer"))).toBe(false);
   const has = (kind: string, part: string) => calls.some(([k, text]) => k === kind && text.includes(part));
-  expect(has("dim", "end-reviewer 没交出结论")).toBe(true);
+  expect(has("dim", "end-reviewer 没交出结论（运行失败），等 PM 重派")).toBe(true);
   expect(has("dim", "✓ vue-reviewer 上一轮已通过")).toBe(true);
   expect(has("success", "✓")).toBe(true);
   expect(has("muted", "clr-reviewer 通过")).toBe(true);
@@ -523,4 +526,75 @@ test("任务行 AC-4：有任务行时需求行图标是转圈而不是 ⏸，p 
   instance.handleInput("\x1b[B");
   instance.handleInput("p");
   expect(togglePause).toHaveBeenCalledTimes(2);
+});
+
+test("任务行 AC-9：等 PM 重派的审查代理行按原因写「轮数用满 / 运行失败 / 被停止」，整行 dim", () => {
+  const { instance, calls } = taskPanel({ taskRows: [review("T1", [
+    { agent: "a-reviewer", state: "awaiting_retry", reason: "turn_limit_reached", turns: 10, maxTurns: 10, elapsedMs: 9_000 },
+    { agent: "b-reviewer", state: "awaiting_retry", reason: "failed", turns: 3, maxTurns: 10, elapsedMs: 62_000 },
+    { agent: "c-reviewer", state: "awaiting_retry", reason: "stopped", turns: 4, maxTurns: 10, elapsedMs: 5_000 },
+  ])] });
+  const lines = instance.render(200).slice(3).map(body);
+  expect(lines).toEqual([
+    "– a-reviewer 没交出结论（轮数用满），等 PM 重派 · ↻10/10 · 9.0s",
+    "– b-reviewer 没交出结论（运行失败），等 PM 重派 · ↻3/10 · 1m2s",
+    "– c-reviewer 没交出结论（被停止），等 PM 重派 · ↻4/10 · 5.0s",
+  ]);
+  for (const line of lines) expect(calls.some(([kind, text]) => kind === "dim" && text.includes(line))).toBe(true);
+});
+
+test("任务行 AC-9：第 2 次起重派的在跑审查代理行写「（第 N 次）」且正文不着色；没有 attempt 时不写次数", () => {
+  const { instance, calls } = taskPanel({ taskRows: [review("T1", [
+    { agent: "a-reviewer", state: "running", attempt: 2, turns: 2, maxTurns: 10, elapsedMs: 5_000 },
+    { agent: "b-reviewer", state: "running", turns: 3, maxTurns: 10, elapsedMs: 7_000 },
+  ])] });
+  const lines = instance.render(200).slice(3).map(body);
+  expect(lines).toEqual(["⠋ a-reviewer（第 2 次）· ↻2/10 · 5.0s", "⠋ b-reviewer · ↻3/10 · 7.0s"]);
+  const grey = calls.filter(([kind]) => kind === "dim" || kind === "muted" || kind === "warning");
+  expect(grey.some(([, text]) => text.includes("a-reviewer") || text.includes("b-reviewer"))).toBe(false);
+});
+
+test("任务行 AC-9：两次没交出结论的审查代理行写「本轮结束后交你裁决」，整行 warning", () => {
+  const { instance, calls } = taskPanel({ taskRows: [review("T1", [
+    { agent: "a-reviewer", state: "exhausted", turns: 10, maxTurns: 10, elapsedMs: 9_000 },
+  ])] });
+  const line = body(instance.render(200)[3]!);
+  expect(line).toBe("– a-reviewer 两次没交出结论，本轮结束后交你裁决 · ↻10/10 · 9.0s");
+  expect(calls.some(([kind, text]) => kind === "warning" && text.includes(line))).toBe(true);
+});
+
+test("任务行 AC-9：新审查代理行的连线前缀用 dim，宽度 1 到 12 列不超宽", () => {
+  const { instance, calls } = taskPanel({ taskRows: [review("T1", [
+    { agent: "a-reviewer", state: "awaiting_retry", reason: "stopped", turns: 4, maxTurns: 10, elapsedMs: 5_000 },
+    { agent: "b-reviewer", state: "running", attempt: 2, turns: 2, maxTurns: 10, elapsedMs: 5_000 },
+    { agent: "c-reviewer", state: "exhausted", turns: 10, maxTurns: 10, elapsedMs: 9_000 },
+    { agent: "d-reviewer", state: "awaiting_retry", reason: "superseded", turns: 3, maxTurns: 10, elapsedMs: 5_000 },
+  ])] }, 1_000, true);
+  instance.render(200);
+  const connectors = calls.filter(([kind, text]) => kind === "dim" && /^[ │├└]+$/.test(text) && /[├└]/.test(text));
+  expect(connectors.length).toBeGreaterThanOrEqual(4);
+  for (let width = 1; width <= 12; width++) {
+    for (const line of instance.render(width)) expect(visibleWidth(line), `宽度 ${width}：${JSON.stringify(line)}`).toBeLessThanOrEqual(width);
+  }
+});
+
+test("任务行 AC-9：被作废的审查代理行写「被作废，等 PM 重派」，不写「没交出结论」，整行 dim", () => {
+  const { instance, calls } = taskPanel({ taskRows: [review("T1", [
+    { agent: "a-reviewer", state: "awaiting_retry", reason: "superseded", turns: 3, maxTurns: 10, elapsedMs: 65_000 },
+  ])] });
+  const line = body(instance.render(200)[3]!);
+  expect(line).toBe("– a-reviewer 被作废，等 PM 重派 · ↻3/10 · 1m5s");
+  expect(line).not.toContain("没交出结论");
+  expect(calls.some(([kind, text]) => kind === "dim" && text.includes(line))).toBe(true);
+});
+
+test("任务行 AC-2：通过、打回的审查代理行带轮数和用时时照写", () => {
+  const { instance } = taskPanel({ taskRows: [review("T1", [
+    { agent: "a-reviewer", state: "clear", turns: 6, maxTurns: 12, elapsedMs: 100_000 },
+    { agent: "b-reviewer", state: "blocked", turns: 5, maxTurns: 12, elapsedMs: 80_000 },
+  ])] });
+  expect(instance.render(200).slice(3).map(body)).toEqual([
+    "✓ a-reviewer 通过 · ↻6/12 · 1m40s",
+    "✗ b-reviewer 打回 · ↻5/12 · 1m20s",
+  ]);
 });

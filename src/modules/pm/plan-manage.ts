@@ -107,7 +107,7 @@ export function reviewRoster(task: { reviewers?: ReadonlyArray<{ agent: string }
 }
 export const REVIEW_REJECTED: ReadonlySet<TaskReview["outcome"]> = new Set(["blocked", "unverified"]);
 export const REVIEW_OUTCOME_LABEL: Readonly<Record<TaskReview["outcome"], string>> = { clear: "通过", blocked: "打回", unverified: "未验证",
-  failed: "没交出结论（运行失败）", turn_limit_reached: "没交出结论（轮次用满）", stopped: "没交出结论（被停止）", superseded: "被作废", skipped: "已跳过", running: "进行中" };
+  failed: "没交出结论（运行失败）", turn_limit_reached: "没交出结论（轮数用满）", stopped: "没交出结论（被停止）", superseded: "被作废", skipped: "已跳过", running: "进行中" };
 export const REVIEW_UNFINISHED: ReadonlySet<TaskReview["outcome"]> = new Set(["failed", "turn_limit_reached", "stopped"]);
 /** 最近一轮的轮次，以及这一轮每个代理的最近一条记录。 */
 export function latestRound(task: { reviews: readonly TaskReview[] }): { round: number; reviews: TaskReview[] } {
