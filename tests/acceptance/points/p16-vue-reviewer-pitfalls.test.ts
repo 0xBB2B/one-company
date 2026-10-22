@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { acceptanceConfig } from "../helpers/installed-host.ts";
 import { pointEvidence } from "../helpers/point-pm.ts";
-import { pitCoverage, POINT_TIMEOUT_MS, runSpecialistReview, seed, span, specialistVerdict } from "../helpers/point-review.ts";
+import { pitCoverage, POINT_TIMEOUT_MS, runSpecialistReview, pit, specialistVerdict } from "../helpers/point-review.ts";
 import type { SeededPit } from "../helpers/point-review.ts";
 
 const config = acceptanceConfig();
@@ -43,7 +43,7 @@ const APP = [
 const VUE_SUPPORT = { "web/server/admin-api.ts": ADMIN_API, "web/server/app.ts": APP };
 
 const VUE_PITS: SeededPit[] = [
-  seed("web/src/components/Comment.vue", [
+  pit("web/src/components/Comment.vue", [
     "<script setup lang=\"ts\">",
     "defineProps<{ author: string; content: string }>()",
     "</script>",
@@ -54,8 +54,8 @@ const VUE_PITS: SeededPit[] = [
     "    <div class=\"body\" v-html=\"content\"></div>",
     "  </article>",
     "</template>",
-  ].join("\n"), "v-html", "v-html", "用 v-html 渲染用户评论"),
-  seed("web/src/components/Profile.vue", [
+  ].join("\n"), "用 v-html 渲染用户评论", ["v-html", "XSS", "转义", "净化"]),
+  pit("web/src/components/Profile.vue", [
     "<script setup lang=\"ts\">",
     "defineProps<{ name: string; homepage: string }>()",
     "</script>",
@@ -66,8 +66,8 @@ const VUE_PITS: SeededPit[] = [
     "    <a :href=\"homepage\">个人主页</a>",
     "  </section>",
     "</template>",
-  ].join("\n"), ":href", ":href", ":href 直接绑定用户填的链接"),
-  seed("web/src/components/ResizeWatcher.vue", [
+  ].join("\n"), ":href 直接绑定用户填的链接", ["javascript:", "href", "协议", "URL 校验"]),
+  pit("web/src/components/ResizeWatcher.vue", [
     "<script setup lang=\"ts\">",
     "import { onMounted, onUnmounted, ref } from 'vue'",
     "",
@@ -89,8 +89,8 @@ const VUE_PITS: SeededPit[] = [
     "<template>",
     "  <p>窗口宽度 {{ width }}</p>",
     "</template>",
-  ].join("\n"), "onMounted(() =>", "  width.value = 0", "onMounted 里 addEventListener，onUnmounted 没移除"),
-  seed("web/src/components/Counter.vue", [
+  ].join("\n"), "onMounted 里 addEventListener，onUnmounted 没移除", ["removeEventListener", "移除", "泄漏", "卸载"]),
+  pit("web/src/components/Counter.vue", [
     "<script setup lang=\"ts\">",
     "import { reactive } from 'vue'",
     "",
@@ -105,8 +105,8 @@ const VUE_PITS: SeededPit[] = [
     "<template>",
     "  <button @click=\"add\">{{ count }} (+{{ step }})</button>",
     "</template>",
-  ].join("\n"), "const { count, step }", "<button", "解构 reactive() 的返回值后在模板里使用"),
-  seed("web/src/router/index.ts", [
+  ].join("\n"), "解构 reactive() 的返回值后在模板里使用", ["解构", "响应式", "toRefs", "reactive"]),
+  pit("web/src/router/index.ts", [
     "import { createRouter, createWebHistory } from 'vue-router'",
     "import { useUserStore } from '../stores/user'",
     "import Home from '../views/Home.vue'",
@@ -128,8 +128,7 @@ const VUE_PITS: SeededPit[] = [
     "})",
     "",
     "export default router",
-  ].join("\n"), "router.beforeEach", "  }", "路由守卫按用户角色放行管理页，后端接口不校验权限",
-    [span("web/server/admin-api.ts", ADMIN_API, "adminRouter.get", "})"), span("web/server/app.ts", APP, "app.use('/api/admin'", "app.use('/api/admin'")]),
+  ].join("\n"), "路由守卫按用户角色放行管理页，后端接口不校验权限", ["权限", "鉴权", "角色", "管理员", "后端校验", "越权", "绕过"], ["web/server/admin-api.ts", "web/server/app.ts"]),
 ];
 
 test.skipIf(!config || process.platform !== "darwin")("P16：vue-reviewer 把 Vue 样例里埋的 5 个坑都列为阻塞并指到文件和行号", async () => {
@@ -138,10 +137,10 @@ test.skipIf(!config || process.platform !== "darwin")("P16：vue-reviewer 把 Vu
   const verdict = specialistVerdict(result);
   const coverage = verdict ? pitCoverage(verdict, VUE_PITS) : [];
   await writeFile(join(evidence, "judgement.json"), `${JSON.stringify({ realTurns: result.turns(), reviewers: result.reviewerAgents, conclusion: verdict?.conclusion ?? null, summary: verdict?.summary ?? null,
-    findings: verdict?.findings ?? [], coverage: coverage.map(({ pit, hit, refs }) => ({ path: pit.path, lines: [pit.startLine, pit.endLine], description: pit.description, hit, refs })),
+    findings: verdict?.findings ?? [], coverage: coverage.map(({ pit, hit, refs }) => ({ path: pit.path, description: pit.description, hit, refs })),
     calls: result.real.toolCalls().map((block) => ({ name: block.name, arguments: block.arguments })) }, null, 2)}\n`, { mode: 0o600 });
   expect(result.turns(), "真实模型没有被调用：vue-reviewer 没有派出").toBeGreaterThan(0);
   expect(verdict, "vue-reviewer 没有交出结论").toBeDefined();
   expect(verdict!.conclusion, JSON.stringify(verdict!.findings)).toBe("blocked");
-  expect(coverage.filter((entry) => !entry.hit).map((entry) => `${entry.pit.path}:${entry.pit.startLine}-${entry.pit.endLine} ${entry.pit.description}`), "没有被阻塞意见指到的坑").toEqual([]);
+  expect(coverage.filter((entry) => !entry.hit).map((entry) => `${entry.pit.path} ${entry.pit.description}`), "没有被阻塞意见指到的坑").toEqual([]);
 }, POINT_TIMEOUT_MS);

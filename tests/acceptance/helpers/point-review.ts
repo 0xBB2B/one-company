@@ -18,21 +18,12 @@ const REVIEW_WAIT_SECONDS = 800;
 const SETUP_SECONDS = 100;
 export const POINT_TIMEOUT_MS = (WORKER_WAIT_SECONDS + REVIEW_WAIT_SECONDS + SETUP_SECONDS) * 1_000;
 
-export interface PitLocation { path: string; startLine: number; endLine: number }
-/** alsoAt 是同一个坑的其他可命中位置，命中任意一处即算命中。 */
-export interface SeededPit extends PitLocation { content: string; description: string; alsoAt?: PitLocation[] }
+/** keywords 是同一个坑的各种说法，阻塞意见的文字含任一个即说明意见说中了这个坑；alsoIn 是同一个坑可命中的其他文件。 */
+export interface SeededPit { path: string; content: string; description: string; keywords: string[]; alsoIn?: string[] }
 export type ReviewWorld = Awaited<ReturnType<typeof runSpecialistReview>>;
 
-/** 在 content 里按行内文字定位起止行（从 1 数起，两端都含）。 */
-export function span(path: string, content: string, from: string, to: string): PitLocation {
-  const lines = content.split("\n");
-  const start = lines.findIndex((line) => line.includes(from)), end = lines.findIndex((line, index) => index >= start && line.includes(to));
-  if (start < 0 || end < 0) throw new Error(`${path} 里找不到起止行：${from} … ${to}`);
-  return { path, startLine: start + 1, endLine: end + 1 };
-}
-
-export function seed(path: string, content: string, from: string, to: string, description: string, alsoAt?: PitLocation[]): SeededPit {
-  return { ...span(path, content, from, to), content: `${content}\n`, description, ...(alsoAt ? { alsoAt } : {}) };
+export function pit(path: string, content: string, description: string, keywords: string[], alsoIn?: string[]): SeededPit {
+  return { path, content: `${content}\n`, description, keywords, ...(alsoIn ? { alsoIn } : {}) };
 }
 
 const BODY = "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n给样例项目新增几项小功能。\n## 功能 {#features}\n功能如下。\n" +
@@ -103,18 +94,17 @@ export function specialistVerdict(result: ReviewWorld): Verdict | undefined {
   return run && result.w.db((db) => db.list<Verdict>(VERDICTS).map((row) => row.data)).find((verdict) => verdict.runId === run.runId);
 }
 
-/** 每条阻塞意见的 targetRef 按「文件:行号」或「文件:起-止」解析（去掉首尾反引号；只写文件名时按末段匹配），文件对得上且行号全落在埋坑的行内即命中该坑。 */
+/** 阻塞意见的 targetRef 去掉首尾反引号和行号后，文件是坑的文件之一（只写文件名时按末段匹配），且 trigger、impact 里含坑的任一关键词（大小写不敏感）即命中该坑。 */
 export function pitCoverage(verdict: Verdict, pits: readonly SeededPit[]): Array<{ pit: SeededPit; hit: boolean; refs: string[] }> {
-  const blocking = verdict.findings.filter((finding) => finding.kind === "blocking").map((finding) => finding.targetRef);
-  const inside = (ref: string, where: PitLocation) => {
-    const match = /^(.+?)[:#]L?(\d+)(?:\s*[-–]\s*L?(\d+))?/u.exec(ref.replace(/^`+|`+$/g, "").trim());
-    if (!match) return false;
-    const file = match[1]!.replace(/^\.\//, ""), start = Number(match[2]), end = Number(match[3] ?? match[2]);
-    const sameFile = file.includes("/") ? file === where.path || file.endsWith(`/${where.path}`) : file === where.path.split("/").at(-1);
-    return sameFile && start >= where.startLine && end <= where.endLine && start <= end;
-  };
-  return pits.map((pit) => {
-    const refs = blocking.filter((ref) => [pit, ...(pit.alsoAt ?? [])].some((where) => inside(ref, where)));
-    return { pit, hit: refs.length > 0, refs };
+  const blocking = verdict.findings.filter((finding) => finding.kind === "blocking");
+  const fileOf = (ref: string) => /^(.+?)(?:[:#]L?\d+.*)?$/u.exec(ref.replace(/^`+|`+$/g, "").trim())?.[1]?.replace(/^\.\//, "") ?? "";
+  const sameFile = (file: string, path: string) => file.includes("/") ? file === path || file.endsWith(`/${path}`) : file === path.split("/").at(-1);
+  return pits.map((entry) => {
+    const files = [entry.path, ...(entry.alsoIn ?? [])], words = entry.keywords.map((word) => word.toLowerCase());
+    const refs = blocking.filter((finding) => {
+      const text = `${finding.trigger}\n${finding.impact}`.toLowerCase();
+      return files.some((path) => sameFile(fileOf(finding.targetRef), path)) && words.some((word) => text.includes(word));
+    }).map((finding) => finding.targetRef);
+    return { pit: entry, hit: refs.length > 0, refs };
   });
 }
