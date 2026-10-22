@@ -13,6 +13,7 @@ import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
 import { runGit } from "./helpers/git-run.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
+import { mainAdjudication } from "./helpers/main-adjudication.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -290,9 +291,9 @@ test("审查记录带审查定义名与轮次：第一次审查是 reviewer、�
   await until(() => w.task("login").status === "awaiting_review");
   w.provider.queue.push(read(1), pmAck);
   await w.review("login", 1);
-  await until(() => w.task("login").reviews.length === 1);
+  await until(() => w.task("login").reviews[0]?.outcome === "turn_limit_reached");
+  expect(w.task("login").status).toBe("reviewing");
   w.provider.queue.push(submit("缺失败提示", [{ kind: "blocking" }]), pmAck);
-  await until(() => w.task("login").status === "awaiting_review");
   await w.review("login");
   await until(() => w.task("login").status === "awaiting_rework");
   expect(w.task("login").reviews).toEqual([expect.objectContaining({ agent: "reviewer", round: 1 }), expect.objectContaining({ agent: "reviewer", round: 1 })]);
@@ -312,19 +313,21 @@ test("M7A-AC4：审查未交出结论按被审尝试计数；用户再给一次�
   w.provider.queue.push(submit("完成 login"), pmAck);
   const first = await w.dispatch("login");
   await until(() => w.task("login").status === "awaiting_review");
-  for (const expected of ["awaiting_review", "awaiting_user"]) {
+  for (const [index, expected] of ["reviewing", "awaiting_user"].entries()) {
     w.provider.queue.push(read(1), pmAck);
     await w.review("login", 1);
-    await until(() => w.task("login").status === expected);
+    await until(() => w.task("login").reviews.length === index + 1 && w.task("login").reviews[index]!.outcome === "turn_limit_reached" && w.task("login").status === expected);
   }
   expect(w.task("login").reviews.map((review) => [review.attemptRunId, review.outcome])).toEqual([[first.runId, "turn_limit_reached"], [first.runId, "turn_limit_reached"]]);
   const stuck = withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => db.read<TaskRecord>(TASKS, w.task("login").taskId)!);
   expect(stalledStage(stuck.data)).toBe("review");
   await expect(w.review("login")).rejects.toMatchObject({ code: "task_not_ready" });
 
-  // 模拟可信登记的用户决定"再给一次机会"：回到再审
-  withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => db.update(TASKS, stuck.data.taskId, stuck.version, { ...stuck.data, status: "awaiting_review",
-    userDecision: { decisionId: uuidv7(), choice: "retry", maxTurns: 2, revision: 1, taskVersion: stuck.data.version, usedByRunId: null, notified: true } }));
+  const main = mainAdjudication(w, cleanups, (reply) => { w.provider.queue.push({ type: "text", text: reply }, pmAck); });
+  const itemId = `task:${stuck.data.taskId}`, itemVersion = `${itemId}:${stuck.version}`;
+  const seen = w.provider.requests.length;
+  await main.adjudicate("再给它一次机会，这次给 2 轮", [main.entry([`item:${itemId}`, `version:${itemVersion}`, "choice:retry", "max-turns:2"], { conclusion: "用户对任务 login 的裁决", scope: "任务 login" })], itemId, itemVersion);
+  await until(() => w.provider.requests.length >= seen + 2);
   w.provider.queue.push(submit("缺失败提示", [{ kind: "blocking" }]), pmAck);
   const granted = await w.review("login", 5);
   expect(granted.maxTurns).toBe(2);
@@ -413,6 +416,7 @@ type Outcome = Exclude<TaskReview["outcome"], "running">;
 
 async function reviewWorld(reviewers: string[] = ["go-reviewer", "vue-reviewer"]) {
   const w = await world();
+  w.provider.awaitReply = async () => pmAck;
   await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
   const { dataRoot, repoId } = w.fixture;
@@ -441,8 +445,15 @@ async function reviewWorld(reviewers: string[] = ["go-reviewer", "vue-reviewer"]
     const row = db.read<TaskRecord>(TASKS, taskId)!;
     db.update(TASKS, taskId, row.version, { ...row.data, ...change(row.data) });
   });
-  const grantRetry = (status: TaskRecord["status"]) => patch((task) => ({ status,
-    userDecision: { decisionId: uuidv7(), choice: "retry", maxTurns: 2, revision: 1, taskVersion: task.version, usedByRunId: null, notified: true } }));
+  const main = mainAdjudication(w, cleanups);
+  const grantRetry = async (maxTurns = 2) => {
+    const itemId = `task:${taskId}`;
+    const itemVersion = `${itemId}:${withDatabase(repositoryDatabase(dataRoot, repoId), (db) => db.read<TaskRecord>(TASKS, taskId)!.version)}`;
+    const seen = w.provider.requests.length;
+    await main.adjudicate(`再给它一次机会，这次给 ${maxTurns} 轮`, [main.entry([`item:${itemId}`, `version:${itemVersion}`, "choice:retry", `max-turns:${maxTurns}`],
+      { conclusion: "用户对任务 login 的裁决", scope: "任务 login" })], itemId, itemVersion);
+    await until(() => w.provider.requests.length >= seen + 2);
+  };
   const reworkByDecision = () => {
     const runId = uuidv7();
     beginTaskAttempt({ dataRoot, repoId, lease: w.lease, taskId, retry: null, runId });
@@ -509,13 +520,13 @@ test("一轮审查：go-reviewer 与 vue-reviewer 同一轮都打回只算一轮
   expect(t.record().status).toBe("awaiting_review");
 });
 
-test("一轮审查：两个通过、vue-reviewer 没交出结论，任务回到待审查，本轮仍是第 1 轮且只重派 vue-reviewer", async () => {
+test("一轮审查：两个通过、vue-reviewer 没交出结论，任务仍在审查中，本轮仍是第 1 轮且只重派 vue-reviewer", async () => {
   const t = await reviewWorld();
   const ids = t.begin(["reviewer", "go-reviewer", "vue-reviewer"]);
   t.finish(ids, "reviewer", "clear");
   t.finish(ids, "go-reviewer", "clear");
   t.finish(ids, "vue-reviewer", "failed");
-  expect(t.record().status).toBe("awaiting_review");
+  expect(t.record().status).toBe("reviewing");
   expect(reviewRoundMembers(t.record())).toEqual({ round: 1, agents: ["vue-reviewer"] });
 });
 
@@ -542,12 +553,15 @@ test("一轮审查：重派的 vue-reviewer 通过后整轮以每个代理的最
   expect(t.rows().filter(([, round]) => round !== 1)).toEqual([]);
 });
 
-test("一轮审查：同一轮里既有打回又有没交出结论的代理时，按打回处理转待返修", async () => {
+test("一轮审查：同一轮里既有打回又有没交出结论的代理时，任务先保持审查中，没交结论的重派后仍失败（用尽 2 次）才按打回处理转待返修", async () => {
   const t = await reviewWorld();
   const ids = t.begin(["reviewer", "go-reviewer", "vue-reviewer"]);
   t.finish(ids, "reviewer", "clear");
   t.finish(ids, "go-reviewer", "blocked");
   t.finish(ids, "vue-reviewer", "failed");
+  expect(t.record().status).toBe("reviewing");
+  const again = t.begin(["vue-reviewer"]);
+  t.finish(again, "vue-reviewer", "failed");
   expect(t.record().status).toBe("awaiting_rework");
 });
 
@@ -570,6 +584,9 @@ test("返修后的新一轮：上一轮 go-reviewer 打回、vue-reviewer 没交
   t.finish(ids, "react-reviewer", "clear");
   t.finish(ids, "go-reviewer", "blocked");
   t.finish(ids, "vue-reviewer", "turn_limit_reached");
+  expect(t.record().status).toBe("reviewing");
+  t.finish(t.begin(["vue-reviewer"]), "vue-reviewer", "turn_limit_reached");
+  expect(t.record().status).toBe("awaiting_rework");
   t.reworkDone();
   expect(reviewRoundMembers(t.record())).toEqual({ round: 2, agents: ["reviewer", "go-reviewer", "vue-reviewer"] });
 });
@@ -605,7 +622,7 @@ test("同一个代理累计没交出结论 2 次：vue-reviewer 第 1 轮重派�
   t.finish(first, "reviewer", "clear");
   t.finish(first, "go-reviewer", "clear");
   t.finish(first, "vue-reviewer", "failed");
-  expect(t.record().status).toBe("awaiting_review");
+  expect(t.record().status).toBe("reviewing");
   const second = t.begin(["vue-reviewer"]);
   t.finish(second, "vue-reviewer", "stopped");
   expect(t.record().status).toBe("awaiting_user");
@@ -617,7 +634,7 @@ test("没交出结论的次数按代理分开数：两个不同的代理各失�
   t.finish(first, "reviewer", "clear");
   t.finish(first, "go-reviewer", "failed");
   t.finish(first, "vue-reviewer", "failed");
-  expect(t.record().status).toBe("awaiting_review");
+  expect(t.record().status).toBe("reviewing");
   expect(reviewRoundMembers(t.record())).toEqual({ round: 1, agents: ["go-reviewer", "vue-reviewer"] });
 });
 
@@ -662,7 +679,7 @@ test("用户裁决再给一次机会后，没交出结论的任务可以再登�
   const second = t.begin(["vue-reviewer"]);
   t.finish(second, "vue-reviewer", "failed");
   expect(t.record().status).toBe("awaiting_user");
-  t.grantRetry("awaiting_review");
+  await t.grantRetry();
   const third = t.begin(["vue-reviewer"]);
   t.finish(third, "vue-reviewer", "clear");
   expect(t.record().status).toBe("completed");
@@ -767,13 +784,15 @@ test("没交出结论在同一轮内计数：两轮各失败一次不转等待�
   t.finish(first, "reviewer", "clear");
   t.finish(first, "go-reviewer", "blocked");
   t.finish(first, "vue-reviewer", "failed");
+  expect(t.record().status).toBe("reviewing");
+  t.finish(t.begin(["vue-reviewer"]), "vue-reviewer", "clear");
   expect(t.record().status).toBe("awaiting_rework");
   t.reworkDone();
   const second = t.begin(["reviewer", "go-reviewer", "vue-reviewer"]);
   t.finish(second, "reviewer", "clear");
   t.finish(second, "go-reviewer", "clear");
   t.finish(second, "vue-reviewer", "failed");
-  expect(t.record().status).toBe("awaiting_review");
+  expect(t.record().status).toBe("reviewing");
   const again = t.begin(["vue-reviewer"]);
   t.finish(again, "vue-reviewer", "failed");
   expect(t.record().status).toBe("awaiting_user");
@@ -787,7 +806,7 @@ test("用户裁决再给一次机会只多放一次：放行的那次审查又�
   const second = t.begin(["vue-reviewer"]);
   t.finish(second, "vue-reviewer", "failed");
   expect(t.record().status).toBe("awaiting_user");
-  t.grantRetry("awaiting_review");
+  await t.grantRetry();
   const granted = t.begin(["vue-reviewer"]);
   t.finish(granted, "vue-reviewer", "turn_limit_reached");
   expect(t.record().status).toBe("awaiting_user");
@@ -798,11 +817,11 @@ test("用户裁决 retry 后放行的那次审查被作废（superseded）：任
   const first = t.begin(["reviewer", "vue-reviewer"]);
   t.finish(first, "reviewer", "clear");
   t.finish(first, "vue-reviewer", "failed");
-  expect(t.record().status).toBe("awaiting_review");
+  expect(t.record().status).toBe("reviewing");
   const second = t.begin(["vue-reviewer"]);
   t.finish(second, "vue-reviewer", "failed");
   expect(t.record().status).toBe("awaiting_user");
-  t.grantRetry("awaiting_review");
+  await t.grantRetry();
   const granted = t.begin(["vue-reviewer"]);
   t.finish(granted, "vue-reviewer", "superseded");
   expect(t.record().status).toBe("awaiting_review");
@@ -822,7 +841,7 @@ test("裁决两次后（审查卡住一次、返修卡住一次）：按 reviewR
   const second = t.begin(["vue-reviewer"]);
   t.finish(second, "vue-reviewer", "failed");
   expect(t.record().status).toBe("awaiting_user");
-  t.grantRetry("awaiting_review");
+  await t.grantRetry();
   const granted = t.begin(["vue-reviewer"]);
   t.finish(granted, "vue-reviewer", "blocked");
   expect(t.record().status).toBe("awaiting_rework");
@@ -833,7 +852,7 @@ test("裁决两次后（审查卡住一次、返修卡住一次）：按 reviewR
   t.finish(third, "reviewer", "clear");
   t.finish(third, "vue-reviewer", "blocked");
   expect(t.record().status).toBe("awaiting_user");
-  t.grantRetry("awaiting_rework");
+  await t.grantRetry();
   t.reworkByDecision();
   expect(t.record().status).toBe("awaiting_review");
   const round3 = reviewRoundMembers(t.record());
@@ -848,7 +867,7 @@ test("同一轮重派时唯一要派的 vue-reviewer 已被关闭：members 只�
   t.finish(ids, "reviewer", "clear");
   t.finish(ids, "go-reviewer", "clear");
   t.finish(ids, "vue-reviewer", "failed");
-  expect(t.record().status).toBe("awaiting_review");
+  expect(t.record().status).toBe("reviewing");
   t.begin([["vue-reviewer", "disabled"]]);
   expect(t.record().status).toBe("completed");
   expect(t.rows().at(-1)).toEqual(["vue-reviewer", 1, "skipped"]);
@@ -879,4 +898,36 @@ test("新尝试不带 rework（重新执行）：下一轮成员是通用 review
 test("第 1 轮任务没有专项审查：成员只有通用 reviewer", async () => {
   const t = await reviewWorld([]);
   expect(reviewRoundMembers(t.record())).toEqual({ round: 1, agents: ["reviewer"] });
+});
+
+test("用户裁决再给一次机会（轮数上限 7）放行的审查被作废后，PM 再派审查带 30：登记的审查记录与返回的 maxTurns 沿用用户给的 7", async () => {
+  const t = await reviewWorld(["vue-reviewer"]);
+  const first = t.begin(["reviewer", "vue-reviewer"]);
+  t.finish(first, "reviewer", "clear");
+  t.finish(first, "vue-reviewer", "failed");
+  const second = t.begin(["vue-reviewer"]);
+  t.finish(second, "vue-reviewer", "failed");
+  expect(t.record().status).toBe("awaiting_user");
+  await t.grantRetry(7);
+  const granted = t.begin(["vue-reviewer"]);
+  t.finish(granted, "vue-reviewer", "superseded");
+  expect(t.record().status).toBe("awaiting_review");
+  const { dataRoot, repoId } = t.w.fixture;
+  const runId = uuidv7();
+  const result = beginTaskReview({ dataRoot, repoId, lease: t.w.lease, taskId: t.taskId, maxTurns: 30, members: [{ agent: "vue-reviewer", runId }] });
+  expect(result.maxTurns).toBe(7);
+  expect(t.record().reviews.find((review) => review.runId === runId)).toMatchObject({ maxTurns: 7 });
+});
+
+test("没有经过用户裁决的普通作废后重派：仍用 PM 给的轮数上限 30", async () => {
+  const t = await reviewWorld(["vue-reviewer"]);
+  const first = t.begin(["reviewer", "vue-reviewer"]);
+  t.finish(first, "reviewer", "clear");
+  t.finish(first, "vue-reviewer", "superseded");
+  expect(t.record().status).toBe("awaiting_review");
+  const { dataRoot, repoId } = t.w.fixture;
+  const runId = uuidv7();
+  const result = beginTaskReview({ dataRoot, repoId, lease: t.w.lease, taskId: t.taskId, maxTurns: 30, members: [{ agent: "vue-reviewer", runId }] });
+  expect(result.maxTurns).toBe(30);
+  expect(t.record().reviews.find((review) => review.runId === runId)).toMatchObject({ maxTurns: 30 });
 });

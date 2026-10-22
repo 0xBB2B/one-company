@@ -16,12 +16,11 @@
 | 13 | overview-task-rows | done | 2026-10-21 |
 | 14 | panel-tree-render | done | 2026-10-22 |
 | 15 | acceptance-p15-p16 | done | 2026-10-22 |
-| 16 | review-individual-dispatch | pending | — |
+| 16 | review-individual-dispatch | done | 2026-10-22 |
 | 17 | panel-review-retry-rows | pending | — |
 ## 当前
-用户 2026-10-22 改了审查重试方式（PRD 02 C-3/C-7/C-9、03 C-3/AC-9 已改），新增 16、17 两份计划，准备执行 16。doc-update 收尾已改 README、CONTRIBUTING、ARCHITECTURE（未提交，最后一起提交）；作废后沿用用户上限与 oneLine 的改动在工作区，由 16 号接着改。
+准备执行 `17-panel-review-retry-rows.md`。16 号经 4 轮复审自修：单派绕过完成条件、同轮重派已打回、提前待返修、汇总重复、旧裁决授权、审查中上报的去向与说明、改计划后旧审查轮误判。用户另定：新一轮只能整轮派、审查缺条件时 PM 可交用户裁决。doc-update 收尾改的 README、CONTRIBUTING、ARCHITECTURE 未提交，最后一起提交。
 ## 待用户决定
-- 范围外：PM 改计划时 plan-manage.ts:430-436 把已执行完、卡在审查的任务错分成执行两次未完成；是否列进待办。
-- 范围外：tests/helpers/run-manager-fixture.ts:28 旧注释用了「夹具」一词；是否清掉。
+（无）
 ## 阻塞
 （无）

@@ -17,8 +17,8 @@ import { createAgentRoleSession } from "../../modules/agents/agent-session.ts";
 import type { AgentSessionHandle } from "../../modules/agents/agent-session.ts";
 import { createPmTools } from "./pm-tools.ts";
 import { createSubagentTools } from "../../modules/pm/subagent-tools.ts";
-import { beginTaskAttempt, beginTaskReview, finishTaskAttempt, finishTaskReview, reviewRoundMembers } from "../../modules/pm/task-dispatch.ts";
-import { confirmedPlanKey, holdResumes, latestRound, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, readPlanIn, readTaskDetail, replanPending, terminationPending } from "../../modules/pm/plan-manage.ts";
+import { beginTaskAttempt, beginTaskReview, finishTaskAttempt, finishTaskReview, reviewDispatchable, reviewRoundMembers, reviewRoundOpen } from "../../modules/pm/task-dispatch.ts";
+import { confirmedPlanKey, holdResumes, latestRound, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, REVIEW_UNFINISHED, readPlanIn, reviewFailures, reviewRoster, readTaskDetail, replanPending, terminationPending } from "../../modules/pm/plan-manage.ts";
 import type { HoldRef } from "../../modules/pm/plan-manage.ts";
 import type { TaskAttempt, TaskRecord as PlanTask, TaskReview } from "../../modules/pm/plan-manage.ts";
 import { VERDICTS } from "../../modules/pm/verdicts.ts";
@@ -106,6 +106,8 @@ const PM_MESSAGE_LABEL = "【主代理转述】下面是主代理根据用户的
 const PM_EVENT_POLL_MS = 500;
 const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "release-pm", "check-pm"];
 
+const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
+
 const reviewRulesFor = (name: string) => loadRoleRules(isGenericDefinition(name) ? "reviewer" : "reviewer-specialist");
 
 async function taskContext(task: PlanTask, maxTurns: number, prototypes: string, rejected: ReadonlyArray<Finding & { agent: string }> = [], reviews: readonly string[] = []): Promise<string> {
@@ -119,7 +121,7 @@ async function taskContext(task: PlanTask, maxTurns: number, prototypes: string,
     `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
     ...(task.writePaths.length ? [`可写范围：${task.writePaths.join("、")}`] : []),
     ...(prototypes ? [prototypes] : []),
-    ...(rejected.length ? [`本次是审查打回后的返修，须解决：\n${rejected.map((finding) => `- [${finding.kind}] ${finding.agent} · ${finding.targetRef}：${finding.trigger} → ${finding.impact}`).join("\n")}`] : []),
+    ...(rejected.length ? [`本次是审查打回后的返修，须解决：\n${rejected.map((finding) => `- [${finding.kind}] ${finding.agent} · ${oneLine(finding.targetRef)}：${oneLine(finding.trigger)} → ${oneLine(finding.impact)}`).join("\n")}`] : []),
     ...(reviews.length ? [`已完成任务的审查结论（审查已核对各任务的改动范围）：\n${reviews.map((line) => `- ${line}`).join("\n")}`] : []),
     `对话轮次上限：${maxTurns}。用满后运行时会停止，请在额度内提交结果。`,
   ].join("\n");
@@ -441,7 +443,7 @@ export class RunManager {
 
   /** PM 按已冻结任务派出受限子代理（执行、返修或任务级审查）：门槛与尝试登记在同一事务，子代理带运行时轮次上限，结局自动上报直属 PM。 */
   async dispatchTask(input: { pmRunId: string; taskId: string; retry: { reason: string; maxTurns: number } | null;
-    rework?: { reason: string; maxTurns: number } | null; review?: { maxTurns: number } }): Promise<{ runId: string; maxTurns: number } | { runIds: string[]; failed: Array<{ agent: string; reason: string }>; maxTurns: number }> {
+    rework?: { reason: string; maxTurns: number } | null; review?: { maxTurns: number; agent?: string; reason?: string } }): Promise<{ runId: string; maxTurns: number } | { runIds: string[]; failed: Array<{ agent: string; reason: string }>; maxTurns: number }> {
     const pm = this.sessions.get(input.pmRunId);
     if (!pm?.pm) throw protocolError("pm_not_running", "派工的 PM 会话不存在");
     const lease = pm.pm.lease;
@@ -468,7 +470,10 @@ export class RunManager {
     }
     const catalog = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
     const plan: Array<{ agent: string; resolved?: ResolvedAgent; runId?: string; skipReason?: "disabled" | "missing" }> = [];
-    for (const agent of reviewRoundMembers(task).agents) {
+    const wanted = input.review!.agent;
+    const added = wanted !== undefined && wanted !== "reviewer" && !reviewRoster(task).includes(wanted)
+      ? { agent: wanted, reason: this.checkAddedReviewer(wanted, input.review!.reason ?? "", catalog) } : undefined;
+    for (const agent of wanted === undefined ? reviewRoundMembers(task).agents : [wanted]) {
       try {
         plan.push({ agent, resolved: await this.resolveAgent(agent, "reviewer", fallback), runId: uuidv7() });
       } catch (error) {
@@ -478,20 +483,31 @@ export class RunManager {
         else throw error;
       }
     }
-    const { maxTurns, attemptRunId } = beginTaskReview({ ...ref, lease, taskId: task.taskId, maxTurns: input.review!.maxTurns,
-      members: plan.map((member) => ({ agent: member.agent, ...(member.runId ? { runId: member.runId } : { skipReason: member.skipReason }) })) });
+    const { maxTurns, attemptRunId, turnsByRun } = beginTaskReview({ ...ref, lease, taskId: task.taskId, maxTurns: input.review!.maxTurns,
+      members: plan.map((member) => ({ agent: member.agent, ...(member.runId ? { runId: member.runId } : { skipReason: member.skipReason }) })),
+      ...(wanted !== undefined ? { single: true } : {}), ...(added ? { addReviewer: added } : {}) });
     const started: string[] = [], failed: Array<{ agent: string; reason: string }> = [];
     for (const member of plan) {
       if (!member.resolved) continue;
       try {
-        await this.launchSubagent({ ...launch, resolved: member.resolved, runId: member.runId!, maxTurns, attemptRunId });
+        await this.launchSubagent({ ...launch, resolved: member.resolved, runId: member.runId!, maxTurns: turnsByRun[member.runId!]!, attemptRunId });
         started.push(member.runId!);
       } catch (error) {
         failed.push({ agent: member.agent, reason: (error as Error).message });
       }
     }
-    this.reportReviewRound(input.pmRunId, withDatabase(this.database, (db) => readPlanIn(db, lease.requirementId)!.tasks.find((candidate) => candidate.taskId === task.taskId)!));
-    return { runIds: started, failed, maxTurns };
+    const latest = withDatabase(this.database, (db) => readPlanIn(db, lease.requirementId)!.tasks.find((candidate) => candidate.taskId === task.taskId)!);
+    this.reportReviewRound(input.pmRunId, latest);
+    return { runIds: started, failed: failed.map((item) => ({ agent: item.agent, reason: `${item.reason}；${this.reviewRetryAdvice(latest, item.agent)}` })), maxTurns };
+  }
+
+  /** 临时加专项审查：定义须存在、职责是 reviewer、没被关闭并写了理由。 */
+  private checkAddedReviewer(agent: string, reason: string, catalog: readonly RoleCatalogEntry[]): string {
+    const entry = catalog.find((candidate) => candidate.name === agent);
+    const why = !entry ? "目录里不存在这个定义" : entry.definition?.role !== "reviewer" ? "职责不是 reviewer"
+      : this.disabledAgents().has(agent) ? "已关闭" : !reason.trim() ? "reason 不能为空，须写明为什么需要这个专项审查" : "";
+    if (why) throw protocolError("agent_invalid", `临时加专项审查 ${agent} 被拒：${why}`, "按原因改 agent 或补 reason 后重派");
+    return reason.trim();
   }
 
   private async launchSubagent(input: { pmRunId: string; lease: PmLease; record: RequirementRecord; task: PlanTask; role: string;
@@ -627,14 +643,14 @@ export class RunManager {
     if (current.ok && !isTerminalState(current.run.state)) {
       await this.runStore.update(runId, { state: outcome === "completed" ? "completed" : outcome === "stopped" ? "stopped" : "failed", stateReason: outcomeReason(outcome, failure) });
     }
-    const parent = this.sessions.get(parentRunId);
     const next = this.nextSteps(taskId);
     const qaFindings = !review && task.role === "qa" && report !== undefined && report.findings.some((finding) => finding.kind !== "suggestion");
     if (qaFindings && task.status === "awaiting_parent") {
       next.awaiting_parent = "QA 发现问题：不要原样重派 QA。先用 workflow_manage finish 结束本检查轮，按问题追加返修任务并经任务级审查，再开新检查轮后用 retry 重派 QA。";
     }
     if (review) {
-      this.reportReviewRound(parentRunId, task);
+      const finished = task.reviews.find((item) => item.runId === runId);
+      this.reportReviewRound(parentRunId, task, finished && REVIEW_UNFINISHED.has(finished.outcome) ? this.reviewUnfinishedNotice(task, finished, failure) : undefined);
       return;
     }
     const lines = [`子代理运行 ${runId} 已结束：任务 ${task.key}，结局 ${effective}，已用 ${used?.turnsUsed ?? 0}/${used?.maxTurns ?? 0} 轮，任务状态 ${task.status}。`,
@@ -642,7 +658,24 @@ export class RunManager {
         : `原因：${outcomeReason(outcome, failure)}。`,
       `建议：${next[task.status] ?? "请核对实际证据后再整合结果。"}`,
       `运行日志：${this.runLog(runId)}（证据不够判断时，读这份会话记录查看子代理的思考与工具调用）`];
-    if (parent?.pm && ["running", "paused"].includes(parent.handle.state())) parent.handle.prompt(lines.join("\n"));
+    this.promptPm(parentRunId, lines.join("\n"));
+  }
+
+  private promptPm(pmRunId: string, text: string): void {
+    const parent = this.sessions.get(pmRunId);
+    if (parent?.pm && ["running", "paused"].includes(parent.handle.state())) parent.handle.prompt(text);
+  }
+
+  private reviewUnfinishedNotice(task: PlanTask, review: TaskReview, failure?: string): string {
+    const cause = review.outcome === "turn_limit_reached" ? "轮数用满" : review.outcome === "stopped" ? "被停止" : `运行失败${failure ? `（${oneLine(failure)}）` : ""}`;
+    return [`审查 ${review.agent} 没交出结论：${cause}，已用 ${review.turnsUsed}/${review.maxTurns} 轮。${this.reviewRetryAdvice(task, review.agent)}`,
+      `运行日志：${this.runLog(review.runId)}`].join("\n");
+  }
+
+  private reviewRetryAdvice(task: PlanTask, agent: string): string {
+    const next = reviewDispatchable(task, agent) ? `用 agent_manage dispatch taskId=${task.taskId} 并带 review（轮次上限，可调整）和 agent=${agent}，单独派 ${agent} 重试，可调整轮数上限`
+      : "不再重派，等本轮其他审查结束后交用户裁决";
+    return `这是本轮第 ${reviewFailures(task.reviews, agent)} 次。建议：${next}。`;
   }
 
   private nextSteps(taskId: string): Partial<Record<PlanTask["status"], string>> {
@@ -655,16 +688,18 @@ export class RunManager {
   }
 
   /** 本轮没有审查在跑时给 PM 发一次整轮汇总；结束发生在派出途中还是结束时，同一批审查记录只发一次。 */
-  private reportReviewRound(pmRunId: string, task: PlanTask): void {
+  private reportReviewRound(pmRunId: string, task: PlanTask, notice?: string): void {
     const { reviews } = latestRound(task);
-    if (reviews.some((review) => review.outcome === "running")) return;
+    const open = reviewRoundOpen(task);
+    if (open) {
+      if (notice !== undefined) this.promptPm(pmRunId, notice);
+      return;
+    }
     const key = reviews.map((review) => review.runId).join();
     if (this.reportedReviewRounds.has(key)) return;
     this.reportedReviewRounds.add(key);
-    const parent = this.sessions.get(pmRunId);
-    if (parent?.pm && ["running", "paused"].includes(parent.handle.state())) {
-      parent.handle.prompt(this.reviewRoundReport(task, this.nextSteps(task.taskId)[task.status] ?? "请核对实际证据后再整合结果。").join("\n"));
-    }
+    const report = this.reviewRoundReport(task, this.nextSteps(task.taskId)[task.status] ?? "请核对实际证据后再整合结果。").join("\n");
+    this.promptPm(pmRunId, notice === undefined ? report : `${notice}\n\n${report}`);
   }
 
   private reviewRoundReport(task: PlanTask, next: string): string[] {
@@ -675,7 +710,7 @@ export class RunManager {
       const verdict = verdicts.find((item) => item.runId === review.runId);
       const count = (kind: string) => verdict?.findings.filter((finding) => finding.kind === kind).length ?? 0;
       return [`- ${review.agent}：${REVIEW_OUTCOME_LABEL[review.outcome]}，已用 ${review.turnsUsed}/${review.maxTurns} 轮`,
-        verdict ? `  summary：${verdict.summary}；分级问题 ${verdict.findings.length} 项（阻塞 ${count("blocking")}、未验证 ${count("unverified")}、建议 ${count("suggestion")}）` : "",
+        verdict ? `  summary：${oneLine(verdict.summary)}；分级问题 ${verdict.findings.length} 项（阻塞 ${count("blocking")}、未验证 ${count("unverified")}、建议 ${count("suggestion")}）` : "",
         `  运行日志：${this.runLog(review.runId)}`].filter(Boolean).join("\n");
     });
     return [`任务 ${task.key} 第 ${round} 轮审查已全部结束，任务状态 ${task.status}。`, ...sections, `建议：${next}`];

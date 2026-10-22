@@ -51,6 +51,13 @@ describe("reviewer-specialist 职责规矩", () => {
   });
 });
 
+describe("pm 职责规矩的审查重试", () => {
+  test("写明审查没交结论时看原因单独重派、必要时调大轮数上限或补条件，需要额外角度时可临时加专项审查并写理由", () => {
+    const rules = loadRoleRules("pm");
+    for (const phrase of ["单独重派", "调大轮数上限", "补条件", "不要靠改任务说明", "escalate", "缺什么", "临时加专项审查", "写理由"]) expect(rules).toContain(phrase);
+  });
+});
+
 describe("prototype 职责规矩", () => {
   test("含单个 HTML、四种状态、深色等宽 80 列终端、多步按顺序、先读上一版按意见改，不含先红后绿", () => {
     const rules = loadRoleRules("prototype");

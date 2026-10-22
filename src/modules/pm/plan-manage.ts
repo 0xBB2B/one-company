@@ -33,6 +33,7 @@ const unitIds = (min: number) => Type.Array(unitId, { minItems: min, uniqueItems
 const key = Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9._-]+$" });
 /** 执行该任务的角色定义名称；缺省用与职责同名的默认定义。 */
 const agentName = Type.String({ pattern: "^[a-z0-9][a-z0-9-]{0,63}$" });
+export const MAX_REVIEWERS = 17;
 const reviewerEntry = object({ agent: agentName, reason: Type.String({ maxLength: 1024 }), auto: Type.Optional(Type.Literal(true)) });
 const DelegatedRole = Type.Union([Type.Literal("explore"), Type.Literal("worker"), Type.Literal("qa")]);
 export const TaskSpec = object({
@@ -95,6 +96,15 @@ export function countedAttempts(task: { attempts: readonly TaskAttempt[] }): num
 export function unsentTask(task: { attempts: readonly TaskAttempt[] }): boolean {
   return countedAttempts(task) === 0;
 }
+/** 审查中 PM 上报的说明是否仍适用：只在裁决所在的那一轮、同一任务版本里有效。 */
+export function currentEscalation(task: Pick<TaskRecord, "reviews" | "userDecision" | "version">): string | undefined {
+  const decision = task.userDecision;
+  return decision?.round === latestRound(task).round && decision.taskVersion === task.version ? decision.escalation : undefined;
+}
+/** 任务的专项审查名单：写在计划里的、同栈自动挂上的和 PM 临时加的，不含通用 reviewer。 */
+export function reviewRoster(task: { reviewers?: ReadonlyArray<{ agent: string }> }): string[] {
+  return (task.reviewers ?? []).map((entry) => entry.agent);
+}
 export const REVIEW_REJECTED: ReadonlySet<TaskReview["outcome"]> = new Set(["blocked", "unverified"]);
 export const REVIEW_OUTCOME_LABEL: Readonly<Record<TaskReview["outcome"], string>> = { clear: "通过", blocked: "打回", unverified: "未验证",
   failed: "没交出结论（运行失败）", turn_limit_reached: "没交出结论（轮次用满）", stopped: "没交出结论（被停止）", superseded: "被作废", skipped: "已跳过", running: "进行中" };
@@ -126,6 +136,12 @@ const UserDecision = object({
   decisionId: id, choice: Type.Union([Type.Literal("retry"), Type.Literal("adjust"), Type.Literal("terminate")]),
   maxTurns: Type.Union([positive, Type.Null()]), revision: positive, taskVersion: positive,
   usedByRunId: Type.Union([id, Type.Null()]), notified: Type.Boolean(),
+  /** 审查卡住时的"再给一次机会"：裁决那一刻本轮等重派或已用尽的代理与轮次，只覆盖这些代理。 */
+  agents: Type.Optional(Type.Array(agentName, { maxItems: MAX_REVIEWERS })), round: Type.Optional(positive),
+  /** agents 里裁决时已用尽的代理：多派 1 次；其余是等重派的代理，只沿用裁决的轮数上限。 */
+  extra: Type.Optional(Type.Array(agentName, { maxItems: MAX_REVIEWERS })),
+  /** 审查中 PM 上报的说明：用户裁决后从尝试上移到这里，只作历史展示。 */
+  escalation: Type.Optional(text),
   /** 登记决定那一刻已确认计划的任务清单指纹，终止后据此判断新计划是否有变更。 */
   confirmedPlan: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })),
 });
@@ -136,7 +152,7 @@ const TaskRecord = object({
   dependsOn: Type.Array(id, { maxItems: 32 }), writePaths: Type.Array(Type.String(), { maxItems: 64 }),
   blockedByQuestionIds: Type.Array(id, { maxItems: 16 }), maxTurns: positive,
   agent: Type.Optional(agentName), agentReason: Type.Optional(text),
-  reviewers: Type.Optional(Type.Array(object({ agent: agentName, reason: Type.String({ maxLength: 1024 }), auto: Type.Optional(Type.Literal(true)) }), { maxItems: 17 })),
+  reviewers: Type.Optional(Type.Array(object({ agent: agentName, reason: Type.String({ maxLength: 1024 }), auto: Type.Optional(Type.Literal(true)), added: Type.Optional(Type.Literal(true)) }), { maxItems: MAX_REVIEWERS })),
   detail: object({ path: Type.String({ minLength: 1 }), hash }),
   status: Type.Union([Type.Literal("pending"), Type.Literal("running"), Type.Literal("completed"), Type.Literal("failed"),
     Type.Literal("needs_update"), Type.Literal("blocked"), Type.Literal("cancelled"), Type.Literal("awaiting_parent"), Type.Literal("awaiting_user"),
@@ -156,7 +172,7 @@ async function textOnlyChange(task: TaskRecord, spec: TaskSpec, keys: ReadonlyMa
   return spec.key === task.key && spec.role === task.role && same(spec.goalUnitIds, task.goalUnitIds) && same(spec.constraintUnitIds, task.constraintUnitIds) &&
     same(spec.dependsOn.map((dep) => keys.get(dep)), task.dependsOn) && same(spec.writePaths, task.writePaths) && same(spec.blockedByQuestionIds, task.blockedByQuestionIds) &&
     spec.maxTurns === task.maxTurns && spec.agent === task.agent &&
-    same((spec.reviewers ?? []).filter((entry) => !entry.auto).map((entry) => entry.agent), (task.reviewers ?? []).filter((entry) => !entry.auto).map((entry) => entry.agent)) &&
+    same((spec.reviewers ?? []).filter((entry) => !entry.auto).map((entry) => entry.agent), (task.reviewers ?? []).filter((entry) => !entry.auto && !entry.added).map((entry) => entry.agent)) &&
     same(spec.scope, previous.scope) && same(spec.performance, previous.performance);
 }
 /** 修改任务时带上用户的决定：还没用掉的"再给一次机会"跟到新版本，PM 可以先补任务说明再派出；这时只允许改说明文字。 */
@@ -426,7 +442,10 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       const taskId = ids.get(spec.key)!;
       const version = (previous?.get(taskId)?.version ?? 0) + 1;
       const hold = sizeHoldOf(spec);
-      const prior = previous?.get(taskId), decision = prior?.userDecision && carriedDecision(prior.userDecision, version);
+      const prior = previous?.get(taskId);
+      const reviewers = [...(spec.reviewers ?? []), ...(prior?.reviewers ?? []).filter((entry) => entry.added && !spec.reviewers?.some((kept) => kept.agent === entry.agent))];
+      if (reviewers.length > MAX_REVIEWERS) deny("agent_invalid", [`${spec.key} 的审查名单合并 PM 临时加的专项审查后有 ${reviewers.length} 条，超过上限 ${MAX_REVIEWERS}，请减少 reviewers`]);
+      const decision = prior?.userDecision && carriedDecision(prior.userDecision, version);
       // 两次机会已用完又没有能用的用户决定时，待派出也派不出去，只能交回用户裁决
       const exhausted = prior !== undefined && countedAttempts(prior) >= 2 && !(decision && decision.usedByRunId === null &&
         ((decision.choice === "retry" && decision.taskVersion === version) || (decision.choice === "adjust" && version > decision.taskVersion)));
@@ -434,7 +453,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
         goalUnitIds: spec.goalUnitIds, constraintUnitIds: spec.constraintUnitIds, closure: closureOf(manifest, spec.goalUnitIds, spec.constraintUnitIds),
         dependsOn: spec.dependsOn.map((dep) => ids.get(dep)!), writePaths: spec.writePaths, blockedByQuestionIds: spec.blockedByQuestionIds,
         maxTurns: spec.maxTurns, ...(spec.agent ? { agent: spec.agent } : {}), ...(spec.agentReason ? { agentReason: spec.agentReason } : {}),
-        ...(spec.reviewers?.length ? { reviewers: spec.reviewers } : {}),
+        ...(reviewers.length ? { reviewers } : {}),
         detail: await writeDetail(taskId, version, spec), status: hold.length || exhausted ? "awaiting_user" : "pending", ...(hold.length ? { sizeHold: hold } : {}), attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
         ...(previous?.get(taskId)?.userDecision ? { userDecision: carriedDecision(previous.get(taskId)!.userDecision!, version) } : {}),
         lastAssessedRevision: revision, updatedAt: now() }));
