@@ -58,6 +58,15 @@ describe("pm 职责规矩的审查重试", () => {
   });
 });
 
+describe("worker 职责规矩的重试验证引用", () => {
+  test("写明重试时引用前一次尝试的红、自己再跑一次绿", () => {
+    const rules = loadRoleRules("worker");
+    expect(rules).toContain("重试");
+    expect(rules).toMatch(/前一次|更早/);
+    expect(rules).toMatch(/重试[^。]*红|红[^。]*重试/);
+  });
+});
+
 describe("prototype 职责规矩", () => {
   test("含单个 HTML、四种状态、深色等宽 80 列终端、多步按顺序、先读上一版按意见改，不含先红后绿", () => {
     const rules = loadRoleRules("prototype");

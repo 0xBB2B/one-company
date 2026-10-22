@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { lintSkillText, skillLintErrors } from "./helpers/skill-lint.ts";
 
@@ -94,5 +96,16 @@ describe("skill 检查辅助函数", () => {
     const errors = await skillLintErrors("no-such-skill", []);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("不存在");
+  });
+});
+
+describe("typescript-coding 的 tsconfig 约定", () => {
+  test("写明严格选项是新建或修改 tsconfig 时的写法，没有 tsconfig 时不自行加严格参数检查（含测试文件），按项目已有检查方式；格式合格且不超过 200 行", async () => {
+    const text = await readFile(join(import.meta.dirname, "..", "skills", "typescript-coding", "SKILL.md"), "utf8");
+    expect(text).toContain("没有 tsconfig");
+    expect(text).toContain("不自行");
+    expect(text).toMatch(/新建或修改 tsconfig/);
+    expect(text.split("\n").length).toBeLessThanOrEqual(200);
+    expect(await skillLintErrors("typescript-coding", TOPICS["typescript-coding"]!)).toEqual([]);
   });
 });

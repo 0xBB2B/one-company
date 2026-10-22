@@ -11,6 +11,8 @@ import type { PmToolsInput } from "../src/app/daemon/pm-tools.ts";
 import { TASKS } from "../src/modules/pm/plan-manage.ts";
 import type { TaskRecord } from "../src/modules/pm/plan-manage.ts";
 import { VERDICTS } from "../src/modules/pm/verdicts.ts";
+import { CHECK_ROUNDS } from "../src/modules/verification/check-round.ts";
+import type { CheckRound } from "../src/modules/verification/check-round.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
 import { CheckRoundService } from "../src/modules/verification/check-round.ts";
 import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
@@ -1184,4 +1186,125 @@ test("任务上有一次还没用的再给一次机会、同时有临时加的�
   await t.plan.execute({ action: "update", planVersion: read.planVersion ?? read.version ?? 1, modify: [{ taskId: task.taskId, version: task.version,
     spec: spec("login", { objective: "改了说明", reviewers: task.reviewers } as Partial<TaskSpec>) }] });
   expect((await login()).task.reviewers).toContainEqual(NODE);
+});
+
+test("任务有通用 reviewer 和专项审查两个通过的审查时，派给 QA 的任务说明里附带的已完成任务审查结论是通用 reviewer 的，不是专项审查的", async () => {
+  const t = await reviewWorld(undefined, ["go-reviewer"]);
+  for (const name of ["reviewer", "go-reviewer"]) t.auto.add(name);
+  await t.review({ maxTurns: 5 });
+  await until(() => t.record().status === "completed");
+  const read = await t.plan.execute({ action: "read" }) as { planVersion?: number; version?: number };
+  const updated = await t.plan.execute({ action: "update", planVersion: read.planVersion ?? read.version ?? 1, add: [spec("qa", { role: "qa", writePaths: [], goalUnitIds: ["scenario.failure"], dependsOn: ["login"] })] }) as { planVersion?: number; version?: number };
+  await t.plan.execute({ action: "confirm", planVersion: updated.planVersion ?? updated.version ?? 2 });
+  const requirement = t.fixture.state.read(t.fixture.requirementId).data;
+  const round: CheckRound = { format: "check-round/v1", checkRoundId: uuidv7(), requirementId: t.fixture.requirementId, repoId: t.fixture.repoId, workspaceId: requirement.workspace!.workspaceId,
+    branch: requirement.workspace!.branch, epoch: requirement.epoch, fence: t.lease.fence, runId: t.lease.runId,
+    baseline: { revision: requirement.revision, approved: requirement.approved!, codeHead: requirement.workspace!.baseCommit, inputHash: "d".repeat(64), inputCount: 0,
+      environment: { node: process.version, platform: process.platform, arch: process.arch } },
+    status: "open", invalidation: null, decision: null, verifications: [], active: [], createdAt: Date.now(), updatedAt: Date.now() };
+  withDatabase(repositoryDatabase(t.fixture.dataRoot, t.fixture.repoId), (db) => db.create(CHECK_ROUNDS, round.checkRoundId, round, round.checkRoundId));
+  await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.task("qa").taskId, retry: null });
+  await until(() => t.requestOf("任务：qa（") !== undefined);
+  const qaPrompt = prompt(t.requestOf("任务：qa（"));
+  expect(qaPrompt).toContain("已完成任务的审查结论");
+  expect(qaPrompt).toContain(SUMMARIES.reviewer);
+  expect(qaPrompt).not.toContain(SUMMARIES["go-reviewer"]);
+});
+
+async function scriptedWorkerWorld() {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("login", { maxTurns: 6 }), spec("rest", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"], maxTurns: 6 })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  type Step = (request: Context) => ScriptedReply;
+  const scripts: Step[][] = [];
+  let current: Step[] = [];
+  const rejections: string[] = [];
+  w.provider.awaitReply = async (request) => {
+    const system = prompt(request);
+    if (system.includes(PM_FIRST_LINE) || system.includes("审查任务：")) return { type: "text", text: "收到" };
+    const index = request.messages.filter((message) => message.role === "assistant").length;
+    if (index === 0) current = scripts.shift() ?? [];
+    const last = JSON.stringify(request.messages.at(-1) ?? "");
+    if (/out_of_scope|invalid_binding|超出了本运行允许的范围/.test(last)) rejections.push(last);
+    return current[index]?.(request) ?? { type: "text", text: "结束" };
+  };
+  const idOf = (request: Context) => {
+    const text = JSON.stringify(request.messages.at(-1) ?? "");
+    return /[0-9a-f]{8}-[0-9a-f-]{27}/.exec(text.slice(text.indexOf("verificationId")))?.[0] ?? "";
+  };
+  const run = (command: string): Step => () => ({ type: "toolcall", name: "one_company_verification_run", input: { action: "run", kind: "debug", command, performance: NA } });
+  const submitIds = (ids: (request: Context) => string[], unverified = false): Step => (request) => ({ type: "toolcall", name: "one_company_result_submit",
+    input: { action: "verdict", result: { checkRoundId: null, verificationIds: ids(request),
+      summary: "交结果", findings: unverified ? [{ kind: "unverified", targetRef: "prd:goal.login", evidenceRef: null, trigger: "还没绿", impact: "不确定" }] : [] } } });
+  const workerVerdicts = (runId: string) => withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) =>
+    db.list<{ runId: string; role: string; verificationIds: string[] }>(VERDICTS).map((row) => row.data).filter((verdict) => verdict.role === "worker" && verdict.runId === runId));
+  const dispatchTo = (key: string, retry: { reason: string; maxTurns: number } | null) => w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.task(key).taskId, retry });
+  const status = (key: string) => withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) =>
+    db.list<{ key: string; status: string }>(TASKS).map((row) => row.data).find((entry) => entry.key === key)!.status);
+  return { ...w, scripts, rejections, idOf, run, submitIds, workerVerdicts, dispatchTo, status };
+}
+
+test("worker 第 1 次尝试跑红后未完成，重试时第 2 次尝试交结果同时列出第 1 次的红和自己这次的绿被收下；通用审查的任务说明能看到第 1 次那条红的编号", async () => {
+  if (process.platform !== "darwin") return;
+  const t = await scriptedWorkerWorld();
+  let red = "";
+  t.scripts.push([t.run("false"), (request) => { red = t.idOf(request); return t.submitIds(() => [red], true)(request); }]);
+  await t.dispatchTo("login", null);
+  await until(() => t.status("login") === "awaiting_parent");
+  let green = "";
+  t.scripts.push([t.run("true"), (request) => { green = t.idOf(request); return t.submitIds(() => [red, green])(request); }]);
+  const second = await t.dispatchTo("login", { reason: "补绿", maxTurns: 6 });
+  await until(() => t.status("login") === "awaiting_review");
+  expect(t.workerVerdicts(second.runId)[0]!.verificationIds.sort()).toEqual([red, green].sort());
+  await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.task("login").taskId, retry: null, review: { maxTurns: 2 } } as never);
+  await until(() => t.provider.requests.some((request) => prompt(request).includes("审查任务：login（")));
+  expect(prompt(t.provider.requests.find((request) => prompt(request).includes("审查任务：login（")))).toContain(red);
+});
+
+test("worker 重试交结果时列出别的任务的验证编号被拒（out_of_scope 或 invalid_binding），不记裁决", async () => {
+  if (process.platform !== "darwin") return;
+  const t = await scriptedWorkerWorld();
+  let other = "";
+  t.scripts.push([t.run("true"), (request) => { other = t.idOf(request); return t.submitIds(() => [other])(request); }]);
+  await t.dispatchTo("rest", null);
+  await until(() => t.status("rest") === "awaiting_review");
+  t.scripts.push([t.run("true"), (request) => t.submitIds(() => [other, t.idOf(request)])(request)]);
+  const attempt = await t.dispatchTo("login", null);
+  await until(() => t.rejections.length > 0);
+  expect(t.rejections[0]).toMatch(/out_of_scope|invalid_binding|超出了本运行允许的范围/);
+  expect(t.workerVerdicts(attempt.runId)).toHaveLength(0);
+});
+
+test("任务版本变了（计划改过）后再引用旧版本那次尝试的验证编号被拒", async () => {
+  if (process.platform !== "darwin") return;
+  const t = await scriptedWorkerWorld();
+  let red = "";
+  t.scripts.push([t.run("false"), (request) => { red = t.idOf(request); return t.submitIds(() => [red], true)(request); }]);
+  await t.dispatchTo("login", null);
+  await until(() => t.status("login") === "awaiting_parent");
+  const read = await t.plan.execute({ action: "read" }) as { planVersion?: number; version?: number; tasks: Array<{ key: string; taskId: string; version: number }> };
+  const task = read.tasks.find((entry) => entry.key === "login")!;
+  const updated = await t.plan.execute({ action: "update", planVersion: read.planVersion ?? read.version ?? 1, modify: [{ taskId: task.taskId, version: task.version,
+    spec: spec("login", { objective: "改了目标", maxTurns: 6 }) }] }) as { planVersion?: number; version?: number };
+  await t.plan.execute({ action: "confirm", planVersion: updated.planVersion ?? updated.version ?? 2 });
+  t.scripts.push([t.run("true"), (request) => t.submitIds(() => [red, t.idOf(request)])(request)]);
+  const attempt = await t.dispatchTo("login", { reason: "按新计划重做", maxTurns: 6 });
+  await until(() => t.rejections.length > 0);
+  expect(t.rejections[0]).toMatch(/out_of_scope|invalid_binding|超出了本运行允许的范围/);
+  expect(t.workerVerdicts(attempt.runId)).toHaveLength(0);
+});
+
+test("worker 重试交结果时只列了更早尝试的红和绿、这次自己没跑验证：被拒，原因写明要有这次自己跑的验证，不记裁决", async () => {
+  if (process.platform !== "darwin") return;
+  const t = await scriptedWorkerWorld();
+  let red = "", green = "";
+  t.scripts.push([t.run("false"), (request) => { red = t.idOf(request); return t.run("true")(request); },
+    (request) => { green = t.idOf(request); return t.submitIds(() => [red, green], true)(request); }]);
+  await t.dispatchTo("login", null);
+  await until(() => t.status("login") === "awaiting_parent");
+  t.scripts.push([t.submitIds(() => [red, green])]);
+  const attempt = await t.dispatchTo("login", { reason: "补验证", maxTurns: 6 });
+  await until(() => t.rejections.length > 0);
+  expect(t.rejections[0]).toMatch(/自己跑/);
+  expect(t.workerVerdicts(attempt.runId)).toHaveLength(0);
 });

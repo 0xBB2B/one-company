@@ -162,6 +162,8 @@ const TaskRecord = object({
   userDecision: Type.Optional(UserDecision),
   sizeHold: Type.Optional(Type.Array(text, { minItems: 1, maxItems: 2 })),
   holdNote: Type.Optional(text),
+  /** 当前任务版本开始时已有的尝试数：此后的尝试才属于当前版本，先红后绿的验证引用只在当前版本内有效。 */
+  attemptBase: Type.Integer({ minimum: 0 }),
   lastAssessedRevision: positive, updatedAt: positive,
 });
 export type TaskRecord = Static<typeof TaskRecord>;
@@ -454,6 +456,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
         dependsOn: spec.dependsOn.map((dep) => ids.get(dep)!), writePaths: spec.writePaths, blockedByQuestionIds: spec.blockedByQuestionIds,
         maxTurns: spec.maxTurns, ...(spec.agent ? { agent: spec.agent } : {}), ...(spec.agentReason ? { agentReason: spec.agentReason } : {}),
         ...(reviewers.length ? { reviewers } : {}),
+        attemptBase: prior?.attempts.length ?? 0,
         detail: await writeDetail(taskId, version, spec), status: hold.length || exhausted ? "awaiting_user" : "pending", ...(hold.length ? { sizeHold: hold } : {}), attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
         ...(previous?.get(taskId)?.userDecision ? { userDecision: carriedDecision(previous.get(taskId)!.userDecision!, version) } : {}),
         lastAssessedRevision: revision, updatedAt: now() }));

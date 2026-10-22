@@ -152,3 +152,9 @@ description: TypeScript 编码规范：strict、避免 any、少用类型断言�
 - 怎么认出：tsconfig 没开 `noUnusedLocals` / `noUnusedParameters`；diff 里新增的变量或 import 没被使用。
 - 修法：开启这两个选项；确实要保留的参数名加下划线前缀。
 - 出处：https://www.typescriptlang.org/tsconfig/#noUnusedLocals
+
+### 25. 严格选项只在新建或修改 tsconfig 时写，没有 tsconfig 不自行加参数检查
+- 问题：strict、noUncheckedIndexedAccess 这类选项是 tsconfig 的 `compilerOptions`，不是随手加的命令行参数。项目没有 tsconfig 时，自己给 `tsc` 加严格参数去检查（包括测试文件），会报出项目从没要求过的大量错误，把无关的老代码问题算到本次改动头上。
+- 怎么认出：项目里找不到 tsconfig.json，却在检查命令里自行加了 `--strict` 之类的参数；或为了让检查通过去改与本次需求无关的代码。
+- 修法：新建或修改 tsconfig 时按上面各项写严格选项；没有 tsconfig 时不自行加严格参数，按项目已有的检查方式（脚本、CI、编辑器）来，项目 AGENTS.md 里另有规定的以它为准。
+- 出处：https://www.typescriptlang.org/docs/handbook/tsconfig-json.html

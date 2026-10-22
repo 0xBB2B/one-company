@@ -145,7 +145,7 @@ async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: s
     ...(worker.body.trim() ? [`被审任务所用 worker 定义（${worker.name}）的正文：\n${worker.body.trim()}`] : []),
     `查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff ${baseCommit} -- ${task.writePaths.join(" ")}（${baseCommit} 是本需求工作区的基线提交）`,
     "worker 各次尝试（先红后绿可以出现在任意一次尝试里；返修改动了可测行为时，这次返修须有新的红；引用的验证记录用 verification_run action=status 逐条查看）：",
-    ...task.attempts.map((attempt, index) => {
+    ...task.attempts.slice(task.attemptBase).map((attempt, index) => {
       const report = reportOf(attempt.runId);
       return `- 第 ${index + 1} 次尝试${attempt.rework ? "（返修）" : ""} ${attempt.runId}${attempt.runId === attemptRunId ? "（本次被审）" : ""}：` +
         `提交说明：${report?.summary ?? "无"}；引用的验证记录：${report?.verificationIds.join("、") || "无"}`;
@@ -609,7 +609,7 @@ export class RunManager {
     return withDatabase(this.database, (db) => {
       const verdicts = db.list<Verdict>(VERDICTS).map((row) => row.data);
       return (readPlanIn(db, requirementId)?.tasks ?? []).filter((task) => task.role === "worker" && task.status === "completed").flatMap((task) => {
-        const clear = task.reviews.findLast((review) => review.outcome === "clear");
+        const clear = task.reviews.findLast((review) => review.agent === "reviewer" && review.outcome === "clear");
         const verdict = clear && verdicts.find((item) => item.runId === clear.runId);
         return verdict ? [`${task.key}：${verdict.summary}`] : [];
       });
