@@ -38,7 +38,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | prototype | 派原型设计师、"确认原型"窗口 | `src/modules/prototype` | `prototype-extension.ts`、`prototype-windows.ts` |
 | verification | 检查轮（所有 worker 任务审查通过后，PM 开的最后一轮全量测试和 QA 验收）、worker 改动的应用、写入保护、命令边界、项目规范（AGENTS.md）写入 | `src/modules/verification` | `CheckRoundService`、`change-apply.ts`、`write-guard.ts` |
 | explore | 只读检索的约定、派发、会话、联网，以及主窗口的 `one_company_agent_manage` 工具 | `src/modules/explore` | `agent-manage-extension.ts`、`explore-dispatch.ts`、`web-access.ts` |
-| settings | `/one:setting` 设置页、模型设定、PM 和内部代理用哪个模型、Git 交付档位和合并方式 | `src/modules/settings` | `settings-page-ui.ts`、`agent-settings.ts`、`internal-model.ts` |
+| settings | `/one:setting` 设置页、模型设定、PM 和内部代理用哪个模型、角色定义的开关、Git 交付档位和合并方式 | `src/modules/settings` | `settings-page-ui.ts`、`agent-settings.ts`、`internal-model.ts` |
 | pm | 计划、派工、PM 提交与同步目标分支、PM 接手复核、需求读取工具、验证命令、子代理交结果 | `src/modules/pm` | `plan-manage.ts`、`task-dispatch.ts`、`PmIntakeService`、`pm-commit.ts`、`result-submit.ts` |
 | delivery | 关闭需求与归档提交、需求流程管理、Git 交付（远程：推送、建 PR/MR、合并；仅本地：合进主仓库当前分支）、需求工作区（worktree）管理 | `src/modules/delivery` | `RequirementCloseService`、`archive-commit.ts`、`workflow-manage.ts`、`git-delivery.ts`（`deliverRequirement`）、`local-delivery.ts`（`deliverLocally`）、`WorkspaceManageService` |
 | panel | 状态面板、PM 概览、⚑ 事项（面板上等用户处理的事）的决策包（打开事项时插进对话、供主代理查原因的材料）、裁决（用户对上报事项做的决定，比如任务两次没完成时怎么办） | `src/modules/panel` | `pm-panel.ts`、`pm-overview.ts`、`adjudication.ts` |
@@ -60,7 +60,7 @@ pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExte
 2. 批准：用户说"批准" → interaction：用户这句话没 @ 到需求、或需求带原型草稿时，`MainRequirementInteraction` 先弹"批准需求"窗口，让用户亲手确认批准的是哪个需求 → 解释器（把用户原话解读成正式决定的内部模型调用，`createPiInteractionInterpreter`）解读原话 → `UserInteractionCore` 用 requirement 的 `createApprovalManifest` 生成批准清单 → `MainRequirementInteraction` 用 `ApprovalManifestStore` 把清单登记下来。
 3. 派 PM：主代理调 `one_company_agent_manage` → 守护进程方法 `agents.dispatchPm` → app/daemon：`RunManager` 用 agents 的 `createAgentRoleSession` 起 PM 会话，工具由 `createPmTools` 组装。
 4. 接手复核：PM 先交它对需求的理解 → pm：`PmIntakeService` 存档，主代理核对通过后 PM 才能写计划。
-5. 规划与派工：PM 用 `plan-manage.ts` 写计划和任务 → `RunManager.dispatchTask` 按任务派 worker、reviewer、qa → 子代理用 `result-submit.ts` 交结果，worker 的改动经 verification 的 `change-apply.ts` 核对写入范围后应用 → PM 用 `pm-commit.ts` 在需求分支里提交。
+5. 规划与派工：PM 用 `plan-manage.ts` 写计划和任务 → `RunManager.dispatchTask` 按任务派 worker、reviewer、qa，派审查时整轮派（按 pm 的 `reviewRoundMembers` 算出本轮名单，同时派出通用审查和专项审查），本轮开始后也能单独重派或临时加审查，整轮结束才判定 → 子代理用 `result-submit.ts` 交结果，worker 的改动经 verification 的 `change-apply.ts` 核对写入范围后应用 → PM 用 `pm-commit.ts` 在需求分支里提交。
 6. 检查与关闭：verification：`CheckRoundService` 管最终检查轮，进入前 pm：`syncTargetBranch` 把需求分支同步到目标分支 → 用户验收后 delivery：`RequirementCloseService` 关闭需求，写归档并用 `commitArchive` 提交进需求分支。
 7. 交付：主代理调交付工具，按设置里的 Git 交付档位分流：delivery：远程档位 `deliverRequirement` 推送、建或复用 PR/MR 并按用户选的方式合并；仅本地档位 `deliverLocally` 在本机合进主仓库当前分支。之后 `WorkspaceManageService` 回收工作区时，按"再合一次不带来任何改动"判断已合并。
 
@@ -99,6 +99,6 @@ pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExte
 
 - **给模型看的报错**：外部命令和工具的失败统一用 `src/core/exec/tool-failure.ts` 转成"哪一步失败、为什么、下一步怎么做"。
 - **代理会话**：所有角色的会话都由 `createAgentRoleSession`（`src/modules/agents/agent-session.ts`）创建，统一挂上职责规矩、写入范围检查、MCP 和模型请求重试。
-- **规矩注入**：包内这几个目录的文件都由 `src/modules/agents/package-rules.ts` 读取。主代理的提示词由 `src/app/extension/rules.ts` 加上 `rules/` 和 `shared/`；子代理的提示词由 `buildAgentPrompt` 拼成"角色定义正文 + `role-rules/` 里对应职责的规矩 + `shared/`"。
+- **规矩注入**：包内这几个目录的文件都由 `src/modules/agents/package-rules.ts` 读取。主代理的提示词由 `src/app/extension/rules.ts` 加上 `rules/` 和 `shared/`；子代理的提示词由 `buildAgentPrompt` 拼成"角色定义正文 + `role-rules/` 里对应职责的规矩 + `shared/`"（专项审查用 `role-rules/reviewer-specialist.md`），定义里点名的 `skills/` 全文拼进任务说明。
 - **数据根目录**：由 `src/core/storage/data-root.ts` 决定，设了 `PI_CODING_AGENT_DIR` 时放在它下面的 `one-company/`；仓库身份和套接字路径在 `src/core/storage/identity.ts`。
 - **断网暂停**：`src/core/host/network-pause.ts` 给模型请求的失败分类，断网时暂停运行，联网后由用户在面板上按 p 恢复；模型请求超时不算断网，交给 SDK 重试。

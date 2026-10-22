@@ -22,7 +22,7 @@ pi install /absolute/path/to/one-company
 | `pnpm run test:installation` | 按真实 pi 安装方式装好再测；没有 Docker 时跳过 Docker 安装测试 |
 | `pnpm run test:acceptance:parallel` | 真实模型验收：14 个单点约 10 分钟，加两条完整流程约 35 分钟 |
 
-合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P14）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`src/modules/requirement/requirement-state.ts`、`src/modules/requirement/requirement-service.ts`、`src/modules/pm/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
+合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P16）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`src/modules/requirement/requirement-state.ts`、`src/modules/requirement/requirement-service.ts`、`src/modules/pm/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
 
 ### 测试注意事项
 
@@ -47,7 +47,7 @@ pnpm run test:acceptance:parallel [--only <编号…>]
 
 **两类测试**，都在临时目录里跑。程序自己保证的步骤（有原型没定下来时不能批准、@ 指向哪个需求、关闭时生成归档等）已有纯代码测试，这里只测靠模型判断的地方和能不能走完流程。
 
-单点测试（`tests/acceptance/points/`）：判断点之前的步骤由按脚本回答的假模型走完，到需要模型判断的那一步，把程序当时发出的请求原样交给真实模型，再由程序按工具调用和记录判对错。每个几十秒到几分钟。交给真实模型的 PM、worker、QA 用 `ONE_COMPANY_ACCEPTANCE_MODEL`；P1、P6–P8、P11、P13、P14 起一个真实主会话，解释器等内部调用默认跟随这个主会话的模型和思考等级。遇到过载、限流时和宿主一样自动重试 3 次。
+单点测试（`tests/acceptance/points/`）：判断点之前的步骤由按脚本回答的假模型走完，到需要模型判断的那一步，把程序当时发出的请求原样交给真实模型，再由程序按工具调用和记录判对错。每个几十秒到几分钟。交给真实模型的 PM、worker、reviewer、QA 用 `ONE_COMPANY_ACCEPTANCE_MODEL`；P1、P6–P8、P11、P13、P14 起一个真实主会话，解释器等内部调用默认跟随这个主会话的模型和思考等级。遇到过载、限流时和宿主一样自动重试 3 次。
 
 | 编号 | 判断点 | 判对的标准 |
 |---|---|---|
@@ -65,6 +65,8 @@ pnpm run test:acceptance:parallel [--only <编号…>]
 | P12 | 实施中用户批准了新版本 | PM 读差异，把计划更新并确认到新版本，新目标有任务覆盖 |
 | P13 | 用户提一个带界面的需求、要求先出草稿 | 主代理存好草稿后派原型设计师出原型 |
 | P14 | 主代理在提交说明没有需求编号时 | 读了提交新增的归档文件，回答里带上需求编号 |
+| P15 | go-worker 的改动里埋了 5 个 Go 常见坑（请求无超时、写未初始化的 map、并发写 map、拼接 SQL、释放 Redis 锁不比对 token） | 自动挂上的 go-reviewer 打回，5 个坑各有一条阻塞意见，指到埋坑的文件和行号 |
+| P16 | vue-worker 的改动里埋了 5 个 Vue 常见坑（v-html 渲染评论、:href 绑用户链接、监听不移除、路由守卫当权限校验、解构 reactive） | 自动挂上的 vue-reviewer 打回，5 个坑各有一条阻塞意见，指到埋坑的文件和行号 |
 
 完整流程（2 条）：在临时目录真实安装本包、建样例项目，由真实模型扮演主代理和各角色，从提需求走到完成关闭。
 
