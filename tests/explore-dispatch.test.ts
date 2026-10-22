@@ -16,7 +16,7 @@ async function world() {
   const w = await createPmRunWorld(cleanups);
   const workspace = await realpath(w.fixture.state.read(w.fixture.requirementId).data.workspace!.path);
   const readme = join(workspace, "README.md");
-  await writeFile(readme, "one-company 检索夹具：登录模块在 src/auth。\n");
+  await writeFile(readme, "one-company 检索样例：登录模块在 src/auth。\n");
   const other = join(w.fixture.root, "OTHER.md");
   await writeFile(other, "工作区以外的文件\n");
   const hashOf = async (path: string) => createHash("sha256").update(await readFile(path)).digest("hex");

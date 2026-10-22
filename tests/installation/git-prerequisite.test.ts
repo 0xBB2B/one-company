@@ -223,7 +223,7 @@ async function withManagedDockerFixture(
   catch (error) { cleanupErrors = [error as Error]; }
   cleanupErrors.push(...state.trackingErrors);
   if (bodyError || cleanupErrors.length > 0) {
-    console.error("Git 安装夹具失败，保留现场：", state.context);
+    console.error("Git 安装测试环境失败，保留现场：", state.context);
     if (bodyError && cleanupErrors.length > 0) throw new AggregateError([bodyError, ...cleanupErrors], "Docker fixture and cleanup failed");
     if (bodyError) throw bodyError;
     throw new AggregateError(cleanupErrors, "Docker fixture cleanup failed");
@@ -262,7 +262,7 @@ function timedOut(): DockerResult {
   return { status: null, signal: "SIGTERM", output: [], pid: 1, stdout: "", stderr: "", error } as DockerResult;
 }
 
-describe("Git 安装 Docker 夹具收尾", () => {
+describe("Git 安装 Docker 测试环境收尾", () => {
   test("build/run 超时及安装失败保留现场并传播错误", async () => {
     for (const mode of ["build-timeout", "run-timeout", "install-failure"] as const) {
       const context = await mkdtemp(join(tmpdir(), `one-company-git-cleanup-${mode}-`));

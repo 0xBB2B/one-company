@@ -25,7 +25,7 @@ export async function eventually(check: () => boolean | Promise<boolean>, label:
     try { if (await check()) return; } catch (error) { lastError = error; }
     await delay(40);
   }
-  throw new Error(`安装夹具等待超时：${label}`, { cause: lastError });
+  throw new Error(`安装测试环境等待超时：${label}`, { cause: lastError });
 }
 
 /** 白名单环境：不继承真实凭据、用户包设置、NODE_OPTIONS 或其他现场的 daemon 配置。 */
@@ -148,7 +148,7 @@ export class InstalledProjectFixture {
     catch (error) { await fixture.close(true); throw error; }
   }
 
-  /** 只测试夹具收尾协议；合成句柄不派出进程，也不替换任何产品实现。 */
+  /** 只测试测试环境的收尾协议；合成句柄不派出进程，也不替换任何产品实现。 */
   static async cleanupSmoke(): Promise<void> {
     const root = await realpath(await mkdtemp("/tmp/m3c-"));
     await chmod(root, 0o700);
@@ -226,7 +226,7 @@ export class InstalledProjectFixture {
     // 子进程测试装置本身从 consumer 启动；仅动态导入已安装产品，绝不导入源码版产品。
     await copyFile(self, join(consumer, "host.ts"));
     await copyFile(new URL("./window-host.ts", import.meta.url), join(consumer, "window-host.ts"));
-    await writeFile(join(consumer, "probe.ts"), `${await readFile(new URL("./project-index-daemon-child.ts", import.meta.url), "utf8")}\nglobalThis.fetch = async () => { throw new Error("安装夹具禁止外部网络请求"); };\n`);
+    await writeFile(join(consumer, "probe.ts"), `${await readFile(new URL("./project-index-daemon-child.ts", import.meta.url), "utf8")}\nglobalThis.fetch = async () => { throw new Error("安装测试环境禁止外部网络请求"); };\n`);
   }
 
   async product<T>(file: string): Promise<T> {
@@ -390,14 +390,14 @@ export class InstalledProjectFixture {
 
 /** SDK 测试前端：确认答案来自独立IPC控制面，不由工具参数或模型文字授予。 */
 async function runHost(): Promise<void> {
-  globalThis.fetch = async () => { throw new Error("安装夹具禁止外部网络请求"); };
-  // daemon由父夹具登记并启动；意外自动拉起必须失败，不能留下父进程无法等待的脱离进程。
+  globalThis.fetch = async () => { throw new Error("安装测试环境禁止外部网络请求"); };
+  // daemon由父测试环境登记并启动；意外自动拉起必须失败，不能留下父进程无法等待的脱离进程。
   const originalSpawn = childProcess.spawn;
   let unexpectedDaemonSpawns = 0;
   childProcess.spawn = ((...args: Parameters<typeof childProcess.spawn>) => {
     if (Array.isArray(args[1]) && args[1].some((arg) => String(arg).endsWith("/src/app/daemon/bootstrap.mjs"))) {
       unexpectedDaemonSpawns++;
-      throw new Error("安装夹具禁止未登记的daemon自动拉起");
+      throw new Error("安装测试环境禁止未登记的daemon自动拉起");
     }
     return Reflect.apply(originalSpawn, childProcess, args);
   }) as typeof childProcess.spawn;
@@ -491,7 +491,7 @@ async function runHost(): Promise<void> {
           queue.push({ calls, text: "controlled answer" });
           if (calls.length) queue.push({ text: "controlled follow-up" });
           await session!.prompt("测试前端发起当前项目操作", { source: "interactive" }).then(() => session!.waitForIdle()).finally(() => { queue.length = 0; });
-        } else if (action !== "get") throw new Error(`未知夹具动作 ${action}`);
+        } else if (action !== "get") throw new Error(`未知测试动作 ${action}`);
         process.send?.({ id, value: get() });
       })().catch((error) => process.send?.({ id, error: error instanceof Error ? error.stack : String(error) }));
     });

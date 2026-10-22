@@ -25,7 +25,7 @@ export async function until(check: () => boolean | Promise<boolean>, limit = 600
 }
 
 /**
- * 真实 RunManager 派出的 PM：夹具原有租约已交还、工作区登记为 ready，PM 以脚本化模型提交接手理解。
+ * 真实 RunManager 派出的 PM：测试环境原有的租约已交还、工作区登记为 ready，PM 以脚本化模型提交接手理解。
  * review 为 false 时不做主代理核对，由用例自行调用 review()。
  */
 export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<unknown>>, options: { review?: boolean; web?: RunManagerOptions["web"]; index?: boolean; body?: string; userDir?: string; reloadCatalog?: boolean;

@@ -355,7 +355,7 @@ describe("worktree 与工作区", () => {
     expect(pidWorktree).toBe(pidMain);
   }, 30_000);
 
-  test("工作区夹具下 WorkspaceClients.all 恰有两个连接，工作区外仓库不在其中", async () => {
+  test("测试工作区下 WorkspaceClients.all 恰有两个连接，工作区外仓库不在其中", async () => {
     const workspace = await createWorkspaceFixture();
     repoFixtures.push(workspace);
     const outside = await createRepoFixture();

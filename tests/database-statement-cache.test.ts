@@ -138,7 +138,7 @@ test("真实SQLite在schema变化后重新编译缓存语句，新增trigger生�
 
 test("锁竞争使缓存语句本次失败且不自动重试，解锁后的新调用可重新绑定", () => {
   const { db, path } = fixture(); warm(db);
-  // 仅缩短夹具等待；产品仍保留原来的busy_timeout。
+  // 仅缩短测试等待；产品仍保留原来的busy_timeout。
   (db as unknown as { connection: DatabaseSync }).connection.exec("PRAGMA busy_timeout=0");
   const raw = new DatabaseSync(path);
   const run = vi.spyOn(StatementSync.prototype, "run");

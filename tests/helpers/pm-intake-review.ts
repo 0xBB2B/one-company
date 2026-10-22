@@ -8,7 +8,7 @@ import type { PmIntakeFixture } from "./pm-intake-fixture.ts";
 
 export type UnderstandingContent = Omit<PmUnderstanding, "format" | "binding">;
 
-/** 在夹具 PM 运行的私有会话里写入被工具受理的接手理解，并返回主代理核对所用的真实提供方。 */
+/** 在测试环境里的 PM 运行的私有会话里写入被工具受理的接手理解，并返回主代理核对所用的真实提供方。 */
 export async function pmIntakeReviewKit(fixture: PmIntakeFixture) {
   const captured = fixture.captureCurrent();
   const material = await fixture.submissionProvider.loadCurrent({ binding: captured.binding, sourceDirectoryHash: captured.sourceDirectoryHash,

@@ -29,7 +29,7 @@ async function fixture(ready = true, shared = false) {
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   const identity = await repositoryIdentity(repo.root);
   const options = { repositoryRoot: repo.root, dataRoot: join(root, "data"), repoId: identity.repoId};
-  // 夹具宿主持有专用service/state句柄。此处仅fixture资源访问许可；真正批准另外核验Core对象能力。
+  // 测试宿主持有专用service/state句柄。此处仅fixture资源访问许可；真正批准另外核验Core对象能力。
   const access = { live: true };
   const service = await RequirementService.open({ ...options, authorize: (r) => access.live && r.repoId === identity.repoId });
   const state = await RequirementStateStore.open({ ...options, authorize: (r) => access.live && r.repoId === identity.repoId });

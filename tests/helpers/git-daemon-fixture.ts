@@ -35,11 +35,11 @@ const OUTPUT_BYTES = 2 * 1024 * 1024;
 
 function currentScope(): Scope {
   const scope = context.getStore();
-  if (!scope) throw new Error("Git daemon夹具必须在独立测试scope中运行");
+  if (!scope) throw new Error("Git daemon 测试环境必须在独立测试scope中运行");
   return scope;
 }
 function assertOpen(scope: Scope): void {
-  if (scope.closed) throw new Error("Git daemon夹具scope已关闭，禁止继续分配或执行");
+  if (scope.closed) throw new Error("Git daemon 测试环境scope已关闭，禁止继续分配或执行");
 }
 function bounded<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
@@ -97,7 +97,7 @@ export function registerOwnedSocket(socket: Socket): Socket {
   assertOpen(scope);
   const record = { socket, closed: false } as SocketRecord;
   record.done = new Promise((resolve) => socket.once("close", () => { record.closed = true; resolve(); }));
-  socket.on("error", () => { /* 调用方处理错误，夹具仍等待close。 */ });
+  socket.on("error", () => { /* 调用方处理错误，测试环境仍等待close。 */ });
   scope.sockets.add(record);
   return socket;
 }
@@ -171,7 +171,7 @@ export function isolatedGitEnvironment(home: string, extra: NodeJS.ProcessEnv = 
   };
   for (const [name, value] of Object.entries(extra)) {
     if (!["PATH", "HOME", "TMPDIR", "PI_CODING_AGENT_DIR"].includes(name) && !name.startsWith("ONE_COMPANY_")) {
-      throw new Error(`夹具未允许的环境覆盖: ${name}`);
+      throw new Error(`测试环境未允许的环境覆盖: ${name}`);
     }
     env[name] = value;
   }
@@ -299,7 +299,7 @@ function cleanupScope(scope: Scope): Promise<void> {
       await bounded(record.done, CLOSE_MS, "socket未观察到真实close");
       scope.sockets.delete(record);
     })));
-    await attempt(async () => { await bounded(Promise.allSettled([...scope.pending]), 2 * CLOSE_MS, "夹具在途操作未完成"); });
+    await attempt(async () => { await bounded(Promise.allSettled([...scope.pending]), 2 * CLOSE_MS, "测试环境在途操作未完成"); });
     await Promise.all([...scope.servers].map((record) => attempt(async () => { await record.close(); scope.servers.delete(record); })));
     errors.push(...scope.retained);
     if (scope.pending.size || scope.children.size || scope.sockets.size || scope.servers.size) errors.push(new Error("仍有未完成的自有资源"));
@@ -315,7 +315,7 @@ function cleanupScope(scope: Scope): Promise<void> {
     }
     if (errors.length) {
       reportPreserved(scope, "资源收尾未确认");
-      throw new AggregateError(errors, `Git daemon夹具收尾失败；保全路径: ${[...scope.roots.keys()].join(", ") || "待在途分配回报"}`);
+      throw new AggregateError(errors, `Git daemon 测试环境收尾失败；保全路径: ${[...scope.roots.keys()].join(", ") || "待在途分配回报"}`);
     }
   })().finally(() => scopes.delete(scope));
   return scope.cleanup;
@@ -323,5 +323,5 @@ function cleanupScope(scope: Scope): Promise<void> {
 export async function cleanupGitDaemonFixtures(): Promise<void> {
   const results = await Promise.allSettled([...scopes].map(cleanupScope));
   const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
-  if (errors.length) throw new AggregateError(errors, "Git daemon夹具scope收尾失败");
+  if (errors.length) throw new AggregateError(errors, "Git daemon 测试环境scope收尾失败");
 }

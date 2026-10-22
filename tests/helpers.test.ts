@@ -246,7 +246,7 @@ describe("repo-fixture", () => {
     }
   });
 
-  test("在全局开启 commit.gpgsign 的环境下仍能创建夹具", async () => {
+  test("在全局开启 commit.gpgsign 的环境下仍能创建测试环境", async () => {
     const configDir = await mkdtemp(join(tmpdir(), "one-company-gitconfig-"));
     tempRoots.push(configDir);
     const configPath = join(configDir, "gitconfig");
@@ -288,7 +288,7 @@ describe("repo-fixture", () => {
     expect(await findNodeModulesGit(workspace.root)).not.toBeNull();
   });
 
-  test("removeRepoFixture 也能清理工作区夹具", async () => {
+  test("removeRepoFixture 也能清理测试工作区", async () => {
     const workspace = await createWorkspaceFixture();
     await removeRepoFixture(workspace);
     expect(await pathExists(workspace.root)).toBe(false);
