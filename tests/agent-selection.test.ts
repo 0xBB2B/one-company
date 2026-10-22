@@ -210,7 +210,7 @@ test("关闭名单含通用 worker 与 py-worker 时：通用 worker 仍可派�
 });
 
 const PM_FIRST_LINE = "你是一个活动需求的唯一 PM";
-const verdict = (summary: string, findings: Array<{ kind: "blocking" | "unverified"; trigger: string; impact?: string }> = []): ScriptedReply => ({ type: "toolcall", name: "one_company_result_submit",
+const verdict = (summary: string, findings: Array<{ kind: "blocking" | "unverified" | "suggestion"; trigger: string; impact?: string }> = []): ScriptedReply => ({ type: "toolcall", name: "one_company_result_submit",
   input: { action: "verdict", result: { checkRoundId: null, verificationIds: [], summary,
     findings: findings.map((finding) => ({ impact: "没有失败提示", ...finding, targetRef: "prd:goal.login", evidenceRef: null })) } } });
 const SUMMARIES = { reviewer: "通用审查无异议", "go-reviewer": "go 侧结论", "vue-reviewer": "vue 侧结论" } as const;
@@ -1145,4 +1145,43 @@ test("go-reviewer 本轮两次没交结论、reviewer 还在跑时用户关掉 g
   expect(t.record().status).toBe("awaiting_user");
   const items = (await t.manager.overviews())[0]!.pendingItems;
   expect(items).toContainEqual(expect.objectContaining({ label: expect.stringContaining("两次审查未完成（go-reviewer）") }));
+});
+
+test("整轮汇总里每个代理那一段列出它的阻塞和未验证意见，每条一行含 kind、targetRef、trigger、impact；建议级意见不列", async () => {
+  const t = await reviewWorld();
+  t.replies["go-reviewer"] = verdict(SUMMARIES["go-reviewer"], [{ kind: "blocking", trigger: "go 触发" }, { kind: "suggestion", trigger: "go 建议" }]);
+  t.replies["vue-reviewer"] = verdict(SUMMARIES["vue-reviewer"], [{ kind: "unverified", trigger: "vue 触发" }]);
+  const before = t.pmRequests().length;
+  await t.review();
+  for (const name of Object.keys(SUMMARIES)) await t.release(name);
+  await until(() => t.pmRequests().length > before);
+  const text = rawText(t.pmRequests().at(-1));
+  const lines = text.split("\n");
+  const goLine = lines.find((line) => line.includes("go 触发"));
+  expect(goLine).toBeDefined();
+  for (const phrase of ["blocking", "prd:goal.login", "没有失败提示"]) expect(goLine).toContain(phrase);
+  const vueLine = lines.find((line) => line.includes("vue 触发"));
+  expect(vueLine).toBeDefined();
+  for (const phrase of ["unverified", "prd:goal.login", "没有失败提示"]) expect(vueLine).toContain(phrase);
+  expect(text).not.toContain("go 建议");
+});
+
+test("PM 读回计划后原样交回：任务上有临时加的审查时，把读回的 reviewers 原样放进计划更新、只改 objective，更新成功，临时加的审查仍在名单里并带 added: true", async () => {
+  const { t, login } = await tempAddRound("blocked");
+  const { read, task } = await login();
+  expect(task.reviewers).toContainEqual(NODE);
+  await t.plan.execute({ action: "update", planVersion: read.planVersion ?? read.version ?? 1, modify: [{ taskId: task.taskId, version: task.version,
+    spec: spec("login", { objective: "改了说明", reviewers: task.reviewers } as Partial<TaskSpec>) }] });
+  expect((await login()).task.reviewers).toContainEqual(NODE);
+});
+
+test("任务上有一次还没用的再给一次机会、同时有临时加的审查时：把读回的 reviewers 原样放进计划更新、只改 objective，更新成功，临时加的审查仍在名单里并带 added: true", async () => {
+  const { t, login } = await tempAddRound("blocked");
+  t.patchTask((task) => ({ status: "awaiting_parent",
+    userDecision: { decisionId: uuidv7(), choice: "retry", maxTurns: 40, revision: 1, taskVersion: task.version, usedByRunId: null, notified: true } }));
+  const { read, task } = await login();
+  expect(task.reviewers).toContainEqual(NODE);
+  await t.plan.execute({ action: "update", planVersion: read.planVersion ?? read.version ?? 1, modify: [{ taskId: task.taskId, version: task.version,
+    spec: spec("login", { objective: "改了说明", reviewers: task.reviewers } as Partial<TaskSpec>) }] });
+  expect((await login()).task.reviewers).toContainEqual(NODE);
 });

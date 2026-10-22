@@ -106,6 +106,9 @@ const PM_MESSAGE_LABEL = "【主代理转述】下面是主代理根据用户的
 const PM_EVENT_POLL_MS = 500;
 const PM_STATE_ACTIONS = ["open", "read", "acquire-pm", "release-pm", "check-pm"];
 
+const findingLine = (finding: Finding & { agent: string }): string =>
+  `- [${finding.kind}] ${finding.agent} · ${oneLine(finding.targetRef)}：${oneLine(finding.trigger)} → ${oneLine(finding.impact)}`;
+
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 
 const reviewRulesFor = (name: string) => loadRoleRules(isGenericDefinition(name) ? "reviewer" : "reviewer-specialist");
@@ -121,7 +124,7 @@ async function taskContext(task: PlanTask, maxTurns: number, prototypes: string,
     `需求章节：${task.goalUnitIds.join("、")}${task.constraintUnitIds.length ? `；约束章节：${task.constraintUnitIds.join("、")}` : ""}`,
     ...(task.writePaths.length ? [`可写范围：${task.writePaths.join("、")}`] : []),
     ...(prototypes ? [prototypes] : []),
-    ...(rejected.length ? [`本次是审查打回后的返修，须解决：\n${rejected.map((finding) => `- [${finding.kind}] ${finding.agent} · ${oneLine(finding.targetRef)}：${oneLine(finding.trigger)} → ${oneLine(finding.impact)}`).join("\n")}`] : []),
+    ...(rejected.length ? [`本次是审查打回后的返修，须解决：\n${rejected.map(findingLine).join("\n")}`] : []),
     ...(reviews.length ? [`已完成任务的审查结论（审查已核对各任务的改动范围）：\n${reviews.map((line) => `- ${line}`).join("\n")}`] : []),
     `对话轮次上限：${maxTurns}。用满后运行时会停止，请在额度内提交结果。`,
   ].join("\n");
@@ -711,6 +714,7 @@ export class RunManager {
       const count = (kind: string) => verdict?.findings.filter((finding) => finding.kind === kind).length ?? 0;
       return [`- ${review.agent}：${REVIEW_OUTCOME_LABEL[review.outcome]}，已用 ${review.turnsUsed}/${review.maxTurns} 轮`,
         verdict ? `  summary：${oneLine(verdict.summary)}；分级问题 ${verdict.findings.length} 项（阻塞 ${count("blocking")}、未验证 ${count("unverified")}、建议 ${count("suggestion")}）` : "",
+        ...(verdict?.findings.filter((finding) => finding.kind !== "suggestion").map((finding) => `  ${findingLine({ ...finding, agent: review.agent })}`) ?? []),
         `  运行日志：${this.runLog(review.runId)}`].filter(Boolean).join("\n");
     });
     return [`任务 ${task.key} 第 ${round} 轮审查已全部结束，任务状态 ${task.status}。`, ...sections, `建议：${next}`];

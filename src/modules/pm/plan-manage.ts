@@ -34,7 +34,7 @@ const key = Type.String({ minLength: 1, maxLength: 64, pattern: "^[A-Za-z0-9._-]
 /** 执行该任务的角色定义名称；缺省用与职责同名的默认定义。 */
 const agentName = Type.String({ pattern: "^[a-z0-9][a-z0-9-]{0,63}$" });
 export const MAX_REVIEWERS = 17;
-const reviewerEntry = object({ agent: agentName, reason: Type.String({ maxLength: 1024 }), auto: Type.Optional(Type.Literal(true)) });
+const reviewerEntry = object({ agent: agentName, reason: Type.String({ maxLength: 1024 }), auto: Type.Optional(Type.Literal(true)), added: Type.Optional(Type.Literal(true)) });
 const DelegatedRole = Type.Union([Type.Literal("explore"), Type.Literal("worker"), Type.Literal("qa")]);
 export const TaskSpec = object({
   key, role: DelegatedRole, goalUnitIds: unitIds(1), constraintUnitIds: unitIds(0),
@@ -172,7 +172,7 @@ async function textOnlyChange(task: TaskRecord, spec: TaskSpec, keys: ReadonlyMa
   return spec.key === task.key && spec.role === task.role && same(spec.goalUnitIds, task.goalUnitIds) && same(spec.constraintUnitIds, task.constraintUnitIds) &&
     same(spec.dependsOn.map((dep) => keys.get(dep)), task.dependsOn) && same(spec.writePaths, task.writePaths) && same(spec.blockedByQuestionIds, task.blockedByQuestionIds) &&
     spec.maxTurns === task.maxTurns && spec.agent === task.agent &&
-    same((spec.reviewers ?? []).filter((entry) => !entry.auto).map((entry) => entry.agent), (task.reviewers ?? []).filter((entry) => !entry.auto && !entry.added).map((entry) => entry.agent)) &&
+    same((spec.reviewers ?? []).filter((entry) => !entry.auto && !entry.added).map((entry) => entry.agent), (task.reviewers ?? []).filter((entry) => !entry.auto && !entry.added).map((entry) => entry.agent)) &&
     same(spec.scope, previous.scope) && same(spec.performance, previous.performance);
 }
 /** 修改任务时带上用户的决定：还没用掉的"再给一次机会"跟到新版本，PM 可以先补任务说明再派出；这时只允许改说明文字。 */
@@ -378,9 +378,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     for (const spec of specs) for (const dep of spec.dependsOn) if (!keys.includes(dep) && !known.has(dep)) deny("dependency_invalid", [`${spec.key} 依赖未知任务 ${dep}`]);
   }
 
-  /** auto 标记只由程序按目录写入，PM 交上来的一律丢弃。 */
+  /** auto、added 标记只由程序写入，PM 交上来的一律丢弃。 */
   function dropAuto(spec: TaskSpec): TaskSpec {
-    return spec.reviewers ? { ...spec, reviewers: spec.reviewers.filter((entry) => !entry.auto) } : spec;
+    return spec.reviewers ? { ...spec, reviewers: spec.reviewers.filter((entry) => !entry.auto && !entry.added) } : spec;
   }
 
   function validateAgents(specs: TaskSpec[], directory: readonly AgentDirectoryEntry[]): void {

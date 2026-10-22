@@ -20,7 +20,7 @@ pi install /absolute/path/to/one-company
 | `pnpm run test:integration` | 集成测试：真实守护进程、临时 SQLite、跨进程 |
 | `pnpm run test:integration:installed` | 同上，但先打包安装，守护进程从安装产物启动 |
 | `pnpm run test:installation` | 按真实 pi 安装方式装好再测；没有 Docker 时跳过 Docker 安装测试 |
-| `pnpm run test:acceptance:parallel` | 真实模型验收：14 个单点约 10 分钟，加两条完整流程约 35 分钟 |
+| `pnpm run test:acceptance:parallel` | 真实模型验收：16 个单点，单点每条 1～6 分钟，同时跑全部单点约 20 分钟，加两条完整流程约 35 分钟 |
 
 合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P16）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`src/modules/requirement/requirement-state.ts`、`src/modules/requirement/requirement-service.ts`、`src/modules/pm/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
 

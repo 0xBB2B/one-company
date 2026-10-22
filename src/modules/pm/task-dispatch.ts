@@ -220,7 +220,7 @@ function reviewSettledStatus(task: Pick<TaskRecord, "attempts" | "reviews" | "us
 
 /**
  * 登记一批任务级审查（整轮、单个或临时加的专项审查）：只审待审查或审查中 worker 任务最近一次完成的尝试。
- * 要派的代理带 runId，跳过的带 skipReason；同一代理正在运行、或本轮没交出结论已满 2 次（用户再给一次机会的代理 3 次）时被拒。
+ * 要派的代理带 runId，跳过的带 skipReason；同一代理正在运行、或本轮没交出结论已满 2 次（用户再给一次机会的代理按裁决基准计）时被拒。
  * 临时加的专项审查带 addReviewer，通过后记进任务的审查名单（名单上限 17）。新一轮只能整轮派开始：本轮没开始时 single 或 addReviewer 被拒；
  * 同一轮里已交结论的代理不能再单独派。不需要检查阶段令牌；检查阶段中不派。
  */
