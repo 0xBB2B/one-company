@@ -138,8 +138,8 @@ const UserDecision = object({
   usedByRunId: Type.Union([id, Type.Null()]), notified: Type.Boolean(),
   /** 审查卡住时的"再给一次机会"：裁决那一刻本轮等重派或已用尽的代理与轮次，只覆盖这些代理。 */
   agents: Type.Optional(Type.Array(agentName, { maxItems: MAX_REVIEWERS })), round: Type.Optional(positive),
-  /** agents 里裁决时已用尽的代理：多派 1 次；其余是等重派的代理，只沿用裁决的轮数上限。 */
-  extra: Type.Optional(Type.Array(agentName, { maxItems: MAX_REVIEWERS })),
+  /** agents 里裁决时已用尽的代理在裁决当时的本轮没交出结论次数：失败次数低于它加 1 才能再派；其余是等重派的代理，只沿用裁决的轮数上限。 */
+  baseline: Type.Optional(Type.Record(agentName, positive)),
   /** 审查中 PM 上报的说明：用户裁决后从尝试上移到这里，只作历史展示。 */
   escalation: Type.Optional(text),
   /** 登记决定那一刻已确认计划的任务清单指纹，终止后据此判断新计划是否有变更。 */

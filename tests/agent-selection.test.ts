@@ -1076,3 +1076,73 @@ test("PM 在审查中上报后用户再给一次机会、这一轮结束进入�
   await until(() => t.record().status === "awaiting_user");
   expect(t.manager.decisionPacket(t.fixture.requirementId, `task:${t.taskId}`)).not.toContain("缺 Go 工具链");
 });
+
+const failureText = (error: unknown) => { const e = error as { message?: string; detail?: unknown; advice?: unknown }; return `${e.message}${JSON.stringify(e.detail ?? "")}${JSON.stringify(e.advice ?? "")}`; };
+
+test("go-reviewer 本轮已 blocked、reviewer 还在跑时用户关掉 go-reviewer，PM 单派它被拒（task_not_ready，写明本轮已交结论），不新增 skipped 记录，reviewer 结束后任务待返修", async () => {
+  const t = await reviewWorld();
+  t.replies["go-reviewer"] = verdict(SUMMARIES["go-reviewer"], [{ kind: "blocking", trigger: "go 触发" }]);
+  t.auto.add("go-reviewer");
+  t.auto.add("vue-reviewer");
+  await t.review({ maxTurns: 5 });
+  await until(() => t.record().reviews.some((entry) => entry.agent === "go-reviewer" && entry.outcome === "blocked"));
+  t.disabled.add("go-reviewer");
+  const error = await t.review({ maxTurns: 5, agent: "go-reviewer" }).then(() => undefined, (failure: unknown) => failure);
+  expect(error).toMatchObject({ code: "task_not_ready" });
+  expect(failureText(error)).toContain("已交结论");
+  expect(t.record().reviews.filter((entry) => entry.agent === "go-reviewer")).toHaveLength(1);
+  await t.release("reviewer");
+  await until(() => t.record().status !== "reviewing");
+  expect(t.record().status).toBe("awaiting_rework");
+});
+
+test("go-reviewer 正在跑时被关掉，PM 单派它被拒，不新增 skipped 记录", async () => {
+  const t = await reviewWorld();
+  t.auto.add("reviewer");
+  t.auto.add("vue-reviewer");
+  await t.review({ maxTurns: 5 });
+  await until(() => t.record().reviews.some((entry) => entry.agent === "go-reviewer" && entry.outcome === "running"));
+  t.disabled.add("go-reviewer");
+  await expect(t.review({ maxTurns: 5, agent: "go-reviewer" })).rejects.toMatchObject({ code: "task_not_ready" });
+  expect(t.record().reviews.filter((entry) => entry.agent === "go-reviewer").map((entry) => entry.outcome)).toEqual(["running"]);
+});
+
+test("用户每次再给一次机会都让被放行的代理多派一次：第 3 次、第 4 次没交结论后各需新的裁决，同一次裁决不能复用", async () => {
+  const t = await reviewWorld();
+  t.replies["go-reviewer"] = [READ, READ, READ, READ];
+  for (const name of ["go-reviewer", "reviewer", "vue-reviewer"]) t.auto.add(name);
+  const goEntries = () => t.record().reviews.filter((entry) => entry.agent === "go-reviewer");
+  await t.review({ maxTurns: 1 });
+  await until(() => goEntries().some((entry) => entry.outcome === "turn_limit_reached"));
+  await t.review({ maxTurns: 1, agent: "go-reviewer" });
+  await until(() => t.record().status === "awaiting_user");
+  await t.grantRetry(7);
+  const third = await t.review({ maxTurns: 30, agent: "go-reviewer" });
+  expect(third.maxTurns).toBe(7);
+  await until(() => goEntries().length === 3 && goEntries()[2]!.outcome !== "running" && t.record().status === "awaiting_user");
+  await t.grantRetry(9);
+  const fourth = await t.review({ maxTurns: 30, agent: "go-reviewer" });
+  expect(fourth.maxTurns).toBe(9);
+  await until(() => goEntries().length === 4 && goEntries()[3]!.outcome !== "running" && t.record().status === "awaiting_user");
+  await expect(t.review({ maxTurns: 30, agent: "go-reviewer" })).rejects.toMatchObject({ code: "retry_exhausted" });
+});
+
+test("go-reviewer 本轮两次没交结论、reviewer 还在跑时用户关掉 go-reviewer：PM 单派它被拒 retry_exhausted，不新增 skipped 记录，reviewer 通过后任务 awaiting_user，事项含「两次审查未完成（go-reviewer）」", async () => {
+  const t = await reviewWorld();
+  t.replies["go-reviewer"] = [READ, READ];
+  t.auto.add("go-reviewer");
+  t.auto.add("vue-reviewer");
+  const goEntries = () => t.record().reviews.filter((entry) => entry.agent === "go-reviewer");
+  await t.review({ maxTurns: 1 });
+  await until(() => goEntries().some((entry) => entry.outcome === "turn_limit_reached"));
+  await t.review({ maxTurns: 1, agent: "go-reviewer" });
+  await until(() => goEntries().length === 2 && goEntries()[1]!.outcome !== "running");
+  t.disabled.add("go-reviewer");
+  await expect(t.review({ maxTurns: 5, agent: "go-reviewer" })).rejects.toMatchObject({ code: "retry_exhausted" });
+  expect(goEntries().map((entry) => entry.outcome)).not.toContain("skipped");
+  await t.release("reviewer");
+  await until(() => t.record().status !== "reviewing");
+  expect(t.record().status).toBe("awaiting_user");
+  const items = (await t.manager.overviews())[0]!.pendingItems;
+  expect(items).toContainEqual(expect.objectContaining({ label: expect.stringContaining("两次审查未完成（go-reviewer）") }));
+});

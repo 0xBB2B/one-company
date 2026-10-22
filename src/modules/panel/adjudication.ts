@@ -145,7 +145,7 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     const userDecision: UserDecision = { decisionId: input.decisionId, choice: parsed.choice as UserDecision["choice"], maxTurns: parsed.maxTurns,
       revision: record.revision, taskVersion: task.version, usedByRunId: null, notified: false,
       confirmedPlan: confirmedPlanKey(readPlanIn(db, input.requirementId)?.plan), ...(escalation ? { escalation } : {}),
-      ...(parsed.choice === "retry" && stage === "review" ? { agents: [...exhausted, ...waiting], extra: exhausted, round: round.round } : {}) };
+      ...(parsed.choice === "retry" && stage === "review" ? { agents: [...exhausted, ...waiting], baseline: Object.fromEntries(exhausted.map((agent) => [agent, reviewFailures(task.reviews, agent)])), round: round.round } : {}) };
     // 再给一次机会回到用完机会的那一环
     const retryStatus = stage === "review" && waiting.length ? "reviewing" : ({ execute: "pending", review: "awaiting_review", rework: "awaiting_rework" } as const)[stage];
     const status = parsed.choice === "retry" ? retryStatus : parsed.choice === "adjust" ? "needs_update" : "cancelled";

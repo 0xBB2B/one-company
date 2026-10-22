@@ -175,12 +175,13 @@ function reviewGranted(task: Pick<TaskRecord, "userDecision" | "version">, round
   return decision?.choice === "retry" && decision.taskVersion === task.version && decision.round === round && decision.agents?.includes(agent) === true;
 }
 
-/** 某代理在本轮能否再派：没在跑，没交出结论少于 2 次；用户给了再一次机会、裁决时已用尽的代理可多派 1 次。 */
+/** 某代理在本轮能否再派：没在跑，没交出结论少于 2 次；用户给了再一次机会、裁决时已用尽的代理，失败次数低于裁决当时的次数加 1。 */
 export function reviewDispatchable(task: Pick<TaskRecord, "reviews" | "userDecision" | "version">, agent: string): boolean {
   const { round, reviews } = latestRound(task);
   if (reviews.find((review) => review.agent === agent)?.outcome === "running") return false;
   const failures = reviewFailures(task.reviews, agent);
-  return failures < 2 || (failures < 3 && reviewGranted(task, round, agent) && task.userDecision!.extra?.includes(agent) === true);
+  const baseline = reviewGranted(task, round, agent) ? task.userDecision!.baseline?.[agent] : undefined;
+  return failures < 2 || (baseline !== undefined && failures < baseline + 1);
 }
 
 /**
@@ -251,10 +252,10 @@ export function beginTaskReview(request: Omit<TaskDispatchRequest, "retry" | "re
       if (exhausted.length) deny("retry_exhausted", exhausted.map((agent) => `${agent} 本轮没交出结论的次数已达上限`));
       deny("task_not_ready", [`${task.key} 本轮没有可派的审查`]);
     }
-    for (const member of running) {
+    for (const member of request.members) {
       const latest = sameRound ? current.reviews.find((review) => review.agent === member.agent)?.outcome : undefined;
       if (latest === "running") deny("task_not_ready", [`${member.agent} 正在运行`]);
-      if (latest === "clear" || (latest !== undefined && REVIEW_REJECTED.has(latest))) deny("task_not_ready", [`${member.agent} 本轮已交出结论，不能再单独派`]);
+      if (latest === "clear" || (latest !== undefined && REVIEW_REJECTED.has(latest))) deny("task_not_ready", [`${member.agent} 已交结论，本轮不能再单独派`]);
       if (sameRound && !reviewDispatchable(task, member.agent)) deny("retry_exhausted", [`${member.agent} 本轮已有 ${reviewFailures(task.reviews, member.agent)} 次没交出结论`]);
     }
     const decision = task.userDecision;
