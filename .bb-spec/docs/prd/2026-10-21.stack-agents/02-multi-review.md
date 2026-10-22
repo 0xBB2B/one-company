@@ -38,7 +38,7 @@ date: 2026-10-21
 ## 约束
 - C-1：计划里每个 worker 任务可以写 0 个或多个专项审查，每个写定义名和一句理由。提交计划时这些情况被拒，并写明原因：理由为空；同一任务里重复写同一个定义；写了 reviewer（通用审查不用写）；写的定义不存在、职责不是 reviewer、或已关闭；非 worker 任务写了专项审查。
 - C-2：worker 任务的执行定义名是 `<前缀>-worker`、而且存在名为 `<前缀>-reviewer` 的定义时，程序自动把 `<前缀>-reviewer` 加进这个任务的专项审查，PM 不用写理由；PM 自己也写了它时不重复。不论 `<前缀>-reviewer` 当时开着还是关着都挂上，关着的在派审查时按 C-4 跳过；自动挂上的不受 C-1"已关闭就拒绝"这条限制。PM 读计划时能看到哪些专项审查是自动挂上的，理由显示为「同栈自动挂上」。
-- C-3：PM 有三种派审查的方式，每次都自己给轮数上限：
+- C-3：PM 有三种派审查的方式，每次都自己给轮数上限。新一轮（任务写完或返修完后第一次派审查）只能整轮派开始；这一轮开始后，才能单独派和临时加。同一轮里已经交了结论（通过、打回、未验证）的审查代理不能再单独派：
   - 整轮派：程序同时派出通用审查和本轮要审的全部专项审查，都用这次给的轮数上限。
   - 单独派：只派审查名单里的某一个，或通用审查。
   - 临时加：派一个名单外的专项审查，必须写理由；定义不存在、职责不是 reviewer、已关闭、或没写理由时被拒并写明原因。临时加的从此算进这个任务的审查名单，之后每一轮都和名单里的一样对待。
@@ -58,7 +58,7 @@ date: 2026-10-21
 ## 验收
 - [ ] AC-1 ← C-1：分别提交带以下问题的计划，各自被拒并写明原因：专项审查理由为空；同一任务写两次 vue-reviewer；写了 reviewer；写了 go-worker（职责不是 reviewer）；写了已关闭的 vue-reviewer；qa 任务写了专项审查。
 - [ ] AC-2 ← C-2：执行定义是 go-worker、没写专项审查的任务，计划里它的专项审查是 go-reviewer、理由「同栈自动挂上」；go-reviewer 关着时计划照样提交成功、照样挂上；执行定义是 acme-worker、没有 acme-reviewer 时，专项审查为空；PM 自己写了 go-reviewer 时只出现一次。
-- [ ] AC-3 ← C-3、C-4：挂了 go-reviewer、vue-reviewer 的任务整轮派审查（轮数上限 12）→ 同时启动 reviewer、go-reviewer、vue-reviewer 三个运行，轮数上限都是 12；派之前关掉 go-reviewer → 只启动 reviewer 和 vue-reviewer，本轮结果里有「go-reviewer 已关闭，本轮未审」；PM 单独派 vue-reviewer（轮数上限 20）→ 只启动 vue-reviewer，上限 20；PM 临时加名单外的 node-reviewer 并写理由 → 启动它，任务的审查名单里多了 node-reviewer 和 PM 写的理由，它也通过后任务才完成；临时加时不写理由、或加已关闭的、职责不是 reviewer 的定义 → 被拒并写明原因。
+- [ ] AC-3 ← C-3、C-4：任务写完后第一次派审查就单独派 go-reviewer 或临时加 → 被拒，要求先整轮派；本轮 go-reviewer 已打回后再单独派它 → 被拒；挂了 go-reviewer、vue-reviewer 的任务整轮派审查（轮数上限 12）→ 同时启动 reviewer、go-reviewer、vue-reviewer 三个运行，轮数上限都是 12；派之前关掉 go-reviewer → 只启动 reviewer 和 vue-reviewer，本轮结果里有「go-reviewer 已关闭，本轮未审」；PM 单独派 vue-reviewer（轮数上限 20）→ 只启动 vue-reviewer，上限 20；PM 临时加名单外的 node-reviewer 并写理由 → 启动它，任务的审查名单里多了 node-reviewer 和 PM 写的理由，它也通过后任务才完成；临时加时不写理由、或加已关闭的、职责不是 reviewer 的定义 → 被拒并写明原因。
 - [ ] AC-4 ← C-5、C-6：go-reviewer 审一个只改了 Vue 文件的任务，结论是通过，摘要含「本次改动不涉及」；它的阻塞意见都带 `文件:行号`、触发条件和修法；审查运行结束后工作区没有被它修改的文件。
 - [ ] AC-5 ← C-7：三个审查里两个通过、一个打回 → 任务待返修，返修意见只含打回的那条并注明来源；三个都通过 → 任务完成；一个没交出结论、另两个还在跑 → PM 立刻收到这一个的原因；PM 单独重派它后它通过、另两个也通过 → 任务完成；它第 2 次又没交出结论 → 不再重派，另两个都结束后任务待用户裁决；另一个已经打回时，没交出结论的照样能单独重派，重派结果的意见也并进返修意见。
 - [ ] AC-6 ← C-8：第 1 轮 go-reviewer 打回、vue-reviewer 通过，返修后派审查 → 只启动 reviewer 和 go-reviewer；第 1 轮 go-reviewer 打回、vue-reviewer 没交出结论、react-reviewer 通过，返修后派审查 → 启动 reviewer、go-reviewer、vue-reviewer；上一轮 vue-reviewer 被作废时，下一轮也派它；计划改了以后任务重新执行完，下一轮派 reviewer 和任务的全部专项审查；返修没做完、PM 让 worker 重试完成后，下一轮同样派 reviewer 和全部专项审查。
