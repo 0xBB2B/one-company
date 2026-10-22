@@ -21,7 +21,26 @@ const ADMIN_API = [
   "})",
   "",
 ].join("\n");
-const VUE_SUPPORT = { "web/server/admin-api.ts": ADMIN_API };
+const APP = [
+  "import express from 'express'",
+  "import { adminRouter } from './admin-api'",
+  "import { sessionFromCookie } from './session'",
+  "",
+  "const app = express()",
+  "",
+  "app.use('/api', async (req, res, next) => {",
+  "  const session = await sessionFromCookie(req.headers.cookie)",
+  "  if (!session) return res.status(401).json({ message: '请先登录' })",
+  "  req.session = session",
+  "  next()",
+  "})",
+  "",
+  "app.use('/api/admin', adminRouter)",
+  "",
+  "app.listen(3000)",
+  "",
+].join("\n");
+const VUE_SUPPORT = { "web/server/admin-api.ts": ADMIN_API, "web/server/app.ts": APP };
 
 const VUE_PITS: SeededPit[] = [
   seed("web/src/components/Comment.vue", [
@@ -110,7 +129,7 @@ const VUE_PITS: SeededPit[] = [
     "",
     "export default router",
   ].join("\n"), "router.beforeEach", "  }", "路由守卫按用户角色放行管理页，后端接口不校验权限",
-    [span("web/server/admin-api.ts", ADMIN_API, "adminRouter.get", "})")]),
+    [span("web/server/admin-api.ts", ADMIN_API, "adminRouter.get", "})"), span("web/server/app.ts", APP, "app.use('/api/admin'", "app.use('/api/admin'")]),
 ];
 
 test.skipIf(!config || process.platform !== "darwin")("P16：vue-reviewer 把 Vue 样例里埋的 5 个坑都列为阻塞并指到文件和行号", async () => {

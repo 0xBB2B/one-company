@@ -22,9 +22,10 @@ const LOGIN_PAGE = "## 背景 {#background}\n用户未说明。\n## 需求 {#req
   "### 验证码失败 {#scenario.failure}\n验证码错误时页面显示失败提示。\n## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n用 node 单元测试验证页面输出与失败提示。\n";
 const AUTH_WORKER = { name: "auth-worker", description: "登录认证专业 worker：负责手机号、验证码登录等认证逻辑的实现与单元测试" };
 const UI_WORKER = { name: "ui-worker", description: "界面专业 worker：负责页面、面板等界面的设计与实现，按项目界面约定写 HTML 与 CSS" };
+const STACK_WORKERS = ["go", "node", "python", "java", "vue", "react"].map((stack) => `${stack}-worker`);
 
 /** 用户层装上专业 worker，主代理核对通过 PM 的接手理解后由真实模型规划，到计划里出现任务为止。 */
-async function plan(name: string, body: string, specialists: Array<{ name: string; description: string }>) {
+async function plan(name: string, body: string, specialists: Array<{ name: string; description: string }>, disabled: string[] = []) {
   const evidence = await pointEvidence(config!, name);
   const userDir = await mkdtemp(join(temporaryRoot(), "agents-"));
   cleanups.push(() => rm(userDir, { recursive: true, force: true }));
@@ -32,7 +33,7 @@ async function plan(name: string, body: string, specialists: Array<{ name: strin
   for (const specialist of specialists) {
     await writeFile(join(userDir, `${specialist.name}.md`), worker.replace("name: worker\n", `name: ${specialist.name}\n`).replace(/description: .*\n/u, `description: ${specialist.description}\n`));
   }
-  const w = await createPmRunWorld(cleanups, { body, review: false, userDir });
+  const w = await createPmRunWorld(cleanups, { body, review: false, userDir, loadDisabledAgents: () => new Set(disabled) });
   const real = await createRealModel(w.fixture.root, config!);
   cleanups.push(() => real.close(evidence));
   const tasks = () => w.db((db) => db.list<TaskRecord>(TASKS).map((row) => row.data));
@@ -52,7 +53,7 @@ test.skipIf(!config || process.platform !== "darwin")("P2：装了对口的登�
 }, 15 * 60_000);
 
 test.skipIf(!config || process.platform !== "darwin")("P3：只装了不对口的界面专业 worker，PM 规划登录逻辑时实现任务仍用默认 worker", async () => {
-  const { planned, workers } = await plan("p3", LOGIN, [UI_WORKER]);
+  const { planned, workers } = await plan("p3", LOGIN, [UI_WORKER], STACK_WORKERS);
   expect(workers.length, JSON.stringify(planned)).toBeGreaterThan(0);
   expect(workers.every((task) => task.agent === null || task.agent === "worker"), JSON.stringify(planned)).toBe(true);
 }, 15 * 60_000);
