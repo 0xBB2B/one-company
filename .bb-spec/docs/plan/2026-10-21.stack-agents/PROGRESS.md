@@ -16,12 +16,12 @@
 | 13 | overview-task-rows | done | 2026-10-21 |
 | 14 | panel-tree-render | done | 2026-10-22 |
 | 15 | acceptance-p15-p16 | done | 2026-10-22 |
+| 16 | review-individual-dispatch | pending | — |
+| 17 | panel-review-retry-rows | pending | — |
 ## 当前
-15 份计划全部完成，进入收尾（全量测试 → doc-update → 删除计划目录）。P15、P16 已写好但没有真实模型配置，未用真实模型跑过。
+用户 2026-10-22 改了审查重试方式（PRD 02 C-3/C-7/C-9、03 C-3/AC-9 已改），新增 16、17 两份计划，准备执行 16。doc-update 收尾已改 README、CONTRIBUTING、ARCHITECTURE（未提交，最后一起提交）；作废后沿用用户上限与 oneLine 的改动在工作区，由 16 号接着改。
 ## 待用户决定
-- 返修中途 PM 重试后，下一轮被当成重新执行、全部重审（多审一次，不漏审）；是否改成只重审打回的。
-- 放行的审查被作废后重派，轮数上限用 PM 传入的，没沿用用户裁决给的上限；是否沿用。
-- 审查代理的 summary 原样拼进给 PM 的汇总，可用换行伪造别的代理段落（只影响 PM 读到的文字，状态由程序判定）；是否把换行压成空格。
-- 范围外：PM 改计划时 plan-manage.ts:430-436 把已执行完、卡在审查的任务错分成执行两次未完成；是否列进待办另修。
+- 范围外：PM 改计划时 plan-manage.ts:430-436 把已执行完、卡在审查的任务错分成执行两次未完成；是否列进待办。
+- 范围外：tests/helpers/run-manager-fixture.ts:28 旧注释用了「夹具」一词；是否清掉。
 ## 阻塞
 （无）

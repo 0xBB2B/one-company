@@ -24,3 +24,7 @@
 
 ## 阶段 5：验收
 - [acceptance-p15-p16](15-acceptance-p15-p16.md) — P15（Go）、P16（Vue）真实模型验收 [依赖: skills-frontend, skills-shared-services, stack-definitions, review-round-dispatch]
+
+## 阶段 6：审查各自重试（用户 2026-10-22 决定）
+- [review-individual-dispatch](16-review-individual-dispatch.md) — 没交结论立刻告诉 PM、PM 单独重派；整轮派、单独派、临时加审查 [依赖: review-round-dispatch]
+- [panel-review-retry-rows](17-panel-review-retry-rows.md) — 面板写出等 PM 重派、第 N 次、两次没交结论 [依赖: review-individual-dispatch, panel-tree-render]
