@@ -64,6 +64,7 @@ date: 2026-10-21
   - P15（Go）：一个 Go 埋坑样例项目，一个执行定义是 go-worker 的任务（程序自动挂上 go-reviewer），改动里埋 5 个坑：用 `http.Get` 发请求没有超时；往没有 make 的 map 里写数据；多个 goroutine 不加锁写同一个 map；用字符串拼接把用户输入拼进 SQL；用 `DEL` 直接释放 Redis 分布式锁、不比对 token。PM 派审查后，判定看 go-reviewer 那一份结论。
   - P16（Vue）：一个 Vue 埋坑样例项目，一个执行定义是 vue-worker 的任务（程序自动挂上 vue-reviewer），改动里埋 5 个坑：用 `v-html` 渲染用户评论；`:href` 直接绑定用户填的链接；`onMounted` 里 `window.addEventListener`，`onUnmounted` 没移除；路由守卫里按用户角色放行管理页，后端接口不校验权限；解构 `reactive()` 的返回值后在模板里使用。PM 派审查后，判定看 vue-reviewer 那一份结论。
   - 通过条件：专项审查的结论是打回；5 个坑每个都有一条阻塞意见，意见里的文件就是埋坑的文件，意见文字里有这个坑的关键词（每个坑列几个同义说法，例如 SQL 拼接的坑认「拼接 / 注入 / 参数化 / 绑定」）；行号不参与判定。
+- C-8：typescript-coding 写明 tsconfig 严格选项是新建或修改 tsconfig 时的写法；项目没有 tsconfig 时，不自行加严格参数去检查（包括测试文件），按项目已有的检查方式来，项目 AGENTS.md 优先。
 
 ## 验收
 - [ ] AC-1 ← C-1、C-2：`skills/` 下有 C-5 表里的 19 个目录，每个的 `SKILL.md` 设置段 name 和目录名一致、description 不为空，总行数都不超过 200。
@@ -72,6 +73,7 @@ date: 2026-10-21
 - [ ] AC-4 ← C-5：对每份 skill，表里每个主题都能找到对应的检查项（由测试按每个主题的关键词检查，例如 go-pitfalls 要能找到 `DefaultClient`、`-race`、`nil map`）。
 - [ ] AC-5 ← C-6：项目受信任、`.pi/skills/go-pitfalls/SKILL.md` 存在时，派 go-reviewer，任务说明里拼进去的是项目里这一份。
 - [ ] AC-6 ← C-7：P15、P16 按规则判定为通过：每次运行里专项审查的结论都是打回，5 个坑各有一条阻塞意见，文件是埋坑的文件、意见文字说中这个坑；同一文件里无关的阻塞意见不算命中。
+- [ ] AC-7 ← C-8：typescript-coding 里有"项目没有 tsconfig 时不自行加严格参数检查"这一条。
 
 ## 验证路径
 1. 列出 `skills/` 下的目录，逐个数行数、读设置段（AC-1）；抽读每份 skill 的检查项格式（AC-2）。
