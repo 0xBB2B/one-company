@@ -8,7 +8,7 @@ import type { WindowChoice, WindowLine } from "../../core/host/question-window.t
 import { dataRoot } from "../../core/storage/data-root.ts";
 import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { writeFileAtomic } from "../../core/storage/store.ts";
-import { lineDiff } from "../verification/project-conventions.ts";
+import { lineDiff, symlinkTarget } from "../verification/project-conventions.ts";
 import { agentSwitchOf, readDisabledAgents } from "./agent-settings.ts";
 import { copyExampleFiles, ExampleCopyError, examplesDir, inspectExample, layerTargets, listExamples, mergeConventions } from "./spec-examples.ts";
 import type { ExampleInspection, ExampleTargets } from "./spec-examples.ts";
@@ -90,11 +90,12 @@ export function confirmLines(input: ConfirmInput): WindowLine[] {
   return lines;
 }
 
-export function conventionsWindow(input: { layer: LayerKey; file: string; before: string | null; merged: string }) {
+export function conventionsWindow(input: { layer: LayerKey; file: string; before: string | null; merged: string; linkTarget?: string | null }) {
   const title = input.layer === "user" ? `把这些改动写入用户规范 ${tilde(input.file)}？` : "把这些改动写入项目规范 AGENTS.md？";
   const lines: WindowLine[] = [
+    ...(input.linkTarget ? [{ text: `AGENTS.md 是软链接，实际写到 ${tilde(input.linkTarget)}`, tone: "warning" } satisfies WindowLine] : []),
     { text: input.before === null ? "还没有 AGENTS.md，要写入的全文如下：" : "与现有的 AGENTS.md 相比的改动：", tone: "muted" },
-    ...lineDiff(input.before ?? "", input.merged).map((text): WindowLine => ({ text, tone: text.startsWith("+ ") ? "added" : "muted" })),
+    ...lineDiff((input.before ?? "").replace(/\r\n/g, "\n"), input.merged.replace(/\r\n/g, "\n")).map((text): WindowLine => ({ text, tone: text.startsWith("+ ") ? "added" : "muted" })),
     { text: "" },
     { text: "写入后，此后派出的 PM、worker、reviewer 都按新内容工作。", tone: "muted" },
   ];
@@ -102,7 +103,7 @@ export function conventionsWindow(input: { layer: LayerKey; file: string; before
   return { title, lines, choices, cancelNote: SKIP_WRITE };
 }
 
-export function resultText(input: { label: string; layer: LayerKey; written: number; skipped: string[]; inspection: ExampleInspection; conventionsFile: string; outcome: Outcome; writeError?: Error }): string {
+export function resultText(input: { label: string; layer: LayerKey; written: number; skipped: string[]; inspection: ExampleInspection; conventionsFile: string; outcome: Outcome; writeError?: Error; writeDir?: string }): string {
   const { heading, state } = input.inspection.section;
   const wrote = input.outcome === "written";
   const lines = [`✓ ${input.label}样例已复制到${LAYER_NAME[input.layer]}：新复制 ${input.written} 个文件${wrote ? `，AGENTS.md 已写入「${heading}」` : ""}。`];
@@ -113,7 +114,7 @@ export function resultText(input: { label: string; layer: LayerKey; written: num
   else if (input.outcome === "changed") lines.push(`确认期间 ${tilde(input.conventionsFile)} 被别处改动，这次没有写入；再运行 /one:examples 补写。`);
   else if (input.outcome === "failed" && input.writeError) {
     const code = (input.writeError as NodeJS.ErrnoException).code;
-    const reason = code === "EACCES" || code === "EPERM" ? `没有权限写入 ${tilde(dirname(input.conventionsFile))}/` : code ?? input.writeError.message.split("\n")[0];
+    const reason = code === "EACCES" || code === "EPERM" ? `没有权限写入 ${tilde(input.writeDir ?? dirname(input.conventionsFile))}/` : code ?? input.writeError.message.split("\n")[0];
     lines.push(`AGENTS.md 没有写入：${reason}；解决后再运行 /one:examples 补写。`);
   } else if (wrote && input.skipped.length === 0) lines.push("此后派出的代理按新规范工作。");
   return lines.join("\n  ");
@@ -193,24 +194,26 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
   }
 
   let outcome: Outcome = "none";
-  let writeError: Error | undefined;
+  let writeError: Error | undefined, writeDir = dirname(targets.conventionsFile);
   if (inspection.section.state === "missing") {
     if (merged.over) outcome = "over";
     else {
-      const answer = await chooseWindow(ctx, conventionsWindow({ layer, file: targets.conventionsFile, before, merged: merged.content }));
+      const linkTarget = await symlinkTarget(targets.conventionsFile);
+      const answer = await chooseWindow(ctx, conventionsWindow({ layer, file: targets.conventionsFile, before, merged: merged.content, linkTarget }));
       if (answer !== WRITE) outcome = "declined";
       else if (await readTextOrNull(targets.conventionsFile) !== before) outcome = "changed";
       else {
         try {
-          await writeFileAtomic(targets.conventionsFile, merged.content);
+          await writeFileAtomic(targets.conventionsFile, merged.content, { followSymlink: true });
           outcome = "written";
         } catch (error) {
           writeError = error as Error;
+          if (linkTarget) writeDir = dirname(linkTarget);
           outcome = "failed";
         }
       }
     }
   }
   const skipped = [...inspection.skills.flatMap((skill) => skill.files), ...inspection.agents].filter((file) => file.state === "changed").map((file) => file.path);
-  ctx.ui.notify(resultText({ label: row.label, layer, written: written.length, skipped, inspection, conventionsFile: targets.conventionsFile, outcome, writeError }));
+  ctx.ui.notify(resultText({ label: row.label, layer, written: written.length, skipped, inspection, conventionsFile: targets.conventionsFile, outcome, writeError, writeDir }));
 }

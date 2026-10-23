@@ -101,7 +101,7 @@ async function listFiles(dir: string, prefix = ""): Promise<string[]> {
 }
 
 export function findSection(text: string, heading: string): string | null {
-  const lines = text.split("\n");
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
   const start = lines.findIndex((line) => line === heading);
   if (start === -1) return null;
   const next = lines.findIndex((line, i) => i > start && line.startsWith("## "));
@@ -159,7 +159,9 @@ export async function inspectExample(input: ExampleInput): Promise<ExampleInspec
 }
 
 export function mergeConventions(before: string | null, example: string) {
-  const content = before === null ? example : `${before.replace(/\n+$/, "")}\n\n${example}`;
+  const content = before === null ? example
+    : before.includes("\r\n") ? `${before.replace(/(\r?\n)+$/, "")}\r\n\r\n${example.replace(/\r?\n/g, "\r\n")}`
+    : `${before.replace(/\n+$/, "")}\n\n${example}`;
   const bytes = Buffer.byteLength(content, "utf8");
   return { content, bytes, over: bytes > MAX_CONVENTIONS_BYTES, excess: Math.max(0, bytes - MAX_CONVENTIONS_BYTES) };
 }

@@ -1,8 +1,10 @@
 import { randomBytes } from "node:crypto";
-import { open, rename, rm } from "node:fs/promises";
+import { open, realpath, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
-export async function writeFileAtomic(path: string, content: string): Promise<void> {
+// 默认不跟随软链接，防止写入穿到目录外
+export async function writeFileAtomic(originalPath: string, content: string, options?: { followSymlink?: boolean }): Promise<void> {
+  const path = options?.followSymlink ? await realpath(originalPath).catch(() => originalPath) : originalPath;
   const dir = dirname(path);
   const temporary = join(dir, `.${basename(path)}.${randomBytes(8).toString("hex")}.tmp`);
   const file = await open(temporary, "wx", 0o600);

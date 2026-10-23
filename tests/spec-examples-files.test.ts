@@ -302,6 +302,39 @@ describe("mergeConventions", () => {
   });
 });
 
+describe("CRLF 换行的 AGENTS.md", () => {
+  const toCrlf = (text: string) => text.replace(/\n/g, "\r\n");
+
+  test("golang 样例全文换成 CRLF 写入：那一段是 same", async () => {
+    const targets = await placeAll(await makeRoot());
+    await writeFile(targets.conventionsFile, toCrlf(await exampleText()));
+    expect((await inspectGolang(targets)).section.state).toBe("same");
+  });
+
+  test("CRLF 文件里那一段改了一条：是 changed", async () => {
+    const targets = await placeAll(await makeRoot());
+    const text = toCrlf(await exampleText());
+    const lines = text.split("\r\n");
+    const index = lines.findIndex((line) => line.startsWith("- "));
+    lines[index] = `${lines[index]}（改）`;
+    await writeFile(targets.conventionsFile, lines.join("\r\n"));
+    expect((await inspectGolang(targets)).section.state).toBe("changed");
+  });
+
+  test("mergeConventions：before 用 CRLF 时结果全程 CRLF，bytes 按结果字节数算", () => {
+    const example = "## 样例\n- 中文条目\n";
+    const merged = mergeConventions("# 我的规范\r\n- 回复用中文\r\n", example);
+    const expected = `# 我的规范\r\n- 回复用中文\r\n\r\n${example.replace(/\n/g, "\r\n")}`;
+    expect(merged.content).toBe(expected);
+    expect(merged.content).not.toMatch(/(?<!\r)\n/u);
+    expect(merged.bytes).toBe(Buffer.byteLength(expected, "utf8"));
+  });
+
+  test("mergeConventions：before 用 LF 时行为不变", () => {
+    expect(mergeConventions("# 我的规范\n- 回复用中文\n", "样例\n").content).toBe("# 我的规范\n- 回复用中文\n\n样例\n");
+  });
+});
+
 describe("一个 skill 有多个文件", () => {
   async function makeExample(root: string) {
     const dir = join(root, "examples");
