@@ -9,7 +9,7 @@
 | definition-body | 角色定义文件里头部设置下面的那段文字，用户在这里写专长和偏好；可以为空 | 简体「定义正文」「正文」 |
 | generic-definition | 内置的 worker、reviewer、qa、explore、prototype 这 5 个角色定义，流程离不开它们，不能关闭 | 简体「通用定义」 |
 | specialist-definition | 按技术栈划分的角色定义，专项 worker 名为 `<栈>-worker`、专项审查名为 `<栈>-reviewer`，同栈的两个预设同一组 skill；包里内置 Go、Node.js / TypeScript、Python、Java / Spring、Vue、React 六对 | 简体「专项定义」「专项 worker」「专项审查」 |
-| spec-example | 仓库 `examples/<栈>/` 下的一套团队设计规范样例，含三类文件：并进项目 `AGENTS.md` 的关键设计决定、详细规范 skill、和内置专项定义同名并加挂这些 skill 的角色定义；供用户复制后照着改 | 简体「设计规范样例」「规范样例」 |
+| spec-example | 仓库 `examples/<栈>/` 下的一套团队设计规范样例，含三类文件：并进用户级或仓库根目录 `AGENTS.md` 的关键设计决定、详细规范 skill、和内置专项定义同名并加挂这些 skill 的角色定义；用户用 `/one:examples` 复制到用户层或项目层后照着改 | 简体「设计规范样例」「规范样例」 |
 | definition-switch | 除通用定义外每个角色定义的开启 / 关闭状态，默认开启，在设置页的角色定义列表里按空格切换；关闭的定义 PM 选不到 | 简体「定义开关」 |
 | review-round | worker 交出一次改动后，PM 派一次审查时程序同时派出的那一批审查代理：通用审查加上本轮要审的专项审查；返修后再派算下一轮 | 简体「审查轮」「第 N 轮审查」 |
 | internal-agent | 程序内部的单次模型调用，不能派工：解释器（把用户原话解读成结构化决定）和草稿核验器（核对需求草稿是不是用户原话要求的） | 简体「内部代理」 |

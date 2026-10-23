@@ -68,6 +68,7 @@ pi install git:github.com/0xBB2B/one-company
 | 命令 | 用途 |
 |---|---|
 | `/one:setting` | 查看和复制角色定义，改 PM 和两个内部代理的模型，选 Git 交付档位和合并方式 |
+| `/one:examples` | 把 Go、Vue 设计规范样例复制到用户层或项目层 |
 | `/one:ps` | 查看和停止终端命令任务 |
 
 ---
@@ -305,7 +306,7 @@ Git 交付有两档：
 | 包内 `role-rules/` | 对应职责 | 各职责的流程规矩，程序加在定义正文之后，冲突时以它为准 |
 | 包内 `agents/` | 对应角色 | 内置角色定义：五个通用定义（worker、reviewer、qa、explore、prototype，正文为空）；Go、Node.js/TypeScript、Python、Java/Spring、Vue、React 六个技术栈各一对 `<栈>-worker`、`<栈>-reviewer`，写明专攻什么并预设 skills |
 | 包内 `skills/` | 定义里点名的角色 | 按技术栈和服务分的编码规范与排查清单，同栈的 worker 和 reviewer 共用一组；每项写问题、怎么认出、修法、出处。和仓库 `AGENTS.md` 冲突时以 `AGENTS.md` 为准 |
-| `~/.pi/agent/AGENTS.md` | 主代理和每个子代理 | 你的个人规范，本包只读不写 |
+| `~/.pi/agent/AGENTS.md` | 主代理和每个子代理 | 你的个人规范；`/one:examples` 经你确认后会在末尾追加样例那一段 |
 | 仓库根目录 `AGENTS.md` | 主代理和每个子代理 | 项目长期约定；改了以后，新派出的子代理读到新内容 |
 
 ### 角色定义
@@ -388,17 +389,24 @@ PM 规划时可以给 worker 任务指定专项定义，并给任务写上要加
 
 每套样例有三类文件：
 
-- `AGENTS.md`：团队的关键设计决定，比如分层怎么分、错误码长什么样、token 存在哪。PM、worker、reviewer 都会读仓库根目录的 `AGENTS.md`。
+- `AGENTS.md`：团队的关键设计决定，比如分层怎么分、错误码长什么样、token 存在哪。PM、worker、reviewer 都会读用户级和仓库根目录的 `AGENTS.md`。
 - `skills/`：详细规范，每个目录是一份 skill。每份 `SKILL.md` 的头部写了 `disable-model-invocation: true`，pi 主窗口的模型看不到它们，只有在定义里点名它们的子代理会拿到全文。
 - `agents/`：和内置专项定义同名的角色定义（Go 样例是 go-worker、go-reviewer，Vue 样例是 vue-worker、vue-reviewer）。skills 名单先列内置定义原有的 skill，后面加上样例自带的 skill。
 
-用 `pi install git:github.com/0xBB2B/one-company` 装好后，样例在 `~/.pi/agent/git/github.com/0xBB2B/one-company/examples/`，也可以在仓库网页上看。样例是一个团队的规范，照抄前先按你团队的做法改。
+用 `pi install git:github.com/0xBB2B/one-company` 装好后，样例在 `~/.pi/agent/git/github.com/0xBB2B/one-company/examples/`，也可以在仓库网页上看。
 
-用到自己项目里分三步：
+运行 `/one:examples`，依次选样例、选复制到哪一层、确认。每个样例后面写着它在两层的状态：未复制、部分复制、已复制（全部和样例一致）、有改动（有文件被你改过）。三类文件一起放到你选的那一层：
 
-1. 把 `skills/` 下的每个目录复制到 `~/.pi/agent/skills/`，对你的所有项目生效；或者复制到仓库内的 `.pi/skills/`，只对这个项目生效，项目在 pi 里设为受信任后才加载。
-2. 把 `agents/` 下的定义复制到 `~/.pi/agent/agents/`，对你的所有项目生效；或者复制到仓库内的 `.pi/agents/`，只对这个项目生效，项目在 pi 里设为受信任后才加载。复制后同名的内置定义被替换，派工用的是复制过去的这一份；删掉复制的文件，就恢复用内置的。`/one:setting` 里的开关按定义名记：复制前关掉的，复制后照样关着；删掉复制的文件后，开关状态留给内置那一份。
-3. 把 `AGENTS.md` 的内容并进自己仓库根目录的 `AGENTS.md`。其中和内置 skill 写法冲突的条目，代理按 `AGENTS.md` 执行，例如 Vue 样例把 refresh token 存在 localStorage。
+| 层 | skills | 角色定义 | AGENTS.md | 生效范围 |
+|---|---|---|---|---|
+| 用户层 | `~/.pi/agent/skills/` | `~/.pi/agent/agents/` | `~/.pi/agent/AGENTS.md` | 你的所有项目 |
+| 项目层 | 仓库内 `.pi/skills/` | 仓库内 `.pi/agents/` | 仓库根目录 `AGENTS.md` | 只有这个项目；项目在 pi 里设为受信任后才能选 |
+
+- 只复制还没有的文件。你改过的文件不覆盖，确认窗口和结果里会列出来。
+- `AGENTS.md` 按样例那一段的标题（如「## 后端设计约定」）认：没有就追加到末尾，先给你看差异，选「写入」才写；已经有了就不动。合并后超过 16 KB 就不写，skills 和定义照常复制，精简 `AGENTS.md` 后再运行一次会只补写这一段。其中和内置 skill 写法冲突的条目，代理按 `AGENTS.md` 执行，例如 Vue 样例把 refresh token 存在 localStorage。
+- 复制后同名的内置定义被替换，派工用的是复制过去的这一份；删掉复制的文件，就恢复用内置的。`/one:setting` 里的开关按定义名记：复制前关掉的，复制后照样关着；删掉复制的文件后，开关状态留给内置那一份。
+
+样例是一个团队的规范，复制后按你团队的做法改。
 
 ---
 

@@ -14,6 +14,7 @@
   "files": [
     "agents",
     "assets",
+    "examples",
     "resources/tree-sitter",
     "role-rules",
     "rules",

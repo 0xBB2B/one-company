@@ -35,11 +35,16 @@ function makeOptions(overrides: Partial<RegisterCommandsOptions> = {}): {
   options: RegisterCommandsOptions;
   settingsCalls: unknown[];
   shellCalls: unknown[];
+  examplesCalls: unknown[];
 } {
   const settingsCalls: unknown[] = [];
   const shellCalls: unknown[] = [];
+  const examplesCalls: unknown[] = [];
   return {
     options: {
+      openExamplesPage: overrides.openExamplesPage ?? (async (ctx: unknown) => {
+        examplesCalls.push(ctx);
+      }),
       openSettingsPage: overrides.openSettingsPage ?? (async (ctx: unknown) => {
         settingsCalls.push(ctx);
       }),
@@ -49,6 +54,7 @@ function makeOptions(overrides: Partial<RegisterCommandsOptions> = {}): {
     },
     settingsCalls,
     shellCalls,
+    examplesCalls,
   };
 }
 
@@ -60,10 +66,10 @@ function setup() {
 }
 
 describe("命令注册集合", () => {
-  test("恰好注册两个命令，且不含任何 spec-* 别名", () => {
+  test("恰好注册三个命令，且不含任何 spec-* 别名", () => {
     const { registrations } = setup();
     const names = Object.keys(registrations).sort();
-    expect(names).toEqual(["one:ps", "one:setting"]);
+    expect(names).toEqual(["one:examples", "one:ps", "one:setting"]);
     expect(names.every((name) => name.startsWith("one:"))).toBe(true);
   });
 
@@ -193,5 +199,42 @@ describe("/one:ps", () => {
     expect(settingsCalls.length).toBe(0);
     expect(notifications.length).toBeGreaterThan(0);
     expect(notifications[notifications.length - 1]!.message).toContain("Shell 管理页加载失败：守护进程未连接");
+  });
+});
+
+describe("/one:examples", () => {
+  test("交互终端下调用打开样例页回调", async () => {
+    const { pi, registrations } = makeFakePi();
+    const { options, examplesCalls } = makeOptions();
+    registerCommands(pi, options);
+    const { ctx } = makeFakeCtx({ hasUI: true, mode: "tui" });
+
+    await registrations["one:examples"]!.handler("", ctx);
+
+    expect(examplesCalls).toEqual([ctx]);
+  });
+
+  test("hasUI=false 时只通知需要交互终端，不调用回调", async () => {
+    const { pi, registrations } = makeFakePi();
+    const { options, examplesCalls } = makeOptions();
+    registerCommands(pi, options);
+    const { ctx, notifications } = makeFakeCtx({ hasUI: false, mode: "tui" });
+
+    await registrations["one:examples"]!.handler("", ctx);
+
+    expect(examplesCalls.length).toBe(0);
+    expect(notifications.map((item) => item.message)).toEqual(["需要交互终端才能打开样例"]);
+  });
+
+  test("mode 不为 tui 时只通知需要交互终端，不调用回调", async () => {
+    const { pi, registrations } = makeFakePi();
+    const { options, examplesCalls } = makeOptions();
+    registerCommands(pi, options);
+    const { ctx, notifications } = makeFakeCtx({ hasUI: true, mode: "other" });
+
+    await registrations["one:examples"]!.handler("", ctx);
+
+    expect(examplesCalls.length).toBe(0);
+    expect(notifications.map((item) => item.message)).toEqual(["需要交互终端才能打开样例"]);
   });
 });
