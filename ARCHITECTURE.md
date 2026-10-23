@@ -21,7 +21,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 2. `src/modules/`：一个功能一个目录，只能引用排在自己前面的模块。
 3. `src/app/`：组装层，把模块接到 pi 入口和守护进程上，本身不放业务逻辑。
 
-仓库根上的 `agents/`、`rules/`、`role-rules/`、`shared/`、`skills/`、`resources/` 不是代码，是程序运行时读取的素材：角色定义、给代理的规矩、语法解析资源。`examples/` 是给用户照着改的 Go、Vue 设计规范样例，程序不读。
+仓库根上的 `agents/`、`rules/`、`role-rules/`、`shared/`、`skills/`、`resources/` 不是代码，是程序运行时读取的素材：角色定义、给代理的规矩、语法解析资源。`examples/` 是 Go、Vue 设计规范样例，`/one:examples` 把它们复制到用户层或项目层。
 
 ## 模块地图
 

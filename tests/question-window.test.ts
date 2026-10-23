@@ -250,3 +250,8 @@ test("M8D-AC9：窄终端 56 列时放不下的文字换行不截断，续行对
   expect(tightLines.some((line) => line.trimStart().startsWith("。"))).toBe(false);
   expect(tightLines.join("\n")).not.toMatch(/0\.\n|\n\s*3 秒/u);
 });
+
+test("窗口行的警告色调：主题 fg 收到 warning", () => {
+  const { text } = view({ tone: "standard", questions: [{ question: "问题", choices: [{ label: "好" }], lines: [{ text: "黄色提示", tone: "warning" }] }] });
+  expect(text()).toContain("<warning>黄色提示</>");
+});

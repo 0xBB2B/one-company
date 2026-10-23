@@ -1,9 +1,9 @@
 import { expect, test } from "vitest";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import {
@@ -77,7 +77,8 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     const runtimeArtifact = await packPackage(pnpm, dirname(fileURLToPath(import.meta.resolve("web-tree-sitter/web-tree-sitter.wasm"))), packs);
     const typeboxRoot = await realpath(join(productRoot, "node_modules", "typebox"));
     for (const file of ["src/app/extension/index.ts", "src/modules/interaction/requirement-manage-extension.ts", "src/modules/requirement/host-authorization.ts", "src/modules/interaction/requirement-manage-tool.ts", "src/modules/requirement/requirement-service.ts", "src/modules/interaction/main-requirement-interaction.ts", "src/modules/interaction/user-interact-tool.ts",
-      "src/modules/requirement/requirement-doc.ts", "skills/requirement-doc/SKILL.md"]) {
+      "src/modules/requirement/requirement-doc.ts", "skills/requirement-doc/SKILL.md",
+      ...(await readdir(join(productRoot, "examples"), { recursive: true, withFileTypes: true })).filter((entry) => entry.isFile()).map((entry) => relative(productRoot, join(entry.parentPath, entry.name)))]) {
       expect(artifact.files).toContain(file);
     }
 

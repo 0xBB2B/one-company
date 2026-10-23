@@ -2,7 +2,7 @@ import type { ExtensionContext, ExtensionUIContext, Theme } from "@earendil-work
 import type { KeybindingsManager, TUI } from "@earendil-works/pi-tui";
 import { decodeKittyPrintable, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
-export type LineTone = "normal" | "muted" | "added" | "removed";
+export type LineTone = "normal" | "muted" | "added" | "removed" | "warning";
 export interface WindowLine { text: string; tone?: LineTone }
 export interface WindowChoice { label: string; description?: string; recommended?: boolean; recommendedReason?: string; /** 不可选时写原因：整行变暗，光标跳过。 */ disabled?: string }
 export interface WindowQuestion {
@@ -51,7 +51,7 @@ function wrapPlain(text: string, width: number): string[] {
   lines.push(line);
   return lines;
 }
-const TONE_COLOR: Record<LineTone, string | undefined> = { normal: undefined, muted: "muted", added: "toolDiffAdded", removed: "toolDiffRemoved" };
+const TONE_COLOR: Record<LineTone, string | undefined> = { normal: undefined, muted: "muted", added: "toolDiffAdded", removed: "toolDiffRemoved", warning: "warning" };
 
 interface QuestionState { cursor: number; picked: Set<number>; other: string; answered: boolean }
 

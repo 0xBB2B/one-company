@@ -1,4 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { openExamplesPage } from "../../modules/settings/examples-extension.ts";
+import type { ExamplesContext } from "../../modules/settings/examples-extension.ts";
 import { openSettingsPage } from "../../modules/settings/settings-extension.ts";
 import type { SettingsExtensionContext } from "../../modules/settings/settings-extension.ts";
 import { openShellUiPage } from "../../modules/shell/shell-ui-extension.ts";
@@ -17,6 +19,7 @@ export interface CommandsPi {
 }
 
 export interface RegisterCommandsOptions {
+  openExamplesPage: (ctx: ExamplesContext) => Promise<void>;
   openSettingsPage: (ctx: SettingsExtensionContext, options: { mainThinking: () => string }) => Promise<void>;
   openShellPage: (ctx: OpenShellPageCtx) => Promise<void>;
 }
@@ -28,6 +31,17 @@ async function openSettingOrReport(
 ): Promise<void> {
   try {
     await options.openSettingsPage(ctx, { mainThinking: () => pi.getThinkingLevel() });
+  } catch (error) {
+    ctx.ui.notify((error as Error).message);
+  }
+}
+
+async function openExamplesOrReport(
+  options: RegisterCommandsOptions,
+  ctx: CommandsCtx,
+): Promise<void> {
+  try {
+    await options.openExamplesPage(ctx);
   } catch (error) {
     ctx.ui.notify((error as Error).message);
   }
@@ -56,6 +70,17 @@ export function registerCommands(pi: CommandsPi, options: RegisterCommandsOption
     },
   });
 
+  pi.registerCommand("one:examples", {
+    description: "复制设计规范样例",
+    handler: async (_args, ctx) => {
+      if (!ctx.hasUI || ctx.mode !== "tui") {
+        ctx.ui.notify("需要交互终端才能打开样例");
+        return;
+      }
+      await openExamplesOrReport(options, ctx);
+    },
+  });
+
   pi.registerCommand("one:ps", {
     description: "打开 Shell 管理页",
     handler: async (_args, ctx) => {
@@ -66,6 +91,7 @@ export function registerCommands(pi: CommandsPi, options: RegisterCommandsOption
 
 export default function commandsExtension(pi: ExtensionAPI): void {
   registerCommands(pi, {
+    openExamplesPage,
     openSettingsPage,
     openShellPage: openShellUiPage,
   });

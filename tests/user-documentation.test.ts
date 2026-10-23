@@ -103,6 +103,9 @@ describe("README 必需句", () => {
     ".pi/skills/",
     "~/.pi/agent/agents/",
     ".pi/agents/",
+    "/one:examples",
+    "| `/one:examples` | 把 Go、Vue 设计规范样例复制到用户层或项目层 |",
+    "你的个人规范；`/one:examples` 经你确认后会在末尾追加样例那一段",
   ];
   for (const phrase of REQUIRED) {
     test(`含: ${phrase}`, async () => {
@@ -113,7 +116,7 @@ describe("README 必需句", () => {
 });
 
 describe("README 禁止句", () => {
-  const FORBIDDEN = ["pi-subagents", "符号链接", "/spec-new", "推荐用 rebase", "PR 用哪种方式合并", "开启 Git 交付", "`true` 或 `false`"];
+  const FORBIDDEN = ["pi-subagents", "符号链接", "/spec-new", "推荐用 rebase", "PR 用哪种方式合并", "开启 Git 交付", "`true` 或 `false`", "只读不写"];
   for (const phrase of FORBIDDEN) {
     test(`不含: ${phrase}`, async () => {
       const body = await readText(README);
@@ -121,6 +124,18 @@ describe("README 禁止句", () => {
     });
   }
 
+});
+
+describe("ARCHITECTURE 样例说明", () => {
+  const ARCHITECTURE = join(PACKAGE_ROOT, "ARCHITECTURE.md");
+
+  test("不含: 程序不读", async () => {
+    expect(await readText(ARCHITECTURE)).not.toContain("程序不读");
+  });
+
+  test("含: /one:examples 把它们复制到用户层或项目层", async () => {
+    expect(await readText(ARCHITECTURE)).toContain("`/one:examples` 把它们复制到用户层或项目层");
+  });
 });
 
 describe("README 仓库合并设置提示框", () => {
@@ -158,7 +173,7 @@ describe("README 常量与实际代码一致", () => {
   test("命令表覆盖扩展注册的全部入口名，且不出现未注册的入口", async () => {
     const source = await readCommandSources();
     const registered = [...source.matchAll(/registerCommand\(\s*"([^"]+)"/g)].map((match) => match[1]).sort();
-    expect(registered).toEqual(["one:setting", "one:ps"].sort());
+    expect(registered).toEqual(["one:setting", "one:examples", "one:ps"].sort());
 
     const body = await readText(README);
     for (const name of registered) {
