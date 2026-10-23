@@ -12,7 +12,7 @@ function overview(patch: Partial<PmOverview>): PmOverview {
   return { requirementId: "01900000-0000-7000-8000-000000000001", pmRunId: "01900000-0000-7000-8000-00000000000a", goals: ["角色跳跃", "跳跃动画"],
     status: "running", doing: "派 worker 执行 login（第 2 次尝试）", turns: 5, toolUses: 5, tokens: 33_800, cacheRate: 0.62, elapsedMs: 12_300, taskProgress: null, pendingItems: [], taskRows: [], ...patch };
 }
-const jump = overview({ pendingItems: [{ itemId: "task:t1", kind: "adjudicate", label: "待裁决：任务 login 两次未完成", version: "task:t1:3" }] });
+const jump = overview({ pendingItems: [{ itemId: "task:t1", kind: "adjudicate", label: "待裁决：任务 login 2 次未完成", version: "task:t1:3" }] });
 const run = overview({ requirementId: "01900000-0000-7000-8000-000000000002", pmRunId: "01900000-0000-7000-8000-00000000000b", goals: ["角色快跑"],
   doing: "规划中（计划 v2 · 3 个任务）", turns: 42, toolUses: 38, tokens: 91_000, cacheRate: 0.84, elapsedMs: 137_000 });
 
@@ -30,7 +30,7 @@ test("M7-AC33：面板按树形显示运行中的 PM、在做什么与待处理�
     "● 2 个需求运行中",
     "├─ ⠋ 角色跳跃、跳跃动画 · ↻5 · 5 tool uses · 33.8k token (62%) · 12.3s",
     "│    └ 派 worker 执行 login（第 2 次尝试）",
-    "│      └ ⚑ 待裁决：任务 login 两次未完成",
+    "│      └ ⚑ 待裁决：任务 login 2 次未完成",
     "└─ ⠋ 角色快跑 · ↻42 · 38 tool uses · 91.0k token (84%) · 2m17s",
     "     └ 规划中（计划 v2 · 3 个任务）",
   ]);
@@ -267,7 +267,7 @@ const body = (line: string) => line.replace(/^[ │├└]+/, "");
 const exec = (taskKey: string, extra: Partial<Extract<Task, { kind: "execute" }>> = {}): Task =>
   ({ kind: "execute", taskKey, agent: "go-worker", attempt: 1, turns: 8, maxTurns: 20, elapsedMs: 182_000, ...extra });
 const review = (taskKey: string, reviewers: Reviewer[]): Task => ({ kind: "review", taskKey, round: 1, reviewers });
-const t1Item = { itemId: "task:t1", kind: "adjudicate" as const, label: "待裁决：任务 T1 两次未完成", version: "task:t1:3", taskKey: "T1", taskText: "两次未完成" };
+const t1Item = { itemId: "task:t1", kind: "adjudicate" as const, label: "待裁决：任务 T1 2 次未完成", version: "task:t1:3", taskKey: "T1", taskText: "2 次未完成" };
 const reqItem = { itemId: "pm:intake", kind: "intake-review" as const, label: "待核对：PM 接手理解 r2", version: "pm:intake:1" };
 
 test("任务行 AC-1：只有一个执行任务时，需求行下一行是执行行，没有 doing 行和其他汇总行", () => {
@@ -347,12 +347,12 @@ test("任务行 AC-5：检索行写在任务行之后", () => {
 
 test("任务行 AC-4：任务级待处理事项画成 ⚑ 行，选中后 Enter 打开决策包；任务进度行不可选中", () => {
   const { instance, openItem, entry } = taskPanel({
-    taskRows: [{ kind: "pending", taskKey: "T1", itemId: "task:t1", text: "两次未完成" }, exec("T2")],
+    taskRows: [{ kind: "pending", taskKey: "T1", itemId: "task:t1", text: "2 次未完成" }, exec("T2")],
     pendingItems: [t1Item],
   });
   instance.focus();
   const lines = instance.render(200);
-  expect(lines[2]).toBe("     ├ ⚑ T1 两次未完成");
+  expect(lines[2]).toBe("     ├ ⚑ T1 2 次未完成");
   expect(lines[3]).toMatch(/^ {5}└ ⠋ T2 执行/);
   instance.handleInput("\x1b[B");
   instance.handleInput("\r");
@@ -366,13 +366,13 @@ test("任务行 AC-4：任务级待处理事项画成 ⚑ 行，选中后 Enter 
 
 test("任务行 AC-4：需求级事项以 ⚑ 事项文字排在任务行之后，↑↓ 顺序与画出顺序一致（需求行 → 任务级 ⚑ → 需求级 ⚑）", () => {
   const { instance, openItem, entry } = taskPanel({
-    taskRows: [{ kind: "pending", taskKey: "T1", itemId: "task:t1", text: "两次未完成" }, exec("T2")],
+    taskRows: [{ kind: "pending", taskKey: "T1", itemId: "task:t1", text: "2 次未完成" }, exec("T2")],
     pendingItems: [reqItem, t1Item],
   });
   instance.focus();
   const lines = instance.render(200);
   expect(lines.slice(2, 5)).toEqual([
-    "     ├ ⚑ T1 两次未完成",
+    "     ├ ⚑ T1 2 次未完成",
     expect.stringMatching(/^ {5}├ ⠋ T2 执行/),
     "     └ ⚑ 待核对：PM 接手理解 r2",
   ]);
@@ -434,14 +434,14 @@ test("任务行 AC-7：窄屏下任务行、审查代理行、检索行、⚑ �
 test("任务行 AC-7：带 ANSI 着色时，宽度 1 到 12 列逐个渲染，每行 visibleWidth 都不超过宽度", () => {
   const { instance } = taskPanel({
     taskRows: [
-      { kind: "pending", taskKey: "T1", itemId: "task:t1", text: "两次未完成" },
+      { kind: "pending", taskKey: "T1", itemId: "task:t1", text: "2 次未完成" },
       review("T2", [
         { agent: "run-reviewer", state: "running", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
         { agent: "blk-reviewer", state: "blocked", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
         { agent: "end-reviewer", state: "awaiting_retry", reason: "failed", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
         { agent: "clr-reviewer", state: "clear", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
         { agent: "retry-reviewer", state: "running", attempt: 2, turns: 2, maxTurns: 10, elapsedMs: 5_000 },
-        { agent: "exh-reviewer", state: "exhausted", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
+        { agent: "exh-reviewer", state: "exhausted", attempt: 2, turns: 2, maxTurns: 10, elapsedMs: 5_000 },
         { agent: "sup-reviewer", state: "awaiting_retry", reason: "superseded", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
         { agent: "go-reviewer", state: "skipped_disabled" },
         { agent: "vue-reviewer", state: "passed_earlier" },
@@ -484,7 +484,7 @@ test("任务行 AC-2：在跑和打回的审查代理行不着灰；没交出结
 test("任务行：任务行、审查代理行、任务级与需求级 ⚑ 行（未选中）的连线前缀都用 dim", () => {
   const { instance, calls } = taskPanel({
     taskRows: [
-      { kind: "pending", taskKey: "T1", itemId: "task:t1", text: "两次未完成" },
+      { kind: "pending", taskKey: "T1", itemId: "task:t1", text: "2 次未完成" },
       review("T2", [{ agent: "a-reviewer", state: "running", turns: 1, maxTurns: 10, elapsedMs: 1_000 }, { agent: "b-reviewer", state: "clear", turns: 1, maxTurns: 10, elapsedMs: 1_000 }]),
       exec("T3"),
     ],
@@ -515,7 +515,7 @@ test("任务行 AC-4：有任务行时需求行图标是转圈而不是 ⏸，p 
   const openItem = vi.fn(), togglePause = vi.fn();
   const instance = new PmPanel({ now: () => 1_000, openItem, togglePause });
   const entry: PmPanelEntry = { repoId: "r", fetchedAt: 1_000, overview: overview({
-    taskRows: [{ kind: "pending", taskKey: "T1", itemId: "task:t1", text: "两次未完成" }, exec("T2")], pendingItems: [t1Item] }) };
+    taskRows: [{ kind: "pending", taskKey: "T1", itemId: "task:t1", text: "2 次未完成" }, exec("T2")], pendingItems: [t1Item] }) };
   instance.update([entry]);
   instance.focus();
   const lines = instance.render(200);
@@ -554,12 +554,12 @@ test("任务行 AC-9：第 2 次起重派的在跑审查代理行写「（第 N 
   expect(grey.some(([, text]) => text.includes("a-reviewer") || text.includes("b-reviewer"))).toBe(false);
 });
 
-test("任务行 AC-9：两次没交出结论的审查代理行写「本轮结束后交你裁决」，整行 warning", () => {
+test.each([2, 3])("任务行 AC-9：用满的审查代理行按 attempt=%i 写次数和「本轮结束后交你裁决」，整行 warning", (attempt) => {
   const { instance, calls } = taskPanel({ taskRows: [review("T1", [
-    { agent: "a-reviewer", state: "exhausted", turns: 10, maxTurns: 10, elapsedMs: 9_000 },
+    { agent: "a-reviewer", state: "exhausted", attempt, turns: 10, maxTurns: 10, elapsedMs: 9_000 },
   ])] });
   const line = body(instance.render(200)[3]!);
-  expect(line).toBe("– a-reviewer 两次没交出结论，本轮结束后交你裁决 · ↻10/10 · 9.0s");
+  expect(line).toBe(`– a-reviewer ${attempt} 次没交出结论，本轮结束后交你裁决 · ↻10/10 · 9.0s`);
   expect(calls.some(([kind, text]) => kind === "warning" && text.includes(line))).toBe(true);
 });
 
@@ -567,7 +567,7 @@ test("任务行 AC-9：新审查代理行的连线前缀用 dim，宽度 1 到 1
   const { instance, calls } = taskPanel({ taskRows: [review("T1", [
     { agent: "a-reviewer", state: "awaiting_retry", reason: "stopped", turns: 4, maxTurns: 10, elapsedMs: 5_000 },
     { agent: "b-reviewer", state: "running", attempt: 2, turns: 2, maxTurns: 10, elapsedMs: 5_000 },
-    { agent: "c-reviewer", state: "exhausted", turns: 10, maxTurns: 10, elapsedMs: 9_000 },
+    { agent: "c-reviewer", state: "exhausted", attempt: 2, turns: 10, maxTurns: 10, elapsedMs: 9_000 },
     { agent: "d-reviewer", state: "awaiting_retry", reason: "superseded", turns: 3, maxTurns: 10, elapsedMs: 5_000 },
   ])] }, 1_000, true);
   instance.render(200);

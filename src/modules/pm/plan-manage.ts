@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { intakeReasonText } from "./pm-intake-contracts.ts";
+import { REVIEW_SUPERSEDED_TEXT, REVIEW_UNFINISHED_TEXT } from "./review-outcome-text.ts";
 import { COMMON_ADVICE, withDetail } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { mkdir, readFile } from "node:fs/promises";
@@ -107,7 +108,7 @@ export function reviewRoster(task: { reviewers?: ReadonlyArray<{ agent: string }
 }
 export const REVIEW_REJECTED: ReadonlySet<TaskReview["outcome"]> = new Set(["blocked", "unverified"]);
 export const REVIEW_OUTCOME_LABEL: Readonly<Record<TaskReview["outcome"], string>> = { clear: "通过", blocked: "打回", unverified: "未验证",
-  failed: "没交出结论（运行失败）", turn_limit_reached: "没交出结论（轮数用满）", stopped: "没交出结论（被停止）", superseded: "被作废", skipped: "已跳过", running: "进行中" };
+  ...REVIEW_UNFINISHED_TEXT, superseded: REVIEW_SUPERSEDED_TEXT, skipped: "已跳过", running: "进行中" };
 export const REVIEW_UNFINISHED: ReadonlySet<TaskReview["outcome"]> = new Set(["failed", "turn_limit_reached", "stopped"]);
 /** 最近一轮的轮次，以及这一轮每个代理的最近一条记录。 */
 export function latestRound(task: { reviews: readonly TaskReview[] }): { round: number; reviews: TaskReview[] } {
@@ -125,8 +126,9 @@ export function reviewFailures(reviews: readonly TaskReview[], agent: string): n
   const { round } = latestRound({ reviews });
   return reviews.filter((review) => review.round === round && review.agent === agent && REVIEW_UNFINISHED.has(review.outcome)).length;
 }
-/** 任务停在哪一环：最近完成的尝试已被审查时看最近一轮，有打回即返修、否则再审；否则是执行。 */
-export function stalledStage(task: Pick<TaskRecord, "attempts" | "reviews">): "execute" | "review" | "rework" {
+/** 任务停在哪一环：改计划后这一版还没执行过，一律算执行（要按新计划重做）；否则最近完成的尝试已被审查时看最近一轮，有打回即返修、否则再审；否则是执行。 */
+export function stalledStage(task: Pick<TaskRecord, "attempts" | "reviews" | "attemptBase">): "execute" | "review" | "rework" {
+  if (task.attempts.length > 0 && task.attempts.length === task.attemptBase) return "execute";
   const attempt = task.attempts.at(-1), { reviews } = latestRound(task);
   if (attempt?.outcome !== "completed" || reviews.length === 0 || reviews.some((review) => review.attemptRunId !== attempt.runId)) return "execute";
   return reviews.some((review) => REVIEW_REJECTED.has(review.outcome)) ? "rework" : "review";

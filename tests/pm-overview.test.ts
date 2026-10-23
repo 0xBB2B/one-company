@@ -3,6 +3,7 @@ import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/da
 import { TASKS } from "../src/modules/pm/plan-manage.ts";
 import type { TaskRecord, TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import type { PmOverview } from "../src/modules/panel/pm-overview.ts";
+import { PmPanel } from "../src/modules/panel/pm-panel.ts";
 import { PM_INTAKE_TOOL } from "../src/modules/pm/pm-intake-runtime.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
@@ -75,7 +76,7 @@ test("M7-AC33：子代理运行时状态行写明派工与尝试次数；用量�
   expect(overview.cacheRate).toBeCloseTo(300 / (100 + 300 + 100 + ((await w.run(w.pm.runId)).usage?.input ?? 0)), 5);
 });
 
-test("M7-AC33：两次未完成的任务成为待裁决事项；PM 空闲且无子代理运行时显示等待决定", async () => {
+test("M7-AC33：2 次未完成的任务成为待裁决事项；PM 空闲且无子代理运行时显示等待决定", async () => {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
@@ -87,7 +88,7 @@ test("M7-AC33：两次未完成的任务成为待裁决事项；PM 空闲且无�
   await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: { reason: "估计不足", maxTurns: 1 } });
   await until(async () => (await w.overview()).status === "waiting");
   expect(await w.overview()).toMatchObject({ doing: "等待决定",
-    pendingItems: [{ itemId: `task:${login}`, kind: "adjudicate", label: "待裁决：任务 login 两次未完成" }] });
+    pendingItems: [{ itemId: `task:${login}`, kind: "adjudicate", label: "待裁决：任务 login 2 次未完成" }] });
 });
 
 test("M8L-AC1/AC4：计划提交被拒时状态行写明次数；被拒两次出现“待裁决：PM 计划两次提交被拒”，卡片列出两次原因、运行记录与三个选择", async () => {
@@ -217,50 +218,50 @@ async function reviewStuckWorld(reviews: StuckReview[]) {
 }
 const pendingLabels = async (w: Awaited<ReturnType<typeof world>>) => (await w.overview()).pendingItems.map((item) => item.label);
 
-test("审查打回累计两轮：待裁决事项写明两次未通过审查和打回过的审查代理名，按第一次打回的先后排；itemId 与 version 不变", async () => {
+test("审查打回累计两轮：待裁决事项写明 2 次未通过审查和打回过的审查代理名，按第一次打回的先后排；itemId 与 version 不变", async () => {
   const { w, id, version } = await reviewStuckWorld([
     { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "reviewer", round: 2, outcome: "blocked" }]);
   expect(await w.overview()).toMatchObject({ pendingItems: [{ itemId: `task:${id}`, kind: "adjudicate",
-    label: "待裁决：任务 T3 两次未通过审查（go-reviewer、reviewer）", version: `task:${id}:${version()}` }] });
+    label: "待裁决：任务 T3 2 次未通过审查（go-reviewer、reviewer）", version: `task:${id}:${version()}` }] });
 });
 
 test("同一轮多个审查代理打回、后一轮同一代理再打回：名单不重复", async () => {
   const { w } = await reviewStuckWorld([
     { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "vue-reviewer", round: 1, outcome: "blocked" },
     { agent: "go-reviewer", round: 2, outcome: "blocked" }]);
-  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次未通过审查（go-reviewer、vue-reviewer）"]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 2 次未通过审查（go-reviewer、vue-reviewer）"]);
 });
 
 test("未验证也算打回：名单里包含给出 unverified 的审查代理", async () => {
   const { w } = await reviewStuckWorld([
     { agent: "go-reviewer", round: 1, outcome: "unverified" }, { agent: "reviewer", round: 2, outcome: "blocked" }]);
-  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次未通过审查（go-reviewer、reviewer）"]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 2 次未通过审查（go-reviewer、reviewer）"]);
 });
 
 test("名单只含打回过的代理：通过的代理和没交结论的代理不进名单", async () => {
   const { w } = await reviewStuckWorld([
     { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "vue-reviewer", round: 1, outcome: "clear" }, { agent: "sec-reviewer", round: 1, outcome: "failed" },
     { agent: "go-reviewer", round: 2, outcome: "blocked" }]);
-  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次未通过审查（go-reviewer）"]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 2 次未通过审查（go-reviewer）"]);
 });
 
-test("同一审查代理在同一轮里两次没交出结论：待裁决事项写明两次审查未完成和该代理名", async () => {
+test("同一审查代理在同一轮里两次没交出结论：待裁决事项写明 2 次审查未完成和该代理名", async () => {
   const { w, id, version } = await reviewStuckWorld([
     { agent: "vue-reviewer", round: 1, outcome: "failed" }, { agent: "vue-reviewer", round: 1, outcome: "failed" }]);
   expect(await w.overview()).toMatchObject({ pendingItems: [{ itemId: `task:${id}`, kind: "adjudicate",
-    label: "待裁决：任务 T3 两次审查未完成（vue-reviewer）", version: `task:${id}:${version()}` }] });
+    label: "待裁决：任务 T3 2 次审查未完成（vue-reviewer）", version: `task:${id}:${version()}` }] });
 });
 
 test("名单为空时事项文字不带括号：最近一轮只有一条没交结论", async () => {
   const { w } = await reviewStuckWorld([{ agent: "vue-reviewer", round: 1, outcome: "failed" }]);
-  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次审查未完成"]);
+  expect((await pendingLabels(w))[0]).toMatch(/^待裁决：任务 T3 1 次审查未完成$/);
 });
 
 test("只算最近一轮：第 1 轮 go-reviewer 两次没交结论、第 2 轮 vue-reviewer 两次没交结论，名单只有 vue-reviewer", async () => {
   const { w } = await reviewStuckWorld([
     { agent: "go-reviewer", round: 1, outcome: "failed" }, { agent: "go-reviewer", round: 1, outcome: "failed" },
     { agent: "vue-reviewer", round: 2, outcome: "failed" }, { agent: "vue-reviewer", round: 2, outcome: "failed" }]);
-  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次审查未完成（vue-reviewer）"]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 2 次审查未完成（vue-reviewer）"]);
 });
 
 test("同一轮 go-reviewer、vue-reviewer 都两次没交结论、sec-reviewer 只有一次：名单只含前两者", async () => {
@@ -268,19 +269,80 @@ test("同一轮 go-reviewer、vue-reviewer 都两次没交结论、sec-reviewer 
     { agent: "go-reviewer", round: 1, outcome: "failed" }, { agent: "go-reviewer", round: 1, outcome: "failed" },
     { agent: "vue-reviewer", round: 1, outcome: "failed" }, { agent: "vue-reviewer", round: 1, outcome: "failed" },
     { agent: "sec-reviewer", round: 1, outcome: "failed" }]);
-  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次审查未完成（go-reviewer、vue-reviewer）"]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 2 次审查未完成（go-reviewer、vue-reviewer）"]);
 });
 
 test("三轮打回：名单按第一次打回的先后排出三个代理", async () => {
   const { w } = await reviewStuckWorld([
     { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "reviewer", round: 2, outcome: "blocked" }, { agent: "vue-reviewer", round: 3, outcome: "blocked" }]);
-  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次未通过审查（go-reviewer、reviewer、vue-reviewer）"]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 3 次未通过审查（go-reviewer、reviewer、vue-reviewer）"]);
 });
 
-test("轮次用满和被停止也算没交出结论：同一代理同一轮各一次即两次审查未完成", async () => {
+test("轮次用满和被停止也算没交出结论：同一代理同一轮各一次即 2 次审查未完成", async () => {
   const { w } = await reviewStuckWorld([
     { agent: "vue-reviewer", round: 1, outcome: "turn_limit_reached" }, { agent: "vue-reviewer", round: 1, outcome: "stopped" }]);
-  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次审查未完成（vue-reviewer）"]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 2 次审查未完成（vue-reviewer）"]);
+});
+
+async function modifiedAfterTwoAttempts(lastOutcome: "completed" | "turn_limit_reached") {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("T1", "goal.login"), spec("other", "scenario.failure")] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const id = w.taskId("T1");
+  w.db((db) => {
+    const row = db.read<TaskRecord>(TASKS, id)!;
+    db.update(TASKS, id, row.version, { ...row.data, status: lastOutcome === "completed" ? "awaiting_review" : "awaiting_parent",
+      attempts: [{ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" },
+        { runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: "估计不足", outcome: lastOutcome }] } as TaskRecord);
+  });
+  const task = w.db((db) => db.read<TaskRecord>(TASKS, id)!);
+  await w.plan.execute({ action: "update", planVersion: 1, modify: [{ taskId: id, version: task.data.version, spec: { ...spec("T1", "goal.login"), objective: "改过的目标" } }] });
+  return { w, id };
+}
+
+test("改计划后要重做：第 2 次执行已完成、等审查时 PM 改了计划，待裁决事项写“改计划后要重做，执行机会已用完”，任务行同文", async () => {
+  const { w, id } = await modifiedAfterTwoAttempts("completed");
+  const overview = await w.overview();
+  expect(overview.pendingItems).toMatchObject([{ itemId: `task:${id}`, kind: "adjudicate",
+    label: "待裁决：任务 T1 改计划后要重做，执行机会已用完", taskKey: "T1", taskText: expect.stringContaining("改计划后要重做，执行机会已用完") }]);
+  expect(overview.taskRows).toContainEqual(expect.objectContaining({ kind: "pending", taskKey: "T1", text: expect.stringContaining("改计划后要重做，执行机会已用完") }));
+});
+
+test("最后一次执行确实没完成时，即使 PM 改了计划，待裁决事项仍写“2 次未完成”", async () => {
+  const { w } = await modifiedAfterTwoAttempts("turn_limit_reached");
+  expect((await w.overview()).pendingItems).toMatchObject([{ kind: "adjudicate", label: "待裁决：任务 T1 2 次未完成", taskText: expect.stringContaining("2 次未完成") }]);
+});
+
+test("次数按实际值写数字：执行第 3 次又没完成，待裁决事项写“3 次未完成”", async () => {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("T1", "goal.login"), spec("other", "scenario.failure")] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const id = w.taskId("T1");
+  w.db((db) => {
+    const row = db.read<TaskRecord>(TASKS, id)!;
+    db.update(TASKS, id, row.version, { ...row.data, status: "awaiting_user",
+      attempts: [1, 2, 3].map(() => ({ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" as const })) } as TaskRecord);
+  });
+  expect((await pendingLabels(w))).toEqual(["待裁决：任务 T1 3 次未完成"]);
+});
+
+test("次数按实际值写数字：审查打回 3 轮，待裁决事项写“3 次未通过审查（go-reviewer）”", async () => {
+  const { w } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "go-reviewer", round: 2, outcome: "blocked" }, { agent: "go-reviewer", round: 3, outcome: "blocked" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 3 次未通过审查（go-reviewer）"]);
+});
+
+test("次数按实际值写数字：同一代理同一轮 3 次没交出结论，写“3 次审查未完成（vue-reviewer）”", async () => {
+  const { w } = await reviewStuckWorld([
+    { agent: "vue-reviewer", round: 1, outcome: "failed" }, { agent: "vue-reviewer", round: 1, outcome: "failed" }, { agent: "vue-reviewer", round: 1, outcome: "failed" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 3 次审查未完成（vue-reviewer）"]);
+});
+
+test("各代理没交出结论的次数不同时逐个写次数：写“审查未完成（go-reviewer 3 次、vue-reviewer 2 次）”", async () => {
+  const { w } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "failed" }, { agent: "go-reviewer", round: 1, outcome: "failed" }, { agent: "go-reviewer", round: 1, outcome: "failed" },
+    { agent: "vue-reviewer", round: 1, outcome: "failed" }, { agent: "vue-reviewer", round: 1, outcome: "failed" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 审查未完成（go-reviewer 3 次、vue-reviewer 2 次）"]);
 });
 
 type World = Awaited<ReturnType<typeof world>>;
@@ -407,7 +469,7 @@ test("任务行：同轮 reviewer 还在跑、go-reviewer 已 failed 没交出�
   expect((await reviewersOf("T1"))?.reviewers.map((reviewer) => [reviewer.agent, reviewer.state])).toEqual([["reviewer", "running"], ["go-reviewer", "awaiting_retry"]]);
 });
 
-test("任务行与待处理事项：T1 两次未通过审查等用户裁决、T2 执行中时，T1 是 pending 行（文字去掉“任务 T1 ”）排在 T2 的 execute 行之前，itemId 与 pendingItems 里那条相同；原有 label、itemId、version 不变并多出 taskKey、taskText", async () => {
+test("任务行与待处理事项：T1 2 次未通过审查等用户裁决、T2 执行中时，T1 是 pending 行（文字去掉“任务 T1 ”）排在 T2 的 execute 行之前，itemId 与 pendingItems 里那条相同；原有 label、itemId、version 不变并多出 taskKey、taskText", async () => {
   const { w, patch, executing, attempt } = await rowsWorld();
   const attemptRunId = uuidv7();
   patch("T1", { status: "awaiting_user", attempts: [attempt(attemptRunId, "completed")], reviews: [
@@ -416,10 +478,10 @@ test("任务行与待处理事项：T1 两次未通过审查等用户裁决、T2
   await executing("T2", { agent: "go-worker", turns: 2, maxTurns: 20 });
   const overview = await w.overview();
   const item = overview.pendingItems[0]!;
-    expect(item).toMatchObject({ itemId: `task:${w.taskId("T1")}`, kind: "adjudicate", label: "待裁决：任务 T1 两次未通过审查（go-reviewer）",
-    taskKey: "T1", taskText: "待裁决：两次未通过审查（go-reviewer）" });
+    expect(item).toMatchObject({ itemId: `task:${w.taskId("T1")}`, kind: "adjudicate", label: "待裁决：任务 T1 2 次未通过审查（go-reviewer）",
+    taskKey: "T1", taskText: "待裁决：2 次未通过审查（go-reviewer）" });
   expect(overview.taskRows).toMatchObject([
-    { kind: "pending", taskKey: "T1", itemId: item.itemId, text: "待裁决：两次未通过审查（go-reviewer）" },
+    { kind: "pending", taskKey: "T1", itemId: item.itemId, text: "待裁决：2 次未通过审查（go-reviewer）" },
     { kind: "execute", taskKey: "T2", agent: "go-worker", attempt: 1 }]);
 });
 
@@ -582,8 +644,8 @@ test("review 行：任务被改成 needs_update 但审查还在跑时仍有 revi
 
 test("待处理事项 version：与任务有关的三类事项 version 与加字段前完全一致", async () => {
   const stuck = await reviewStuckWorld([{ agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "go-reviewer", round: 2, outcome: "blocked" }]);
-  expect((await stuck.w.overview()).pendingItems).toEqual([{ itemId: `task:${stuck.id}`, kind: "adjudicate", label: "待裁决：任务 T3 两次未通过审查（go-reviewer）",
-    version: `task:${stuck.id}:${stuck.version()}`, taskKey: "T3", taskText: "待裁决：两次未通过审查（go-reviewer）" }]);
+  expect((await stuck.w.overview()).pendingItems).toEqual([{ itemId: `task:${stuck.id}`, kind: "adjudicate", label: "待裁决：任务 T3 2 次未通过审查（go-reviewer）",
+    version: `task:${stuck.id}:${stuck.version()}`, taskKey: "T3", taskText: "待裁决：2 次未通过审查（go-reviewer）" }]);
 
   const { w, patch, executing } = await rowsWorld();
   const record = w.fixture.state.read(w.fixture.requirementId).data;
@@ -671,7 +733,7 @@ test("审查代理行：本轮没交结论已满 2 次时为 exhausted，带最�
     { agent: "go-reviewer", round: 1, outcome: "failed", turns: 2, maxTurns: 12 },
     { agent: "go-reviewer", round: 1, outcome: "turn_limit_reached", turns: 9, maxTurns: 12 }]);
   expect((await reviewersOf("T1"))?.reviewers.find((entry) => entry.agent === "go-reviewer")).toEqual(
-    { agent: "go-reviewer", state: "exhausted", reason: "turn_limit_reached", turns: 9, maxTurns: 12, elapsedMs: expect.any(Number) });
+    { agent: "go-reviewer", state: "exhausted", attempt: 2, reason: "turn_limit_reached", turns: 9, maxTurns: 12, elapsedMs: expect.any(Number) });
 });
 
 test("审查代理行：PM 临时加的代理（任务 reviewers 里 added: true）在跑时和其他代理一样出一行", async () => {
@@ -717,4 +779,35 @@ test("elapsedMs：已结束的运行算到结束时刻，先暂停后被停止�
   await w.runStore.update(stoppedRun, { state: "stopped" });
   vi.setSystemTime(t0 + 30_000);
   expect((await reviewersOf("T1"))?.reviewers[1]).toMatchObject({ agent: "go-reviewer", elapsedMs: 2_000 });
+});
+
+async function panelLinesOf(w: World): Promise<string[]> {
+  const instance = new PmPanel({ now: () => Date.now(), openItem: () => undefined, togglePause: () => undefined });
+  instance.update([{ repoId: "r", overview: await w.overview(), fetchedAt: Date.now() }]);
+  return instance.render(200);
+}
+
+test.each([[2], [3]])("面板审查代理行：本轮没交出结论 %i 次用满时写“– go-reviewer N 次没交出结论，本轮结束后交你裁决”（N 为实际次数）", async (count) => {
+  const { w, reviewing } = await rowsWorld();
+  await reviewing("T1", [
+    { agent: "reviewer", round: 1, outcome: "running", turns: 1, maxTurns: 15 },
+    ...Array.from({ length: count }, () => ({ agent: "go-reviewer", round: 1, outcome: "failed" as const }))]);
+  const lines = await panelLinesOf(w);
+  expect(lines.some((line) => line.includes(`– go-reviewer ${count} 次没交出结论，本轮结束后交你裁决`))).toBe(true);
+});
+
+test("次数口径：本轮记录为 [被作废, 运行失败, 运行失败] 时，面板行写“2 次没交出结论”，被作废不计入", async () => {
+  const { w, reviewing } = await rowsWorld();
+  await reviewing("T1", [
+    { agent: "reviewer", round: 1, outcome: "running", turns: 1, maxTurns: 15 },
+    { agent: "go-reviewer", round: 1, outcome: "superseded" }, { agent: "go-reviewer", round: 1, outcome: "failed" }, { agent: "go-reviewer", round: 1, outcome: "failed" }]);
+  const lines = await panelLinesOf(w);
+  expect(lines.some((line) => line.includes("– go-reviewer 2 次没交出结论，本轮结束后交你裁决"))).toBe(true);
+  expect(lines.some((line) => line.includes("3 次没交出结论"))).toBe(false);
+});
+
+test("次数口径：本轮记录为 [被作废, 运行失败, 运行失败] 时，待裁决事项写“2 次审查未完成（go-reviewer）”", async () => {
+  const { w } = await reviewStuckWorld([
+    { agent: "go-reviewer", round: 1, outcome: "superseded" }, { agent: "go-reviewer", round: 1, outcome: "failed" }, { agent: "go-reviewer", round: 1, outcome: "failed" }]);
+  expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 2 次审查未完成（go-reviewer）"]);
 });

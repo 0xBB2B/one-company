@@ -1,7 +1,7 @@
 import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
 import { activeCheckRoundIn } from "../verification/check-round.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
-import { implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
+import { countedAttempts, implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, reviewRejections, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
 import type { TaskRecord } from "../pm/plan-manage.ts";
 import { reviewDispatchable } from "../pm/task-dispatch.ts";
 import { latestPmSubmission } from "../pm/pm-intake-runtime.ts";
@@ -30,7 +30,7 @@ export type PanelReviewerState = "running" | "clear" | "blocked" | "awaiting_ret
 export interface PanelReviewerRow extends Partial<PanelRunStats> {
   agent: string;
   state: PanelReviewerState;
-  /** 本轮第几次派这个代理；只在大于 1 时给出。 */
+  /** 运行中的行表示本轮第几次派这个代理（只在大于 1 时给出）；用满的行表示本轮没交出结论的次数。 */
   attempt?: number;
   /** awaiting_retry 时没交出结论的原因。 */
   reason?: "turn_limit_reached" | "failed" | "stopped" | "superseded";
@@ -123,12 +123,23 @@ export function namesIn(names: string[]): string {
   return names.length ? `（${names.join("、")}）` : "";
 }
 
+function reviewUnfinishedCause(task: TaskRecord): string {
+  const names = unfinishedReviewers(task);
+  const counts = names.map((agent) => reviewFailures(task.reviews, agent));
+  if (counts.length > 0 && new Set(counts).size > 1) return `审查未完成（${names.map((agent, i) => `${agent} ${counts[i]} 次`).join("、")}）`;
+  const times = counts[0] ?? Math.max(...latestRound(task).reviews.map((review) => reviewFailures(task.reviews, review.agent)));
+  return `${times} 次审查未完成${namesIn(names)}`;
+}
+
 function stallCauseOf(task: TaskRecord): string {
   const stage = stalledStage(task);
-  if (stage === "execute") return "两次未完成";
-  if (stage === "review") return `两次审查未完成${namesIn(unfinishedReviewers(task))}`;
+  if (stage === "execute") {
+    if (task.attempts.length === task.attemptBase && task.attempts.at(-1)?.outcome === "completed" && countedAttempts(task) >= 2) return "改计划后要重做，执行机会已用完";
+    return `${countedAttempts(task)} 次未完成`;
+  }
+  if (stage === "review") return reviewUnfinishedCause(task);
   const rejectors = [...new Set(task.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome)).map((review) => review.agent))];
-  return `两次未通过审查${namesIn(rejectors)}`;
+  return `${reviewRejections(task)} 次未通过审查${namesIn(rejectors)}`;
 }
 
 function onTask(task: TaskRecord, label: string): Pick<PendingItem, "taskKey" | "taskText"> {
@@ -232,7 +243,9 @@ function reviewerRowsOf(task: TaskRecord, round: number, runs: ReadonlyMap<strin
     const run = runs.get(review.runId);
     const stats = run ? runStatsOf(run, now) : { turns: review.turnsUsed, maxTurns: review.maxTurns };
     if (outcome === "failed" || outcome === "turn_limit_reached" || outcome === "stopped" || outcome === "superseded") {
-      return { agent: review.agent, state: outcome !== "superseded" && !reviewDispatchable(task, review.agent) ? "exhausted" : "awaiting_retry", reason: outcome, ...stats };
+      const exhausted = outcome !== "superseded" && !reviewDispatchable(task, review.agent);
+      const attempt = reviewFailures(task.reviews, review.agent);
+      return { agent: review.agent, state: exhausted ? "exhausted" : "awaiting_retry", ...(exhausted ? { attempt } : {}), reason: outcome, ...stats };
     }
     if (outcome === "skipped") return { agent: review.agent, state: review.skipReason === "missing" ? "skipped_missing" : "skipped_disabled" };
     return { agent: review.agent, state: outcome === "clear" ? "clear" : "blocked", ...stats };

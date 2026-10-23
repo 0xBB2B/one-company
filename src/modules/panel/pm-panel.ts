@@ -2,6 +2,7 @@ import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth } from "@earend
 import type { MainExploreOverview } from "../explore/explore-dispatch.ts";
 import type { MainPrototypeOverview } from "../prototype/prototype-dispatch.ts";
 import type { PanelReviewerRow, PanelReviewerState, PanelRunStats, PendingItem, PmOverview } from "./pm-overview.ts";
+import { REVIEW_SUPERSEDED_TEXT, REVIEW_UNFINISHED_TEXT } from "../pm/review-outcome-text.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 
 export interface PmPanelEntry { repoId: string; overview: PmOverview; fetchedAt: number }
@@ -22,7 +23,7 @@ export interface PmPanelOptions {
 type Row = { kind: "pm"; entry: PmPanelEntry } | { kind: "item"; entry: PmPanelEntry; item: PendingItem };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const RETRY_TEXT = { turn_limit_reached: "没交出结论（轮数用满）", failed: "没交出结论（运行失败）", stopped: "没交出结论（被停止）", superseded: "被作废" } as const;
+const RETRY_TEXT = { ...REVIEW_UNFINISHED_TEXT, superseded: REVIEW_SUPERSEDED_TEXT } as const;
 const HINT = "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框";
 
 export function formatTokens(value: number): string {
@@ -95,7 +96,7 @@ export class PmPanel {
       clear: ` ${row.agent} 通过${suffix}`,
       blocked: `✗ ${row.agent} 打回${suffix}`,
       awaiting_retry: `– ${row.agent} ${row.reason ? RETRY_TEXT[row.reason] : ""}，等 PM 重派${suffix}`,
-      exhausted: `– ${row.agent} 两次没交出结论，本轮结束后交你裁决${suffix}`,
+      exhausted: `– ${row.agent} ${row.attempt} 次没交出结论，本轮结束后交你裁决${suffix}`,
       skipped_disabled: `– ${row.agent} 已关闭，本轮未审`,
       skipped_missing: `– ${row.agent} 已不存在，本轮未审`,
       passed_earlier: `✓ ${row.agent} 上一轮已通过`,

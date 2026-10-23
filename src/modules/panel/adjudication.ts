@@ -135,7 +135,8 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     const task = row.data;
     if (task.requirementId !== input.requirementId || task.status !== "awaiting_user" || parsed.version !== `task:${taskId}:${row.version}` ||
       !["retry", "adjust", "terminate"].includes(parsed.choice)) deny("item_changed");
-    const stage = reviewRoundOpen(task) ? "review" : stalledStage(task);
+    const base = stalledStage(task);
+    const stage = base !== "execute" && reviewRoundOpen(task) ? "review" : base;
     const round = latestRound(task);
     const exhausted = round.reviews.map((review) => review.agent).filter((agent) => reviewFailures(task.reviews, agent) >= 2);
     const waiting = round.reviews.filter((review) => REVIEW_UNFINISHED.has(review.outcome) && reviewFailures(task.reviews, review.agent) < 2).map((review) => review.agent);
