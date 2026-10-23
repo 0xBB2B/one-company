@@ -361,3 +361,30 @@ describe("审查补充", () => {
     expect(lines.slice(start, end + 2).some((line) => line.trim() === "")).toBe(false);
   });
 });
+
+describe("复制完成后写 AGENTS.md 出错", () => {
+  test.skipIf(process.getuid?.() === 0)("代理目录没有写权限：不抛错，结果提示写明 AGENTS.md 没有写入和补写办法", async () => {
+    await setup();
+    try {
+      const { last } = await run([GOLANG, USER_LAYER, COPY, (screen) => { chmodSync(agentDir, 0o555); WRITE(screen); }]);
+      const lines = last().split("\n");
+      expect(lines[0]).toBe("✓ Go 后端样例已复制到用户层：新复制 12 个文件。");
+      expect(last()).toContain("AGENTS.md 没有写入：没有权限写入 ");
+      expect(last()).toContain("；解决后再运行 /one:examples 补写。");
+      expect(last()).not.toContain("此后派出的代理按新规范工作");
+    } finally {
+      chmodSync(agentDir, 0o755);
+    }
+  });
+});
+
+describe("选层窗口", () => {
+  test("项目受信任、用户层已全部复制：用户层变暗写已全部复制，光标停在项目层", async () => {
+    await setup({ trusted: true });
+    await copyGolangToUser();
+    const layer: string[] = [];
+    await run([GOLANG, capture(layer, CANCEL)]);
+    expect(layer[0]).toMatch(/用户层.*已全部复制，和样例一致/u);
+    expect(layer[0]).toMatch(/→ 项目层/u);
+  });
+});

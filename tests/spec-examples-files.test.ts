@@ -432,3 +432,15 @@ describe("copyExampleFiles", () => {
     expect(await readdir(targets.skillsDir)).toEqual([]);
   });
 });
+
+describe("复制时建目录出错", () => {
+  test("skills 目录的位置是个普通文件：抛 ExampleCopyError，不抛其他错误，那个文件不动", async () => {
+    const root = await makeRoot();
+    const targets = targetsOf(root);
+    const inspection = await inspectGolang(targets);
+    await writeFile(targets.skillsDir, "别处的文件\n");
+    const failure = await copyExampleFiles({ examplesDir: EXAMPLES_DIR, example: "golang", targets, inspection }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(ExampleCopyError);
+    expect(await readFile(targets.skillsDir, "utf8")).toBe("别处的文件\n");
+  });
+});

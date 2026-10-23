@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { defaultRoleDir } from "../agents/roles.ts";
 import { MAX_CONVENTIONS_BYTES } from "../verification/project-conventions.ts";
@@ -185,8 +185,13 @@ export async function copyExampleFiles(input: ExampleInput & { inspection: Examp
   for (const file of pending) {
     try {
       await mkdir(dirname(file.path), { recursive: true });
+      const data = await readFile(file.source);
       // 判定到写入之间隔着确认窗口，目标位置可能已被别处写入，不能覆盖
-      await writeFile(file.path, await readFile(file.source), { flag: "wx" });
+      await writeFile(file.path, data, { flag: "wx" }).catch(async (error: NodeJS.ErrnoException) => {
+        // wx 失败且不是 EEXIST 时文件是本次建的，删掉，否则写了一半的文件下次会被当成被改过而一直跳过
+        if (error.code !== "EEXIST") await rm(file.path, { force: true });
+        throw error;
+      });
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       throw new ExampleCopyError(written.length, dirname(file.path), code, `写入 ${file.path} 失败：${(error as Error).message}`);

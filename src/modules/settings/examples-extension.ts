@@ -17,7 +17,7 @@ import { tilde } from "./settings-page-ui.ts";
 export type ExamplesContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode">;
 
 type LayerKey = "user" | "project";
-type Outcome = "written" | "declined" | "over" | "changed" | "none";
+type Outcome = "written" | "declined" | "over" | "changed" | "failed" | "none";
 
 const LAYER_NAME: Record<LayerKey, string> = { user: "用户层", project: "项目层" };
 const CLASSES = [["新复制", "missing"], ["已一致", "same"], ["被改过，跳过", "changed"]] as const;
@@ -102,7 +102,7 @@ export function conventionsWindow(input: { layer: LayerKey; file: string; before
   return { title, lines, choices, cancelNote: SKIP_WRITE };
 }
 
-export function resultText(input: { label: string; layer: LayerKey; written: number; skipped: string[]; inspection: ExampleInspection; conventionsFile: string; outcome: Outcome }): string {
+export function resultText(input: { label: string; layer: LayerKey; written: number; skipped: string[]; inspection: ExampleInspection; conventionsFile: string; outcome: Outcome; writeError?: Error }): string {
   const { heading, state } = input.inspection.section;
   const wrote = input.outcome === "written";
   const lines = [`✓ ${input.label}样例已复制到${LAYER_NAME[input.layer]}：新复制 ${input.written} 个文件${wrote ? `，AGENTS.md 已写入「${heading}」` : ""}。`];
@@ -111,7 +111,11 @@ export function resultText(input: { label: string; layer: LayerKey; written: num
   if (input.outcome === "declined") lines.push("AGENTS.md 没有写入；想补上就再运行 /one:examples。");
   else if (input.outcome === "over") lines.push("AGENTS.md 合并后超过 16 KB 上限，没有写入；精简后再运行 /one:examples 补写。");
   else if (input.outcome === "changed") lines.push(`确认期间 ${tilde(input.conventionsFile)} 被别处改动，这次没有写入；再运行 /one:examples 补写。`);
-  else if (wrote && input.skipped.length === 0) lines.push("此后派出的代理按新规范工作。");
+  else if (input.outcome === "failed" && input.writeError) {
+    const code = (input.writeError as NodeJS.ErrnoException).code;
+    const reason = code === "EACCES" || code === "EPERM" ? `没有权限写入 ${tilde(dirname(input.conventionsFile))}/` : code ?? input.writeError.message.split("\n")[0];
+    lines.push(`AGENTS.md 没有写入：${reason}；解决后再运行 /one:examples 补写。`);
+  } else if (wrote && input.skipped.length === 0) lines.push("此后派出的代理按新规范工作。");
   return lines.join("\n  ");
 }
 
@@ -121,7 +125,6 @@ export function copyFailureText(error: ExampleCopyError): string {
   return `✗ 复制没有完成：${reason} ${tilde(error.dir)}/\n  已复制的 ${error.written} 个文件保留，AGENTS.md 没有动；解决后再运行 /one:examples 会接着补。`;
 }
 
-/** /one:examples：选一套设计规范样例和一层，把 skills、角色定义复制过去，AGENTS.md 那一段经差异窗口确认后追加。 */
 export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
   const agentDir = dirname(dataRoot(process.env));
   const repoRoot = await primaryWorktreeRoot(ctx.cwd);
@@ -190,6 +193,7 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
   }
 
   let outcome: Outcome = "none";
+  let writeError: Error | undefined;
   if (inspection.section.state === "missing") {
     if (merged.over) outcome = "over";
     else {
@@ -197,11 +201,16 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
       if (answer !== WRITE) outcome = "declined";
       else if (await readTextOrNull(targets.conventionsFile) !== before) outcome = "changed";
       else {
-        await writeFileAtomic(targets.conventionsFile, merged.content);
-        outcome = "written";
+        try {
+          await writeFileAtomic(targets.conventionsFile, merged.content);
+          outcome = "written";
+        } catch (error) {
+          writeError = error as Error;
+          outcome = "failed";
+        }
       }
     }
   }
   const skipped = [...inspection.skills.flatMap((skill) => skill.files), ...inspection.agents].filter((file) => file.state === "changed").map((file) => file.path);
-  ctx.ui.notify(resultText({ label: row.label, layer, written: written.length, skipped, inspection, conventionsFile: targets.conventionsFile, outcome }));
+  ctx.ui.notify(resultText({ label: row.label, layer, written: written.length, skipped, inspection, conventionsFile: targets.conventionsFile, outcome, writeError }));
 }
