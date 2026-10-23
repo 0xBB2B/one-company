@@ -59,7 +59,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { KnowledgeTransportQuerySchema } from "../../modules/project-index/knowledge-query-tool.ts";
 import { createPmCommitTool } from "../../modules/pm/pm-commit.ts";
 import { createPmSyncTool } from "../../modules/pm/pm-sync.ts";
-import { AgentResolveError, definitionHash, resolveAgent, resolveModelChoice } from "../../modules/agents/agent-resolve.ts";
+import { AgentResolveError, definitionHash, loadSkills, resolveAgent, resolveModelChoice } from "../../modules/agents/agent-resolve.ts";
 import type { AgentFingerprint, ResolvedAgent } from "../../modules/agents/agent-resolve.ts";
 import { readAgentSettings } from "../../modules/settings/agent-settings.ts";
 import { isGenericDefinition, PM_DEFINITION } from "../../modules/agents/roles.ts";
@@ -130,8 +130,10 @@ async function taskContext(task: PlanTask, maxTurns: number, prototypes: string,
   ].join("\n");
 }
 
+interface WorkerDefinition { name: string; body: string; skillDivision: string[] }
+
 async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: string, reportOf: (runId: string) => Pick<Verdict, "summary" | "verificationIds"> | undefined,
-  maxTurns: number, worker: { name: string; body: string }, prototypes: string): Promise<string> {
+  maxTurns: number, worker: WorkerDefinition, prototypes: string): Promise<string> {
   const detail = await readTaskDetail(task);
   return [
     `审查任务：${task.key}（${task.taskId}，版本 ${task.version}）的 worker 尝试 ${attemptRunId}`,
@@ -143,6 +145,7 @@ async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: s
     `只审可写范围内的改动：${task.writePaths.join("、")}`,
     ...(prototypes ? [prototypes] : []),
     ...(worker.body.trim() ? [`被审任务所用 worker 定义（${worker.name}）的正文：\n${worker.body.trim()}`] : []),
+    ...worker.skillDivision,
     `查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff ${baseCommit} -- ${task.writePaths.join(" ")}（${baseCommit} 是本需求工作区的基线提交）`,
     "worker 各次尝试（先红后绿可以出现在任意一次尝试里；返修改动了可测行为时，这次返修须有新的红；引用的验证记录用 verification_run action=status 逐条查看）：",
     ...task.attempts.slice(task.attemptBase).map((attempt, index) => {
@@ -516,13 +519,20 @@ export class RunManager {
   private async launchSubagent(input: { pmRunId: string; lease: PmLease; record: RequirementRecord; task: PlanTask; role: string;
     workspace: NonNullable<RequirementRecord["workspace"]>; ref: { dataRoot: string; repoId: string }; resolved: ResolvedAgent; runId: string; maxTurns: number;
     attemptRunId: string | undefined }): Promise<void> {
-    const { lease, record, task, role, workspace, ref, resolved, runId, maxTurns, attemptRunId } = input;
+    const { lease, record, task, role, workspace, ref, runId, maxTurns, attemptRunId } = input;
     const review = attemptRunId !== undefined;
-    const { definition, model: modelRef, thinking } = resolved;
+    const { definition, model: modelRef, thinking } = input.resolved;
     const fail = () => review ? finishTaskReview({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" })
       : finishTaskAttempt({ ...ref, taskId: task.taskId, runId, turnsUsed: 0, outcome: "failed" });
     let run: RunRecord;
+    let resolved = input.resolved;
+    let workerDefinition: WorkerDefinition = { name: task.agent ?? "worker", body: "", skillDivision: [] };
     try {
+      if (review) {
+        const worker = await this.reviewedWorker(task, definition.name, input.resolved);
+        workerDefinition = worker.definition;
+        resolved = worker.resolved;
+      }
       run = await this.runStore.create({ id: runId, kind: "role", role: `one-company.${role}`, requirement: lease.requirementId, parentRunId: input.pmRunId, task: task.taskId,
         cwd: workspace.path, readPaths: [workspace.path], writePaths: review ? [] : task.writePaths, model: modelRef, thinking, mcp: definition.mcp ?? [], agent: resolved.fingerprint, maxTurns });
     } catch (error) {
@@ -540,11 +550,6 @@ export class RunManager {
     try {
       tools = await createSubagentTools({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id,
         pmLease: lease, workspace, epoch: record.epoch, task, alive, ...(review ? { review: { attemptRunId: attemptRunId! } } : {}) });
-      // 只取正文，不核验被审 worker 的模型：它的凭据失效不该挡住审查
-      const workerName = task.agent ?? "worker";
-      const workerEntry = review ? (this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog)
-        .find((entry) => entry.name === workerName && entry.available && entry.definition?.role === "worker") : undefined;
-      const workerDefinition = { name: workerName, body: workerEntry?.definition?.body ?? "" };
       const checkRound = role === "qa" ? withDatabase(this.database, (db) => activeCheckRoundIn(db, this.repoId, task.requirementId)) : null;
       if (role === "qa" && !checkRound) throw protocolError("check_round_closed", "派 QA 时检查轮已关闭或不存在", "重新开检查轮后再派 QA");
       const promptRevision = checkRound ? checkRound.data.baseline.revision : record.revision;
@@ -581,6 +586,42 @@ export class RunManager {
     handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishSubagent(run.id, "failed", reason); });
     await this.runStore.update(run.id, { state: "running" });
     handle.prompt(review ? "开始审查。" : "开始执行任务。");
+  }
+
+  /** 不核验被审 worker 的模型：它的凭据失效不该挡住审查。 */
+  private async reviewedWorker(task: PlanTask, reviewerName: string, resolved: ResolvedAgent): Promise<{ definition: WorkerDefinition; resolved: ResolvedAgent }> {
+    const name = task.agent ?? "worker";
+    const catalog = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
+    const entry = catalog.find((candidate) => candidate.name === name && candidate.available && candidate.definition?.role === "worker");
+    const definition: WorkerDefinition = { name, body: entry?.definition?.body ?? "", skillDivision: [] };
+    const workerSkills = entry?.definition?.skills ?? [];
+    if (!isGenericDefinition(reviewerName) || !workerSkills.length) return { definition, resolved };
+    const disabled = this.disabledAgents();
+    const covered = new Map<string, string[]>();
+    for (const { agent } of task.reviewers ?? []) {
+      const specialist = catalog.find((candidate) => candidate.name === agent);
+      if (disabled.has(agent) || !specialist?.available || specialist.definition?.role !== "reviewer") continue;
+      const shared = workerSkills.filter((skill) => specialist.definition!.skills?.includes(skill));
+      if (shared.length) covered.set(agent, shared);
+    }
+    const coveredSkills = new Set([...covered.values()].flat());
+    const uncovered = workerSkills.filter((skill) => !coveredSkills.has(skill));
+    definition.skillDivision = [
+      ...[...covered].map(([agent, skills]) => `${name} 定义加载的 skill 里，${skills.join("、")} 由专项审查 ${agent} 核对，不在你的核对范围。`),
+      ...(uncovered.length ? [`${name} 定义加载的 ${uncovered.join("、")} 没有专项审查覆盖，已加载给你（见「本任务加载的 skills」），由你逐条核对。`] : []),
+      ...(definition.body.trim() ? ["定义正文里其他写明的规范照旧逐条核对。"] : []),
+    ];
+    const own = new Set(resolved.fingerprint.skills.map((skill) => skill.name));
+    const extra = uncovered.filter((skill) => !own.has(skill));
+    if (!extra.length) return { definition, resolved };
+    try {
+      const loaded = await loadSkills(extra, this.options.skillDirs ?? [], name);
+      return { definition, resolved: { ...resolved, skillsContext: [resolved.skillsContext, loaded.context].filter(Boolean).join("\n\n"),
+        fingerprint: { ...resolved.fingerprint, skills: [...resolved.fingerprint.skills, ...loaded.skills] } } };
+    } catch (error) {
+      if (error instanceof AgentResolveError) throw protocolError(error.code, error.message);
+      throw error;
+    }
   }
 
   private async withConventions(context: string): Promise<string> {

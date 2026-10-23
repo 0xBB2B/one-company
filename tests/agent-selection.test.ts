@@ -304,6 +304,125 @@ test("通用 reviewer 用通用审查规矩（含核对先红后绿），专项�
   for (const name of Object.keys(SUMMARIES)) await t.release(name);
 });
 
+const genericReview = (t: Awaited<ReturnType<typeof reviewWorld>>) => t.provider.requests.find((request) => prompt(request).includes("审查任务：")
+  && !["go-reviewer", "vue-reviewer", "node-reviewer"].some((name) => prompt(request).includes(`你是 ${name}。`)));
+const lines = (text: string) => text.split(/[。\n]/);
+const taskStatement = (text: string) => {
+  const from = text.indexOf("## 本次任务");
+  const rest = from < 0 ? "" : text.slice(from);
+  const end = ["## MCP 状态", "## skill："].map((marker) => rest.indexOf(marker)).filter((index) => index > 0);
+  return end.length ? rest.slice(0, Math.min(...end)) : rest;
+};
+const coveredBy = (text: string, skill: string, reviewer: string) => lines(text).some((line) => line.includes(skill) && line.includes(reviewer) && line.includes("核对"));
+const loadedForGeneric = (text: string, skill: string) => lines(text).some((line) => line.includes(skill) && line.includes("已加载") && line.includes("核对"));
+const skillDivisionLines = (text: string) => lines(text).filter((line) => (line.includes("专项审查") && line.includes("核对") && line.includes("不在你的核对范围")) || (line.includes("已加载") && line.includes("核对")));
+const NODE_SKILLS = "typescript-coding, node-pitfalls, web-api-security, auth-session, supply-chain, relational-db, redis, message-queue, service-runtime";
+const packageSkills = join(defaultRoleDir(), "..", "skills");
+
+test("审 node-worker 的任务、名单里有开着的 node-reviewer：通用审查任务说明写明 typescript-coding、node-pitfalls 由 node-reviewer 核对，上下文不含这些 skill 正文，node-reviewer 的任务说明没有这句", async () => {
+  const t = await reviewWorld();
+  await t.define("node-reviewer", `skills: [${NODE_SKILLS}]\n`, "你是 node-reviewer。", "reviewer");
+  t.options.skillDirs = [t.skillDir, packageSkills];
+  t.patchTask({ agent: "node-worker", reviewers: [{ agent: "node-reviewer", reason: "Node 服务" }] });
+  await t.review();
+  await until(() => genericReview(t) !== undefined && t.requestOf("你是 node-reviewer。") !== undefined);
+  const text = prompt(genericReview(t));
+  const statement = taskStatement(text);
+  const specialist = prompt(t.requestOf("你是 node-reviewer。"));
+  const specialistStatement = taskStatement(specialist);
+  for (const name of ["reviewer", "node-reviewer"]) await t.release(name);
+  expect(text).toContain("你负责写 Node.js / TypeScript 后端代码");
+  for (const skill of ["typescript-coding", "node-pitfalls"]) {
+    expect(coveredBy(statement, skill, "node-reviewer")).toBe(true);
+    expect(text).not.toContain(`## skill：${skill}`);
+    expect(specialist).toContain(`## skill：${skill}`);
+  }
+  expect(lines(specialistStatement).some((line) => line.includes("typescript-coding") && line.includes("专项审查") && line.includes("核对"))).toBe(false);
+  expect(lines(specialistStatement).some((line) => line.includes("已加载") && line.includes("核对"))).toBe(false);
+});
+
+test("自定义 worker（ui-dev，skills: [ui-kit]）且没有专项审查：通用审查上下文加载 ui-kit 正文，任务说明写明 ui-kit 已加载给它核对", async () => {
+  const t = await reviewWorld();
+  await t.define("ui-dev", "skills: [ui-kit]\n");
+  t.patchTask({ agent: "ui-dev", reviewers: [] });
+  const { runIds } = await t.review();
+  await until(() => genericReview(t) !== undefined);
+  const text = prompt(genericReview(t));
+  await t.release("reviewer");
+  expect(text).toContain("## skill：ui-kit");
+  expect(text).toContain("按钮统一用主色");
+  expect(loadedForGeneric(taskStatement(text), "ui-kit")).toBe(true);
+  expect(taskStatement(text)).toContain("定义正文里其他写明的规范");
+  const records = await Promise.all(runIds.map((id) => t.runStore.get(id)));
+  const generic = records.find((record) => record.ok && record.run.agent?.name === "reviewer");
+  expect(generic?.ok && generic.run.agent?.skills?.map((skill) => skill.name)).toContain("ui-kit");
+});
+
+test("正文为空、只带 skill 的自定义 worker（ui-blank）且没有专项审查：通用审查上下文加载 ui-kit 正文，任务说明里有一句含 ui-kit、已加载、核对，并指明是 ui-blank", async () => {
+  const t = await reviewWorld();
+  await t.define("ui-blank", "skills: [ui-kit]\n", "");
+  t.patchTask({ agent: "ui-blank", reviewers: [] });
+  await t.review();
+  await until(() => genericReview(t) !== undefined);
+  const text = prompt(genericReview(t));
+  await t.release("reviewer");
+  expect(text).toContain("## skill：ui-kit");
+  expect(text).toContain("按钮统一用主色");
+  expect(lines(taskStatement(text)).some((line) => line.includes("ui-kit") && line.includes("已加载") && line.includes("核对") && line.includes("ui-blank"))).toBe(true);
+  expect(taskStatement(text)).not.toContain("定义正文里其他写明的规范");
+});
+
+test("worker 加载 [alpha-kit, beta-kit]、名单里开着的 extra-reviewer 只加载 alpha-kit：通用审查任务说明写明 alpha-kit 由 extra-reviewer 核对、beta-kit 已加载给它核对，上下文只加载 beta-kit 正文", async () => {
+  const t = await reviewWorld();
+  for (const name of ["alpha-kit", "beta-kit"]) {
+    await mkdir(join(t.skillDir, name), { recursive: true });
+    await writeFile(join(t.skillDir, name, "SKILL.md"), `# ${name} 规范\n${name} 正文标记。\n`);
+  }
+  await t.define("two-skill-dev", "skills: [alpha-kit, beta-kit]\n");
+  await t.define("extra-reviewer", "skills: [alpha-kit]\n", "你是 extra-reviewer。", "reviewer");
+  t.patchTask({ agent: "two-skill-dev", reviewers: [{ agent: "extra-reviewer", reason: "专项审查" }] });
+  await t.review();
+  const generic = () => t.provider.requests.find((request) => prompt(request).includes("审查任务：") && !prompt(request).includes("你是 extra-reviewer。"));
+  await until(() => generic() !== undefined);
+  const text = prompt(generic());
+  for (const name of ["reviewer", "extra-reviewer"]) await t.release(name);
+  expect(coveredBy(taskStatement(text), "alpha-kit", "extra-reviewer")).toBe(true);
+  expect(loadedForGeneric(taskStatement(text), "beta-kit")).toBe(true);
+  expect(text).toContain("## skill：beta-kit");
+  expect(text).not.toContain("## skill：alpha-kit");
+});
+
+test("审 node-worker 的任务、node-reviewer 被关掉：通用审查上下文加载 node-worker 的全部 skill（typescript-coding、node-pitfalls），任务说明写明已加载给它核对", async () => {
+  const t = await reviewWorld();
+  await t.define("node-reviewer", `skills: [${NODE_SKILLS}]\n`, "你是 node-reviewer。", "reviewer");
+  t.options.skillDirs = [t.skillDir, packageSkills];
+  t.patchTask({ agent: "node-worker", reviewers: [{ agent: "node-reviewer", reason: "Node 服务" }] });
+  t.disabled.add("node-reviewer");
+  await t.review();
+  await until(() => genericReview(t) !== undefined);
+  const text = prompt(genericReview(t));
+  await t.release("reviewer");
+  for (const skill of NODE_SKILLS.split(", ")) expect(text).toContain(`## skill：${skill}`);
+  for (const skill of ["typescript-coding", "node-pitfalls"]) {
+    expect(loadedForGeneric(taskStatement(text), skill)).toBe(true);
+    expect(coveredBy(taskStatement(text), skill, "node-reviewer")).toBe(false);
+  }
+});
+
+test("审不带 skill 的 worker 定义的任务：通用审查的任务说明含定义正文，没有由专项审查核对、已加载给它核对 skill 的那两句，也没有额外加载 skill 正文", async () => {
+  const t = await reviewWorld();
+  await t.define("plain-dev", "", "你是无技能的 plain-dev 定义。");
+  t.patchTask({ agent: "plain-dev" });
+  await t.review();
+  await until(() => genericReview(t) !== undefined);
+  const text = prompt(genericReview(t));
+  for (const name of Object.keys(SUMMARIES)) await t.release(name);
+  expect(text).toContain("你是无技能的 plain-dev 定义。");
+  expect(taskStatement(text).length).toBeGreaterThan(0);
+  expect(skillDivisionLines(taskStatement(text))).toEqual([]);
+  expect(text).not.toContain("## skill：");
+});
+
 test("派之前关掉 go-reviewer：只启动 reviewer 与 vue-reviewer，go-reviewer 记为 skipped（disabled），整轮结束后 PM 收到的汇总含「go-reviewer 已关闭，本轮未审」", async () => {
   const t = await reviewWorld();
   t.disabled.add("go-reviewer");

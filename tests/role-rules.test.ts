@@ -41,6 +41,27 @@ describe("职责规矩文件", () => {
   });
 });
 
+describe("reviewer 职责规矩的 skill 分工", () => {
+  test("worker 定义加载的 skill 由专项审查核对，通用审查不因看不到 skill 正文列未验证", () => {
+    const rules = loadRoleRules("reviewer");
+    const sentence = rules.split(/[。\n]/).find((line) => line.includes("skill") && line.includes("专项审查") && line.includes("未验证"));
+    expect(sentence).toBeDefined();
+  });
+
+  test("已加载给通用审查的 skill（没有专项审查覆盖的）由它逐条核对", () => {
+    const rules = loadRoleRules("reviewer");
+    const sentence = rules.split(/[。\n]/).find((line) => line.includes("skill") && line.includes("已加载给你") && line.includes("逐条核对"));
+    expect(sentence).toBeDefined();
+  });
+
+  test("已加载给你的 skill 逐条核对不挂在没有给出时跳过的条件下", () => {
+    const rules = loadRoleRules("reviewer");
+    const item = rules.split(/^- /m).find((entry) => entry.includes("已加载给你"));
+    expect(item).toBeDefined();
+    expect(item).not.toContain("没有给出时跳过");
+  });
+});
+
 describe("reviewer-specialist 职责规矩", () => {
   test("含只按本任务 skills 核对、通用审查负责项不核对、不适用结论、修法写法、按项目规范，不含通用审查的条目开头", () => {
     const rules = loadRoleRules("reviewer-specialist");

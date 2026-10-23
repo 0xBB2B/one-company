@@ -99,6 +99,6 @@ pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExte
 
 - **给模型看的报错**：外部命令和工具的失败统一用 `src/core/exec/tool-failure.ts` 转成"哪一步失败、为什么、下一步怎么做"。
 - **代理会话**：所有角色的会话都由 `createAgentRoleSession`（`src/modules/agents/agent-session.ts`）创建，统一挂上职责规矩、写入范围检查、MCP 和模型请求重试。
-- **规矩注入**：包内这几个目录的文件都由 `src/modules/agents/package-rules.ts` 读取。主代理的提示词由 `src/app/extension/rules.ts` 加上 `rules/` 和 `shared/`；子代理的提示词由 `buildAgentPrompt` 拼成"角色定义正文 + `role-rules/` 里对应职责的规矩 + `shared/`"（专项审查用 `role-rules/reviewer-specialist.md`），定义里点名的 `skills/` 全文拼进任务说明。
+- **规矩注入**：包内这几个目录的文件都由 `src/modules/agents/package-rules.ts` 读取。主代理的提示词由 `src/app/extension/rules.ts` 加上 `rules/` 和 `shared/`；子代理的提示词由 `buildAgentPrompt` 拼成"角色定义正文 + `role-rules/` 里对应职责的规矩 + `shared/`"（专项审查用 `role-rules/reviewer-specialist.md`），定义里点名的 `skills/` 全文拼进任务说明；派通用 reviewer 时，被审 worker 加载、但本任务专项审查都没覆盖的 skill 也拼进去。
 - **数据根目录**：由 `src/core/storage/data-root.ts` 决定，设了 `PI_CODING_AGENT_DIR` 时放在它下面的 `one-company/`；仓库身份和套接字路径在 `src/core/storage/identity.ts`。
 - **断网暂停**：`src/core/host/network-pause.ts` 给模型请求的失败分类，断网时暂停运行，联网后由用户在面板上按 p 恢复；模型请求超时不算断网，交给 SDK 重试。
