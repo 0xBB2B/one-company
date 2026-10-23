@@ -283,6 +283,35 @@ test("轮次用满和被停止也算没交出结论：同一代理同一轮各�
   expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 两次审查未完成（vue-reviewer）"]);
 });
 
+async function modifiedAfterTwoAttempts(lastOutcome: "completed" | "turn_limit_reached") {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("T1", "goal.login"), spec("other", "scenario.failure")] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  const id = w.taskId("T1");
+  w.db((db) => {
+    const row = db.read<TaskRecord>(TASKS, id)!;
+    db.update(TASKS, id, row.version, { ...row.data, status: lastOutcome === "completed" ? "awaiting_review" : "awaiting_parent",
+      attempts: [{ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" },
+        { runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: "估计不足", outcome: lastOutcome }] } as TaskRecord);
+  });
+  const task = w.db((db) => db.read<TaskRecord>(TASKS, id)!);
+  await w.plan.execute({ action: "update", planVersion: 1, modify: [{ taskId: id, version: task.data.version, spec: { ...spec("T1", "goal.login"), objective: "改过的目标" } }] });
+  return { w, id };
+}
+
+test("改计划后要重做：第 2 次执行已完成、等审查时 PM 改了计划，待裁决事项写“改计划后要重做，执行机会已用完”，任务行同文", async () => {
+  const { w, id } = await modifiedAfterTwoAttempts("completed");
+  const overview = await w.overview();
+  expect(overview.pendingItems).toMatchObject([{ itemId: `task:${id}`, kind: "adjudicate",
+    label: "待裁决：任务 T1 改计划后要重做，执行机会已用完", taskKey: "T1", taskText: expect.stringContaining("改计划后要重做，执行机会已用完") }]);
+  expect(overview.taskRows).toContainEqual(expect.objectContaining({ kind: "pending", taskKey: "T1", text: expect.stringContaining("改计划后要重做，执行机会已用完") }));
+});
+
+test("最后一次执行确实没完成时，即使 PM 改了计划，待裁决事项仍写“两次未完成”", async () => {
+  const { w } = await modifiedAfterTwoAttempts("turn_limit_reached");
+  expect((await w.overview()).pendingItems).toMatchObject([{ kind: "adjudicate", label: "待裁决：任务 T1 两次未完成", taskText: expect.stringContaining("两次未完成") }]);
+});
+
 type World = Awaited<ReturnType<typeof world>>;
 type TaskReviewRow = TaskRecord["reviews"][number];
 

@@ -125,8 +125,9 @@ export function reviewFailures(reviews: readonly TaskReview[], agent: string): n
   const { round } = latestRound({ reviews });
   return reviews.filter((review) => review.round === round && review.agent === agent && REVIEW_UNFINISHED.has(review.outcome)).length;
 }
-/** 任务停在哪一环：最近完成的尝试已被审查时看最近一轮，有打回即返修、否则再审；否则是执行。 */
-export function stalledStage(task: Pick<TaskRecord, "attempts" | "reviews">): "execute" | "review" | "rework" {
+/** 任务停在哪一环：改计划后这一版还没执行过，一律算执行（要按新计划重做）；否则最近完成的尝试已被审查时看最近一轮，有打回即返修、否则再审；否则是执行。 */
+export function stalledStage(task: Pick<TaskRecord, "attempts" | "reviews" | "attemptBase">): "execute" | "review" | "rework" {
+  if (task.attempts.length > 0 && task.attempts.length === task.attemptBase) return "execute";
   const attempt = task.attempts.at(-1), { reviews } = latestRound(task);
   if (attempt?.outcome !== "completed" || reviews.length === 0 || reviews.some((review) => review.attemptRunId !== attempt.runId)) return "execute";
   return reviews.some((review) => REVIEW_REJECTED.has(review.outcome)) ? "rework" : "review";

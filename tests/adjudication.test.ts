@@ -702,6 +702,46 @@ async function reviewStuckWorld(reviews: StuckReview[]) {
   return { w, id, itemId: `task:${id}` };
 }
 
+const REDO_LABEL = "待裁决：任务 login 改计划后要重做，执行机会已用完";
+async function modifiedLogin(stage: Partial<TaskRecord>, attempts: Array<"turn_limit_reached" | "completed">, spec2: Partial<TaskSpec> = { objective: "改过的目标" }) {
+  const w = await pendingWorld();
+  const id = w.task("login").taskId;
+  const attemptRuns = attempts.map(() => uuidv7());
+  w.db((db) => {
+    const row = db.read<TaskRecord>(TASKS, id)!;
+    db.update(TASKS, id, row.version, { ...row.data, ...stage,
+      attempts: attempts.map((outcome, index) => ({ runId: attemptRuns[index]!, maxTurns: 1, turnsUsed: 1, reason: index === 0 ? null : "估计不足", outcome })),
+      reviews: (stage.reviews ?? []).map((review) => ({ ...review, attemptRunId: attemptRuns.at(-1)! })) } as TaskRecord);
+  });
+  await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version, spec: spec("login", "goal.login", spec2) }] });
+  return { w, id, itemId: `task:${id}` };
+}
+const reviewRow = (agent: string, round: number, outcome: TaskRecord["reviews"][number]["outcome"]) =>
+  ({ runId: uuidv7(), attemptRunId: "", maxTurns: 1, turnsUsed: 1, agent, round, outcome }) as TaskRecord["reviews"][number];
+const pendingLabelsOf = async (w: Awaited<ReturnType<typeof pendingWorld>>) => (await w.manager.overviews())[0]!.pendingItems.map((item) => item.label);
+const grantRetry = async (w: Awaited<ReturnType<typeof pendingWorld>>) => userAdjudicates(w, "login", ["choice:retry", "max-turns:3"]);
+
+test("返修中改计划：第 2 次执行完成、审查打回 1 轮、任务待返修时 PM 修改该任务，待裁决原因是改计划后要重做、执行机会已用完；用户选再给一次机会后任务回到 pending", async () => {
+  const { w } = await modifiedLogin({ status: "awaiting_rework", reviews: [reviewRow("reviewer", 1, "blocked")] }, ["turn_limit_reached", "completed"]);
+  expect(await pendingLabelsOf(w)).toEqual([REDO_LABEL]);
+  expect(await grantRetry(w)).toMatchObject({ status: "recorded", choice: "retry", taskStatus: "pending" });
+  expect(w.task("login").status).toBe("pending");
+});
+
+test("审查中改计划：第 2 次执行完成、通用审查已交结论而另一个审查没交结论时 PM 修改该任务，待裁决原因同上；用户选再给一次机会后任务回到 pending", async () => {
+  const { w } = await modifiedLogin({ status: "reviewing", reviews: [reviewRow("reviewer", 1, "clear"), reviewRow("go-reviewer", 1, "failed")] }, ["turn_limit_reached", "completed"]);
+  expect(await pendingLabelsOf(w)).toEqual([REDO_LABEL]);
+  expect(await grantRetry(w)).toMatchObject({ status: "recorded", choice: "retry", taskStatus: "pending" });
+  expect(w.task("login").status).toBe("pending");
+});
+
+test("只执行过 1 次的任务被 PM 改到超过轮数上限而交给用户裁决：待裁决事项标题不含“执行机会已用完”", async () => {
+  const { w } = await modifiedLogin({ status: "awaiting_review" }, ["completed"], { maxTurns: 150 });
+  const labels = await pendingLabelsOf(w);
+  expect(labels).toHaveLength(1);
+  expect(labels[0]).not.toContain("执行机会已用完");
+});
+
 test("审查卡住的待裁决任务：待处理事项、决策包带审查代理名，裁决卡片每条审查记录写出“第 N 轮 代理名：结局”，打回写“打回”", async () => {
   const { w, itemId } = await reviewStuckWorld([
     { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "vue-reviewer", round: 1, outcome: "clear" },

@@ -1,7 +1,7 @@
 import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
 import { activeCheckRoundIn } from "../verification/check-round.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
-import { implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
+import { countedAttempts, implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
 import type { TaskRecord } from "../pm/plan-manage.ts";
 import { reviewDispatchable } from "../pm/task-dispatch.ts";
 import { latestPmSubmission } from "../pm/pm-intake-runtime.ts";
@@ -125,7 +125,10 @@ export function namesIn(names: string[]): string {
 
 function stallCauseOf(task: TaskRecord): string {
   const stage = stalledStage(task);
-  if (stage === "execute") return "两次未完成";
+  if (stage === "execute") {
+    if (task.attempts.length === task.attemptBase && task.attempts.at(-1)?.outcome === "completed" && countedAttempts(task) >= 2) return "改计划后要重做，执行机会已用完";
+    return "两次未完成";
+  }
   if (stage === "review") return `两次审查未完成${namesIn(unfinishedReviewers(task))}`;
   const rejectors = [...new Set(task.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome)).map((review) => review.agent))];
   return `两次未通过审查${namesIn(rejectors)}`;
