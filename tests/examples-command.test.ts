@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, writeFileSync } from "node:fs";
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openExamplesPage } from "../src/modules/settings/examples-extension.ts";
@@ -191,6 +191,54 @@ describe("golang 复制到用户层", () => {
     expect(result.last()).toContain("AGENTS.md 没有动");
     expect(result.last()).toContain("解决后再运行 /one:examples 会接着补。");
     expect(exists(join(agentDir, "AGENTS.md"))).toBe(false);
+  });
+});
+
+describe("AGENTS.md 软链接和 CRLF", () => {
+  test("用户层 AGENTS.md 是软链接：选写入后软链接保留，真实文件里追加了样例那一段", async () => {
+    await setup();
+    const real = join(root, "elsewhere.md");
+    const link = join(agentDir, "AGENTS.md");
+    await writeFile(real, "个人规范一\n");
+    await symlink(real, link);
+    await run([GOLANG, USER_LAYER, COPY, WRITE]);
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+    expect(await readlink(link)).toBe(real);
+    expect(await readFile(real, "utf8")).toBe(`个人规范一\n\n${await sample("golang", "AGENTS.md")}`);
+  });
+
+  test("用户层 AGENTS.md 是软链接：差异窗口在说明行上方写出真实路径", async () => {
+    await setup();
+    const real = join(root, "elsewhere.md");
+    await writeFile(real, "个人规范一\n");
+    await symlink(real, join(agentDir, "AGENTS.md"));
+    const screens: string[] = [];
+    await run([GOLANG, USER_LAYER, COPY, capture(screens, WRITE)]);
+    const note = `AGENTS.md 是软链接，实际写到 ${await realpath(real)}`;
+    expect(screens[0]).toContain(note);
+    expect(screens[0]!.indexOf(note)).toBeLessThan(screens[0]!.indexOf("与现有的 AGENTS.md 相比的改动："));
+  });
+
+  test("用户层 AGENTS.md 是普通文件：差异窗口没有软链接说明行", async () => {
+    await setup();
+    await writeFile(join(agentDir, "AGENTS.md"), "个人规范一\n");
+    const screens: string[] = [];
+    await run([GOLANG, USER_LAYER, COPY, capture(screens, WRITE)]);
+    expect(screens[0]).toContain("与现有的 AGENTS.md 相比的改动：");
+    expect(screens[0]).not.toContain("AGENTS.md 是软链接");
+  });
+
+  test("用户层 AGENTS.md 是 CRLF：差异窗口没有 \\r，写入后没有单独的 \\n，再运行窗口一显示已复制", async () => {
+    await setup();
+    const agentsPath = join(agentDir, "AGENTS.md");
+    await writeFile(agentsPath, "个人规范一\r\n个人规范二\r\n");
+    const screens: string[] = [];
+    await run([GOLANG, USER_LAYER, COPY, capture(screens, WRITE)]);
+    expect(screens[0]).not.toContain("\r");
+    expect(await readFile(agentsPath, "utf8")).not.toMatch(/(?<!\r)\n/u);
+    const after: string[] = [];
+    await run([capture(after, CANCEL)]);
+    expect(after[0]).toContain("Go 后端 · 用户层：已复制");
   });
 });
 
@@ -386,5 +434,22 @@ describe("选层窗口", () => {
     await run([GOLANG, capture(layer, CANCEL)]);
     expect(layer[0]).toMatch(/用户层.*已全部复制，和样例一致/u);
     expect(layer[0]).toMatch(/→ 项目层/u);
+  });
+});
+
+describe("软链接指向的目录不可写", () => {
+  test.skipIf(process.getuid?.() === 0)("写 AGENTS.md 失败时，原因写真实文件所在的目录", async () => {
+    await setup();
+    const realDir = join(root, "dotfiles");
+    await mkdir(realDir);
+    await writeFile(join(realDir, "AGENTS.md"), "个人规范一\n");
+    await symlink(join(realDir, "AGENTS.md"), join(agentDir, "AGENTS.md"));
+    chmodSync(realDir, 0o555);
+    try {
+      const { last } = await run([GOLANG, USER_LAYER, COPY, WRITE]);
+      expect(last()).toContain(`AGENTS.md 没有写入：没有权限写入 ${await realpath(realDir)}/`);
+    } finally {
+      chmodSync(realDir, 0o755);
+    }
   });
 });

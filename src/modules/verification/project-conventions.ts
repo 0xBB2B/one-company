@@ -1,6 +1,6 @@
 import type { ProgramWindow, WindowAnswer, WindowChoice, WindowLine } from "../../core/host/question-window.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
-import { readFile, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { writeFileAtomic } from "../../core/storage/store.ts";
@@ -69,6 +69,13 @@ export function lineDiff(before: string, after: string): string[] {
   return lines;
 }
 
+export async function symlinkTarget(file: string): Promise<string | null> {
+  try {
+    if (!(await lstat(file)).isSymbolicLink()) return null;
+    return await realpath(file);
+  } catch { return null; }
+}
+
 const WRITE = "写入", SKIP = "不写入";
 export type ConventionsWindow = ProgramWindow & { choices: WindowChoice[]; otherLabel: string; cancelNote: string };
 export type ConventionsUpdateResult = { status: "unchanged" | "cancelled" | "written" } | { status: "revise"; feedback: string };
@@ -80,9 +87,11 @@ export async function updateConventions(input: { repositoryRoot: string; content
   const file = join(input.repositoryRoot, CONVENTIONS_FILE);
   const before = await readOptional(file);
   if (before === input.content) return { status: "unchanged" };
+  const linkTarget = await symlinkTarget(file);
   const lines: WindowLine[] = [
+    ...(linkTarget ? [{ text: `${CONVENTIONS_FILE} 是软链接，实际写到 ${linkTarget.startsWith(`${homedir()}/`) ? "~" + linkTarget.slice(homedir().length) : linkTarget}`, tone: "warning" } satisfies WindowLine] : []),
     { text: before === null ? `仓库里还没有 ${CONVENTIONS_FILE}，要写入的全文如下：` : `与仓库里现有的 ${CONVENTIONS_FILE} 相比的改动：`, tone: "muted" },
-    ...lineDiff(before ?? "", input.content).map((line): WindowLine =>
+    ...lineDiff((before ?? "").replace(/\r\n/g, "\n"), input.content.replace(/\r\n/g, "\n")).map((line): WindowLine =>
       ({ text: line, tone: line.startsWith("+ ") ? "added" : line.startsWith("- ") ? "removed" : "muted" })),
     { text: "" },
     { text: "写入后，此后派出的 PM、worker、reviewer 都按新内容工作。", tone: "muted" },
@@ -92,6 +101,6 @@ export async function updateConventions(input: { repositoryRoot: string; content
   if (answer?.other) return { status: "revise", feedback: answer.other };
   if (answer?.choices[0] !== WRITE) return { status: "cancelled" };
   if (await readOptional(file) !== before) throw new ProjectConventionsError("changed_concurrently");
-  await writeFileAtomic(file, input.content);
+  await writeFileAtomic(file, input.content, { followSymlink: true });
   return { status: "written" };
 }
