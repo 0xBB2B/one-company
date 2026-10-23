@@ -17,7 +17,7 @@
 [![pi package](https://img.shields.io/badge/pi-package-8A2BE2.svg)](#安装)
 [![Node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen.svg)](package.json)
 
-[前置条件](#前置条件) · [安装](#安装) · [上手](#上手) · [功能](#功能) · [设置](#设置) · [原理](#原理) · [已知限制](#已知限制) · [常见问题](#常见问题) · [参与开发](CONTRIBUTING.md)
+[前置条件](#前置条件) · [安装](#安装) · [上手](#上手) · [功能](#功能) · [设置](#设置) · [设计规范样例](#设计规范样例) · [原理](#原理) · [已知限制](#已知限制) · [常见问题](#常见问题) · [参与开发](CONTRIBUTING.md)
 
 </div>
 
@@ -374,6 +374,31 @@ PM 规划时可以给 worker 任务指定专项定义，并给任务写上要加
 - 连接日志在 `~/.pi/agent/mcp.log`。
 
 </details>
+
+---
+
+## 设计规范样例
+
+包里带了两套设计规范样例，演示怎么让专项 worker 和专项审查按你团队自己的规范写代码和审查。
+
+| 样例 | 目录 |
+|---|---|
+| Go 后端 | `examples/golang/` |
+| Vue 前端 | `examples/vue/` |
+
+每套样例有三类文件：
+
+- `AGENTS.md`：团队的关键设计决定，比如分层怎么分、错误码长什么样、token 存在哪。PM、worker、reviewer 都会读仓库根目录的 `AGENTS.md`。
+- `skills/`：详细规范，每个目录是一份 skill。每份 `SKILL.md` 的头部写了 `disable-model-invocation: true`，pi 主窗口的模型看不到它们，只有在定义里点名它们的子代理会拿到全文。
+- `agents/`：和内置专项定义同名的角色定义（Go 样例是 go-worker、go-reviewer，Vue 样例是 vue-worker、vue-reviewer）。skills 名单先列内置定义原有的 skill，后面加上样例自带的 skill。
+
+用 `pi install git:github.com/0xBB2B/one-company` 装好后，样例在 `~/.pi/agent/git/github.com/0xBB2B/one-company/examples/`，也可以在仓库网页上看。样例是一个团队的规范，照抄前先按你团队的做法改。
+
+用到自己项目里分三步：
+
+1. 把 `skills/` 下的每个目录复制到 `~/.pi/agent/skills/`，对你的所有项目生效；或者复制到仓库内的 `.pi/skills/`，只对这个项目生效，项目在 pi 里设为受信任后才加载。
+2. 把 `agents/` 下的定义复制到 `~/.pi/agent/agents/`，对你的所有项目生效；或者复制到仓库内的 `.pi/agents/`，只对这个项目生效，项目在 pi 里设为受信任后才加载。复制后同名的内置定义被替换，派工用的是复制过去的这一份；删掉复制的文件，就恢复用内置的。`/one:setting` 里的开关按定义名记：复制前关掉的，复制后照样关着；删掉复制的文件后，开关状态留给内置那一份。
+3. 把 `AGENTS.md` 的内容并进自己仓库根目录的 `AGENTS.md`。其中和内置 skill 写法冲突的条目，代理按 `AGENTS.md` 执行，例如 Vue 样例把 refresh token 存在 localStorage。
 
 ---
 

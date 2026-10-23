@@ -48,6 +48,7 @@ const REQUIRED_SECTION_ORDER = [
   "上手",
   "功能",
   "设置",
+  "设计规范样例",
   "原理",
   "已知限制",
   "常见问题",
@@ -94,6 +95,14 @@ describe("README 必需句", () => {
     "Allow auto-merge",
     "Squash commit message template",
     "--diff-filter=A",
+    "examples/golang/",
+    "examples/vue/",
+    "~/.pi/agent/git/github.com/0xBB2B/one-company/examples/",
+    "[设计规范样例](#设计规范样例)",
+    "~/.pi/agent/skills/",
+    ".pi/skills/",
+    "~/.pi/agent/agents/",
+    ".pi/agents/",
   ];
   for (const phrase of REQUIRED) {
     test(`含: ${phrase}`, async () => {
