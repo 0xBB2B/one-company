@@ -19,7 +19,15 @@ import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../src/modules/agents/roles.ts";
 import { disabledAgentNames } from "../src/modules/settings/agent-settings.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
+import { PmPanel } from "../src/modules/panel/pm-panel.ts";
 import { mainAdjudication } from "./helpers/main-adjudication.ts";
+
+const sessionFailure = vi.hoisted(() => ({ agent: "" }));
+vi.mock("../src/modules/agents/agent-session.ts", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../src/modules/agents/agent-session.ts")>();
+  return { ...original, createAgentRoleSession: (options: Parameters<typeof original.createAgentRoleSession>[0]) =>
+    sessionFailure.agent && options.definition.name === sessionFailure.agent ? Promise.reject(new Error("会话建立失败")) : original.createAgentRoleSession(options) };
+});
 
 vi.setConfig({ testTimeout: 60_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -750,7 +758,7 @@ test("某个审查轮数用满：PM 立刻收到只关于它的消息（含代�
   expect(newMessages(t, before).filter((text) => text.includes("审查已全部结束"))).toHaveLength(1);
 });
 
-test("同一代理本轮第 2 次没交结论：消息写明不再重派；再单独派或整轮派都被拒为 retry_exhausted；另两个通过后任务等待用户裁决，事项为「两次审查未完成（go-reviewer）」", async () => {
+test("同一代理本轮第 2 次没交结论：消息写明不再重派；再单独派或整轮派都被拒为 retry_exhausted；另两个通过后任务等待用户裁决，事项为「2 次审查未完成（go-reviewer）」", async () => {
   const t = await reviewWorld();
   t.replies["go-reviewer"] = [READ, READ];
   t.auto.add("go-reviewer");
@@ -766,7 +774,7 @@ test("同一代理本轮第 2 次没交结论：消息写明不再重派；再�
   await t.release("vue-reviewer");
   await until(() => t.record().status === "awaiting_user");
   const items = (await t.manager.overviews())[0]!.pendingItems;
-  expect(items).toContainEqual(expect.objectContaining({ label: expect.stringContaining("两次审查未完成（go-reviewer）") }));
+  expect(items).toContainEqual(expect.objectContaining({ label: expect.stringContaining("2 次审查未完成（go-reviewer）") }));
 });
 
 test("另一个审查已打回时，没交结论的审查仍可单独派；它重试后也打回，返修意见带两个来源", async () => {
@@ -1124,7 +1132,7 @@ test("本轮 reviewer 已打回、go-reviewer 没交结论时 escalate 后用户
   await expect(t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: null })).rejects.toMatchObject({ code: "retry_required" });
 });
 
-test("escalate 后用户再给一次机会，go-reviewer 单派后又没交结论：本轮结束后 awaiting_user，事项文字是「待裁决：任务 login 两次审查未完成（go-reviewer）」，决策包仍保留 PM 上报的说明", async () => {
+test("escalate 后用户再给一次机会，go-reviewer 单派后又没交结论：本轮结束后 awaiting_user，事项文字是「待裁决：任务 login 2 次审查未完成（go-reviewer）」，决策包仍保留 PM 上报的说明", async () => {
   const t = await goWaiting([READ, { type: "text", text: "没有结论" }]);
   const escalate = await pmEscalator(t);
   await escalate("缺 Go 工具链");
@@ -1134,7 +1142,7 @@ test("escalate 后用户再给一次机会，go-reviewer 单派后又没交结�
   const itemId = `task:${t.taskId}`;
   const items = (await t.manager.overviews())[0]!.pendingItems;
   const item = items.find((entry) => entry.itemId === itemId)!;
-  expect(item.label).toBe("待裁决：任务 login 两次审查未完成（go-reviewer）");
+  expect(item.label).toBe("待裁决：任务 login 2 次审查未完成（go-reviewer）");
   expect(item.label).not.toContain("PM 上报需要决定");
   expect(t.manager.decisionPacket(t.fixture.requirementId, itemId)).toContain("缺 Go 工具链");
 });
@@ -1248,7 +1256,7 @@ test("用户每次再给一次机会都让被放行的代理多派一次：第 3
   await expect(t.review({ maxTurns: 30, agent: "go-reviewer" })).rejects.toMatchObject({ code: "retry_exhausted" });
 });
 
-test("go-reviewer 本轮两次没交结论、reviewer 还在跑时用户关掉 go-reviewer：PM 单派它被拒 retry_exhausted，不新增 skipped 记录，reviewer 通过后任务 awaiting_user，事项含「两次审查未完成（go-reviewer）」", async () => {
+test("go-reviewer 本轮两次没交结论、reviewer 还在跑时用户关掉 go-reviewer：PM 单派它被拒 retry_exhausted，不新增 skipped 记录，reviewer 通过后任务 awaiting_user，事项含「2 次审查未完成（go-reviewer）」", async () => {
   const t = await reviewWorld();
   t.replies["go-reviewer"] = [READ, READ];
   t.auto.add("go-reviewer");
@@ -1265,7 +1273,7 @@ test("go-reviewer 本轮两次没交结论、reviewer 还在跑时用户关掉 g
   await until(() => t.record().status !== "reviewing");
   expect(t.record().status).toBe("awaiting_user");
   const items = (await t.manager.overviews())[0]!.pendingItems;
-  expect(items).toContainEqual(expect.objectContaining({ label: expect.stringContaining("两次审查未完成（go-reviewer）") }));
+  expect(items).toContainEqual(expect.objectContaining({ label: expect.stringContaining("2 次审查未完成（go-reviewer）") }));
 });
 
 test("整轮汇总里每个代理那一段列出它的阻塞和未验证意见，每条一行含 kind、targetRef、trigger、impact；建议级意见不列", async () => {
@@ -1426,4 +1434,139 @@ test("worker 重试交结果时只列了更早尝试的红和绿、这次自己�
   await until(() => t.rejections.length > 0);
   expect(t.rejections[0]).toMatch(/自己跑/);
   expect(t.workerVerdicts(attempt.runId)).toHaveLength(0);
+});
+
+test("B 审查代理启动阶段就失败：PM 会话立刻收到只关于它的一条消息（含代理名、运行失败、原因、第 1 次、建议单独派重试），派工返回值 failed 照旧", async () => {
+  const t = await reviewWorld();
+  const create = t.runStore.create.bind(t.runStore);
+  vi.spyOn(t.runStore, "create").mockImplementation(async (input) => {
+    if (input.agent?.name === "go-reviewer") throw new Error("会话创建失败");
+    return create(input);
+  });
+  const before = t.pmRequests().length;
+  const result = await t.review();
+  expect(result.failed).toEqual([{ agent: "go-reviewer", reason: expect.stringContaining("会话创建失败") }]);
+  await until(() => newMessages(t, before).some((text) => text.includes("审查 go-reviewer 没交出结论")));
+  const single = newMessages(t, before).filter((text) => text.includes("审查 go-reviewer 没交出结论"));
+  expect(single).toHaveLength(1);
+  for (const phrase of ["运行失败", "会话创建失败", "第 1 次", "单独派 go-reviewer 重试"]) expect(single[0]).toContain(phrase);
+  expect(single[0]).not.toContain("审查已全部结束");
+  expect(t.record().status).toBe("reviewing");
+});
+
+test.each([
+  ["turn_limit_reached", "没交出结论（轮数用满）", [READ, READ], 1],
+  ["failed", "没交出结论（运行失败）", [{ type: "text", text: "没有结论" }, { type: "text", text: "没有结论" }], 5],
+] as const)("C 面板等重派行的原因文字与 PM 收到的整轮汇总一致：%s", async (outcome, expected, goReplies, maxTurns) => {
+  const t = await reviewWorld();
+  t.replies["go-reviewer"] = [...goReplies] as ScriptedReply[];
+  t.auto.add("go-reviewer");
+  const before = t.pmRequests().length;
+  await t.review({ maxTurns });
+  await until(() => t.record().reviews.some((entry) => entry.agent === "go-reviewer" && entry.outcome === outcome));
+  const instance = new PmPanel({ now: () => Date.now(), openItem: () => undefined, togglePause: () => undefined });
+  instance.update([{ repoId: "r", overview: (await t.manager.overviews())[0]!, fetchedAt: Date.now() }]);
+  const waiting = instance.render(200).find((line) => line.includes("go-reviewer") && line.includes("等 PM 重派"));
+  expect(waiting).toContain(expected);
+  await t.review({ maxTurns, agent: "go-reviewer" });
+  await t.release("reviewer");
+  await t.release("vue-reviewer");
+  await until(() => t.record().status === "awaiting_user");
+  await t.settle();
+  const summary = newMessages(t, before).filter((text) => text.includes("审查已全部结束"));
+  expect(summary).toHaveLength(1);
+  expect(summary[0]).toContain(expected);
+});
+
+test.each([
+  ["轮数用满", READ, 1],
+  ["运行失败", { type: "text", text: "没有结论" }, 5],
+] as const)("D 改计划后旧一轮里在跑的审查代理%s结束：PM 收到的单条消息写明这一轮已作废（计划改了、任务要重做），不建议单独派重试", async (cause, reply, maxTurns) => {
+  const t = await reviewWorld(undefined, ["go-reviewer"]);
+  t.replies["go-reviewer"] = [reply as ScriptedReply];
+  t.replies["worker"] = { type: "text", text: "做不了" };
+  t.auto.add("reviewer");
+  await t.review({ maxTurns });
+  const before = t.pmRequests().length;
+  await t.plan.execute({ action: "update", planVersion: 1, modify: [{ taskId: t.taskId, version: t.record().version,
+    spec: spec("login", { objective: "改了目标", reviewers: [{ agent: "go-reviewer", reason: "专项审查" }] } as Partial<TaskSpec>) }] });
+  await t.plan.execute({ action: "confirm", planVersion: 2 });
+  await t.release("go-reviewer");
+  await until(() => newMessages(t, before).some((text) => text.includes("审查 go-reviewer 没交出结论")));
+  const single = newMessages(t, before).find((text) => text.includes("审查 go-reviewer 没交出结论"))!;
+  expect(single).toContain(cause);
+  expect(single).toContain("作废");
+  expect(single).toContain("计划");
+  expect(single).not.toContain("单独派 go-reviewer");
+});
+
+test("B 会话建立阶段失败（createAgentRoleSession 抛错）：PM 同样收到只关于它的一条消息，派工返回值 failed 含原因", async () => {
+  const t = await reviewWorld();
+  sessionFailure.agent = "go-reviewer";
+  cleanups.push(() => { sessionFailure.agent = ""; });
+  const before = t.pmRequests().length;
+  const result = await t.review();
+  expect(result.failed).toEqual([{ agent: "go-reviewer", reason: expect.stringContaining("会话建立失败") }]);
+  await until(() => newMessages(t, before).some((text) => text.includes("审查 go-reviewer 没交出结论")));
+  const single = newMessages(t, before).filter((text) => text.includes("审查 go-reviewer 没交出结论"));
+  expect(single).toHaveLength(1);
+  for (const phrase of ["运行失败", "会话建立失败", "第 1 次"]) expect(single[0]).toContain(phrase);
+});
+
+test("B 启动失败的代理恰好是本轮最后一个：本轮因此结束时 PM 这一次只收到一条消息，同时含该代理没交出结论的说明和整轮汇总", async () => {
+  const t = await reviewWorld();
+  vi.spyOn(t.runStore, "create").mockRejectedValue(new Error("会话创建失败"));
+  await t.review();
+  await t.settle();
+  vi.restoreAllMocks();
+  const create = t.runStore.create.bind(t.runStore);
+  vi.spyOn(t.runStore, "create").mockImplementation(async (input) => {
+    if (input.agent?.name === "go-reviewer") throw new Error("会话创建失败");
+    return create(input);
+  });
+  await t.review({ maxTurns: 5, agent: "reviewer" });
+  await t.review({ maxTurns: 5, agent: "vue-reviewer" });
+  await t.release("reviewer");
+  await t.release("vue-reviewer");
+  await until(() => ["reviewer", "vue-reviewer"].every((name) => t.record().reviews.some((entry) => entry.agent === name && entry.outcome === "clear")));
+  await t.settle();
+  const before = t.pmRequests().length;
+  const result = await t.review({ maxTurns: 5, agent: "go-reviewer" });
+  expect(result.failed).toHaveLength(1);
+  await until(() => t.record().status === "awaiting_user");
+  await t.settle();
+  const messages = newMessages(t, before).filter((text) => text.includes("审查 go-reviewer 没交出结论") || text.includes("审查已全部结束"));
+  expect(messages).toHaveLength(1);
+  expect(messages[0]).toContain("审查 go-reviewer 没交出结论");
+  expect(messages[0]).toContain("审查已全部结束");
+});
+
+test("B 审查会话已建立、把运行记录改成运行中时抛错（磁盘满）：审查记录结局为运行失败而不是一直进行中，failed 含原因，PM 收到第 1 次的单条消息；另两个结束后单独重派它通过，任务完成并只发一条整轮汇总", async () => {
+  const t = await reviewWorld();
+  const update = t.runStore.update.bind(t.runStore);
+  const spy = vi.spyOn(t.runStore, "update").mockImplementation(async (id, patch, ...rest) => {
+    const found = await t.runStore.get(id);
+    if (found.ok && found.run.agent?.name === "go-reviewer" && (patch as { state?: string }).state === "running") throw new Error("磁盘已满");
+    return (update as (...args: unknown[]) => Promise<never>)(id, patch, ...rest);
+  });
+  const before = t.pmRequests().length;
+  const result = await t.review();
+  expect(result.failed).toEqual([{ agent: "go-reviewer", reason: expect.stringContaining("磁盘已满") }]);
+  const goRuns = await Promise.all((await t.runStore.list({ limit: 100 })).items.map((item) => t.runStore.get(item.id)));
+  expect(goRuns.flatMap((run) => run.ok && run.run.agent?.name === "go-reviewer" ? [run.run.state] : [])).toEqual(["failed"]);
+  expect(t.record().reviews.find((entry) => entry.agent === "go-reviewer")).toMatchObject({ outcome: "failed" });
+  await until(() => newMessages(t, before).some((text) => text.includes("审查 go-reviewer 没交出结论")));
+  const single = newMessages(t, before).filter((text) => text.includes("审查 go-reviewer 没交出结论"));
+  expect(single).toHaveLength(1);
+  for (const phrase of ["运行失败", "磁盘已满", "第 1 次", "单独派 go-reviewer 重试"]) expect(single[0]).toContain(phrase);
+  spy.mockRestore();
+  for (const name of ["reviewer", "vue-reviewer"]) await t.release(name);
+  await until(() => t.record().reviews.filter((entry) => entry.outcome === "clear").length === 2);
+  await t.settle();
+  expect(t.record().reviews.some((entry) => entry.outcome === "running")).toBe(false);
+  await t.review({ maxTurns: 5, agent: "go-reviewer" });
+  await t.release("go-reviewer");
+  await until(() => t.record().status === "completed");
+  await t.settle();
+  expect(newMessages(t, before).filter((text) => text.includes("审查已全部结束"))).toHaveLength(1);
 });

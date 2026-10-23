@@ -492,18 +492,19 @@ export class RunManager {
     const { maxTurns, attemptRunId, turnsByRun } = beginTaskReview({ ...ref, lease, taskId: task.taskId, maxTurns: input.review!.maxTurns,
       members: plan.map((member) => ({ agent: member.agent, ...(member.runId ? { runId: member.runId } : { skipReason: member.skipReason }) })),
       ...(wanted !== undefined ? { single: true } : {}), ...(added ? { addReviewer: added } : {}) });
-    const started: string[] = [], failed: Array<{ agent: string; reason: string }> = [];
+    const started: string[] = [], failed: Array<{ agent: string; runId: string; reason: string }> = [];
     for (const member of plan) {
       if (!member.resolved) continue;
       try {
         await this.launchSubagent({ ...launch, resolved: member.resolved, runId: member.runId!, maxTurns: turnsByRun[member.runId!]!, attemptRunId });
         started.push(member.runId!);
       } catch (error) {
-        failed.push({ agent: member.agent, reason: (error as Error).message });
+        failed.push({ agent: member.agent, runId: member.runId!, reason: (error as Error).message });
       }
     }
     const latest = withDatabase(this.database, (db) => readPlanIn(db, lease.requirementId)!.tasks.find((candidate) => candidate.taskId === task.taskId)!);
-    this.reportReviewRound(input.pmRunId, latest);
+    const notices = failed.map((item) => this.reviewUnfinishedNotice(latest, latest.reviews.find((review) => review.runId === item.runId)!, item.reason));
+    this.reportReviewRound(input.pmRunId, latest, notices.length ? notices.join("\n\n") : undefined);
     return { runIds: started, failed: failed.map((item) => ({ agent: item.agent, reason: `${item.reason}；${this.reviewRetryAdvice(latest, item.agent)}` })), maxTurns };
   }
 
@@ -584,7 +585,16 @@ export class RunManager {
     handle.events.on("turn_limit_reached", () => { void this.finishSubagent(run.id, "turn_limit_reached"); });
     handle.events.on("ended_without_result", () => { void this.finishSubagent(run.id, "ended_without_result"); });
     handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishSubagent(run.id, "failed", reason); });
-    await this.runStore.update(run.id, { state: "running" });
+    try {
+      await this.runStore.update(run.id, { state: "running" });
+    } catch (error) {
+      this.sessions.delete(run.id);
+      handle.dispose();
+      toolSet.dispose();
+      fail();
+      await this.runStore.update(run.id, { state: "failed", stateReason: `子代理启动失败：${(error as Error).message}` }).catch(() => {});
+      throw error;
+    }
     handle.prompt(review ? "开始审查。" : "开始执行任务。");
   }
 
@@ -712,7 +722,9 @@ export class RunManager {
 
   private reviewUnfinishedNotice(task: PlanTask, review: TaskReview, failure?: string): string {
     const cause = review.outcome === "turn_limit_reached" ? "轮数用满" : review.outcome === "stopped" ? "被停止" : `运行失败${failure ? `（${oneLine(failure)}）` : ""}`;
-    return [`审查 ${review.agent} 没交出结论：${cause}，已用 ${review.turnsUsed}/${review.maxTurns} 轮。${this.reviewRetryAdvice(task, review.agent)}`,
+    const stale = !task.attempts.slice(task.attemptBase).some((attempt) => attempt.runId === review.attemptRunId);
+    const advice = stale ? "这一轮因计划改了已作废，任务要按新计划重做，不用单独重派。" : this.reviewRetryAdvice(task, review.agent);
+    return [`审查 ${review.agent} 没交出结论：${cause}，已用 ${review.turnsUsed}/${review.maxTurns} 轮。${advice}`,
       `运行日志：${this.runLog(review.runId)}`].join("\n");
   }
 

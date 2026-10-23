@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 export const PM_MESSAGE_MAX_CHARS = 4000;
 

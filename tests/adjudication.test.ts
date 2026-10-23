@@ -312,7 +312,7 @@ async function userAdjudicates(w: Awaited<ReturnType<typeof pendingWorld>>, key:
 }
 const planVersionOf = (w: Awaited<ReturnType<typeof pendingWorld>>) => w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
 
-test("被上报的任务选再给一次机会后，第一次派出时上报原因被清掉；之后两次未完成进入待裁决时，标签是两次未完成，决策包没有旧的上报原因", async () => {
+test("被上报的任务选再给一次机会后，第一次派出时上报原因被清掉；之后 2 次未完成进入待裁决时，标签是“2 次未完成”，决策包没有旧的上报原因", async () => {
   const w = await pendingWorld();
   const failure = w.task("failure").taskId, itemId = `task:${failure}`, note = "旧的上报原因-缺原型";
   await w.escalate(failure, note);
@@ -324,11 +324,11 @@ test("被上报的任务选再给一次机会后，第一次派出时上报原�
   await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: failure, retry: null });
   expect(w.task("failure").holdNote).toBeUndefined();
   await until(() => w.task("failure").status === "awaiting_parent" && w.provider.queue.length === 0);
-  w.provider.queue.push({ type: "text", text: "还是没做完" }, { type: "text", text: "PM 看到两次未完成" });
+  w.provider.queue.push({ type: "text", text: "还是没做完" }, { type: "text", text: "PM 看到 2 次未完成" });
   await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: failure, retry: { reason: "再试一次", maxTurns: 1 } });
   await until(() => w.task("failure").status === "awaiting_user" && w.provider.queue.length === 0);
   const items = (await w.manager.overviews())[0]!.pendingItems;
-  expect(items).toEqual([expect.objectContaining({ itemId, label: "待裁决：任务 failure 两次未完成" })]);
+  expect(items).toEqual([expect.objectContaining({ itemId, label: "待裁决：任务 failure 2 次未完成" })]);
   expect(w.manager.decisionPacket(w.fixture.requirementId, itemId)).not.toContain(note);
 });
 
@@ -532,7 +532,7 @@ test("M7-AC35：决策包只由持久记录生成，模型写的文字标明仅�
   const w = await world();
   const packetVersion = w.version();
   const packet = w.manager.decisionPacket(w.fixture.requirementId, w.itemId);
-  expect(packet).toContain("[待处理事项] 待裁决：任务 login 两次未完成");
+  expect(packet).toContain("[待处理事项] 待裁决：任务 login 2 次未完成");
   expect(packet).toContain("（N 填建议的轮数上限，1 到 1000）");
   expect(packet).not.toContain("N 填你建议");
   expect(packet).toContain("尝试 2：1/1 轮 · 结局 turn_limit_reached");
@@ -589,14 +589,14 @@ const choice = (label: string, recommended = false) => ({ label, reason: `${labe
 test("M8L-AC3：待裁决经问答窗口给建议：选项文字须与程序固定的一致；用户选中“再给一次机会，轮数上限 3”后按这个回答登记，任务按 3 轮派出", async () => {
   const w = await world();
   w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
-  const ask = (labels: string[]) => w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question: "任务 login 两次未完成，怎么裁决？", rootCheck: "两次都是轮数用完",
+  const ask = (labels: string[]) => w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question: "任务 login 2 次未完成，怎么裁决？", rootCheck: "两次都是轮数用完",
     choices: labels.map((label, index) => choice(label, index === 0)) });
   await expect(ask(["多给几轮", "调整目标或范围", "终止这个任务"])).rejects.toThrow("「再给一次机会，轮数上限 N」、「调整目标或范围」、「终止这个任务」");
   await expect(ask(["再给一次机会，轮数上限 1001", "调整目标或范围", "终止这个任务"])).rejects.toThrow("「再给一次机会，轮数上限 N」");
   w.answerWindows("再给一次机会，轮数上限 3");
   const answered = await ask(["再给一次机会，轮数上限 3", "调整目标或范围", "终止这个任务"]);
   expect(answered).toMatchObject({ status: "answered", answer: { text: "再给一次机会，轮数上限 3\n再给一次机会，轮数上限 3的理由", choice: 1 }, decision: { itemId: w.itemId, itemVersion: w.version() } });
-  expect(w.windows.at(-1)!.title).toContain("事项 · 待裁决：任务 login 两次未完成");
+  expect(w.windows.at(-1)!.title).toContain("事项 · 待裁决：任务 login 2 次未完成");
   const result = await w.register(w.itemId, w.version(), [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
   expect(result).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 3 });
   const interpreter = w.provider.requests.filter((request) => request.systemPrompt?.includes("需求解释器")).at(-1)!;
@@ -621,7 +621,7 @@ test("面板事项提问的问题含人称字：ask 失败并写明字段与字�
   const ask = (question: string) => w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question, rootCheck: "两次都是轮数用完",
     choices: ["再给一次机会，轮数上限 3", "调整目标或范围", "终止这个任务"].map((label, index) => choice(label, index === 0)) });
   w.answerWindows("再给一次机会，轮数上限 3");
-  await ask("任务 login 两次未完成，怎么裁决？");
+  await ask("任务 login 2 次未完成，怎么裁决？");
   const before = w.windows.length;
   expect(before).toBe(1);
   const error = await ask("您想怎么裁决？").then(() => undefined, (caught: unknown) => caught as Error);
@@ -631,11 +631,11 @@ test("面板事项提问的问题含人称字：ask 失败并写明字段与字�
   expect(w.windows.length).toBe(before);
 });
 
-test("面板事项提问的问题照抄事项标签“待裁决：任务 login 两次未完成”时照常弹窗，没有 question_format 错误", async () => {
+test("面板事项提问的问题照抄事项标签“待裁决：任务 login 2 次未完成”时照常弹窗，没有 question_format 错误", async () => {
   const w = await world();
   w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
   w.answerWindows("再给一次机会，轮数上限 3");
-  const answered = await w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question: "待裁决：任务 login 两次未完成，怎么处理？", rootCheck: "两次都是轮数用完",
+  const answered = await w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question: "待裁决：任务 login 2 次未完成，怎么处理？", rootCheck: "两次都是轮数用完",
     choices: ["再给一次机会，轮数上限 3", "调整目标或范围", "终止这个任务"].map((label, index) => choice(label, index === 0)) });
   expect(answered).toMatchObject({ status: "answered" });
   expect(w.windows).toHaveLength(1);
@@ -746,7 +746,7 @@ test("审查卡住的待裁决任务：待处理事项、决策包带审查代�
   const { w, itemId } = await reviewStuckWorld([
     { agent: "go-reviewer", round: 1, outcome: "blocked" }, { agent: "vue-reviewer", round: 1, outcome: "clear" },
     { agent: "reviewer", round: 2, outcome: "blocked" }]);
-  const label = "待裁决：任务 login 两次未通过审查（go-reviewer、reviewer）";
+  const label = "待裁决：任务 login 2 次未通过审查（go-reviewer、reviewer）";
   expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label })]);
   const packet = w.manager.decisionPacket(w.fixture.requirementId, itemId);
   expect(packet).toContain(`[待处理事项] ${label}`);
@@ -761,7 +761,7 @@ test("审查卡住的待裁决任务：待处理事项、决策包带审查代�
 test("审查没交出结论卡住时，事项文字与卡片都写出代理名；用户选再给一次机会后任务回到 awaiting_review，告知 PM 的文字带上审查代理名", async () => {
   const { w, id, itemId } = await reviewStuckWorld([
     { agent: "vue-reviewer", round: 1, outcome: "failed" }, { agent: "vue-reviewer", round: 1, outcome: "failed" }]);
-  expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label: "待裁决：任务 login 两次审查未完成（vue-reviewer）" })]);
+  expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label: "待裁决：任务 login 2 次审查未完成（vue-reviewer）" })]);
   expect(w.manager.decisionPacket(w.fixture.requirementId, itemId).split("\n").filter((line) => line.startsWith("第 1 轮 vue-reviewer："))).toHaveLength(2);
   const version = `task:${id}:${w.db((db) => db.read<TaskRecord>(TASKS, id)!.version)}`;
   const main = mainAdjudication(w, cleanups);
@@ -802,7 +802,7 @@ test("裁决卡片里审查记录的结局全部写中文，不出现英文枚�
 
 test("名单为空时事项文字、决策包和告知 PM 的文字都不带空括号", async () => {
   const { w, id, itemId } = await reviewStuckWorld([{ agent: "vue-reviewer", round: 1, outcome: "failed" }]);
-  const label = "待裁决：任务 login 两次审查未完成";
+  const label = "待裁决：任务 login 1 次审查未完成";
   expect((await w.manager.overviews())[0]!.pendingItems).toEqual([expect.objectContaining({ itemId, label })]);
   expect(w.manager.decisionPacket(w.fixture.requirementId, itemId)).not.toContain("（）");
   const version = `task:${id}:${w.db((db) => db.read<TaskRecord>(TASKS, id)!.version)}`;
