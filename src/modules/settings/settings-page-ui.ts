@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { basename } from "node:path";
+import { basename, sep } from "node:path";
 import { decodeKittyPrintable, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import {
   checkList, definitionColumns, fit, FOLLOW, layerRows, MARKER, pad, pickerHead, pickerList, SettingsTab, SOURCE, STATE, tableColumns, tableRow, untrustedLayerNote, wrapHint, wrapText,
@@ -43,7 +43,10 @@ export const methodsText = (methods: readonly MergeMethod[], short = false) => {
   return short && on.length === MERGE_METHODS.length ? "压缩 · 普通合并 · rebase" : on.map((method) => method.label).join(short ? " · " : "、");
 };
 
-export const tilde = (path: string) => { const home = homedir(); return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path; };
+export const tilde = (path: string) => {
+  const raw = homedir(), home = raw.endsWith(sep) ? raw.slice(0, -sep.length) : raw;
+  return home && (path === home || path.startsWith(`${home}${sep}`)) ? `~${path.slice(home.length)}` : path;
+};
 const fitTail = (text: string, width: number) => {
   if (visibleWidth(text) <= width) return text;
   let kept = "";
