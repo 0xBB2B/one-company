@@ -45,4 +45,5 @@ features: [spec-examples]
 - 样例 golang-testing 里的"测试夹具"改成"测试素材"：按仓库 `AGENTS.md` 写文档的规矩，泛指测试材料叫"测试素材"。用户 2026-10-23 决定。
 - README 里写的安装位置 `~/.pi/agent/git/github.com/0xBB2B/one-company/` 有出处：pi 1.3.0 的 `dist/core/package-manager.js` 里，用户级 git 包装在 `~/.pi/agent/git/<主机>/<路径>` 下（`getGitInstallRoot`、`resolveManagedPath`），`dist/utils/git.js` 把 `github.com/0xBB2B/one-company` 的路径解析成 `0xBB2B/one-company`。
 - 测试里的 C-7（样例定义名单开头和内置定义的名单完全相同）、C-8（样例 skill 不和内置 skill 重名）是写 PRD 时补的，用户在确认 PRD 时一并认可。
+- README 里开关那句写成"开关按定义名记"：设置文件只存被关掉的定义名（`agentSwitchOf`、按空格时写进定义文件所在层），复制前关掉的复制后照样关着、删掉复制的文件后状态留给内置那一份。否决原写法"开关管复制过去的那一份"：这两种情况下读者会想错。审查发现，用户 2026-10-23 决定。
 - 功能名用新名 `spec-examples`，`/one:examples` 命令以后也沿用，查样例相关的需求时一次就能搜全。否决沿用 `stack-agents`：复制命令和专项代理关系不大，挂在那个名字下不好找。用户 2026-10-23 决定。

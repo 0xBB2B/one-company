@@ -27,7 +27,7 @@ date: 2026-10-23
 **用例（主路径）**
 - 场景：用户读 README 的样例那一节。
 - 操作：读到 agents 那一步。
-- 预期：README 写明复制后同名的内置定义被替换；`/one:setting` 里这个定义的开关管的是复制过去的那一份；删掉复制的文件就恢复用内置的。
+- 预期：README 写明复制后同名的内置定义被替换，删掉复制的文件就恢复用内置的；开关按定义名记，复制前关掉的复制后照样关着，删掉复制的文件后开关状态留给内置那一份。
 
 ## 约束
 - C-1：`examples/golang/` 下有 `AGENTS.md`；`skills/` 下有 10 个目录：api-design、auth-constraints、authz-constraints、config-constraints、database-constraints、golang-constraints、golang-testing、observability-constraints、service-constraints、version-policy，每个目录一份 `SKILL.md`；`agents/` 下有 `go-worker.md`、`go-reviewer.md`。
@@ -44,7 +44,7 @@ date: 2026-10-23
   - 有 Go 后端（`examples/golang/`）和 Vue 前端（`examples/vue/`）两套样例，各自包含哪三类文件、各是干什么的。
   - 样例在哪：用 `pi install git:github.com/0xBB2B/one-company` 装好后在 `~/.pi/agent/git/github.com/0xBB2B/one-company/examples/`，也可以在仓库网页上看。
   - skills 下的每个目录复制到 `~/.pi/agent/skills/`（对你的所有项目生效）或仓库内 `.pi/skills/`（只对这个项目生效，项目在 pi 里设为受信任后才加载）。
-  - agents 下的定义复制到 `~/.pi/agent/agents/` 或仓库内 `.pi/agents/`，规则同上；复制后同名的内置定义被替换，`/one:setting` 里这个定义的开关管的是复制过去的那一份，删掉复制的文件就恢复用内置的。
+  - agents 下的定义复制到 `~/.pi/agent/agents/` 或仓库内 `.pi/agents/`，规则同上；复制后同名的内置定义被替换，删掉复制的文件就恢复用内置的；`/one:setting` 里的开关按定义名记：复制前关掉的，复制后照样关着；删掉复制的文件后，开关状态留给内置那一份。
   - `AGENTS.md` 的内容并进自己仓库根目录的 `AGENTS.md`；其中和内置 skill 写法冲突的条目，代理按 `AGENTS.md` 执行。
   - 样例是一个团队的规范，照抄前先按自己团队的做法改。
 - C-12：README 开头的目录导航加上「设计规范样例」这一节的链接。
