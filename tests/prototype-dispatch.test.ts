@@ -21,7 +21,7 @@ const HTML = "<!doctype html><html><body><h1>登录页草图</h1></body></html>"
 const MAIN_MODEL = { provider: "team-model", id: "test" };
 type Handler = (params: Record<string, unknown>, client: unknown) => Promise<Record<string, unknown>>;
 
-async function world(options: { index?: boolean } = {}) {
+async function world(options: { index?: boolean; disabled?: Set<string> } = {}) {
   const root = await mkdtemp(join("/tmp", "pi-t-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const userDir = join(root, "agents");
@@ -32,7 +32,7 @@ async function world(options: { index?: boolean } = {}) {
   await define("proto-broken", "name: proto-broken\ndescription: 坏定义\nrole: not-a-role");
   await define("ui-dev", "name: ui-dev\ndescription: 写界面代码\nrole: worker");
 
-  const w = await createPmRunWorld(cleanups, { userDir, ...(options.index ? { index: true } : {}) });
+  const w = await createPmRunWorld(cleanups, { userDir, ...(options.index ? { index: true } : {}), ...(options.disabled ? { loadDisabledAgents: () => options.disabled! } : {}) });
   const repoRoot = await realpath(w.fixture.repositoryRoot);
   const insideFile = join(repoRoot, "design-notes.md");
   await writeFile(insideFile, "仓库内笔记：登录页需要手机号输入框。\n");
@@ -128,6 +128,16 @@ test("指定的定义不存在、不可用或是 worker 类时被拒并写明原
   expect(w.provider.requests.length).toBe(before);
   expect((await w.entry())?.inFlight ?? null).toBeNull();
   await expect(w.call("prototypes.list", {})).resolves.toEqual({ items: [] });
+});
+
+test("指定的原型定义在关闭名单里时被拒为 agent_disabled，没有开出会话也没有登记新的原型版本", async () => {
+  const w = await world({ disabled: new Set(["x-designer"]) });
+  await writeFile(join(w.userDir, "x-designer.md"), "---\nname: x-designer\ndescription: 原型\nrole: prototype\n---\n你是 x-designer。\n");
+  const before = w.provider.requests.length;
+  await expect(w.dispatch({ agent: "x-designer" })).rejects.toMatchObject({ code: "agent_disabled", message: expect.stringContaining("x-designer 已关闭"),
+    advice: { next: expect.stringContaining("用通用 prototype") } });
+  expect(w.provider.requests.length).toBe(before);
+  expect((await w.board()).entries).toEqual([]);
 });
 
 test("轮数上限等于 maxTurns，用满后运行停止、看板在途清空、收到写明轮数用满的 finished 事件", async () => {

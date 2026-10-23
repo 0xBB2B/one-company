@@ -18,6 +18,8 @@ const LONG = { provider: "some-long-provider", id: "claude-opus-5-5-extended-con
 const GRAY_NOTE = /gpt-6-luna 不支持/u;
 const NOTICE = "✓ 已复制到 ~/.pi/agent/agents/vue-engineer.md，打开它写专长、skills 和 mcp";
 const MODEL_HINT = "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层";
+const AGENT_HINT = "←/Esc 回左栏  ↑↓ 选择  回车 详情  空格 开关  C 复制";
+const AGENT_HINT_OPEN = "←/Esc 回左栏  ↑↓ 选择  回车 收起  空格 开关  C 复制";
 const MODE_FOOT = "Git 交付：远程＝推送并开 PR；仅本地＝合进主仓库当前分支";
 const METHODS_FOOT = "合并方式：远程和仅本地都只用勾了的方式，压缩合并是推荐方式";
 const SPACE = " ";
@@ -37,7 +39,7 @@ async function writeJson(path: string, content: unknown) {
 const oneCompany = (entries: Record<string, unknown>) => ({ "one-company": entries });
 
 interface PageOptions {
-  trusted?: boolean; state?: Record<string, unknown>; taken?: Record<string, string>; skills?: string; clean?: boolean; legacy?: boolean; longPath?: boolean; projectWorker?: boolean; noRole?: boolean;
+  trusted?: boolean; state?: Record<string, unknown>; taken?: Record<string, string>; skills?: string; clean?: boolean; legacy?: boolean; longPath?: boolean; projectWorker?: boolean; noRole?: boolean; acmeWorker?: boolean; pairedBroken?: boolean;
   user?: unknown; project?: unknown; models?: unknown[]; mainModel?: unknown; mainThinking?: string;
   origin?: string | null; ghHosts?: string[]; glabHosts?: string[];
 }
@@ -54,6 +56,11 @@ async function page(options: PageOptions = {}) {
   await role(roleDirs.projectDir, "reviewer", "description: 本项目的审查\nrole: reviewer\nmodel: 5x/gpt-6-sol\nthinking: high");
   if (!options.clean) await role(roleDirs.userDir, "broken", "description: 坏\nrole: worker\nthinking: extreme");
   if (options.projectWorker) await role(roleDirs.projectDir, "proj-worker", "description: 项目的 worker\nrole: worker");
+  if (options.acmeWorker) await role(roleDirs.userDir, "acme-worker", "description: 没有搭档的专项\nrole: worker");
+  if (options.pairedBroken) {
+    await role(roleDirs.userDir, "x-worker", "description: 正常的专项\nrole: worker");
+    await role(roleDirs.userDir, "x-reviewer", "role: reviewer");
+  }
   if (options.noRole) await role(roleDirs.userDir, "other", "description: 别的工具的定义");
   if (options.legacy) for (const name of ["pm", "interpreter", "draft-verifier"]) await role(roleDirs.userDir, name, `description: 旧定义\nrole: ${name}\nmodel: 5x/gpt-6-luna`);
   if (options.user !== undefined) await writeJson(userSettingsPath(agentDir), options.user);
@@ -70,6 +77,7 @@ async function page(options: PageOptions = {}) {
   } finally {
     await gh.restore();
   }
+  const toggles: string[] = [];
   const copies: Array<{ name: string; entry: string }> = [], saves: unknown[] = [], clears: unknown[] = [], switchSaves: unknown[] = [], switchClears: unknown[] = [];
   let closed = false;
   const view = new SettingsPageView({
@@ -80,6 +88,7 @@ async function page(options: PageOptions = {}) {
     onCopy: (request: { entry: { name: string }; name: string }) => copies.push({ name: request.name, entry: request.entry.name }),
     onSaveSetting: (request: unknown) => saves.push(request), onClearSetting: (request: unknown) => clears.push(request),
     onSaveSwitch: (request: unknown) => switchSaves.push(request), onClearSwitch: (request: unknown) => switchClears.push(request),
+    onToggleAgent: (entry: { name: string }) => toggles.push(entry.name),
     onClose: () => { closed = true; },
   });
   const lines = (width = 80) => view.render(width);
@@ -88,7 +97,7 @@ async function page(options: PageOptions = {}) {
   const pane = (width = 80) => paneParts(rows(width)).join("\n");
   const right = (width = 80) => rightParts(rows(width)).join("\n");
   const press = (...keys: string[]) => { for (const key of keys) view.handleInput(key); };
-  return { view, root, right, lines, rows, text, pane, press, copies, saves, clears, switchSaves, switchClears, closed: () => closed };
+  return { view, root, toggles, right, lines, rows, text, pane, press, copies, saves, clears, switchSaves, switchClears, closed: () => closed };
 }
 type Page = Awaited<ReturnType<typeof page>>;
 
@@ -127,7 +136,7 @@ test("80 列打开：边框、标题、目录顺序与份数、worker 行带 ▸
   expect(rows.find((row) => row.includes("┬"))).toBe(`${"─".repeat(20)}┬${"─".repeat(59)}`);
   expect(rows.find((row) => row.includes("┴"))).toBe(`${"─".repeat(20)}┴${"─".repeat(59)}`);
   const cells = navCells(rows);
-  expect(cells.slice(0, 10)).toEqual(["角色定义", "▸ worker 2", "reviewer 1", "qa 1", "explore 1", "prototype 1", "", "设定", "模型 3", "开关 2"]);
+  expect(cells.slice(0, 10)).toEqual(["角色定义", "▸ worker 8", "reviewer 7", "qa 1", "explore 1", "prototype 1", "", "设定", "模型 3", "开关 2"]);
   expect(cells.slice(10).every((cell) => cell === "")).toBe(true);
   expect(p.text()).not.toContain("问题");
   expect(p.lines().join("\n")).toContain("<muted>");
@@ -162,15 +171,15 @@ test("打开时焦点在目录，选中 worker，右栏显示 worker 的定义",
   const first = paneParts(p.rows());
   expect(first[0]!.trim()).toBe("worker  写代码");
   expect(first[1]!.trim()).toBe("");
-  expect(first[2]).toMatch(/^\s*名称 +来源 +模型 +思考\s*$/u);
-  expect(p.pane()).toMatch(/ui-worker +用户 +5x\/gpt-6-luna +medium/u);
+  expect(first[2]).toMatch(/^\s*名称 +来源 +状态 +模型 +思考\s*$/u);
+  expect(p.pane()).toMatch(/ui-worker +用户 +开启 +5x\/gpt-6-luna +medium/u);
   expect(p.text()).toContain("↑↓ 选分类  → 进右栏  Esc 退出");
 });
 
 test("焦点在目录时目录选中行铺底色；焦点进右栏后目录选中行改为强调色粗体不铺底色，右栏选中行铺底色", async () => {
   const p = await page();
   const navPart = (raw: string) => raw.slice(0, raw.indexOf("│"));
-  const navRow = () => p.lines().find((line) => /worker +2/u.test(plain(line)) && plain(line).includes("│"))!;
+  const navRow = () => p.lines().find((line) => /worker +8/u.test(plain(line)) && plain(line).includes("│"))!;
   expect(navPart(navRow())).toContain("[selectedBg]");
   p.press(RIGHT);
   expect(navPart(navRow())).not.toContain("[selectedBg]");
@@ -196,7 +205,7 @@ test("目录里 ↓ 换分类，右栏跟着换：模型分类显示 PM、解释
 test("目录里 ↑ 到顶不越界，↓ 跳过标题和空行直达问题，到底不越界", async () => {
   const p = await page();
   p.press(UP, UP);
-  expect(navCells(p.rows())).toContain("▸ worker 2");
+  expect(navCells(p.rows())).toContain("▸ worker 8");
   p.press(...Array<string>(20).fill(DOWN));
   expect(navCells(p.rows())).toContain("▸ 问题 1");
   expect(paneParts(p.rows())[0]!.trim()).toBe("问题  这些文件写错了，没有生效");
@@ -277,7 +286,7 @@ test("复制起名里 Esc 取消并提示已取消复制，焦点留在右栏，
   const p = await page();
   p.press(RIGHT, "c", ESC);
   expect(p.text()).toContain("已取消复制");
-  expect(p.text()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 详情  C 复制");
+  expect(p.text()).toContain(AGENT_HINT);
   expect(p.closed()).toBe(false);
   expect(p.copies).toEqual([]);
 });
@@ -318,7 +327,7 @@ test("八个分类的右栏第一行是分类名加两空格加说明", async ()
 });
 
 test("焦点在目录时底部写分类说明；职责分类写定义份数和各层份数", async () => {
-  const expected = ["worker：写代码 · 2 份定义（用户 1 · 内置 1）", "reviewer：代码审查：实现是否合理 · 1 份定义（项目 1）", "qa：功能验收：行为是否符合目标 · 1 份定义（内置 1）",
+  const expected = ["worker：写代码 · 8 份定义（用户 1 · 内置 7）", "reviewer：代码审查：实现是否合理 · 7 份定义（项目 1 · 内置 6）", "qa：功能验收：行为是否符合目标 · 1 份定义（内置 1）",
     "explore：只读查资料 · 1 份定义（内置 1）", "prototype：需求涉及界面时出 HTML 原型 · 1 份定义（内置 1）", "模型：PM 和两个内部代理用哪个模型", "开关：Git 交付怎么交、用哪些合并方式", "问题：这些文件写错了，没有生效"];
   for (const [index, line] of expected.entries()) {
     const p = await page();
@@ -330,22 +339,23 @@ test("焦点在目录时底部写分类说明；职责分类写定义份数和�
 test("同一职责下用户层与项目层排在内置前面，被盖住的下层不再列出，底部说明随选中行变化", async () => {
   const p = await page();
   p.press(RIGHT);
-  expect(p.pane()).toMatch(/▸ ui-worker +用户 +5x\/gpt-6-luna +medium *\n +worker +内置 +跟随主会话 +跟随 *(\n|$)/u);
+  expect(p.pane()).toMatch(/▸ ui-worker +用户 +开启 +5x\/gpt-6-luna +medium/u);
+  expect(p.pane()).toMatch(/^ +worker +内置 +必须 +跟随主会话 +跟随 *$/mu);
   expect(p.lines().join("\n")).toContain("<accent>5x/gpt-6-luna</>");
   expect(p.text()).toContain("界面设计与实现，产出 HTML 预览 · skills ui-basics");
-  p.press(DOWN);
+  moveTo(p, "worker");
   expect(selectedPaneLine(p)).toMatch(/▸ worker +内置/u);
   p.press(LEFT, DOWN, RIGHT);
-  expect(p.pane()).toMatch(/▸ reviewer +项目 +5x\/gpt-6-sol +high/u);
-  expect(p.pane().match(/reviewer +(内置|项目)/gu)).toHaveLength(1);
+  expect(p.pane()).toMatch(/▸ reviewer +项目 +必须 +5x\/gpt-6-sol +high/u);
+  expect(p.pane().match(/^\s*[▸▾]?\s*reviewer +(内置|项目)/gmu)).toHaveLength(1);
 });
 
 test("没写模型和思考的定义，模型列写“跟随主会话”、思考列写“跟随”，不写“继承”", async () => {
   const p = await page();
   p.press(DOWN, DOWN, RIGHT);
-  expect(p.pane()).toMatch(/▸ qa +内置 +跟随主会话 +跟随 *(\n|$)/u);
+  expect(p.pane()).toMatch(/▸ qa +内置 +必须 +跟随主会话 +跟随 *(\n|$)/u);
   p.press(LEFT, DOWN, RIGHT);
-  expect(p.pane()).toMatch(/▸ explore +内置 +跟随主会话 +跟随 *(\n|$)/u);
+  expect(p.pane()).toMatch(/▸ explore +内置 +必须 +跟随主会话 +跟随 *(\n|$)/u);
   expect(p.text()).not.toContain("继承");
   expect(p.lines().join("\n")).toContain("<dim>跟随主会话</>");
 });
@@ -353,7 +363,7 @@ test("没写模型和思考的定义，模型列写“跟随主会话”、思�
 test("prototype 分类内置行跟随主会话，底部写说明，复制出的定义归在这一类", async () => {
   const p = await page();
   enterSection(p, "prototype");
-  expect(p.pane()).toMatch(/▸ prototype +内置 +跟随主会话 +跟随 *(\n|$)/u);
+  expect(p.pane()).toMatch(/▸ prototype +内置 +必须 +跟随主会话 +跟随 *(\n|$)/u);
   expect(p.text()).toContain("只能由主窗口派出，在澄清阶段出界面原型（单个 HTML）。");
   const d = await roleDirsOnly();
   const catalog = await loadRoleCatalog({ ...d.dirs, parseFrontmatter, projectTrusted: true });
@@ -376,7 +386,7 @@ test("职责回车展开出说明、skills、MCP、正文、文件五行详情�
   const at = ["说明", "skills", "MCP", "正文", "文件"].map((label) => detail.findIndex((line) => line.includes(label)));
   expect(at.every((index) => index >= 0)).toBe(true);
   expect([...at].sort((a, b) => a - b)).toEqual(at);
-  expect(p.text()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 收起  C 复制");
+  expect(p.text()).toContain(AGENT_HINT_OPEN);
   p.press(ENTER);
   expect(selectedPaneLine(p)).toMatch(/^\s*▸ ui-worker/u);
   expect(p.pane()).not.toContain("┊");
@@ -395,7 +405,9 @@ test("展开详情里用顿号隔开的列表值放不下时在顿号之后断�
 
 test("复制：C 进入命名画面，格式不对或重名当场拦下，合规名触发 onCopy", async () => {
   const p = await page({ taken: { "ui-worker": "用户层" } });
-  p.press(RIGHT, DOWN, "c");
+  p.press(RIGHT);
+  moveTo(p, "worker");
+  p.press("c");
   const naming = p.pane();
   expect(paneParts(p.rows())[0]!.trim()).toBe("复制 worker 为新定义");
   expect(naming).toMatch(/ 新名称 +worker-copy█/u);
@@ -1162,7 +1174,7 @@ test("44 列焦点在目录时只画目录，没有分隔竖线，提示换成�
   const rows = p.rows(44);
   expect(rows.some((row) => row.includes("│"))).toBe(false);
   expect(p.text(44)).toContain("角色定义");
-  expect(p.text(44)).toMatch(/worker +2/u);
+  expect(p.text(44)).toMatch(/worker +8/u);
   expect(p.text(44)).not.toMatch(/名称 +来源/u);
   expect(p.text(44)).toContain("↑↓ 选分类  → 进入  Esc 退出");
 });
@@ -1319,8 +1331,8 @@ test("模型行底部说明在 36 列下折行后，任何一行都不以顿号�
 test("按键提示放不下时按两个空格分组折行，一组不被拆开，放得下时仍是一行", async () => {
   const screens: Array<{ hint: string; keys: string[] }> = [
     { hint: "↑↓ 选分类  → 进右栏  Esc 退出", keys: [] },
-    { hint: "←/Esc 回左栏  ↑↓ 选择  回车 详情  C 复制", keys: [RIGHT] },
-    { hint: "←/Esc 回左栏  ↑↓ 选择  回车 收起  C 复制", keys: [RIGHT, ENTER] },
+    { hint: AGENT_HINT, keys: [RIGHT] },
+    { hint: AGENT_HINT_OPEN, keys: [RIGHT, ENTER] },
     { hint: "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层", keys: toSection("models") },
     { hint: "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层", keys: toSection("switches") },
     { hint: "←/Esc 回左栏  ↑↓ 选择  回车 详情", keys: toSection("problems") },
@@ -1414,7 +1426,7 @@ test("复制内置 worker 生成的文件头部不含 model 和 thinking，仍�
 });
 
 test("80 列下在 PM 上回车改模型、在开关上回车改开关、在 worker 上按 C 命名时，目录仍完整显示，当前分类行是焦点在右栏的样式", async () => {
-  const cases: Array<[RegExp, string[], string]> = [[/模型 +3/u, toSection("models", ENTER), "模型"], [/开关 +2/u, toSection("switches", ENTER), "开关"], [/worker +2/u, [RIGHT, "c"], "worker"]];
+  const cases: Array<[RegExp, string[], string]> = [[/模型 +3/u, toSection("models", ENTER), "模型"], [/开关 +2/u, toSection("switches", ENTER), "开关"], [/worker +8/u, [RIGHT, "c"], "worker"]];
   for (const [cell, keys] of cases) {
     const p = await page();
     p.press(...keys);
@@ -1557,7 +1569,7 @@ test("修改合并方式的两步里，底部显示合并方式的说明，按�
 
 test("项目、用户、内置三层都有 worker 定义时，目录焦点底部按项目、用户、内置写份数", async () => {
   const p = await page({ projectWorker: true });
-  expect(p.text()).toContain("worker：写代码 · 3 份定义（项目 1 · 用户 1 · 内置 1）");
+  expect(p.text()).toContain("worker：写代码 · 9 份定义（项目 1 · 用户 1 · 内置 7）");
 });
 
 test("问题分类里按 C 和 R 不起作用：不触发回调，不进入命名或修改，不出现提示", async () => {
@@ -1577,4 +1589,173 @@ test("缺少 role 字段的定义文件在问题分类里显示一行，短原�
   enterSection(p, "problems");
   const row = paneParts(p.rows(200)).find((line) => line.includes("other.md"));
   expect(row).toMatch(/other\.md +用户 +不是 one-company 的定义，没有导入/u);
+});
+
+const isDataRow = (line: string, name: string) => firstWord(line) === name && /用户|项目|内置/u.test(line);
+const rowOf = (p: Page, name: string, width = 80) => rightParts(p.rows(width)).find((line) => isDataRow(line, name)) ?? "";
+const detailText = (p: Page) => squeeze(p.pane().replaceAll("┊", ""));
+
+test("定义开关：worker 分类表头写名称、来源、状态、模型、思考；通用定义状态是必须，专项开启；用户层关掉的显示关闭", async () => {
+  const p = await page({ user: oneCompany({ "disabled-agents": ["python-worker"] }) });
+  p.press(RIGHT);
+  expect(paneParts(p.rows())[2]).toMatch(/^\s*名称 +来源 +状态 +模型 +思考\s*$/u);
+  expect(rowOf(p, "worker")).toContain("必须");
+  expect(rowOf(p, "go-worker")).toContain("开启");
+  expect(rowOf(p, "python-worker")).toContain("关闭");
+  expect(rowOf(p, "python-worker")).not.toContain("开启");
+});
+
+test("定义开关：状态用颜色区分，必须灰、开启绿、关闭灰且名字也灰", async () => {
+  const p = await page({ user: oneCompany({ "disabled-agents": ["python-worker"] }) });
+  p.press(RIGHT);
+  const line = (name: string) => { const raw = p.lines().find((l) => plain(l).includes("│") && isDataRow(plain(l).slice(plain(l).indexOf("│") + 1), name))!; return raw.slice(raw.indexOf("│")); };
+  expect(line("worker")).toMatch(/<(muted|dim)>[^<]*必须/u);
+  expect(line("go-worker")).toMatch(/<success>[^<]*开启/u);
+  expect(line("python-worker")).toMatch(/<(muted|dim)>[^<]*python-worker/u);
+  expect(line("python-worker")).toMatch(/<(muted|dim)>[^<]*关闭/u);
+});
+
+test("定义开关：36 列进入右栏时去掉思考列、保留状态列，每行都不超过 36 列", async () => {
+  const p = await page({ user: oneCompany({ "disabled-agents": ["python-worker"] }) });
+  p.press(RIGHT);
+  const text = p.text(36);
+  expect(text).toMatch(/名称 +来源 +状态/u);
+  expect(text).not.toContain("思考");
+  for (const row of p.rows(36)) expect(visibleWidth(row), row).toBeLessThanOrEqual(36);
+  expect(rowOf(p, "go-worker", 36)).toContain("开启");
+});
+
+test("定义开关：在通用定义 reviewer 上按空格不触发开关回调，底部黄字写通用定义不能关闭", async () => {
+  const p = await page();
+  p.press(DOWN, RIGHT);
+  moveTo(p, "reviewer");
+  p.press(SPACE);
+  expect(p.toggles).toEqual([]);
+  expect(squeeze(p.text())).toContain(squeeze("reviewer 是通用定义，流程离不开它，不能关闭"));
+  expect(p.lines().join("\n")).toMatch(/<warning>[^\n]*reviewer 是通用定义/u);
+});
+
+test("定义开关：在 go-worker 上按空格触发开关回调，参数是 go-worker 条目", async () => {
+  const p = await page();
+  p.press(RIGHT);
+  moveTo(p, "go-worker");
+  p.press(SPACE);
+  expect(p.toggles).toEqual(["go-worker"]);
+});
+
+test("定义开关：定义分类的操作提示带空格 开关，展开时回车 详情换成回车 收起", async () => {
+  const p = await page();
+  p.press(RIGHT);
+  expect(p.text()).toContain(AGENT_HINT);
+  p.press(ENTER);
+  expect(p.text()).toContain(AGENT_HINT_OPEN);
+});
+
+test("定义开关：展开 go-worker 写开启默认值和自动加 go-reviewer", async () => {
+  const p = await page();
+  p.press(RIGHT);
+  moveTo(p, "go-worker");
+  p.press(ENTER);
+  expect(detailText(p)).toContain(squeeze("开启 · 默认值 · 切换后全局生效"));
+  expect(detailText(p)).toContain(squeeze("用了它的任务自动加 go-reviewer"));
+  expect(p.pane()).toMatch(/┊ 开关/u);
+  expect(p.pane()).toMatch(/┊ 审查/u);
+});
+
+test("定义开关：展开关闭的定义写关闭和来自哪一层，项目层关闭写来自项目层", async () => {
+  const u = await page({ user: oneCompany({ "disabled-agents": ["go-worker"] }) });
+  u.press(RIGHT);
+  moveTo(u, "go-worker");
+  u.press(ENTER);
+  expect(detailText(u)).toContain(squeeze("关闭 · 来自用户层"));
+  const j = await page({ project: oneCompany({ "disabled-agents": ["go-worker"] }) });
+  j.press(RIGHT);
+  moveTo(j, "go-worker");
+  j.press(ENTER);
+  expect(detailText(j)).toContain(squeeze("关闭 · 来自项目层"));
+});
+
+test("定义开关：展开项目层的定义，开关行写切换后本项目生效", async () => {
+  const p = await page({ projectWorker: true });
+  p.press(RIGHT);
+  moveTo(p, "proj-worker");
+  p.press(ENTER);
+  expect(detailText(p)).toContain(squeeze("开启 · 默认值 · 切换后本项目生效"));
+});
+
+test("定义开关：展开没有配对审查的用户定义 acme-worker 没有审查行", async () => {
+  const p = await page({ acmeWorker: true });
+  p.press(RIGHT);
+  moveTo(p, "acme-worker");
+  p.press(ENTER);
+  expect(p.pane()).toMatch(/┊ 开关/u);
+  expect(p.pane()).not.toMatch(/┊ 审查/u);
+});
+
+test("定义开关：展开通用定义 worker 没有开关行和审查行", async () => {
+  const p = await page();
+  p.press(RIGHT);
+  moveTo(p, "worker");
+  p.press(ENTER);
+  expect(p.pane()).toMatch(/┊ 说明/u);
+  expect(p.pane()).not.toMatch(/┊ 开关/u);
+  expect(p.pane()).not.toMatch(/┊ 审查/u);
+});
+
+const rawRow = (p: Page, name: string, width = 80) => {
+  const raw = p.lines(width).find((l) => plain(l).includes("│") && isDataRow(plain(l).slice(plain(l).indexOf("│") + 1), name))!;
+  return raw.slice(raw.indexOf("│"));
+};
+const switchRow = (p: Page) => p.lines().find((l) => plain(l).includes("┊") && plain(l).includes("开关")) ?? "";
+
+test("定义开关：开启后另一层仍写着关闭时，这一行名字是灰色，不是绿色高亮", async () => {
+  const warning = { tone: "warning", text: "go-worker 仍是关闭：项目层设置文件里也写了关闭" };
+  const p = await page({ project: oneCompany({ "disabled-agents": ["go-worker"] }), state: { section: "worker", focus: "pane", selectName: "go-worker", fresh: "go-worker", notice: warning } });
+  expect(rowOf(p, "go-worker")).toContain("关闭");
+  expect(rawRow(p, "go-worker")).not.toMatch(/<success>[^<]*go-worker/u);
+  expect(rawRow(p, "go-worker")).toMatch(/<(muted|dim)>[^<]*go-worker/u);
+  const on = await page({ state: { section: "worker", focus: "pane", selectName: "go-worker", fresh: "go-worker", notice: { tone: "ok", text: "已开启 go-worker · 全局生效" } } });
+  expect(rawRow(on, "go-worker")).toMatch(/<success>go-worker/u);
+});
+
+test("定义开关：展开 x-worker 时，同名前缀的 x-reviewer 定义格式错误，没有审查行", async () => {
+  const p = await page({ pairedBroken: true });
+  p.press(RIGHT);
+  moveTo(p, "x-worker");
+  p.press(ENTER);
+  expect(p.pane()).toMatch(/┊ 开关/u);
+  expect(p.pane()).not.toMatch(/┊ 审查/u);
+});
+
+test("定义开关：39、44、60 列进入 worker 和 reviewer 分类右栏，每行都不超过终端宽度", async () => {
+  for (const section of ["worker", "reviewer"] as const) {
+    for (const width of [39, 44, 60]) {
+      const p = await page();
+      enterSection(p, section);
+      for (const row of p.rows(width)) expect(visibleWidth(row), `${section} ${width} ${row}`).toBeLessThanOrEqual(width);
+      expect(p.text(width), `${section} ${width}`).toContain("状态");
+    }
+  }
+});
+
+test("定义开关：80 列 reviewer 分类里 python-reviewer、react-reviewer 名字完整不带省略号，表头仍有思考", async () => {
+  const p = await page();
+  enterSection(p, "reviewer");
+  expect(rowOf(p, "python-reviewer")).toContain("python-reviewer");
+  expect(rowOf(p, "react-reviewer")).toContain("react-reviewer");
+  expect(p.pane()).not.toContain("…");
+  expect(p.pane()).toMatch(/名称 +来源 +状态 +模型 +思考/u);
+});
+
+test("定义开关：展开后开关行开启是绿色，关闭是灰色", async () => {
+  const on = await page();
+  on.press(RIGHT);
+  moveTo(on, "go-worker");
+  on.press(ENTER);
+  expect(switchRow(on)).toMatch(/<success>[^<]*开启/u);
+  const off = await page({ user: oneCompany({ "disabled-agents": ["go-worker"] }) });
+  off.press(RIGHT);
+  moveTo(off, "go-worker");
+  off.press(ENTER);
+  expect(switchRow(off)).toMatch(/<(muted|dim)>[^<]*关闭/u);
 });

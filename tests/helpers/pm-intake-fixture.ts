@@ -176,14 +176,14 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
   allocation.pmPath = root;
   const rootInfo = await lstat(root);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
-    throw new Error(`PM夹具根不是自产真实目录；保全路径 ${root}`);
+    throw new Error(`PM 测试环境根不是自产真实目录；保全路径 ${root}`);
   }
   allocation.pmReceipt = Object.freeze({ path: root, dev: rootInfo.dev, ino: rootInfo.ino });
   const repo = await createRepoFixture();
   const repoReceipt = repoFixtureRootReceipt(repo);
-  if (!repoReceipt) throw new Error("PM夹具未取得原repo根收据");
+  if (!repoReceipt) throw new Error("PM 测试环境未取得原repo根收据");
   allocation.repoReceipt = Object.freeze({ path: repoReceipt.path, dev: repoReceipt.dev, ino: repoReceipt.ino });
-  if (repo.root !== repoReceipt.path) throw new Error("PM夹具repo公开根与原收据不一致");
+  if (repo.root !== repoReceipt.path) throw new Error("PM 测试环境repo公开根与原收据不一致");
   const dataRoot = join(root, "data"), identity = await repositoryIdentity(repo.root);
   let now = Date.now();
   const config = { repositoryRoot: repo.root, dataRoot, repoId: identity.repoId };
@@ -193,15 +193,15 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
   let saved = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title, body });
   const worktree = await addWorktree(repo);
   const worktreeReceipt = worktreeFixtureRootReceipt(worktree);
-  if (!worktreeReceipt) throw new Error("PM夹具未取得原worktree根收据");
+  if (!worktreeReceipt) throw new Error("PM 测试环境未取得原worktree根收据");
   allocation.worktreeReceipt = Object.freeze({ path: worktreeReceipt.path, dev: worktreeReceipt.dev, ino: worktreeReceipt.ino });
-  if (worktree.root !== worktreeReceipt.path) throw new Error("PM夹具worktree公开根与原收据不一致");
+  if (worktree.root !== worktreeReceipt.path) throw new Error("PM 测试环境worktree公开根与原收据不一致");
   const baseCommit = (await exec("git", ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
   await state.bindWorkspace({ requirementId: saved.requirementId, version: state.read(saved.requirementId).version,
     path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
   let confirmOperationId = uuidv7(), useRetained = false;
   let revisionPlan: { units: Record<string, { globalConstraint?: boolean; appliesTo?: string[]; dependsOn?: string[]; disposition?: "pending-description" }> } | undefined;
-  // 夹具正文用 goal 与 scenario 两个板块，批准并授权实施时这两个板块下已确认的段落都是实施目标
+  // 样例需求正文用 goal 与 scenario 两个板块，批准并授权实施时这两个板块下已确认的段落都是实施目标
   const docSpec = { skillHash: `sha256:${"f".repeat(64)}`, sections: [{ id: "goal", title: "目标", goal: true as const },
     { id: "scenario", title: "场景", goal: true as const }, { id: "implementation", title: "实现", record: "implementation" as const },
     { id: "acceptance", title: "验收", record: "acceptance" as const }] };
@@ -332,7 +332,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
     decisionIds: intakeManifestDecisionIds(authorized.manifest), questionIds: [], requiredScenarioIds: [...sourceProvider.scenarioIds] };
   const dbPath = repositoryDatabase(dataRoot, identity.repoId);
   if (!allocation.pmReceipt || !allocation.repoReceipt || !allocation.worktreeReceipt) {
-    throw new Error("PM夹具三根原收据不完整");
+    throw new Error("PM 测试环境三根原收据不完整");
   }
   const fixture: PmIntakeFixture = {
     root, repositoryRoot: repo.root, dataRoot, repoId: identity.repoId, requirementId: saved.requirementId, service: approver, state, host, intakeStore, intake,
@@ -373,7 +373,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
       repoRoot: allocation.repoReceipt?.path ?? null, worktreeRoot: allocation.worktreeReceipt?.path ?? null,
       processCleanup: "unconfirmed", memoryCleanupFailed: cleanupErrors.length > 0 }));
     const paths = [allocation.pmPath, allocation.repoReceipt?.path, allocation.worktreeReceipt?.path].filter((path): path is string => Boolean(path));
-    throw new AggregateError([error, ...cleanupErrors], `PM夹具初始化失败${paths.length ? `；保全自有根 ${paths.join(" / ")}` : "；未取得分配路径"}`);
+    throw new AggregateError([error, ...cleanupErrors], `PM 测试环境初始化失败${paths.length ? `；保全自有根 ${paths.join(" / ")}` : "；未取得分配路径"}`);
   }
 }
 // PM_FIXTURE_FACTORY_END

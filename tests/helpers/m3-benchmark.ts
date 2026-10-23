@@ -49,7 +49,7 @@ export function specText(id: number, revision = 0): string {
       acceptance: [{ id: "result", given: "输入有效", when: "处理", then: `结果为${String(revision).padStart(4, "0")}` }] }] })}\n`;
 }
 export function gitEnv(home: string): NodeJS.ProcessEnv {
-  // 不继承Git仓库、配置注入、hook或用户身份；所有Git写入只发生在夹具根。
+  // 不继承Git仓库、配置注入、hook或用户身份；所有Git写入只发生在测试根。
   return { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, TMPDIR: home,
     GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0",
     GIT_AUTHOR_NAME: "m3-benchmark", GIT_AUTHOR_EMAIL: "benchmark@localhost", GIT_COMMITTER_NAME: "m3-benchmark",
@@ -83,7 +83,7 @@ async function fixture(root: string, config: BenchmarkConfig, archives: number, 
   const sourceFiles = manifest.length;
   const textBytes = manifest.reduce((sum, item) => sum + item.bytes, 0);
   if (sourceFiles !== config.files || new Set(manifest.map((item) => item.sha256)).size !== config.files || textBytes > config.maxTextBytes) {
-    throw new Error("夹具规模、内容唯一性或文本预算不匹配");
+    throw new Error("测试素材规模、内容唯一性或文本预算不匹配");
   }
   await mkdir(join(repo, PRD_ARCHIVE_DIRECTORY), { recursive: true, mode: 0o700 });
   for (let i = 0; i < archives; i++) {
@@ -240,7 +240,7 @@ async function main(): Promise<void> {
         failures++;
         jsonFile(join(groupOutput, "setup-error.json"), { error: String(error) });
       } finally {
-        // 所有本脚本启动的Node已close；只删除本轮生成的夹具，报告保留。
+        // 所有本脚本启动的Node已close；只删除本轮生成的测试环境，报告保留。
         if (fixtureSafeToRemove) await rm(fixtureRoot, { recursive: true, force: true });
         let exists = true; try { await lstat(fixtureRoot); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") exists = false; else throw error; }
         jsonFile(join(groupOutput, "cleanup.json"), { fixtureRoot, removed: !exists, fixtureSafeToRemove });

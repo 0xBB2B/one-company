@@ -34,9 +34,9 @@ async function world(probes?: ShellRegistryProbes, timeSource?: FakeTimeSource) 
   const snapshot = () => withDatabase(database, (db) => JSON.stringify({ runs: db.list("runs"), sessions: db.list("sessions"), questions: db.list("relay_questions") }));
   async function create(state: RunState = "queued", parent?: RunRecord, provider = "provider-a") {
     const run = await runs.create({ kind: parent ? "role" : "requirement", role: parent ? "one-company.worker" : undefined, parentRunId: parent?.id, requirement: parent?.requirement ?? uuidv7(), task: SECRET, cwd: fixture.repo.root, writePaths: ["src"], readPaths: [], model: { provider, id: "test" }, thinking: "off", mcp: [], pendingDispatch: { instructions: SECRET }, reportPath: join(fixture.repo.root, "must-not-create.md") });
-    // 无授权的历史记录夹具，不经过会话工厂或重新启动入口。
+    // 无授权的历史记录测试素材，不经过会话工厂或重新启动入口。
     withDatabase(database, (db) => { const r = db.read<any>("runs", run.id)!; db.update("runs", run.id, r.version, { ...r.data, state, stateReason: SECRET, result: { verdict: "PASS", body: SECRET }, commands: [SECRET] }); });
-    const result = await runs.get(run.id); if (!result.ok) throw new Error("夹具记录损坏"); return result.run;
+    const result = await runs.get(run.id); if (!result.ok) throw new Error("测试记录损坏"); return result.run;
   }
   async function spawn(run: RunRecord, script = "setInterval(()=>{},1000)") {
     const result = await shells.spawn({ taskId: uuidv7(), host: { kind: "role", id: run.id, role: run.role, runId: run.id }, command: process.execPath, args: ["-e", script], cwd: fixture.repo.root, mode: "background", runToken: run.shellToken });
@@ -223,7 +223,7 @@ describe("持久重查、只读元数据与完整停止覆盖", () => {
   test("R20 close 遍历全部运行记录，停止排在 100 条之外的运行的真实 Shell", async () => {
     const w = await world({ ps: async () => [] }); const template = await w.create("stopped"); const ids: string[] = [];
     withDatabase(w.database, (db) => db.transaction(() => { for (let i = 0; i < 105; i++) { const id = uuidv7(); ids.push(id); db.create("runs", id, { ...template, id, shellToken: id }, id); } }));
-    const last = await w.runs.get(ids.at(-1)!); if (!last.ok) throw new Error("夹具缺失"); const task = await w.spawn(last.run);
+    const last = await w.runs.get(ids.at(-1)!); if (!last.ok) throw new Error("测试记录缺失"); const task = await w.spawn(last.run);
     expect(alive(task.pid)).toBe(true);
     await w.manager.close(); expect(alive(task.pid)).toBe(false); expect(alive(-task.pgid)).toBe(false);
   }, 30_000);

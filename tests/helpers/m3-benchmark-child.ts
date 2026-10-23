@@ -167,7 +167,7 @@ async function events() {
   const state = await RequirementStateStore.open(options);
   const eventService = await RequirementEventService.open(options);
   disposeEvents = () => eventService.dispose();
-  const created = await requirements.create({ requestId: uuidv7(), operationId: uuidv7(), title: "测量夹具", body: "BASELINE_0" });
+  const created = await requirements.create({ requestId: uuidv7(), operationId: uuidv7(), title: "测量样例", body: "BASELINE_0" });
   const worktree = join(job.fixtureRoot, "event-worktree");
   gitRun(job.git, job.repo, ["worktree", "add", "-b", "benchmark-events", worktree], job.fixtureRoot);
   const baseCommit = gitRun(job.git, worktree, ["rev-parse", "HEAD"], job.fixtureRoot);
@@ -211,9 +211,9 @@ async function events() {
         guard();
         assert.equal((await eventService.poll({ lease })).status, "caught_up", "样本开始不得已有积压");
         const draft = await requirements.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(),
-          version: state.read(created.requirementId).version, title: "测量夹具", body: `DRAFT_NOT_APPROVED_${i}` });
+          version: state.read(created.requirementId).version, title: "测量样例", body: `DRAFT_NOT_APPROVED_${i}` });
         const candidate = await requirements.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(),
-          version: draft.version, title: "测量夹具", body: `APPROVED_${i + 1}` });
+          version: draft.version, title: "测量样例", body: `APPROVED_${i + 1}` });
         const confirm = await manifestConfirmInput(options, { requirementId: created.requirementId, savedOperationId: candidate.operationId });
         const saveStarted = performance.now();
         const approved = await requirements.confirmUpdate(confirm);

@@ -29,6 +29,7 @@ export interface PmToolsInput {
   epoch: number;
   /** 宿主核验本 PM 物理会话仍存活；模型参数不能让它返回 true。 */
   alive: () => boolean;
+  agentDirectory?: Parameters<typeof createPlanManageTool>[0]["agentDirectory"];
   /** 核验本运行仍持有当前 PM 租约。 */
   checkLease: () => Promise<void>;
   /** 提交时的批准基线，由宿主读取当前记录，写入工具结果供接手核对比对。 */
@@ -36,7 +37,7 @@ export interface PmToolsInput {
   /** 由运行管理器执行的子代理派工与控制；只作用于本 PM 派出的运行。 */
   agents: {
     dispatch(taskId: string, mode: { retry: { reason: string; maxTurns: number } | null; rework: { reason: string; maxTurns: number } | null;
-      review: { maxTurns: number } | undefined }): Promise<unknown>;
+      review: { maxTurns: number; agent?: string; reason?: string } | undefined }): Promise<unknown>;
     explore(request: { question: string; clues: string[]; source: ExploreSourceRequest }, maxTurns: number): Promise<unknown>;
     control(action: "status" | "pause" | "resume" | "stop", runId: string): Promise<unknown>;
     /** 有界能力目录：只含名称、职责、描述与来源，不含定义正文或 skill 正文。 */
@@ -53,7 +54,8 @@ const PM_ACTION_SHAPES: Partial<Record<CoreAction<"agent_manage">, TSchema[]>> =
       [kind]: Type.Optional(Type.Object({ reason: Type.String({ minLength: 1, maxLength: 1024 }), maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) },
         { additionalProperties: false })) }, { additionalProperties: false })),
     Type.Object({ action: Type.Literal("dispatch"), taskId: Type.String({ pattern: UUID_V7 }),
-      review: Type.Object({ maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) }, { additionalProperties: false }) }, { additionalProperties: false }),
+      review: Type.Object({ maxTurns: Type.Integer({ minimum: 1, maximum: 100 }), agent: Type.Optional(Type.String({ pattern: "^[a-z0-9][a-z0-9-]{0,63}$" })),
+        reason: Type.Optional(Type.String({ maxLength: 1024 })) }, { additionalProperties: false }) }, { additionalProperties: false }),
     Type.Object({ action: Type.Literal("dispatch"), role: Type.Literal("explore"), question: Type.String({ minLength: 1, maxLength: 1500 }),
       clues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })), ...EXPLORE_WEB_QUERY,
       maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) }, { additionalProperties: false }),
@@ -86,11 +88,11 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
     const workflow = track(await createWorkflowManageTool({ ...shared, deliveryMode: input.deliveryMode, authorize, grant: { ...identity(), lease: input.lease } }));
     const verification = track(await createVerificationRunTool({ ...shared, authorize, grant: { ...identity(), epoch: input.epoch } }));
     const { branch: _branch, ...planIdentity } = identity();
-    const plan = track(await createPlanManageTool({ ...shared, authorize, grant: { ...planIdentity, lease: input.lease } }));
+    const plan = track(await createPlanManageTool({ ...shared, authorize, agentDirectory: input.agentDirectory, grant: { ...planIdentity, lease: input.lease } }));
     return {
       tools: [
         toPiTool("requirement_manage", "读取本需求已批准的 PRD 正文、章节（read）或两个批准版本之间的准确差异（diff，按 fromRevision/toRevision 查，可重复查）；metadata 看状态；结果的 coverage.nextCursor 不为空时用 next 带上它读下一页；不能读取草稿、其他需求或已关闭需求。", REQUIREMENT_READ_PARAMETERS, read),
-        toPiTool("workflow_manage", "查看状态、进入/退出检查阶段、提交中断或等待决策、交付核对；交付核对通过后以 report 提交完成报告（note 写给用户的说明）等待用户验收；等待你处置的任务自己处理不了时，以 escalate（taskId 与 note：卡在哪、需要用户决定什么）交用户裁决；还没派出的任务遇到需要用户决定的问题（如缺原型、要新增依赖）也可以 escalate。关闭需求只能由用户经主代理决定。", WORKFLOW_MANAGE_PARAMETERS, workflow),
+        toPiTool("workflow_manage", "查看状态、进入/退出检查阶段、提交中断或等待决策、交付核对；交付核对通过后以 report 提交完成报告（note 写给用户的说明）等待用户验收；等待你处置的任务自己处理不了时，以 escalate（taskId 与 note：卡在哪、需要用户决定什么）交用户裁决；还没派出的任务遇到需要用户决定的问题（如缺原型、要新增依赖）也可以 escalate；审查中缺条件、本轮没有审查在跑时也可以。关闭需求只能由用户经主代理决定。", WORKFLOW_MANAGE_PARAMETERS, workflow),
         toPiTool("verification_run", "在绑定工作区的受控沙箱里运行正式检查命令，或查询、停止运行；status 也能查看本需求子代理提交里引用的验证记录（命令、退出码和输出末尾）。", VERIFICATION_RUN_PARAMETERS, verification),
         toPiTool("plan_manage", "维护本需求计划：propose 提出、update 修改、confirm 冻结为可执行基线（AI 决策，不是用户授权）、read 读取、assess-update 逐任务影响复核。接手核对通过且有实施授权才能提出或修改。", PLAN_MANAGE_PARAMETERS, plan),
         intakeSubmitTool(input),
@@ -141,7 +143,7 @@ export function agentManageTool(input: PmToolsInput): ToolDefinition {
   return {
     name: "one_company_agent_manage",
     label: "agent_manage",
-    description: "dispatch 按已冻结计划中的任务派出子代理，轮次上限取任务登记值；任务首次尝试未完成时可带 retry（原因与新的轮次上限）重试一次，再未完成即等待用户裁决。worker 任务完成后进入待审查，带 review（轮次上限）派 reviewer 审查该任务；审查打回后带 rework（原因与新的轮次上限）派 worker 返修一次，再次打回即等待用户裁决。所在目录与执行中、待审查、待返修任务重叠的 worker 任务不能同时派出。dispatch role=explore 派出只读检索（问题、线索与轮次上限；不给 webQuery 时在需求工作区内检索本地文件，给出 webQuery 则联网检索），立即返回运行编号，结果到达后自动注入本会话，可同时派出多个。status/pause/resume/stop 控制本 PM 派出的运行。catalog 按职责分页列出可用角色定义（名称、描述、来源），供在计划任务里用 agent 指定专业定义；用户明确指定的定义不可用时，不自行改用其他定义，向用户提问。",
+    description: "dispatch 按已冻结计划中的任务派出子代理，轮次上限取任务登记值；任务首次尝试未完成时可带 retry（原因与新的轮次上限）重试一次，再未完成即等待用户裁决。worker 任务完成后进入待审查，带 review 派一次审查，程序同时派出通用和专项审查（review 给轮次上限），返回本轮启动成功的审查运行编号和启动失败的原因；review 里加 agent 只单独派名单里的这一个（审查没交出结论时用它重试，可调整轮次上限），agent 是名单外的专项审查定义时须再给 reason，临时加进这个任务的审查名单；审查打回后带 rework（原因与新的轮次上限）派 worker 返修一次，再次打回即等待用户裁决。所在目录与执行中、待审查、待返修任务重叠的 worker 任务不能同时派出。dispatch role=explore 派出只读检索（问题、线索与轮次上限；不给 webQuery 时在需求工作区内检索本地文件，给出 webQuery 则联网检索），立即返回运行编号，结果到达后自动注入本会话，可同时派出多个。status/pause/resume/stop 控制本 PM 派出的运行。catalog 按职责分页列出可用角色定义（名称、描述、来源），供在计划任务里用 agent 指定专业定义；用户明确指定的定义不可用或已关闭时，不自行改用其他定义，向用户提问。",
     parameters: PM_AGENT_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams) {
@@ -156,7 +158,7 @@ export function agentManageTool(input: PmToolsInput): ToolDefinition {
     if (!Value.Check(PM_AGENT_MANAGE_PARAMETERS, rawParams)) throw new AdvisedError("invalid_shape",
       { why: "参数不符合该动作的格式（retry、rework、review 三者最多给一个；轮次上限是 1 到 100 的整数）", next: "按工具说明改正字段后重试" });
     const params = rawParams as { action: "dispatch" | "status" | "pause" | "resume" | "stop" | "catalog"; taskId?: string; runId?: string;
-      retry?: { reason: string; maxTurns: number }; rework?: { reason: string; maxTurns: number }; review?: { maxTurns: number }; role?: string; question?: string; clues?: string[]; webQuery?: string; maxTurns?: number; cursor?: number };
+      retry?: { reason: string; maxTurns: number }; rework?: { reason: string; maxTurns: number }; review?: { maxTurns: number; agent?: string; reason?: string }; role?: string; question?: string; clues?: string[]; webQuery?: string; maxTurns?: number; cursor?: number };
     if (!authorizeToolAction("pm", "agent_manage", params.action)) throw new AdvisedError("action_not_allowed",
       { why: `PM 的职责不允许 agent_manage 的 ${params.action} 动作`, next: "改用 PM 职责内的动作" });
     const result = params.action === "catalog"

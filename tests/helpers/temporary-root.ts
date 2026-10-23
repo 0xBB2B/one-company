@@ -184,7 +184,7 @@ export function cleanupTemporaryRoot(): void {
     rmdirSync(root);
     delete testProcess[ROOT_PROPERTY];
   } catch {
-    // 非空目录保留，用于暴露未收尾的夹具或子进程。
+    // 非空目录保留，用于暴露未收尾的测试环境或子进程。
   }
 }
 

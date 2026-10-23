@@ -12,7 +12,7 @@ export interface PmStall { pmRunId: string; at: number; lastText: string; log: s
 
 /** 计入被拒次数的只有改了计划就能解决的内容问题（含目标被已有尝试的任务占住）；身份、租约、接手门槛、待复核更新、并发改动与任务状态不允许（要等而不是改）都不算。 */
 export const PLAN_CONTENT_CODES: ReadonlySet<string> = new Set(["invalid_shape", "plan_exists", "plan_missing", "unknown_unit",
-  "unit_not_authorized", "dependency_invalid", "coverage_incomplete", "goal_held"]);
+  "unit_not_authorized", "dependency_invalid", "agent_invalid", "coverage_incomplete", "goal_held"]);
 
 interface Ref { dataRoot: string; repoId: string }
 

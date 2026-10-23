@@ -419,7 +419,7 @@ test("未知 socket 不从路径猜 dataRoot，显式路径不匹配也拒绝写
 test("remove 先 fence 资源；结构化外来参数和后来可变 worktree 均不取得删除权", async () => {
   const unknownRoot = await ownedTempRoot("daemon-harness-unknown-");
   const forged = runInNewContext(`({ home: { home: ${JSON.stringify(unknownRoot)}, agentDir: "x", dataRoot: "x", env: {} }, repo: { root: ${JSON.stringify(unknownRoot)}, worktrees: [] }, repoDir: ${JSON.stringify(unknownRoot)}, dataRoot: ${JSON.stringify(unknownRoot)}, repoId: "${"a".repeat(64)}", socketPath: "x" })`) as DaemonFixture;
-  await expect(removeDaemonFixture(forged)).rejects.toThrow(/未由本 daemon 夹具创建/);
+  await expect(removeDaemonFixture(forged)).rejects.toThrow(/未由本 daemon 测试环境创建/);
   expect(existsSync(unknownRoot)).toBe(true);
 
   const f = await fixture();

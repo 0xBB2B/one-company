@@ -99,7 +99,7 @@ test("展开内置 worker 详情：正文行写空，说明流程规矩由程序
   await writeRole(d.userDir, "vue-engineer", "description: 写 Vue\nrole: worker\nskills: [a]\nmcp: [docs]", "擅长 Vue\n");
   const p = await viewOf(d);
   p.view.handleInput(RIGHT);
-  p.view.handleInput("\x1b[B");
+  for (let i = 0; i < 20 && !/│ ▸ worker /u.test(p.text()); i++) p.view.handleInput("\x1b[B");
   p.view.handleInput(ENTER);
   const lines = p.lines();
   expect(p.text()).toMatch(/[▸▾] worker/u);
@@ -166,7 +166,7 @@ test("页面复制完成后底部提示：已复制到新文件路径，打开�
   await writeFile(join(root, "agent", "trust.json"), JSON.stringify({ [await realpath(join(root, "repo"))]: true }));
   const screens: string[] = [];
   const steps: Array<(keys: (...k: string[]) => void, text: string) => void> = [
-    (keys) => keys(RIGHT, "c", ...Array(11).fill(BACKSPACE), ..."vue-engineer", ENTER),
+    (keys) => keys(RIGHT, "c", ...Array(32).fill(BACKSPACE), ..."vue-engineer", ENTER),
     (keys) => keys(ENTER),
     (keys, text) => { screens.push(text); keys(ESC, ESC); },
   ];

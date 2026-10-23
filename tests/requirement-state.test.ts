@@ -33,9 +33,9 @@ async function world(authorize: RequirementStoreOptions["authorize"] = () => tru
     authorizeManifest: () => true, now: () => now };
   const store = await RequirementStateStore.open(options);
   const service = await RequirementService.open({ ...options, authorize: () => true });
-  const draft = (body = "状态正文") => service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "状态夹具", body });
+  const draft = (body = "状态正文") => service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "状态样例", body });
   const update = (requirementId: string, body: string) =>
-    service.updateDraft({ requirementId, operationId: uuidv7(), version: store.read(requirementId).version, title: "状态夹具", body });
+    service.updateDraft({ requirementId, operationId: uuidv7(), version: store.read(requirementId).version, title: "状态样例", body });
   const approve = async (requirementId: string, savedOperationId: string) => {
     const confirm = await manifestConfirmInput(options, { requirementId, savedOperationId });
     return store.recordApprovedVersion({ requirementId, version: confirm.version, receiptId: confirm.receiptId,

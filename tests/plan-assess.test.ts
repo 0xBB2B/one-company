@@ -224,7 +224,7 @@ test("M8M-AC1：任务已有 16 条尝试和 16 条审查记录时，用户再�
     const row = db.read<Record<string, unknown>>(TASKS, login.taskId)!;
     db.update(TASKS, login.taskId, row.version, { ...row.data, status: "awaiting_parent",
       attempts: past.map((runId) => ({ runId, maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" })),
-      reviews: past.map((attemptRunId) => ({ runId: uuidv7(), attemptRunId, maxTurns: 12, turnsUsed: 12, outcome: "turn_limit_reached" })),
+      reviews: past.map((attemptRunId, index) => ({ runId: uuidv7(), attemptRunId, maxTurns: 12, turnsUsed: 12, agent: "reviewer", round: index + 1, outcome: "turn_limit_reached" })),
       userDecision: { decisionId: uuidv7(), choice: "retry", maxTurns: 40, revision: 1, taskVersion: 1, usedByRunId: null, notified: true } });
   });
   const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };

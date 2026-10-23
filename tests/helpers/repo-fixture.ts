@@ -24,13 +24,13 @@ const workspaceRootReceipts = new WeakMap<object, OwnedRoot>();
 const repoWorktreeReceipts = new WeakMap<object, OwnedRoot[]>();
 const worktreeRootReceipts = new WeakMap<object, OwnedRoot>();
 
-/** 只向持有原始 createRepoFixture 返回对象的夹具提供主根分配收据。 */
+/** 只向持有原始 createRepoFixture 返回对象的测试环境提供主根分配收据。 */
 export function repoFixtureRootReceipt(fixture: RepoFixture): RepoFixtureRootReceipt | undefined {
   const receipt = repoRootReceipts.get(fixture);
   return receipt ? Object.freeze({ path: receipt.path, dev: receipt.dev, ino: receipt.ino }) : undefined;
 }
 
-/** 只向持有原始 addWorktree 返回对象的夹具提供worktree根分配收据。 */
+/** 只向持有原始 addWorktree 返回对象的测试环境提供worktree根分配收据。 */
 export function worktreeFixtureRootReceipt(fixture: WorktreeFixture): WorktreeFixtureRootReceipt | undefined {
   const receipt = worktreeRootReceipts.get(fixture);
   return receipt ? Object.freeze({ path: receipt.path, dev: receipt.dev, ino: receipt.ino }) : undefined;
@@ -46,11 +46,11 @@ async function allocateOwnedRoot(prefix: string, kind: OwnedRoot["kind"]): Promi
   try { info = await lstat(path); }
   catch (error) {
     reportPreserved(path, "分配后的根身份无法确认");
-    throw new PreserveFixtureRootError([error], `Repo夹具根身份无法确认；保全自有根 ${path}`);
+    throw new PreserveFixtureRootError([error], `测试仓库根身份无法确认；保全自有根 ${path}`);
   }
   if (!info.isDirectory() || info.isSymbolicLink()) {
     reportPreserved(path, "分配后的根不是自产真实目录");
-    throw new PreserveFixtureRootError([], `Repo夹具根不是自产真实目录；保全路径 ${path}`);
+    throw new PreserveFixtureRootError([], `测试仓库根不是自产真实目录；保全路径 ${path}`);
   }
   const owned = { path, dev: info.dev, ino: info.ino, kind };
   return owned;
@@ -60,10 +60,10 @@ async function assertOwnedRoot(root: OwnedRoot): Promise<void> {
   let current;
   try { current = await lstat(root.path); }
   catch (error) {
-    throw new PreserveFixtureRootError([error], `Repo夹具自产根身份复验失败；保全自有根 ${root.path}`);
+    throw new PreserveFixtureRootError([error], `测试仓库自产根身份复验失败；保全自有根 ${root.path}`);
   }
   if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== root.dev || current.ino !== root.ino) {
-    throw new PreserveFixtureRootError([], `Repo夹具根归属已变化；保全自有根 ${root.path}`);
+    throw new PreserveFixtureRootError([], `测试仓库根归属已变化；保全自有根 ${root.path}`);
   }
 }
 
@@ -76,23 +76,23 @@ function settledCommandFailure(error: unknown): boolean {
 async function failCreation(root: OwnedRoot, error: unknown): Promise<never> {
   if (error instanceof PreserveFixtureRootError) {
     reportPreserved(root.path, error.message);
-    throw new AggregateError([error], `Repo夹具创建失败；保全自有根 ${root.path}`);
+    throw new AggregateError([error], `测试仓库创建失败；保全自有根 ${root.path}`);
   }
   let current;
   try { current = await lstat(root.path); }
   catch (cleanupError) {
     if ((cleanupError as NodeJS.ErrnoException).code === "ENOENT") throw error;
     reportPreserved(root.path, "自产根身份复验失败");
-    throw new AggregateError([error, cleanupError], `Repo夹具清理前身份复验失败；保全自有根 ${root.path}`);
+    throw new AggregateError([error, cleanupError], `测试仓库清理前身份复验失败；保全自有根 ${root.path}`);
   }
   if (!current.isDirectory() || current.dev !== root.dev || current.ino !== root.ino) {
     reportPreserved(root.path, "根归属已变化");
-    throw new AggregateError([error], `Repo夹具根归属已变化；保全自有根 ${root.path}`);
+    throw new AggregateError([error], `测试仓库根归属已变化；保全自有根 ${root.path}`);
   }
   try { await rm(root.path, { recursive: true, force: true }); }
   catch (cleanupError) {
     reportPreserved(root.path, "自产根清理未确认");
-    throw new AggregateError([error, cleanupError], `Repo夹具清理失败；保全自有根 ${root.path}`);
+    throw new AggregateError([error, cleanupError], `测试仓库清理失败；保全自有根 ${root.path}`);
   }
   throw error;
 }
@@ -198,7 +198,7 @@ export async function addWorktree(repo: RepoFixture): Promise<WorktreeFixture> {
     await assertOwnedRoot(owned);
     worktrees.push(owned.path);
     const ownedWorktrees = repoWorktreeReceipts.get(repo);
-    if (!ownedWorktrees) throw new Error("Repo夹具缺少原始worktree分配账本");
+    if (!ownedWorktrees) throw new Error("测试仓库缺少原始worktree分配账本");
     ownedWorktrees.push(Object.freeze({ ...owned }));
     const fixture = { root: owned.path, branch };
     worktreeRootReceipts.set(fixture, Object.freeze({ ...owned }));

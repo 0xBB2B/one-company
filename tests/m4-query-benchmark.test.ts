@@ -138,7 +138,7 @@ async function helperSource(): Promise<string> {
   return readFile(new URL("./helpers/m4-query-benchmark.ts", import.meta.url), "utf8");
 }
 
-test("smoke通过真实SQLite、认证socket上的knowledge.query，并清理夹具资源", async () => {
+test("smoke通过真实SQLite、认证socket上的knowledge.query，并清理测试资源", async () => {
   const parent = process.env.M4_QUERY_BENCHMARK_TEST_EVIDENCE_ROOT ?? tmpdir();
   const root = await mkdtemp(join(parent, "m4-query-benchmark-test-"));
   const output = join(root, "evidence");
@@ -187,7 +187,7 @@ test("smoke通过真实SQLite、认证socket上的knowledge.query，并清理夹
   }
 }, 180_000);
 
-test("关闭失败时非零退出、关闭字段如实且保留证据根，子进程结束后才限定清理注入夹具", async () => {
+test("关闭失败时非零退出、关闭字段如实且保留证据根，子进程结束后才限定清理注入的测试素材", async () => {
   const parent = process.env.M4_QUERY_BENCHMARK_TEST_EVIDENCE_ROOT ?? tmpdir();
   const root = await mkdtemp(join(parent, "m4-query-benchmark-fault-"));
   const output = join(root, "evidence");

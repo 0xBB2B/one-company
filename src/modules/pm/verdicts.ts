@@ -4,7 +4,7 @@ import { registeredApprovalManifestIn } from "../requirement/approval-manifest-s
 import { readCheckRoundIn, readVerificationIn } from "../verification/check-round.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
-import { implementScope } from "./plan-manage.ts";
+import { implementScope, readPlanIn } from "./plan-manage.ts";
 import { checked, counter, hash, id, object, positive } from "../requirement/requirement-contracts.ts";
 import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
 
@@ -32,6 +32,8 @@ export interface VerdictBinding {
   dataRoot: string; requirementId: string; repoId: string; workspaceId: string; epoch: number;
   /** reviewer 运行由派工服务绑定被审任务及其尝试；缺失时 reviewer 不能提交裁决。 */
   review?: { taskId: string; attemptRunId: string };
+  /** worker 运行所属任务：同一任务、同一任务版本里更早几次尝试的 debug 验证也可引用（先红后绿的红可能在前一次尝试里）。 */
+  workerTaskId?: string;
 }
 export type VerdictErrorCode = "invalid_shape" | "invalid_binding" | "out_of_scope";
 export class VerdictError extends Error {
@@ -85,12 +87,21 @@ export function submitVerdict(binding: VerdictBinding, grant: { role: "worker" |
       const outside = unverifiedOutsideImplement(db, binding.repoId, row!, payload.findings);
       if (outside.length) throw new VerdictError("out_of_scope", `${outside.join("、")} 不是已确认的实施目标或验收段落（待定、排除或交付流程要求），本轮不验：不要列为未验证，删掉或改为建议后重交`);
     }
+    const earlierRuns = grant.role === "worker" && binding.workerTaskId !== undefined
+      ? new Set((() => {
+        const task = readPlanIn(db, binding.requirementId)?.tasks.find((candidate) => candidate.taskId === binding.workerTaskId);
+        return task?.attempts.slice(task.attemptBase).map((attempt) => attempt.runId) ?? [];
+      })()) : new Set<string>();
     for (const verificationId of payload.verificationIds) {
       const run = readVerificationIn(db, verificationId)?.data;
       if (!run || run.repoId !== binding.repoId || run.requirementId !== binding.requirementId || run.epoch !== binding.epoch) throw new VerdictError("invalid_binding", verificationId);
-      if (ownDebug ? (run.kind !== "debug" || run.runId !== grant.runId) : (run.kind !== "formal" || run.checkRoundId !== payload.checkRoundId)) {
+      if (ownDebug ? (run.kind !== "debug" || (run.runId !== grant.runId && !earlierRuns.has(run.runId))) : (run.kind !== "formal" || run.checkRoundId !== payload.checkRoundId)) {
         throw new VerdictError("out_of_scope", verificationId);
       }
+    }
+    if (ownDebug && payload.verificationIds.length) {
+      const runs = payload.verificationIds.map((verificationId) => readVerificationIn(db, verificationId)!.data.runId);
+      if (runs.some((runId) => runId !== grant.runId) && !runs.includes(grant.runId)) throw new VerdictError("out_of_scope", "引用了更早尝试的验证，要有这次自己跑的验证");
     }
     const verdict = checked(Verdict, { format: "verdict/v1", verdictId: uuidv7(), requirementId: binding.requirementId, repoId: binding.repoId, workspaceId: binding.workspaceId,
       epoch: binding.epoch, runId: grant.runId, parentRunId: grant.parentRunId, role: grant.role, checkRoundId: payload.checkRoundId,

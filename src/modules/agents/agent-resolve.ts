@@ -63,6 +63,22 @@ export async function resolveModelChoice(input: {
   return { model, thinking };
 }
 
+export async function loadSkills(names: readonly string[], skillDirs: readonly string[], owner: string): Promise<{ skills: AgentFingerprint["skills"]; context: string }> {
+  const skills: AgentFingerprint["skills"] = [], bodies: string[] = [];
+  for (const skill of names) {
+    let loaded: { path: string; body: string } | undefined;
+    for (const dir of skillDirs) {
+      const path = join(dir, skill, "SKILL.md");
+      const body = await readFile(path, "utf8").catch(() => undefined);
+      if (body !== undefined) { loaded = { path, body }; break; }
+    }
+    if (!loaded) throw new AgentResolveError("skill_unavailable", `找不到 skill ${skill}（${owner} 声明）`);
+    skills.push({ name: skill, path: loaded.path, hash: sha256(loaded.body) });
+    bodies.push(`## skill：${skill}\n${loaded.body.trim()}`);
+  }
+  return { skills, context: bodies.join("\n\n") };
+}
+
 /**
  * 按名称取角色定义并核验：定义可用且职责一致、指定模型真实存在且配了凭据、思考等级受该模型支持、声明的 skills 都能找到；
  * 任一不满足即报错，不静默换定义、换模型或跳过 skill。
@@ -83,18 +99,7 @@ export async function resolveAgent(input: {
   if (definition.role !== input.role) throw new AgentResolveError("agent_unavailable", `${input.name} 的职责是 ${definition.role}，不能承担 ${input.role} 任务`);
   const { model, thinking } = await resolveModelChoice({ model: definition.model ?? null, thinking: definition.thinking ?? null,
     models: input.models, hasAuth: input.hasAuth, fallback: input.fallback });
-  const skills: AgentFingerprint["skills"] = [], bodies: string[] = [];
-  for (const skill of definition.skills ?? []) {
-    let loaded: { path: string; body: string } | undefined;
-    for (const dir of input.skillDirs) {
-      const path = join(dir, skill, "SKILL.md");
-      const body = await readFile(path, "utf8").catch(() => undefined);
-      if (body !== undefined) { loaded = { path, body }; break; }
-    }
-    if (!loaded) throw new AgentResolveError("skill_unavailable", `找不到 skill ${skill}（${input.name} 声明）`);
-    skills.push({ name: skill, path: loaded.path, hash: sha256(loaded.body) });
-    bodies.push(`## skill：${skill}\n${loaded.body.trim()}`);
-  }
-  return { definition, model, thinking, skillsContext: bodies.join("\n\n"),
+  const { skills, context: skillsContext } = await loadSkills(definition.skills ?? [], input.skillDirs, input.name);
+  return { definition, model, thinking, skillsContext,
     fingerprint: { name: entry.name, source: entry.source, path: entry.path, hash: await definitionHash(entry.path), skills } };
 }

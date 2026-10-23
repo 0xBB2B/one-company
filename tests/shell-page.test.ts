@@ -101,7 +101,7 @@ async function spawnLocal(registry: ShellRegistry, marker: string, script = "sle
     mode: "background",
     runToken: randomUUID(),
   });
-  if (!result.ok) throw new Error(`夹具启动失败：${result.reason}`);
+  if (!result.ok) throw new Error(`测试环境启动失败：${result.reason}`);
   spawnedPgids.push(result.task.pgid);
   await sleepMs(150);
   return taskId;
@@ -694,7 +694,7 @@ describe("ShellPage：不确定任务只能请求实际停止，不能人工裁�
       mode: "background",
       runToken: randomUUID(),
     });
-    if (!started.ok) throw new Error(`夹具启动失败：${started.reason}`);
+    if (!started.ok) throw new Error(`测试环境启动失败：${started.reason}`);
     spawnedPgids.push(started.task.pgid);
     await waitFor(() => registry.get(taskId)?.status === "uncertain", 5_000);
     return { registry, taskId };

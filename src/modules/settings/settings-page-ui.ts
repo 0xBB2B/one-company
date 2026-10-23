@@ -2,14 +2,14 @@ import { homedir } from "node:os";
 import { basename } from "node:path";
 import { decodeKittyPrintable, matchesKey, visibleWidth } from "@earendil-works/pi-tui";
 import {
-  checkList, fit, FOLLOW, layerRows, MARKER, pad, pickerHead, pickerList, SettingsTab, SOURCE, tableColumns, tableRow, untrustedLayerNote, wrapHint, wrapText,
+  checkList, definitionColumns, fit, FOLLOW, layerRows, MARKER, pad, pickerHead, pickerList, SettingsTab, SOURCE, STATE, tableColumns, tableRow, untrustedLayerNote, wrapHint, wrapText,
 } from "./agent-settings-ui.ts";
 import type { ClearSettingRequest, PageNotice, PickerRow, PageTheme, SaveSettingRequest, SettingsLayerName } from "./agent-settings-ui.ts";
 import type { ModelLike } from "../agents/agent-resolve.ts";
-import { MERGE_METHODS, SETTINGS_ROLES } from "./agent-settings.ts";
+import { agentSwitchOf, MERGE_METHODS, SETTINGS_ROLES } from "./agent-settings.ts";
 import type { MergeMethod, readAgentSettings } from "./agent-settings.ts";
 import type { DeliveryMode } from "../../core/exec/git-host.ts";
-import { NAME_PATTERN } from "../agents/roles.ts";
+import { isGenericDefinition, NAME_PATTERN } from "../agents/roles.ts";
 import type { RoleCatalog, RoleCatalogEntry, RoleDefinitionProblem, RoleSource } from "../agents/roles.ts";
 
 const ROLE_SECTIONS = ["worker", "reviewer", "qa", "explore", "prototype"] as const;
@@ -209,6 +209,7 @@ export class SettingsPageView {
     nameTaken(name: string): string | undefined; onCopy(request: CopyRequest): void; onClose(): void;
     onSaveSetting(request: SaveSettingRequest): void; onClearSetting(request: ClearSettingRequest): void;
     onSaveSwitch(request: SaveSwitchRequest): void; onClearSwitch(request: ClearSwitchRequest): void;
+    onToggleAgent(entry: RoleCatalogEntry): void;
   };
   private readonly settingsTab: SettingsTab;
   private readonly deliveryPicker: DeliveryModePicker;
@@ -322,7 +323,12 @@ export class SettingsPageView {
       else if (this.rowCount()) this.expanded = !this.expanded;
       return;
     }
-    if ((data === "c" || data === "C") && this.isDefinitions()) {
+    if ((data === " " || matchesKey(data, "space")) && this.isDefinitions()) {
+      const entry = this.entries()[this.cursor];
+      if (!entry) return;
+      if (isGenericDefinition(entry.name)) this.notice = { tone: "warning", text: `${entry.name} 是通用定义，流程离不开它，不能关闭` };
+      else this.options.onToggleAgent(entry);
+    } else if ((data === "c" || data === "C") && this.isDefinitions()) {
       const entry = this.entries()[this.cursor];
       if (entry?.definition) this.naming = { entry, text: `${entry.name}-copy` };
     } else if (data === "r" || data === "R") {
@@ -421,21 +427,30 @@ export class SettingsPageView {
   private marker(selected: boolean): string { return selected ? (this.expanded ? " ▾ " : " ▸ ") : "   "; }
 
   private definitionPane(width: number): string[] {
-    const { theme } = this.options, cols = tableColumns(width);
-    const lines = [theme.fg("muted", `${" ".repeat(MARKER)}${pad("名称", cols.name)}${pad("来源", SOURCE)}${pad("模型", cols.model)}思考`)];
+    const { theme } = this.options, cols = definitionColumns(width);
+    const lines = [theme.fg("muted", `${" ".repeat(MARKER)}${pad("名称", cols.name)}${pad("来源", SOURCE)}${pad("状态", STATE)}${pad("模型", cols.model)}${cols.thinking ? "思考" : ""}`)];
     this.entries().forEach((entry, index) => {
-      const definition = entry.definition!, selected = this.selectedRow(index);
+      const definition = entry.definition!, selected = this.selectedRow(index), state = this.switchStateOf(entry);
       const name = fit(entry.name, cols.name - 1), model = fit(definition.model ?? FOLLOW, cols.model - 1), thinking = definition.thinking ?? "跟随";
       lines.push(tableRow(theme, selected, width, [
         [this.marker(selected), (text) => theme.fg("accent", text)],
-        [name, this.fresh === entry.name ? (text) => theme.fg("success", text) : undefined], [" ".repeat(cols.name - visibleWidth(name))],
+        [name, !state.enabled ? (text) => theme.fg("dim", text) : this.fresh === entry.name ? (text) => theme.fg("success", text) : undefined], [" ".repeat(cols.name - visibleWidth(name))],
         [" ".repeat(6), undefined, this.sourceTag(entry.source)], [" ".repeat(SOURCE - 6)],
+        [pad(state.text, STATE), (text) => theme.fg(state.color, text)],
         [model, (text) => theme.fg(definition.model ? "accent" : "dim", text)], [" ".repeat(cols.model - visibleWidth(model))],
-        [thinking, definition.thinking ? undefined : (text) => theme.fg("dim", text)],
+        [cols.thinking ? thinking : "", definition.thinking ? undefined : (text) => theme.fg("dim", text)],
       ]));
       if (selected && this.expanded) lines.push(...this.entryDetail(entry, width));
     });
     return lines;
+  }
+
+  private switchStateOf(entry: RoleCatalogEntry): { enabled: boolean; text: string; color: string; detail?: { value: string; color: string } } {
+    const state = agentSwitchOf(entry.name, this.options.settings.disabledAgents);
+    if (state.generic) return { enabled: true, text: "必须", color: "muted" };
+    if (state.enabled) return { enabled: true, text: "开启", color: "success",
+      detail: { value: `开启 · 默认值 · 切换后${entry.source === "project" ? "本项目生效" : "全局生效"}`, color: "success" } };
+    return { enabled: false, text: "关闭", color: "dim", detail: { value: `关闭 · ${SOURCE_NOTE[state.from!]}`, color: "dim" } };
   }
 
   private detailLine(key: string, value: string, width: number, style?: (text: string) => string): string[] {
@@ -454,7 +469,11 @@ export class SettingsPageView {
 
   private entryDetail(entry: RoleCatalogEntry, width: number): string[] {
     const { theme } = this.options, definition = entry.definition!, dim = (text: string) => theme.fg("dim", text);
+    const state = this.switchStateOf(entry), prefix = entry.name.match(/^(.+)-worker$/)?.[1];
+    const paired = prefix !== undefined && this.options.catalog.roles.some((role) => role.available && role.name === `${prefix}-reviewer`);
     return [...this.detailLine("说明", definition.description, width),
+      ...(state.detail ? this.detailLine("开关", state.detail.value, width, (text) => theme.fg(state.detail!.color, text)) : []),
+      ...(state.detail && paired ? this.detailLine("审查", `用了它的任务自动加 ${prefix}-reviewer`, width) : []),
       ...this.detailLine("skills", definition.skills?.join("、") || "无", width, definition.skills?.length ? undefined : dim),
       ...this.detailLine("MCP", definition.mcp?.join("、") || "无", width, definition.mcp?.length ? undefined : dim),
       ...this.detailLine("正文", definition.body.trim() ? "已写 · 流程规矩由程序加上，优先于正文" : "空 · 流程规矩由程序加上，正文只写专长和偏好", width),
@@ -541,7 +560,7 @@ export class SettingsPageView {
     else if (this.switchPicker()) hint = this.switchPicker()!.hint();
     else if (this.focus === "nav") hint = "↑↓ 选分类  → 进右栏  Esc 退出";
     else if (this.section === "models" || this.section === "switches") hint = "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层";
-    else hint = `←/Esc 回左栏  ↑↓ 选择  回车 ${this.expanded ? "收起" : "详情"}${this.section === "problems" ? "" : "  C 复制"}`;
+    else hint = `←/Esc 回左栏  ↑↓ 选择  回车 ${this.expanded ? "收起" : "详情"}${this.section === "problems" ? "" : "  空格 开关  C 复制"}`;
     return narrow ? hint.replace("←/Esc 回左栏", "←/Esc 回目录").replace("→ 进右栏", "→ 进入") : hint;
   }
 

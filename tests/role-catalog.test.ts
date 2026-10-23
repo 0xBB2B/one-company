@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { loadRoleRules } from "../src/modules/agents/package-rules.ts";
-import { AGENT_ROLES, defaultRoleDir, loadRoleCatalog, readRoleDefinition } from "../src/modules/agents/roles.ts";
+import { AGENT_ROLES, defaultRoleDir, GENERIC_DEFINITIONS, isGenericDefinition, loadRoleCatalog, readRoleDefinition } from "../src/modules/agents/roles.ts";
 import { authorizeToolAction, CORE_TOOL_ACTIONS } from "../src/core/policy/core-permissions.ts";
 import type { CoreTool } from "../src/core/policy/core-permissions.ts";
 import { coreToolName, ROLE_HOST_TOOLS } from "../src/modules/agents/role-tools.ts";
@@ -28,18 +28,65 @@ async function writeRole(dir: string, name: string, frontmatter: string, body = 
 }
 
 describe("内置默认团队", () => {
-  test("安装资源恰好提供 explore、worker、reviewer、qa、prototype 五个职责定义，都不写模型和思考", async () => {
+  const GENERIC = ["explore", "prototype", "qa", "reviewer", "worker"];
+  const COMMON = ["web-api-security", "auth-session", "supply-chain"];
+  const BACKEND_TAIL = ["relational-db", "redis", "message-queue", "service-runtime"];
+  const STACKS = [
+    { stack: "go", label: "Go", skills: ["go-coding", "go-pitfalls", ...COMMON, ...BACKEND_TAIL] },
+    { stack: "node", label: "Node.js / TypeScript", skills: ["typescript-coding", "node-pitfalls", ...COMMON, ...BACKEND_TAIL] },
+    { stack: "python", label: "Python", skills: ["python-coding", "python-pitfalls", ...COMMON, ...BACKEND_TAIL] },
+    { stack: "java", label: "Java / Spring", skills: ["java-coding", "java-pitfalls", ...COMMON, ...BACKEND_TAIL] },
+    { stack: "vue", label: "Vue", skills: ["typescript-coding", "vue-coding", "vue-pitfalls", ...COMMON] },
+    { stack: "react", label: "React", skills: ["typescript-coding", "react-coding", "react-pitfalls", ...COMMON] },
+  ];
+  const SPECIALIZED = STACKS.flatMap(({ stack, label, skills }) => [
+    { name: `${stack}-worker`, role: "worker", label, skills },
+    { name: `${stack}-reviewer`, role: "reviewer", label, skills },
+  ]);
+  const loadDefaults = () => loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: true });
+
+  test("安装资源恰好提供 5 个通用定义和 12 个专项定义共 17 个文件，通用定义都不写模型和思考", async () => {
     const files = (await readdir(defaultRoleDir())).filter((name) => name.endsWith(".md")).sort();
-    expect(files).toEqual(["explore.md", "prototype.md", "qa.md", "reviewer.md", "worker.md"]);
-    const { roles } = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: "/nonexistent/u", projectDir: "/nonexistent/p", parseFrontmatter, projectTrusted: false });
-    expect(roles.map((entry) => entry.name).sort()).toEqual(["explore", "prototype", "qa", "reviewer", "worker"]);
-    for (const role of ["explore", "worker", "reviewer", "qa", "prototype"]) {
-      const entry = roles.find((candidate) => candidate.name === role);
+    expect(files).toEqual([...GENERIC, ...SPECIALIZED.map((entry) => entry.name)].map((name) => `${name}.md`).sort());
+    const { roles: entries } = await loadDefaults();
+    expect(entries.map((entry) => entry.name).sort()).toEqual([...GENERIC, ...SPECIALIZED.map((entry) => entry.name)].sort());
+    for (const role of GENERIC) {
+      const entry = entries.find((candidate) => candidate.name === role);
       expect(entry?.available, entry?.reason).toBe(true);
       expect(entry?.definition?.role).toBe(role);
       expect(entry?.definition?.model).toBeUndefined();
       expect(entry?.definition?.thinking).toBeUndefined();
     }
+  });
+
+  test("内置层加载后 17 份定义全部可用，problems 为空", async () => {
+    const { roles: entries, problems } = await loadDefaults();
+    expect(entries).toHaveLength(17);
+    expect(entries.filter((entry) => !entry.available).map((entry) => entry.name)).toEqual([]);
+    expect(problems).toEqual([]);
+  });
+
+  test("内置定义声明的 skill 都在包内 skills/ 下", async () => {
+    const { roles: entries } = await loadDefaults();
+    const declared = entries.flatMap((entry) => (entry.definition?.skills ?? []));
+    expect(declared.length).toBeGreaterThan(0);
+    for (const skill of new Set(declared)) {
+      await expect(readFile(join(defaultRoleDir(), "..", "skills", skill, "SKILL.md"), "utf8"), `缺少 skills/${skill}/SKILL.md`).resolves.toBeTruthy();
+    }
+  });
+
+  test.each(SPECIALIZED)("$name 的职责是 $role，skills 按约定顺序，description 与正文都写明「$label」，不写 model、thinking，mcp 为空", async ({ name, role, label, skills }) => {
+    const definition = await readRoleDefinition(join(defaultRoleDir(), `${name}.md`), parseFrontmatter);
+    expect(definition.name).toBe(name);
+    expect(definition.role).toBe(role);
+    expect(definition.skills).toEqual(skills);
+    expect(definition.description.trim()).not.toBe("");
+    expect(definition.description).toContain(label);
+    expect(definition.body.trim()).not.toBe("");
+    expect(definition.body).toContain(label);
+    expect(definition.model).toBeUndefined();
+    expect(definition.thinking).toBeUndefined();
+    expect(definition.mcp).toEqual([]);
   });
 
   test("prototype 内置定义正文为空，描述写明只能由主窗口派出，不写模型和思考", async () => {
@@ -65,7 +112,7 @@ describe("内置默认团队", () => {
     expect(body("qa")).toContain("审查已覆盖的不标未验证，审查没提到的才标未验证");
   });
   test("M8H-AC1：PM 角色说明写明提出或修改计划前先查一次角色目录", async () => {
-    expect(loadRoleRules("pm")).toContain("每次提出或修改计划前，先用 one_company_agent_manage action=catalog 查一次可用角色定义");
+    expect(loadRoleRules("pm")).toContain("每次提出或修改计划前，先用 one_company_agent_manage action=catalog 查可用角色定义");
   });
 
   test("M8D2-AC1：角色说明不重复共享规范里的搜索范围", async () => {
@@ -107,6 +154,20 @@ describe("内置默认团队", () => {
     expect(body("reviewer")).toContain("先按任务说明里的 git diff 命令查看本次改动，分清哪些定义是本次新增或修改的");
     expect(body("reviewer")).toMatch(/核对先红后绿[\s\S]*action=status 查看 worker 提交引用的验证记录[\s\S]*没有红的记录[\s\S]*列为阻塞/);
     expect(body("reviewer")).toContain("红绿可以出现在同一任务的任意一次尝试里；返修改动了可测行为时，这次返修须有新的红");
+  });
+});
+
+describe("通用定义判断", () => {
+  test.each(["worker", "reviewer", "qa", "explore", "prototype"])("%s 是通用定义", (name) => {
+    expect(isGenericDefinition(name)).toBe(true);
+  });
+
+  test.each(["go-reviewer", "acme-worker", "go-worker", ""])("%j 不是通用定义", (name) => {
+    expect(isGenericDefinition(name)).toBe(false);
+  });
+
+  test("GENERIC_DEFINITIONS 恰为 5 个通用名", () => {
+    expect([...GENERIC_DEFINITIONS].sort()).toEqual(["explore", "prototype", "qa", "reviewer", "worker"]);
   });
 });
 
@@ -222,7 +283,9 @@ describe("覆盖与导入规则", () => {
     const root = await tempDir();
     const path = await writeRole(join(root, "u"), role, `name: ${role}\ndescription: 旧定义\nrole: ${role}\nmodel: 5x/gpt-6-luna\nthinking: low`);
     const { roles, problems } = await load(join(root, "u"), join(root, "p"));
-    expect(roles.map((entry) => entry.name).sort()).toEqual(["explore", "prototype", "qa", "reviewer", "worker"]);
+    const names = roles.map((entry) => entry.name);
+    expect(names).not.toContain(role);
+    expect(names).toEqual(expect.arrayContaining(["explore", "prototype", "qa", "reviewer", "worker"]));
     expect(problems.filter((problem) => problem.reason === RETIRED)).toMatchObject([{ source: "user", dir: path }]);
   });
 

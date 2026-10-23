@@ -9,7 +9,7 @@ test("残留监听探测结束后目标被替换，失败竞争者不能删除�
   const root = await mkdtemp(join(temporaryRoot(), "socket-race-"));
   const socketPath = join(root, "daemon.sock");
   await writeFile(socketPath, "stale");
-  // 持有旧 inode，避免测试夹具立即复用刚删除的 inode。
+  // 持有旧 inode，避免测试环境立即复用刚删除的 inode。
   const old = await open(socketPath, "r");
   const server = new DaemonServer({ authToken: "fixture", repoId: "fixture", startedAt: "fixture" });
   const close = server.close.bind(server);

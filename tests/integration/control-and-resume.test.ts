@@ -22,7 +22,7 @@ function alive(pid: number) { try { process.kill(pid, 0); return true; } catch {
 async function world(blockedStop?: { value: boolean }) {
   const fixture = await createDaemonFixture(); cleanup.push(() => removeDaemonFixture(fixture));
   const database = repositoryDatabase(fixture.dataRoot, fixture.repoId);
-  const store = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: "历史数据夹具，不授予执行权限" });
+  const store = new RunStore({ dataRoot: fixture.dataRoot, repoId: fixture.repoId, daemonStartedAt: "历史测试数据，不授予执行权限" });
   const clock = createClock(); cleanup.push(() => clock.stopGapWatcher());
   const shells = new ShellRegistry({ clock, database, probes: blockedStop ? { kill(pid, signal) {
     if (signal !== 0 && blockedStop.value) throw Object.assign(new Error("测试停止系统调用被拒绝"), { code: "EPERM" });

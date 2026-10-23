@@ -80,7 +80,7 @@ test("格式排版不改变摘要指纹，内容和范围变化会改变", () =>
   expect(decisionDigest(input)).not.toBe(decisionDigest({ ...input, decisions: [{ ...item(), scope: "允许实施" }] }));
 });
 
-// 授权与主体核验均为明确的合成夹具；不证明真实用户交互或自然语言归纳正确。
+// 授权与主体核验均为明确的合成测试素材；不证明真实用户交互或自然语言归纳正确。
 async function world(overrides: Partial<ShortDecisionStoreOptions> = {}) {
   const root = await mkdtemp(join(temporaryRoot(), "short-decisions-")); cleanup.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture(); cleanup.push(() => removeRepoFixture(repo));

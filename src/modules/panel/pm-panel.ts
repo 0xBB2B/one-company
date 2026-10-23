@@ -1,7 +1,7 @@
-import { isKeyRelease, matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
+import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { MainExploreOverview } from "../explore/explore-dispatch.ts";
 import type { MainPrototypeOverview } from "../prototype/prototype-dispatch.ts";
-import type { PendingItem, PmOverview } from "./pm-overview.ts";
+import type { PanelReviewerRow, PanelReviewerState, PanelRunStats, PendingItem, PmOverview } from "./pm-overview.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 
 export interface PmPanelEntry { repoId: string; overview: PmOverview; fetchedAt: number }
@@ -22,6 +22,7 @@ export interface PmPanelOptions {
 type Row = { kind: "pm"; entry: PmPanelEntry } | { kind: "item"; entry: PmPanelEntry; item: PendingItem };
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const RETRY_TEXT = { turn_limit_reached: "没交出结论（轮数用满）", failed: "没交出结论（运行失败）", stopped: "没交出结论（被停止）", superseded: "被作废" } as const;
 const HINT = "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框";
 
 export function formatTokens(value: number): string {
@@ -77,7 +78,61 @@ export class PmPanel {
   hasRows(): boolean { return this.entries.length > 0; }
 
   private rows(): Row[] {
-    return this.entries.flatMap((entry) => [{ kind: "pm" as const, entry }, ...entry.overview.pendingItems.map((item) => ({ kind: "item" as const, entry, item }))]);
+    return this.entries.flatMap((entry) => [{ kind: "pm" as const, entry }, ...selectableItems(entry.overview).map((item) => ({ kind: "item" as const, entry, item }))]);
+  }
+
+  private runSuffix(stats: Partial<PanelRunStats>, running: boolean, fetchedAt: number): string {
+    const parts: string[] = [];
+    if (stats.turns !== undefined) parts.push(`↻${stats.turns}${stats.maxTurns == null ? "" : `/${stats.maxTurns}`}`);
+    if (stats.elapsedMs !== undefined) parts.push(formatElapsed(stats.elapsedMs + (running ? Math.max(0, this.options.now() - fetchedAt) : 0)));
+    return parts.map((part) => ` · ${part}`).join("");
+  }
+
+  private reviewerLine(prefix: string, row: PanelReviewerRow, entry: PmPanelEntry, width: number): string {
+    const suffix = this.runSuffix(row, row.state === "running", entry.fetchedAt);
+    const text: Record<PanelReviewerState, string> = {
+      running: `${SPINNER[this.frame]} ${row.agent}${row.attempt ? `（第 ${row.attempt} 次）${suffix.trimStart()}` : suffix}`,
+      clear: ` ${row.agent} 通过${suffix}`,
+      blocked: `✗ ${row.agent} 打回${suffix}`,
+      awaiting_retry: `– ${row.agent} ${row.reason ? RETRY_TEXT[row.reason] : ""}，等 PM 重派${suffix}`,
+      exhausted: `– ${row.agent} 两次没交出结论，本轮结束后交你裁决${suffix}`,
+      skipped_disabled: `– ${row.agent} 已关闭，本轮未审`,
+      skipped_missing: `– ${row.agent} 已不存在，本轮未审`,
+      passed_earlier: `✓ ${row.agent} 上一轮已通过`,
+    };
+    const body = text[row.state];
+    const kind = row.state === "awaiting_retry" || row.state === "passed_earlier" ? "dim" : row.state === "exhausted" || row.state === "skipped_disabled" || row.state === "skipped_missing" ? "warning" : undefined;
+    return this.segments(row.state === "clear" ? [["dim", prefix], ["success", "✓"], ["muted", body]] : [["dim", prefix], [kind, body]], width);
+  }
+
+  /** 各段分别按剩余宽度截断后再着色，着色码不会被截断切开。 */
+  private segments(parts: Array<[string | undefined, string]>, width: number): string {
+    let used = 0;
+    return parts.map(([kind, text]) => {
+      const fitted = width > used ? this.fit(text, width - used) : "";
+      used += visibleWidth(fitted);
+      return kind ? this.paint(kind, fitted) : fitted;
+    }).join("");
+  }
+
+  private taskLines(entry: PmPanelEntry, rail: string, selected: Row | undefined, width: number): string[] {
+    const { overview, fetchedAt } = entry;
+    const byId = new Map(overview.pendingItems.map((item) => [item.itemId, item]));
+    const nodes: Array<{ text: string; item?: PendingItem; reviewers?: PanelReviewerRow[] }> = overview.taskRows.map((row) => {
+      if (row.kind === "execute") return { text: `${SPINNER[this.frame]} ${row.taskKey} 执行 · ${row.agent}（第 ${row.attempt} 次尝试）${this.runSuffix(row, true, fetchedAt).trimStart()}` };
+      if (row.kind === "review") return { text: `${row.taskKey} 第 ${row.round} 轮审查`, reviewers: row.reviewers };
+      if (row.kind === "pending") return { text: `⚑ ${row.taskKey} ${row.text}`, item: byId.get(row.itemId) };
+      return { text: `${SPINNER[this.frame]} explore 检索${this.runSuffix(row, true, fetchedAt)}` };
+    });
+    for (const item of overview.pendingItems) if (item.taskKey === undefined) nodes.push({ text: `⚑ ${item.label}`, item });
+    return nodes.flatMap((node, index) => {
+      const last = index === nodes.length - 1;
+      const prefix = `${rail}   ${last ? "└" : "├"} `;
+      const isSelected = node.item !== undefined && selected !== undefined && selected.kind === "item" && selected.entry === entry && selected.item.itemId === node.item.itemId;
+      const line = isSelected ? this.mark(this.fit(prefix + node.text, width), true) : this.segments([["dim", prefix], [undefined, node.text]], width);
+      const sub = `${rail}   ${last ? "  " : "│ "}`;
+      return [line, ...(node.reviewers ?? []).map((reviewer, i) => this.reviewerLine(`${sub}${i === node.reviewers!.length - 1 ? "└" : "├"} `, reviewer, entry, width))];
+    });
   }
 
   handleInput(data: string): boolean {
@@ -107,6 +162,7 @@ export class PmPanel {
       const cache = overview.cacheRate === null ? "" : ` (${Math.round(overview.cacheRate * 100)}%)`;
       const head = `${branch} ${icon} ${goals}${overview.taskProgress ? ` · 任务 ${overview.taskProgress.completed}/${overview.taskProgress.total}` : ""} · ↻${overview.turns} · ${overview.toolUses} tool uses · ${formatTokens(overview.tokens)} token${cache} · ${formatElapsed(elapsed)}`;
       lines.push(this.mark(this.fit(head, safeWidth), selected !== undefined && selected.kind === "pm" && selected.entry === entry));
+      if (overview.taskRows.length) { lines.push(...this.taskLines(entry, rail, selected, safeWidth)); return; }
       lines.push(this.fit(`${rail}   └ ${overview.doing}`, safeWidth));
       overview.pendingItems.forEach((item, itemIndex) => {
         const itemBranch = itemIndex === overview.pendingItems.length - 1 ? "└" : "├";
@@ -127,7 +183,7 @@ export class PmPanel {
       const source = explore.source === "web" ? "联网" : "本地";
       lines.push(this.fit(`${branch} ${SPINNER[this.frame]} ${source} · ${explore.question.replace(/\s+/g, " ")} · ↻${explore.turns}/${explore.maxTurns} · ${formatElapsed(elapsed)}`, safeWidth));
     });
-    if (this.focused) lines.push(this.dim(this.fit(HINT, safeWidth)));
+    if (this.focused) lines.push(this.paint("dim", this.fit(HINT, safeWidth)));
     return lines;
   }
 
@@ -137,7 +193,14 @@ export class PmPanel {
   private mark(line: string, selected: boolean): string {
     return selected && this.theme?.bg ? this.theme.bg("selectedBg", line) : selected ? `›${line.slice(1)}` : line;
   }
-  private dim(line: string): string { return this.theme?.fg ? this.theme.fg("dim", line) : line; }
+  private paint(kind: string, text: string): string { return text && this.theme?.fg ? this.theme.fg(kind, text) : text; }
+}
+
+function selectableItems(overview: PmOverview): PendingItem[] {
+  if (!overview.taskRows.length) return overview.pendingItems;
+  const byId = new Map(overview.pendingItems.map((item) => [item.itemId, item]));
+  const taskLevel = overview.taskRows.flatMap((row) => (row.kind === "pending" && byId.has(row.itemId) ? [byId.get(row.itemId)!] : []));
+  return [...taskLevel, ...overview.pendingItems.filter((item) => item.taskKey === undefined)];
 }
 
 function rowKey(row: Row): string {

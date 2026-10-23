@@ -25,7 +25,7 @@ const probeModule = fileURLToPath(new URL("../helpers/project-index-daemon-child
 afterEach(async () => {
   const failures: unknown[] = [];
   for (const cleanup of cleanups.splice(0).reverse()) { try { await cleanup(); } catch (error) { failures.push(error); } }
-  if (failures.length) throw new AggregateError(failures, "项目索引装配夹具清理失败");
+  if (failures.length) throw new AggregateError(failures, "项目索引装配测试环境清理失败");
 });
 
 interface Probe { pid: number; node: string; forbiddenReads: number; exited: boolean }
@@ -96,7 +96,7 @@ test("外部修改后下一次查询读到新内容，包括大小与mtime都不
   expect(second.generation).toBeGreaterThan(first.generation);
   const before = await stat(path);
   await writeFile(path, 'export const alpha = "CCCC";\n');
-  // 数值秒保留亚毫秒精度，Date对象会截断原mtime，使“同mtime”夹具失真。
+  // 数值秒保留亚毫秒精度，Date对象会截断原mtime，使“同mtime”测试素材失真。
   await utimes(path, before.atimeMs / 1000, before.mtimeMs / 1000);
   const after = await stat(path);
   expect(after.size).toBe(before.size);

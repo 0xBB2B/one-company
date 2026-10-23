@@ -185,7 +185,7 @@ afterEach(async () => {
     }
     if (!safeToDelete) console.error(`进程停止未确认，保留fixtures：${JSON.stringify({ root: w.root, repo: w.repo })}`);
   }
-  if (failures.length) throw new AggregateError(failures, "跨进程夹具收尾失败，未强制退出或删除未知现场");
+  if (failures.length) throw new AggregateError(failures, "跨进程测试环境收尾失败，未强制退出或删除未知现场");
 }, 60_000);
 
 test("M3-AC6/5：A独立Node消费ack并退出，B新Node有效lease恢复cursor与当前active基线，不重放副作用", async () => {

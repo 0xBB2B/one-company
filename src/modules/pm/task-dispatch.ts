@@ -4,9 +4,9 @@ import { withDetail } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
 import { activeCheckRoundIn } from "../verification/check-round.ts";
-import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
-import { countedAttempts, implementScope, PlanManageError, readPlanIn, replanPending, reviewFailures, reviewRejections, TASKS, terminationPending, unsentTask } from "./plan-manage.ts";
+import { countedAttempts, implementScope, latestRound, PlanManageError, readPlanIn, replanPending, reviewFailures, reviewRejections, REVIEW_REJECTED, MAX_REVIEWERS, REVIEW_UNFINISHED, reviewRoster, TASKS, terminationPending, unsentTask } from "./plan-manage.ts";
 import type { TaskAttempt, TaskRecord, TaskReview } from "./plan-manage.ts";
 import { evaluatePmIntakeGate } from "./pm-intake-runtime.ts";
 import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
@@ -70,7 +70,7 @@ function revokedGoalsIn(db: LocalDatabase, repoId: string, task: TaskRecord): st
  * 派子代理前共用的程序门槛：接手核对通过且有实施授权、无待处理更新、任务在已冻结版本中、依赖已完成、未决问题已解决、
  * 目标仍在实施授权内、没有运行中的同任务子代理。
  */
-function schedulingGateIn(db: LocalDatabase, request: { repoId: string; lease: PmLease; taskId: string }): SchedulingGate {
+function schedulingGateIn(db: LocalDatabase, request: { repoId: string; lease: PmLease; taskId: string }, allowRunningReviews = false): SchedulingGate {
   const requirementId = request.lease.requirementId;
   const recordRow = db.read<RequirementRecord>("requirements", requirementId);
   if (!recordRow || recordRow.data.pendingRevision !== null) deny("pending_update");
@@ -94,7 +94,7 @@ function schedulingGateIn(db: LocalDatabase, request: { repoId: string; lease: P
   if (task.role === "qa" && round?.data.status !== "open") {
     deny("round_not_open", ["QA 只能在检查轮内派出：先提交全部改动并用 one_company_git_sync 同步，再用 one_company_workflow_manage action=advance 开检查轮"]);
   }
-  if (task.attempts.some((attempt) => attempt.outcome === "running") || task.reviews.some((review) => review.outcome === "running")) {
+  if (task.attempts.some((attempt) => attempt.outcome === "running") || (!allowRunningReviews && task.reviews.some((review) => review.outcome === "running"))) {
     deny("task_not_ready", [`${task.key} 仍有运行中的子代理`]);
   }
   return { task, tasks: current.tasks };
@@ -169,29 +169,112 @@ export function beginTaskAttempt(request: TaskDispatchRequest & { runId: string;
   }));
 }
 
+/** 用户"再给一次机会"是否覆盖本轮的这个代理：只认带代理名单且轮次等于本轮的裁决，名单内的代理才沿用裁决的轮数上限。 */
+function reviewGranted(task: Pick<TaskRecord, "userDecision" | "version">, round: number, agent: string): boolean {
+  const decision = task.userDecision;
+  return decision?.choice === "retry" && decision.taskVersion === task.version && decision.round === round && decision.agents?.includes(agent) === true;
+}
+
+/** 某代理在本轮能否再派：没在跑，没交出结论少于 2 次；用户给了再一次机会、裁决时已用尽的代理，失败次数低于裁决当时的次数加 1。 */
+export function reviewDispatchable(task: Pick<TaskRecord, "reviews" | "userDecision" | "version">, agent: string): boolean {
+  const { round, reviews } = latestRound(task);
+  if (reviews.find((review) => review.agent === agent)?.outcome === "running") return false;
+  const failures = reviewFailures(task.reviews, agent);
+  const baseline = reviewGranted(task, round, agent) ? task.userDecision!.baseline?.[agent] : undefined;
+  return failures < 2 || (baseline !== undefined && failures < baseline + 1);
+}
+
 /**
- * 派出任务级审查：只审待审查 worker 任务最近一次完成的尝试。审查运行未交出结论时允许再派一次，第二次仍未交出即等待用户裁决。
- * 不需要检查阶段令牌；检查阶段中不派。通过后在同一事务中登记本次审查为运行中。
+ * 下一次整轮派要派的代理：最近完成的尝试还没审过是新一轮。第 1 轮、或新尝试不是返修（重新执行）时是通用 reviewer 加任务全部专项审查；
+ * 返修后是通用 reviewer 加上一轮打回、没交结论或被作废的专项审查。已有本轮记录时在同一轮里只重派没交结论（还能重派）或被作废的代理。通用 reviewer 排第一。
  */
-export function beginTaskReview(request: Omit<TaskDispatchRequest, "retry" | "rework"> & { runId: string; maxTurns: number; now?: number }):
-  { task: TaskRecord; maxTurns: number; attemptRunId: string } {
+export function reviewRoundMembers(task: Pick<TaskRecord, "attempts" | "reviews" | "reviewers" | "userDecision" | "version">): { round: number; agents: string[] } {
+  const attempt = task.attempts.findLast((candidate) => candidate.outcome === "completed");
+  const latest = latestRound(task);
+  const inRound = attempt !== undefined && latest.reviews.some((review) => review.attemptRunId === attempt.runId);
+  const unsettled = (review: TaskReview) => REVIEW_UNFINISHED.has(review.outcome) || review.outcome === "superseded";
+  const agents = inRound ? latest.reviews.filter((review) => unsettled(review) && reviewDispatchable(task, review.agent)).map((review) => review.agent)
+    : ["reviewer", ...(latest.round > 0 && attempt?.rework
+      ? latest.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome) || unsettled(review)).map((review) => review.agent)
+      : reviewRoster(task))];
+  return { round: inRound ? latest.round : latest.round + 1, agents: [...new Set(agents)].sort((a, b) => Number(b === "reviewer") - Number(a === "reviewer")) };
+}
+
+/** 本轮没结束：本轮审的是任务最近一次尝试，且有代理在跑，或有没交出结论且还能重派的代理。 */
+export function reviewRoundOpen(task: Pick<TaskRecord, "attempts" | "reviews" | "userDecision" | "version">): boolean {
+  const attempt = task.attempts.at(-1);
+  return latestRound(task).reviews.filter((review) => review.attemptRunId === attempt?.runId).some((review) => review.outcome === "running" || (REVIEW_UNFINISHED.has(review.outcome) && reviewDispatchable(task, review.agent)));
+}
+
+/**
+ * 整轮审查的任务状态：本轮没结束则仍在审查中；结束后有打回转待返修（打回轮数达 2 转等待用户裁决）；
+ * 有代理没交出结论且已用尽再派机会转等待用户裁决；只有被作废的回待审查；其余完成。
+ */
+function reviewSettledStatus(task: Pick<TaskRecord, "attempts" | "reviews" | "userDecision" | "version">): TaskRecord["status"] {
+  const { reviews } = latestRound(task);
+  if (reviewRoundOpen(task)) return "reviewing";
+  if (reviews.some((review) => REVIEW_REJECTED.has(review.outcome))) return reviewRejections(task) >= 2 ? "awaiting_user" : "awaiting_rework";
+  if (reviews.some((review) => REVIEW_UNFINISHED.has(review.outcome))) return "awaiting_user";
+  return reviews.some((review) => review.outcome === "superseded") ? "awaiting_review" : "completed";
+}
+
+/**
+ * 登记一批任务级审查（整轮、单个或临时加的专项审查）：只审待审查或审查中 worker 任务最近一次完成的尝试。
+ * 要派的代理带 runId，跳过的带 skipReason；同一代理正在运行、或本轮没交出结论已满 2 次（用户再给一次机会的代理按裁决基准计）时被拒。
+ * 临时加的专项审查带 addReviewer，通过后记进任务的审查名单（名单上限 17）。新一轮只能整轮派开始：本轮没开始时 single 或 addReviewer 被拒；
+ * 同一轮里已交结论的代理不能再单独派。不需要检查阶段令牌；检查阶段中不派。
+ */
+export function beginTaskReview(request: Omit<TaskDispatchRequest, "retry" | "rework"> & { maxTurns: number; now?: number;
+  members: Array<{ agent: string; runId?: string; skipReason?: "disabled" | "missing" }>; single?: boolean; addReviewer?: { agent: string; reason: string } }):
+  { task: TaskRecord; maxTurns: number; attemptRunId: string; turnsByRun: Record<string, number> } {
   const gate = evaluatePmIntakeGate({ dataRoot: request.dataRoot, repoId: request.repoId, lease: request.lease });
   if (!gate.allowed) deny(gate.reasons.includes("pending_approved_update") ? "pending_update" : "intake_gate", gate.reasons.map(intakeReasonText));
   return withDatabase(repositoryDatabase(request.dataRoot, request.repoId), (db) => db.transaction(() => {
-    const { task } = schedulingGateIn(db, request);
-    if (task.role !== "worker" || task.status !== "awaiting_review") deny("task_not_ready", [`${task.key}:${task.status} 不在待审查`]);
+    const { task } = schedulingGateIn(db, request, true);
+    if (task.role === "worker" && task.status === "awaiting_user") {
+      const exhausted = request.members.filter((member) => member.runId !== undefined && !reviewDispatchable(task, member.agent)).map((member) => member.agent);
+      if (exhausted.length) deny("retry_exhausted", exhausted.map((agent) => `${agent} 本轮没交出结论的次数已达上限`));
+    }
+    if (task.role !== "worker" || (task.status !== "awaiting_review" && task.status !== "reviewing")) deny("task_not_ready", [`${task.key}:${task.status} 不在待审查或审查中`]);
     if (activeCheckRoundIn(db, request.repoId, request.lease.requirementId) !== null) deny("check_phase_active");
     const attempt = task.attempts.findLast((candidate) => candidate.outcome === "completed");
     if (!attempt) deny("task_not_ready", [`${task.key} 没有完成的尝试`]);
-    const failures = reviewFailures(task.reviews, attempt!.runId);
-    const granted = failures >= 2 && userRetryGranted(task);
-    if (failures >= 2 && !granted) deny("retry_exhausted");
-    const maxTurns = granted ? task.userDecision!.maxTurns! : request.maxTurns;
-    const review: TaskReview = { runId: request.runId, attemptRunId: attempt!.runId, maxTurns, turnsUsed: 0, outcome: "running" };
+    const { round } = reviewRoundMembers(task);
+    const current = latestRound(task);
+    const sameRound = round === current.round;
+    const running = request.members.filter((member) => member.runId !== undefined);
+    if (!sameRound && (request.single || request.addReviewer)) deny("task_not_ready", [`${task.key} 的新一轮要先整轮派，再单独派或临时加`]);
+    if (request.addReviewer && !reviewRoster(task).includes(request.addReviewer.agent) && (task.reviewers?.length ?? 0) >= MAX_REVIEWERS) {
+      deny("task_not_ready", [`${task.key} 的审查名单已满（上限 ${MAX_REVIEWERS}），不能再临时加`]);
+    }
+    if (!request.members.length) {
+      const exhausted = current.reviews.filter((review) => REVIEW_UNFINISHED.has(review.outcome) && !reviewDispatchable(task, review.agent)).map((review) => review.agent);
+      if (exhausted.length) deny("retry_exhausted", exhausted.map((agent) => `${agent} 本轮没交出结论的次数已达上限`));
+      deny("task_not_ready", [`${task.key} 本轮没有可派的审查`]);
+    }
+    for (const member of request.members) {
+      const latest = sameRound ? current.reviews.find((review) => review.agent === member.agent)?.outcome : undefined;
+      if (latest === "running") deny("task_not_ready", [`${member.agent} 正在运行`]);
+      if (latest === "clear" || (latest !== undefined && REVIEW_REJECTED.has(latest))) deny("task_not_ready", [`${member.agent} 已交结论，本轮不能再单独派`]);
+      if (sameRound && !reviewDispatchable(task, member.agent)) deny("retry_exhausted", [`${member.agent} 本轮已有 ${reviewFailures(task.reviews, member.agent)} 次没交出结论`]);
+    }
+    const decision = task.userDecision;
+    const granted = (agent: string) => sameRound && reviewGranted(task, round, agent);
+    const turnsOf = (agent: string) => granted(agent) ? decision!.maxTurns! : request.maxTurns;
+    const reviews = request.members.map((member): TaskReview => member.runId !== undefined
+      ? { runId: member.runId, attemptRunId: attempt!.runId, agent: member.agent, round, maxTurns: turnsOf(member.agent), turnsUsed: 0, outcome: "running" }
+      : { runId: uuidv7(), attemptRunId: attempt!.runId, agent: member.agent, round, maxTurns: request.maxTurns, turnsUsed: 0, outcome: "skipped", skipReason: member.skipReason });
+    const firstGranted = running.find((member) => granted(member.agent));
+    const firstRunId = running[0]?.runId;
     const row = db.read<unknown>(TASKS, task.taskId)!;
-    db.update(TASKS, task.taskId, row.version, { ...task, status: "reviewing", reviews: [...task.reviews, review],
-      ...(granted ? { userDecision: { ...task.userDecision!, usedByRunId: request.runId } } : {}), updatedAt: request.now ?? Date.now() });
-    return { task, maxTurns, attemptRunId: attempt!.runId };
+    const all = [...task.reviews, ...reviews];
+    const reviewers = request.addReviewer && !reviewRoster(task).includes(request.addReviewer.agent)
+      ? [...(task.reviewers ?? []), { agent: request.addReviewer.agent, reason: request.addReviewer.reason, added: true as const }] : task.reviewers;
+    const next = { ...task, ...(reviewers ? { reviewers } : {}), reviews: all };
+    db.update(TASKS, task.taskId, row.version, { ...next, status: firstRunId === undefined ? reviewSettledStatus(next) : "reviewing",
+      ...(firstGranted && decision!.usedByRunId === null ? { userDecision: { ...decision!, usedByRunId: firstGranted.runId! } } : {}), updatedAt: request.now ?? Date.now() });
+    return { task, maxTurns: running[0] ? turnsOf(running[0].agent) : request.maxTurns, attemptRunId: attempt!.runId,
+      turnsByRun: Object.fromEntries(running.map((member) => [member.runId!, turnsOf(member.agent)])) };
   }));
 }
 
@@ -207,7 +290,9 @@ export function escalateTask(request: { dataRoot: string; repoId: string; lease:
     if (!row || row.data.requirementId !== request.lease.requirementId) deny("task_not_ready", ["任务不属于本需求"]);
     const task = row!.data;
     const unsent = task.status === "pending" && unsentTask(task);
-    if (task.status !== "awaiting_parent" && !unsent) deny("task_not_ready", [`${task.key}:${task.status} 不在等待 PM 处置，也不是还没派出的任务`]);
+    const waitingReview = task.role === "worker" && task.status === "reviewing";
+    if (waitingReview && task.reviews.some((review) => review.outcome === "running")) deny("task_not_ready", [`${task.key} 本轮还有审查在跑，等它们结束后再上报`]);
+    if (task.status !== "awaiting_parent" && !unsent && !waitingReview) deny("task_not_ready", [`${task.key}:${task.status} 不在等待 PM 处置，也不是还没派出的任务`]);
     const attempts = unsent ? task.attempts : task.attempts.map((attempt, index) => index === task.attempts.length - 1 ? { ...attempt, escalation: request.note } : attempt);
     const next = { ...task, status: "awaiting_user", attempts, ...(unsent ? { holdNote: request.note } : {}), updatedAt: request.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, task.taskId, row!.version, next);
@@ -236,8 +321,8 @@ export function finishTaskAttempt(request: { dataRoot: string; repoId: string; t
 }
 
 /**
- * 登记一次任务级审查的真实结局：通过则被审任务完成；打回首次进入待返修、再次打回等待用户裁决；
- * 未交出结论首次回到待审查、再次即等待用户裁决。
+ * 按 runId 登记一个审查代理的真实结局；本轮没结束（有代理在运行，或有没交出结论且还能重派的）时任务保持审查中。结束后：有打回，打回的轮数达到 2 等待用户裁决，否则待返修；
+ * 没打回但有代理没交出结论且已用尽再派机会等待用户裁决；只有被作废的回到待审查；其余完成。
  */
 export function finishTaskReview(request: { dataRoot: string; repoId: string; taskId: string; runId: string; turnsUsed: number;
   outcome: Exclude<TaskReview["outcome"], "running">; now?: number }): TaskRecord {
@@ -248,13 +333,8 @@ export function finishTaskReview(request: { dataRoot: string; repoId: string; ta
     const index = task.reviews.findIndex((review) => review.runId === request.runId);
     if (index < 0 || task.reviews[index]!.outcome !== "running") return task;
     const reviews = task.reviews.map((review, i) => i === index ? { ...review, outcome: request.outcome, turnsUsed: request.turnsUsed } : review);
-    const outcome = request.outcome;
     // 运行期间影响复核已把任务改为待更新或受阻时，结局只记入审查，不覆盖复核结论
-    const status = task.status !== "reviewing" ? task.status
-      : outcome === "clear" ? "completed"
-        : outcome === "blocked" || outcome === "unverified" ? (reviewRejections({ reviews }) >= 2 ? "awaiting_user" : "awaiting_rework")
-          : outcome === "superseded" ? "awaiting_review"
-            : reviewFailures(reviews, reviews[index]!.attemptRunId) >= 2 ? "awaiting_user" : "awaiting_review";
+    const status = task.status !== "reviewing" ? task.status : reviewSettledStatus({ ...task, reviews });
     const next = { ...task, status, reviews, updatedAt: request.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, task.taskId, row.version, next);
     return next;

@@ -129,7 +129,7 @@ function bounded<T>(promise: Promise<T>, timeoutMs: number, label: string, signa
 }
 
 function ownerError(): Error {
-  return new Error("daemon 夹具已进入清理，禁止新操作");
+  return new Error("daemon 测试环境已进入清理，禁止新操作");
 }
 
 function assertOwnerActive(owner: FixtureRecord | undefined): void {
@@ -224,11 +224,11 @@ async function cleanupCreation(roots: readonly CreationRoot[], primary: unknown)
     catch (error) { errors.push(error); preserved.push(root.path); }
   }
   if (errors.length === 1 && preserved.length === 0) throw primary;
-  throw new AggregateError(errors, `daemon 夹具创建失败；保全精确根: ${preserved.join(", ") || "无"}`);
+  throw new AggregateError(errors, `daemon 测试环境创建失败；保全精确根: ${preserved.join(", ") || "无"}`);
 }
 
 function assertCreationActive(creation: CreationRecord): void {
-  if (creation.signal.aborted) throw creation.signal.reason ?? new Error("daemon 夹具创建已取消");
+  if (creation.signal.aborted) throw creation.signal.reason ?? new Error("daemon 测试环境创建已取消");
 }
 
 async function assertCreationRoots(roots: readonly CreationRoot[], creation: CreationRecord): Promise<void> {
@@ -258,13 +258,13 @@ function ownerForInputs(home: FixedHome, repoDir: string, dataRoot: string, sock
   add(fixturesByResourceKey.get(resourceKey(home.home, home.agentDir, repoDir, dataRoot)));
   for (const path of [home.home, home.agentDir, home.dataRoot, repoDir, dataRoot]) add(fixturesByKnownPath.get(resolve(path)));
   if (socketPath !== undefined) add(fixturesBySocket.get(resolve(socketPath)));
-  if (candidates.size > 1) throw new Error("daemon 夹具资源路径归属冲突");
+  if (candidates.size > 1) throw new Error("daemon 测试环境资源路径归属冲突");
   const owner = candidates.values().next().value as FixtureRecord | undefined;
   if (!owner) return undefined;
   if (resolve(home.home) !== resolve(owner.home.home) || resolve(home.agentDir) !== resolve(owner.home.agentDir)
     || resolve(home.dataRoot) !== resolve(owner.home.dataRoot) || resolve(repoDir) !== resolve(owner.repoDir)
     || resolve(dataRoot) !== resolve(owner.dataRoot) || !sameRecordEnv(home.env, owner.home.env)) {
-    throw new Error("daemon 夹具调用参数与原始不可变记录不匹配");
+    throw new Error("daemon 测试环境调用参数与原始不可变记录不匹配");
   }
   assertOwnerActive(owner);
   return owner;
@@ -350,7 +350,7 @@ export interface SpawnDaemonOptions extends DaemonEnvOverrides {
   dataRoot: string;
   captureOutput?: boolean;
   outputByteLimit?: number;
-  /** 只供本测试夹具专测拦截 spawn；实参仍固定为当前 Node、daemon 入口、绝对 cwd。 */
+  /** 只供本测试环境专测拦截 spawn；实参仍固定为当前 Node、daemon 入口、绝对 cwd。 */
   spawnImpl?: typeof spawn;
 }
 
@@ -378,10 +378,10 @@ const ALLOWED_EXTRA_ENV = new Set([
 
 function validateExtraEnv(extra: Readonly<Record<string, string>>): void {
   for (const [key, value] of Object.entries(extra)) {
-    if (typeof value !== "string") throw new Error(`daemon 夹具环境变量必须是字符串: ${key}`);
-    if (PROTECTED_ENV.has(key)) throw new Error(`daemon 夹具保护环境变量禁止覆盖: ${key}`);
+    if (typeof value !== "string") throw new Error(`daemon 测试环境的环境变量必须是字符串: ${key}`);
+    if (PROTECTED_ENV.has(key)) throw new Error(`daemon 测试环境的保护环境变量禁止覆盖: ${key}`);
     if (!ALLOWED_EXTRA_ENV.has(key) && !key.startsWith("ONE_COMPANY_TEST_")) {
-      throw new Error(`daemon 夹具未允许的测试环境变量: ${key}`);
+      throw new Error(`daemon 测试环境不允许的环境变量: ${key}`);
     }
   }
 }
@@ -613,14 +613,14 @@ export interface DaemonFixture {
 }
 
 export interface CreateDaemonFixtureOptions {
-  /** 仅用于本夹具专测创建阶段的自产资源收尾。 */
+  /** 仅用于本测试环境专测创建阶段的自产资源收尾。 */
   faultAfter?: "home" | "repo" | "dataRoot";
   signal?: AbortSignal;
 }
 
 export async function createDaemonFixture(options: CreateDaemonFixtureOptions = {}): Promise<DaemonFixture> {
   const captured = { faultAfter: options.faultAfter, signal: options.signal };
-  if (captured.signal?.aborted) return Promise.reject(captured.signal.reason ?? new Error("daemon 夹具创建已取消"));
+  if (captured.signal?.aborted) return Promise.reject(captured.signal.reason ?? new Error("daemon 测试环境创建已取消"));
   const abort = new AbortController();
   const linked = linkedSignal(abort.signal, captured.signal);
   let resolve!: (fixture: DaemonFixture) => void, reject!: (error: unknown) => void;
@@ -647,13 +647,13 @@ async function buildDaemonFixture(creation: CreationRecord, options: CreateDaemo
     const homeReceipt = tempHomeRootReceipt(home);
     if (!homeReceipt || homeReceipt.path !== home.home) throw new Error(`临时 HOME 缺少原始分配收据；保全路径 ${home.home}`);
     roots.push({ path: homeReceipt.path, identity: Object.freeze({ ...homeReceipt }) });
-    if (options.faultAfter === "home") throw new Error("daemon 夹具专测：HOME 初始化后失败");
+    if (options.faultAfter === "home") throw new Error("daemon 测试环境专测：HOME 初始化后失败");
     await assertCreationRoots(roots, creation);
     repo = await createRepoFixture();
     const repoReceipt = repoFixtureRootReceipt(repo);
-    if (!repoReceipt || repoReceipt.path !== repo.root) throw new Error(`Repo夹具缺少原始分配收据；保全路径 ${repo.root}`);
+    if (!repoReceipt || repoReceipt.path !== repo.root) throw new Error(`测试仓库缺少原始分配收据；保全路径 ${repo.root}`);
     roots.push({ path: repoReceipt.path, identity: Object.freeze({ ...repoReceipt }) });
-    if (options.faultAfter === "repo") throw new Error("daemon 夹具专测：repo 初始化后失败");
+    if (options.faultAfter === "repo") throw new Error("daemon 测试环境专测：repo 初始化后失败");
     await assertCreationRoots(roots, creation);
     const identity = await repositoryIdentity(repo.root);
     await assertCreationRoots(roots, creation);
@@ -661,7 +661,7 @@ async function buildDaemonFixture(creation: CreationRecord, options: CreateDaemo
     const dataAllocation: { path: string; identity?: RootIdentity } = { path: dataRoot };
     roots.push(dataAllocation);
     dataAllocation.identity = await rootIdentity(dataRoot);
-    if (options.faultAfter === "dataRoot") throw new Error("daemon 夹具专测：dataRoot 初始化后失败");
+    if (options.faultAfter === "dataRoot") throw new Error("daemon 测试环境专测：dataRoot 初始化后失败");
     const socketPath = daemonSocketPath(dataRoot, identity.repoId);
     const fixture: DaemonFixture = { home, repo, repoDir: identity.commonDir, dataRoot, repoId: identity.repoId, socketPath };
     const fixedHome = Object.freeze({
@@ -696,7 +696,7 @@ async function buildDaemonFixture(creation: CreationRecord, options: CreateDaemo
     const knownPaths = [fixedHome.home, fixedHome.agentDir, fixedHome.dataRoot, record.repoDir, record.dataRoot];
     if (fixturesBySocket.has(resolve(socketPath)) || fixturesByResourceKey.has(key)
       || knownPaths.some((path) => fixturesByKnownPath.has(resolve(path)))) {
-      throw new Error("daemon 夹具自产路径与已有记录冲突");
+      throw new Error("daemon 测试环境自产路径与已有记录冲突");
     }
     fixtureRecords.set(fixture, record);
     fixturesByHomeObject.set(home, record);
@@ -716,13 +716,13 @@ function assertFixtureObject(record: FixtureRecord, fixture: DaemonFixture): voi
     || fixture.home.home !== record.home.home || fixture.home.agentDir !== record.home.agentDir
     || fixture.home.dataRoot !== record.home.dataRoot || !sameRecordEnv(fixture.home.env, record.home.env)
     || fixture.repo.root !== record.repoRoot || fixture.repo.worktrees !== record.repoWorktreesRef) {
-    throw new Error("daemon 夹具调用对象已被修改；拒绝按可变字段清理");
+    throw new Error("daemon 测试环境调用对象已被修改；拒绝按可变字段清理");
   }
 }
 
 export async function removeDaemonFixture(fixture: DaemonFixture): Promise<void> {
   const record = fixtureRecords.get(fixture);
-  if (!record) throw new Error("拒绝清理未由本 daemon 夹具创建的结构化参数");
+  if (!record) throw new Error("拒绝清理未由本 daemon 测试环境创建的结构化参数");
   if (record.cleanup) return record.cleanup;
   let begin!: () => void;
   const ready = new Promise<void>((resolve) => { begin = resolve; });
@@ -734,11 +734,11 @@ export async function removeDaemonFixture(fixture: DaemonFixture): Promise<void>
     await Promise.all([...record.sockets].map((socket) => attempt(() => closeSocket(socket))));
     await Promise.all([...record.children].map((child) => attempt(async () => { await stopChild(child); })));
     await attempt(async () => {
-      await bounded(Promise.allSettled([...record.pending]).then(() => undefined), 2 * CLOSE_TIMEOUT_MS, "等待 daemon 夹具在途操作");
+      await bounded(Promise.allSettled([...record.pending]).then(() => undefined), 2 * CLOSE_TIMEOUT_MS, "等待 daemon 测试环境在途操作");
     });
-    if (record.pending.size || record.sockets.size || record.children.size) errors.push(new Error("daemon 夹具仍有未完成自有资源"));
+    if (record.pending.size || record.sockets.size || record.children.size) errors.push(new Error("daemon 测试环境仍有未完成自有资源"));
     if (record.repoWorktreesRef.length > 0) {
-      errors.push(new Error(`后续 worktree 归属无法由 daemon 夹具创建记录证明，保全根: ${record.repoRoot}`));
+      errors.push(new Error(`后续 worktree 归属无法由 daemon 测试环境创建记录证明，保全根: ${record.repoRoot}`));
     }
     if (errors.length === 0) {
       for (const root of record.roots) await attempt(() => assertRootIdentity(root));
@@ -747,7 +747,7 @@ export async function removeDaemonFixture(fixture: DaemonFixture): Promise<void>
       for (const root of [...record.roots].reverse()) await attempt(() => removeOwnedRoot(root));
     }
     if (errors.length > 0) {
-      throw new AggregateError(errors, `daemon 夹具收尾失败；保全精确根: ${record.roots.map((root) => root.path).join(", ")}`);
+      throw new AggregateError(errors, `daemon 测试环境收尾失败；保全精确根: ${record.roots.map((root) => root.path).join(", ")}`);
     }
     record.closed = true;
   })();
@@ -767,7 +767,7 @@ export async function removeDaemonFixture(fixture: DaemonFixture): Promise<void>
 
 export async function cleanupDaemonHarnessFixtures(): Promise<void> {
   const activeCreations = [...creations];
-  for (const creation of activeCreations) creation.abort.abort(new Error("daemon 夹具外层清理取消创建"));
+  for (const creation of activeCreations) creation.abort.abort(new Error("daemon 测试环境外层清理取消创建"));
   const results = await Promise.allSettled([
     ...activeCreations.map(async (creation) => {
       try { await bounded(creation.pending, 2 * CLOSE_TIMEOUT_MS, "等待真实创建操作结束"); }
@@ -781,7 +781,7 @@ export async function cleanupDaemonHarnessFixtures(): Promise<void> {
     ...[...new Set(fixturesBySocket.values())].map((record) => record.closed ? Promise.resolve() : removeDaemonFixture(record.fixtureRef)),
   ]);
   const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
-  if (errors.length) throw new AggregateError(errors, "daemon 夹具全局收尾未确认，保全相关根");
+  if (errors.length) throw new AggregateError(errors, "daemon 测试环境全局收尾未确认，保全相关根");
 }
 
 export interface StartDaemonOptions extends DaemonEnvOverrides {
@@ -827,7 +827,7 @@ export async function startDaemonForTest(
   if (!Number.isFinite(fixedOptions.rpcTimeoutMs) || fixedOptions.rpcTimeoutMs <= 0) throw new Error("rpcTimeoutMs 必须是有限正数");
   const directOwner = fixtureRecords.get(fixture as object);
   const owner = ownerForInputs(fixedHome, repoDir, dataRoot, socketPath, originalHome);
-  if (directOwner && directOwner !== owner) throw new Error("daemon 夹具启动对象与原始记录冲突");
+  if (directOwner && directOwner !== owner) throw new Error("daemon 测试环境启动对象与原始记录冲突");
   return track(owner, async (ownerSignal) => {
     const cancel = new AbortController();
     const linked = linkedSignal(ownerSignal, cancel.signal);
@@ -847,7 +847,7 @@ export async function startDaemonForTest(
     }
     try {
       assertOwnerActive(owner);
-      if (owner && identity.repoId !== owner.repoId) throw new Error("启动仓库身份与夹具原始 repoId 不匹配");
+      if (owner && identity.repoId !== owner.repoId) throw new Error("启动仓库身份与测试环境原始 repoId 不匹配");
     } catch (error) {
       linked.dispose();
       throw error;
@@ -1186,7 +1186,7 @@ export async function authenticateTestClient(
   options: AuthenticateTestClientOptions = {},
 ): Promise<Record<string, unknown>> {
   const record = rawRecords.get(raw);
-  if (!record || record.raw !== raw) throw new Error("认证辅助函数只接受本夹具创建的 RawClient");
+  if (!record || record.raw !== raw) throw new Error("认证辅助函数只接受本测试环境创建的 RawClient");
   const owner = record.owner;
   return track(owner, async (ownerSignal) => {
     assertOwnerActive(owner);
@@ -1206,7 +1206,7 @@ export async function authenticateTestClient(
     const explicitToken = Object.prototype.hasOwnProperty.call(options, "authToken");
     const explicitAuthToken = options.authToken;
     if (expectedRepoId !== undefined && knownRepoId !== undefined && expectedRepoId !== knownRepoId) {
-      throw new Error("显式 expectedRepoId 与夹具原始 repoId 冲突");
+      throw new Error("显式 expectedRepoId 与测试环境原始 repoId 冲突");
     }
     if (optionSignal?.aborted) throw optionSignal.reason ?? new Error("认证已取消");
     assertAuthenticationRecord(raw, record);

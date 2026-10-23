@@ -1,9 +1,10 @@
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
-import { confirmedPlanKey, readPlanIn, stalledStage, TASKS, terminationPending, unsentTask } from "../pm/plan-manage.ts";
+import { reviewRoundOpen } from "../pm/task-dispatch.ts";
+import { currentEscalation, confirmedPlanKey, latestRound, readPlanIn, REVIEW_UNFINISHED, reviewFailures, stalledStage, TASKS, terminationPending, unsentTask } from "../pm/plan-manage.ts";
 import type { TaskRecord, UserDecision } from "../pm/plan-manage.ts";
-import { pendingItemsIn } from "./pm-overview.ts";
+import { namesIn, pendingItemsIn, reviewLine, unfinishedReviewers } from "./pm-overview.ts";
 import { checked } from "../requirement/requirement-contracts.ts";
 import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
 import { checkDecisionRecord } from "../requirement/short-decision-format.ts";
@@ -68,7 +69,8 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
     const lines = [`任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`,
       ...(task.sizeHold && unsentTask(task) ? [`拆分上限：${task.sizeHold.join("；")}`] : []),
       ...task.attempts.map((attempt, index) => `${attempt.rework ? "返修" : "尝试"} ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}${attempt.escalation ? " · PM 已上报" : ""}`),
-      ...task.reviews.map((review, index) => `审查 ${index + 1}：${review.turnsUsed}/${review.maxTurns} 轮 · 结局 ${review.outcome}`),
+      ...task.reviews.map(reviewLine),
+      ...(currentEscalation(task) ? ["PM 已上报（审查中）"] : []),
       `依据：PRD r${record.revision}`];
     return { itemId, version: item.version, summary: lines.join("\n").slice(0, 2000) };
   });
@@ -133,13 +135,22 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     const task = row.data;
     if (task.requirementId !== input.requirementId || task.status !== "awaiting_user" || parsed.version !== `task:${taskId}:${row.version}` ||
       !["retry", "adjust", "terminate"].includes(parsed.choice)) deny("item_changed");
+    const stage = reviewRoundOpen(task) ? "review" : stalledStage(task);
+    const round = latestRound(task);
+    const exhausted = round.reviews.map((review) => review.agent).filter((agent) => reviewFailures(task.reviews, agent) >= 2);
+    const waiting = round.reviews.filter((review) => REVIEW_UNFINISHED.has(review.outcome) && reviewFailures(task.reviews, review.agent) < 2).map((review) => review.agent);
+    const lastAttempt = task.attempts.at(-1);
+    const movedEscalation = stage === "review" ? lastAttempt?.escalation : undefined;
+    const escalation = movedEscalation ?? currentEscalation(task);
     const userDecision: UserDecision = { decisionId: input.decisionId, choice: parsed.choice as UserDecision["choice"], maxTurns: parsed.maxTurns,
       revision: record.revision, taskVersion: task.version, usedByRunId: null, notified: false,
-      confirmedPlan: confirmedPlanKey(readPlanIn(db, input.requirementId)?.plan) };
+      confirmedPlan: confirmedPlanKey(readPlanIn(db, input.requirementId)?.plan), ...(escalation ? { escalation } : {}),
+      ...(parsed.choice === "retry" && stage === "review" ? { agents: [...exhausted, ...waiting], baseline: Object.fromEntries(exhausted.map((agent) => [agent, reviewFailures(task.reviews, agent)])), round: round.round } : {}) };
     // 再给一次机会回到用完机会的那一环
-    const retryStatus = ({ execute: "pending", review: "awaiting_review", rework: "awaiting_rework" } as const)[stalledStage(task)];
+    const retryStatus = stage === "review" && waiting.length ? "reviewing" : ({ execute: "pending", review: "awaiting_review", rework: "awaiting_rework" } as const)[stage];
     const status = parsed.choice === "retry" ? retryStatus : parsed.choice === "adjust" ? "needs_update" : "cancelled";
-    const next = { ...task, status, userDecision, updatedAt: input.now ?? Date.now() } as TaskRecord;
+    const attempts = movedEscalation ? task.attempts.map((attempt) => { if (attempt !== lastAttempt) return attempt; const { escalation: _moved, ...rest } = attempt; return rest; }) : task.attempts;
+    const next = { ...task, status, attempts, userDecision, updatedAt: input.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, taskId!, row.version, next);
     return { kind: "task" as const, task: next };
   }));
@@ -190,7 +201,7 @@ export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string
       db.update(TASKS, task.taskId, row.version, { ...row.data, userDecision: { ...decision, notified: true } });
       messages.push(decision.choice === "retry"
         ? `用户决定：任务 ${task.key} 再给一次机会，轮数上限 ${decision.maxTurns}。${task.status === "awaiting_rework" ? "可用 agent_manage dispatch 直接派 worker 返修，不带 rework"
-          : task.status === "awaiting_review" ? "可用 agent_manage dispatch 带 review 再派审查，轮数按用户决定" : "可用 agent_manage dispatch 直接派出，不带 retry"}；这次不占你的重试机会。`
+          : task.status === "awaiting_review" || task.status === "reviewing" ? `可用 agent_manage dispatch 带 review 再派审查${namesIn(unfinishedReviewers(task))}，轮数按用户决定` : "可用 agent_manage dispatch 直接派出，不带 retry"}；这次不占你的重试机会。`
         : decision.choice === "adjust" && task.sizeHold && unsentTask(task)
           ? `用户决定：任务 ${task.key} 由你拆分或精简（${task.sizeHold.join("；")}）。用 plan_manage update 修改该任务，或取消后另加任务，不需要等新的批准版本；改完仍超出上限会再次交用户裁决。`
         : decision.choice === "adjust" && task.holdNote && unsentTask(task)

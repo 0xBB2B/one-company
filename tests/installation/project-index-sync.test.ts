@@ -12,7 +12,7 @@ const worlds: InstalledProjectFixture[] = [];
 afterEach(async (context) => {
   const errors: unknown[] = [];
   for (const world of worlds.splice(0).reverse()) { try { await world.close(context.task.result?.state === "fail"); } catch (error) { errors.push(error); } }
-  if (errors.length) throw new AggregateError(errors, "M3安装夹具未完整收尾");
+  if (errors.length) throw new AggregateError(errors, "M3 安装测试环境未完整收尾");
 });
 const installedTest = test.skipIf(process.platform !== "darwin");
 async function world() { const result = await InstalledProjectFixture.create(); worlds.push(result); return result; }
@@ -107,7 +107,7 @@ installedTest("M3-AC1/3/9 安装：preview不升级、查询前对账读到增�
   const before = await stat(join(repo.path, "source.ts"));
   await cleanDaemon(first);
   await writeFile(join(repo.path, "source.ts"), "export const external = 9;\n");
-  // 数值秒保留亚毫秒精度，Date对象会截断原mtime，使“同mtime”夹具失真。
+  // 数值秒保留亚毫秒精度，Date对象会截断原mtime，使“同mtime”测试素材失真。
   await utimes(join(repo.path, "source.ts"), before.atimeMs / 1000, before.mtimeMs / 1000);
   expect((await stat(join(repo.path, "source.ts"))).size).toBe(before.size);
   expect((await stat(join(repo.path, "source.ts"))).mtimeMs).toBeCloseTo(before.mtimeMs, 2);

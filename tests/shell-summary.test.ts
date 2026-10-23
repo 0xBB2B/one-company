@@ -53,7 +53,7 @@ async function spawnBackgroundWithDescendants(registry: ShellRegistry): Promise<
     mode: "background",
     runToken: randomUUID(),
   });
-  if (!result.ok) throw new Error(`夹具启动失败：${result.reason}`);
+  if (!result.ok) throw new Error(`测试环境启动失败：${result.reason}`);
   spawnedPgids.push(result.task.pgid);
   await sleepMs(150);
   return taskId;

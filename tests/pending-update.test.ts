@@ -11,6 +11,8 @@ import { CheckRoundService } from "../src/modules/verification/check-round.ts";
 import { createVerificationRunTool } from "../src/modules/pm/verification-run.ts";
 import type { VerificationView } from "../src/modules/pm/verification-run.ts";
 import { createResultSubmitTool } from "../src/modules/pm/result-submit.ts";
+import { createSubagentTools } from "../src/modules/pm/subagent-tools.ts";
+import type { TaskRecord } from "../src/modules/pm/plan-manage.ts";
 import { createRequirementReadTool } from "../src/modules/pm/requirement-read-tool.ts";
 import type { RequirementReadBinding } from "../src/modules/pm/requirement-read-tool.ts";
 import { VERDICTS } from "../src/modules/pm/verdicts.ts";
@@ -196,4 +198,27 @@ test("M6-AC16：defer 期间绑定检查轮的读取只取该轮登记的原批�
   await w.approve(BODY_3);
   w.rounds.decide({ lease: w.lease, checkRoundId: second.checkRoundId, kind: "interrupt", revision: revision + 1 });
   await expect(reader.execute({ action: "read" })).rejects.toMatchObject({ code: "check_round_invalid" });
+});
+
+async function resultSubmitDescription(review?: { attemptRunId: string }) {
+  const w = await world();
+  const task = { taskId: uuidv7(), requirementId: w.created.requirementId, role: "worker", writePaths: ["src"], attempts: [] } as unknown as TaskRecord;
+  const subagent = await createSubagentTools({ repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId, runId: uuidv7(), pmLease: w.lease,
+    workspace: w.workspace, epoch: w.state.read(w.created.requirementId).data.epoch, task, alive: () => true, ...(review ? { review } : {}) });
+  cleanups.push(async () => subagent.dispose());
+  return subagent.tools.find((tool) => tool.name === "one_company_result_submit")!.description;
+}
+
+test("worker 的 result_submit 说明写明重试时可加同任务前一次尝试的红，同时仍要求列本运行的验证编号", async () => {
+  const description = await resultSubmitDescription();
+  expect(description).toContain("本运行");
+  expect(description).toContain("重试");
+  expect(description).toContain("前一次");
+  expect(description).toContain("红");
+});
+
+test("reviewer 的 result_submit 说明仍只能引用本运行的测试，不允许引用前一次尝试", async () => {
+  const description = await resultSubmitDescription({ attemptRunId: uuidv7() });
+  expect(description).toContain("只能引用本运行");
+  expect(description).not.toContain("前一次");
 });

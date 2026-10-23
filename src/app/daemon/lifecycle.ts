@@ -12,7 +12,7 @@ import { ProjectIndexHost, registerIndexHandlers } from "./project-index-host.ts
 import { ProjectIndexRequirements } from "./project-index-requirements.ts";
 import { NetworkPauseGate } from "../../core/host/network-pause.ts";
 import { probeExistingInstance, socketPathByteLimit } from "../../core/host/daemon-probe.ts";
-import { readAgentSettings } from "../../modules/settings/agent-settings.ts";
+import { disabledAgentNames, readAgentSettings, readDisabledAgents } from "../../modules/settings/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../../modules/agents/roles.ts";
 import { retireRunChangeSetsIn } from "../../modules/verification/change-apply.ts";
 import { RunStore } from "../../modules/agents/run-store.ts";
@@ -508,6 +508,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       emit: (event, data, filter) => server.broadcast(event, data, filter ? (info) => filter(info.windowId) : undefined),
       index: indexHost,
       loadAgentSettings: () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: new ProjectTrustStore(agentDir).get(repositoryRoot) === true }),
+      loadDisabledAgents: () => disabledAgentNames(readDisabledAgents({ agentDir, repositoryRoot, projectTrusted: new ProjectTrustStore(agentDir).get(repositoryRoot) === true })),
       loadRoleCatalog: async () => (await loadDaemonRoleCatalog(agentDir, repositoryRoot)).roles,
       skillDirs: [...(new ProjectTrustStore(agentDir).get(repositoryRoot) === true ? [join(repositoryRoot, ".pi", "skills")] : []),
         join(agentDir, "skills"), join(dirname(defaultRoleDir()), "skills")],

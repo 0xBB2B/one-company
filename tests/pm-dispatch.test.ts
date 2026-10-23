@@ -80,7 +80,7 @@ async function plainWorld(options: { prepare?: boolean; activate?: boolean } = {
   return { dispatch: () => runs.dispatchPm({ requirementId, model: { provider: "pm-model", id: "test" }, thinking: "off" }) };
 }
 
-/** 带实施授权批准清单的需求：夹具原有的 PM 租约已交还，工作区登记为 ready。 */
+/** 带实施授权批准清单的需求：测试环境原有的 PM 租约已交还，工作区登记为 ready。 */
 async function world(clock?: ReturnType<typeof createClock>) {
   const fixture = await createPmIntakeFixture(); cleanups.push(() => fixture.cleanup());
   const record = fixture.state.read(fixture.requirementId).data;

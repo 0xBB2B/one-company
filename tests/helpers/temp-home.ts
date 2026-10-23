@@ -29,7 +29,7 @@ async function assertReceipt(receipt: TempHomeRootReceipt, phase: string): Promi
   }
 }
 
-/** 只向持有原始 createTempHome 返回对象的测试夹具提供分配时根身份。 */
+/** 只向持有原始 createTempHome 返回对象的测试环境提供分配时根身份。 */
 export function tempHomeRootReceipt(home: TempHome): TempHomeRootReceipt | undefined {
   const receipt = tempHomeReceipts.get(home);
   return receipt ? frozenReceipt(receipt.path, receipt.dev, receipt.ino) : undefined;

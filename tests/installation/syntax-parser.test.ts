@@ -138,16 +138,16 @@ test.skipIf(process.platform !== "darwin")("M0-AC1/2：真实产品安装产物�
     console.log(JSON.stringify({ artifactSha256: createHash("sha256").update(await readFile(artifact.path)).digest("hex"),
       resourceSha256: Object.fromEntries(Object.entries(manifest.grammars).map(([name, entry]) => [name, (entry as { sha256: string }).sha256])),
       runtimes: [`Node ${process.versions.node}`], validRuns: 3, failureRuns: failures.length, warmInvalidRuns: 1, network: "OS deny network*", installation: "pnpm isolated layout + exact dependency tarballs, pi install registered" }));
-    // 业务夹具仅依赖标准文件，不导入产品或其数据库。
+    // 业务样例仅依赖标准文件，不导入产品或其数据库。
     const business = join(root, "business");
     await mkdir(business);
     await writeFile(join(business, "spec.json"), '{"schemaVersion":1}');
-    await writeFile(join(business, "prd.md"), "# 人工文件夹具\n");
+    await writeFile(join(business, "prd.md"), "# 人工文件样例\n");
     await run(node, ["--input-type=module", "-e", "import{readFileSync}from'node:fs';import assert from'node:assert/strict';assert.equal(JSON.parse(readFileSync('spec.json','utf8')).schemaVersion,1);assert(readFileSync('prd.md','utf8').startsWith('#'));"], business);
     passed = true;
   } finally {
     // execFile 的回调在子进程 close 后完成；仅成功且命令全部收尾才删除安装现场。
     if (passed) await rm(root, { recursive: true, force: true });
-    else console.error("离线安装夹具失败，保留现场：", root);
+    else console.error("离线安装测试环境失败，保留现场：", root);
   }
 }, 120_000);

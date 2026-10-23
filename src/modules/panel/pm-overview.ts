@@ -1,8 +1,9 @@
 import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
 import { activeCheckRoundIn } from "../verification/check-round.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
-import { implementScope, readPlanIn, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
+import { implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
 import type { TaskRecord } from "../pm/plan-manage.ts";
+import { reviewDispatchable } from "../pm/task-dispatch.ts";
 import { latestPmSubmission } from "../pm/pm-intake-runtime.ts";
 import { PmIntakeStore } from "../pm/pm-intake-store.ts";
 import { planRejectionsIn, stallIn } from "../pm/pm-attention.ts";
@@ -17,7 +18,29 @@ export interface PendingItem {
   label: string;
   /** 事项所依据记录的版本；登记决定时须与当前一致。 */
   version: string;
+  /** 和某个任务有关时为任务号，面板把它画在这个任务的行上。 */
+  taskKey?: string;
+  /** 画在任务行上时用的短文字，去掉了"任务 <任务号> "。 */
+  taskText?: string;
 }
+
+export interface PanelRunStats { turns: number; maxTurns: number | null; elapsedMs: number }
+
+export type PanelReviewerState = "running" | "clear" | "blocked" | "awaiting_retry" | "exhausted" | "skipped_disabled" | "skipped_missing" | "passed_earlier";
+export interface PanelReviewerRow extends Partial<PanelRunStats> {
+  agent: string;
+  state: PanelReviewerState;
+  /** 本轮第几次派这个代理；只在大于 1 时给出。 */
+  attempt?: number;
+  /** awaiting_retry 时没交出结论的原因。 */
+  reason?: "turn_limit_reached" | "failed" | "stopped" | "superseded";
+}
+
+export type PanelTaskRow =
+  | ({ kind: "execute"; taskKey: string; agent: string; attempt: number } & PanelRunStats)
+  | { kind: "review"; taskKey: string; round: number; reviewers: PanelReviewerRow[] }
+  | { kind: "pending"; taskKey: string; itemId: string; text: string }
+  | ({ kind: "explore" } & PanelRunStats);
 export type PmOverviewStatus = "running" | "pausing" | "paused" | "waiting";
 export interface PmOverview {
   requirementId: string;
@@ -33,6 +56,7 @@ export interface PmOverview {
   elapsedMs: number;
   taskProgress: { completed: number; total: number } | null;
   pendingItems: PendingItem[];
+  taskRows: PanelTaskRow[];
 }
 
 export interface PmOverviewInput {
@@ -86,21 +110,47 @@ function requirementRow(db: LocalDatabase, requirementId: string) {
   return db.read<RequirementRecord>("requirements", requirementId)!;
 }
 
+/** 最近一轮里没交出结论达到 2 次的审查代理。 */
+export function unfinishedReviewers(task: TaskRecord): string[] {
+  return latestRound(task).reviews.map((review) => review.agent).filter((agent) => reviewFailures(task.reviews, agent) >= 2);
+}
+
+export function reviewLine(review: TaskRecord["reviews"][number]): string {
+  return `第 ${review.round} 轮 ${review.agent}：${REVIEW_OUTCOME_LABEL[review.outcome]}`;
+}
+
+export function namesIn(names: string[]): string {
+  return names.length ? `（${names.join("、")}）` : "";
+}
+
+function stallCauseOf(task: TaskRecord): string {
+  const stage = stalledStage(task);
+  if (stage === "execute") return "两次未完成";
+  if (stage === "review") return `两次审查未完成${namesIn(unfinishedReviewers(task))}`;
+  const rejectors = [...new Set(task.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome)).map((review) => review.agent))];
+  return `两次未通过审查${namesIn(rejectors)}`;
+}
+
+function onTask(task: TaskRecord, label: string): Pick<PendingItem, "taskKey" | "taskText"> {
+  return { taskKey: task.key, taskText: label.replace(`任务 ${task.key} `, "") };
+}
+
 /** 待处理事项只取自已有持久记录：终止后待调整的需求、待用户裁决的任务、待核对的接手理解、阻塞任务的未决问题。 */
 export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId" | "db" | "record" | "lease">, tasks: TaskRecord[]): PendingItem[] {
   const items: PendingItem[] = [];
   for (const task of tasks) {
     if (!terminationPending([task], input.record.revision)) continue;
-    items.push({ itemId: `halt:${task.taskId}`, kind: "adjust-requirement", label: `待决定：任务 ${task.key} 已终止，请调整需求或取消需求`,
-      version: `halt:${task.taskId}:${input.record.revision}` });
+    const label = `待决定：任务 ${task.key} 已终止，请调整需求或取消需求`;
+    items.push({ itemId: `halt:${task.taskId}`, kind: "adjust-requirement", label, version: `halt:${task.taskId}:${input.record.revision}`, ...onTask(task, label) });
   }
   for (const task of tasks) {
     if (task.status !== "awaiting_user") continue;
     const row = input.db.read<TaskRecord>("tasks", task.taskId)!;
     const cause = task.sizeHold && unsentTask(task) ? task.sizeHold.join("；")
       : task.attempts.at(-1)?.escalation !== undefined || task.holdNote !== undefined && unsentTask(task) ? "PM 上报需要决定"
-      : ({ execute: "两次未完成", review: "两次审查未完成", rework: "两次未通过审查" } as const)[stalledStage(task)];
-    items.push({ itemId: `task:${task.taskId}`, kind: "adjudicate", label: `待裁决：任务 ${task.key} ${cause}`, version: `task:${task.taskId}:${row.version}` });
+      : stallCauseOf(task);
+    const label = `待裁决：任务 ${task.key} ${cause}`;
+    items.push({ itemId: `task:${task.taskId}`, kind: "adjudicate", label, version: `task:${task.taskId}:${row.version}`, ...onTask(task, label) });
   }
   if (input.record.approved && !reviewPassedFor(input)) {
     const submission = latestPmSubmission({ dataRoot: input.dataRoot, repoId: input.repoId, runId: input.lease.runId, baseline: {
@@ -116,7 +166,8 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
       if (asked.has(questionId) || !questionPending(input.db, input.repoId, input.record, row, questionId)) continue;
       asked.add(questionId);
       items.push({ itemId: `question:${questionId}`, kind: "question", label: `待回答：任务 ${task.key} 的未决问题`,
-        version: `question:${questionId}:${input.record.approvalManifest!.reference.manifestHash}` });
+        version: `question:${questionId}:${input.record.approvalManifest!.reference.manifestHash}`,
+        taskKey: task.key, taskText: "待回答：未决问题" });
     }
   }
   const report = input.record.lifecycle === "active" ? pendingReportIn(input.db, input.repoId, input.lease.requirementId) : null;
@@ -136,7 +187,7 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
   if (status === "paused") return terminationPending(tasks, input.record.revision) ? "等待调整需求" : "已暂停";
   if (status === "pausing") {
     const running = input.children.filter((child) => ACTIVE_CHILD.has(child.state));
-    return running.length ? `暂停中：等待 ${running.map((child) => ROLE_LABEL[child.role ?? ""] ?? "子代理").join("、")} 结束` : "暂停中：等待当前工具结束";
+    return running.length ? `暂停中：等待 ${running.map((child) => child.agent?.name ?? ROLE_LABEL[child.role ?? ""] ?? "子代理").join("、")} 结束` : "暂停中：等待当前工具结束";
   }
   const rejected = planRejectionsIn(input.db, input.lease.requirementId);
   const rejectedCount = rejected?.pmRunId === input.lease.runId ? rejected.count : 0;
@@ -153,14 +204,64 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
     const child = running[0]!, task = tasks.find((candidate) => candidate.taskId === child.task);
     const attempt = task ? task.attempts.findIndex((entry) => entry.runId === child.id) + 1 : 0;
     const review = task ? task.reviews.findIndex((entry) => entry.runId === child.id) + 1 : 0;
+    const name = child.agent?.name ?? ROLE_LABEL[child.role ?? ""] ?? "子代理";
     const head = child.role === "one-company.explore" ? "派 explore 检索"
-      : review > 0 ? `派 ${ROLE_LABEL[child.role ?? ""] ?? "子代理"} 审查 ${task!.key}（第 ${review} 次审查）`
-        : `派 ${ROLE_LABEL[child.role ?? ""] ?? "子代理"} 执行 ${task?.key ?? "任务"}${attempt > 0 ? `（第 ${attempt} 次尝试）` : ""}`;
+      : review > 0 ? `派 ${name} 审查 ${task!.key}（第 ${review} 次审查）`
+        : `派 ${name} 执行 ${task?.key ?? "任务"}${attempt > 0 ? `（第 ${attempt} 次尝试）` : ""}`;
     return running.length > 1 ? `${head} 等 ${running.length} 个` : head;
   }
   if (!plan) return "规划中";
   if (plan.plan.confirmedVersion === null) return `规划中（计划 v${plan.plan.planVersion} · ${tasks.filter((task) => task.status !== "cancelled").length} 个任务）`;
   return "空闲";
+}
+
+function runStatsOf(run: RunRecord, now: number): PanelRunStats {
+  const end = run.endedAt ? Date.parse(run.endedAt) : now;
+  const pausedNow = run.pausedAt ? Math.max(0, end - Date.parse(run.pausedAt)) : 0;
+  return { turns: run.turns, maxTurns: run.maxTurns ?? null, elapsedMs: Math.max(0, end - Date.parse(run.startedAt) - (run.pausedMs ?? 0) - pausedNow) };
+}
+
+function reviewerRowsOf(task: TaskRecord, round: number, runs: ReadonlyMap<string, RunRecord>, now: number): PanelReviewerRow[] {
+  const rows = latestRound(task).reviews.map((review): PanelReviewerRow => {
+    const { outcome } = review;
+    if (outcome === "running") {
+      const run = runs.get(review.runId);
+      const attempt = task.reviews.filter((entry) => entry.round === round && entry.agent === review.agent).length;
+      return { agent: review.agent, state: "running", ...(attempt > 1 ? { attempt } : {}), ...(run ? runStatsOf(run, now) : {}) };
+    }
+    const run = runs.get(review.runId);
+    const stats = run ? runStatsOf(run, now) : { turns: review.turnsUsed, maxTurns: review.maxTurns };
+    if (outcome === "failed" || outcome === "turn_limit_reached" || outcome === "stopped" || outcome === "superseded") {
+      return { agent: review.agent, state: outcome !== "superseded" && !reviewDispatchable(task, review.agent) ? "exhausted" : "awaiting_retry", reason: outcome, ...stats };
+    }
+    if (outcome === "skipped") return { agent: review.agent, state: review.skipReason === "missing" ? "skipped_missing" : "skipped_disabled" };
+    return { agent: review.agent, state: outcome === "clear" ? "clear" : "blocked", ...stats };
+  });
+  const present = new Set(rows.map((row) => row.agent));
+  const earlier = new Map<string, TaskRecord["reviews"][number]>();
+  for (const review of task.reviews) if (review.round < round) earlier.set(review.agent, review);
+  for (const [agent, review] of earlier) if (review.outcome === "clear" && !present.has(agent)) rows.push({ agent, state: "passed_earlier" });
+  return rows;
+}
+
+function taskRowsOf(input: PmOverviewInput, tasks: TaskRecord[], items: PendingItem[]): PanelTaskRow[] {
+  if (input.pm.state === "pausing" || input.pm.state === "paused") return [];
+  const runs = new Map(input.children.map((child) => [child.id, child]));
+  const rows: PanelTaskRow[] = [];
+  for (const task of tasks) {
+    for (const item of items) if (item.taskKey === task.key) rows.push({ kind: "pending", taskKey: task.key, itemId: item.itemId, text: item.taskText! });
+    const attemptIndex = task.attempts.findIndex((attempt) => attempt.outcome === "running");
+    const run = attemptIndex >= 0 ? runs.get(task.attempts[attemptIndex]!.runId) : undefined;
+    if (run) rows.push({ kind: "execute", taskKey: task.key, agent: run.agent?.name ?? ROLE_LABEL[run.role ?? ""] ?? "子代理", attempt: attemptIndex + 1, ...runStatsOf(run, input.now) });
+    const { round, reviews } = latestRound(task);
+    if (task.status === "reviewing" || reviews.some((review) => review.outcome === "running")) {
+      rows.push({ kind: "review", taskKey: task.key, round, reviewers: reviewerRowsOf(task, round, runs, input.now) });
+    }
+  }
+  for (const child of input.children) {
+    if (child.role === "one-company.explore" && ACTIVE_CHILD.has(child.state)) rows.push({ kind: "explore", ...runStatsOf(child, input.now) });
+  }
+  return rows;
 }
 
 function taskProgressOf(tasks: TaskRecord[]): PmOverview["taskProgress"] {
@@ -190,5 +291,6 @@ export function pmOverview(input: PmOverviewInput): PmOverview {
     elapsedMs: Math.max(0, input.now - Date.parse(input.pm.startedAt) - (input.pm.pausedMs ?? 0) - pausedNow),
     taskProgress: taskProgressOf(tasks),
     pendingItems: items,
+    taskRows: taskRowsOf(input, tasks, items),
   };
 }
