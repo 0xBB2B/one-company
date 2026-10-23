@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { chooseWindow, mutedLines } from "../../core/host/question-window.ts";
@@ -58,9 +58,9 @@ interface ConfirmInput {
 
 export function confirmLines(input: ConfirmInput): WindowLine[] {
   const { inspection, targets, layer, conventions } = input;
-  const lines: WindowLine[] = [{ text: `skills → ${tilde(targets.skillsDir)}/` }, ...classLines(inspection.skills)];
+  const lines: WindowLine[] = [{ text: `skills → ${tilde(targets.skillsDir)}${sep}` }, ...classLines(inspection.skills)];
   const agents = [...inspection.agents].sort(workerFirst);
-  lines.push({ text: `角色定义 → ${tilde(targets.agentsDir)}/` }, ...classLines(agents));
+  lines.push({ text: `角色定义 → ${tilde(targets.agentsDir)}${sep}` }, ...classLines(agents));
   const fresh = agents.filter((agent) => agent.state === "missing");
   if (fresh.length > 0) {
     const replaced = layer === "project" && fresh.some((agent) => existsSync(join(input.userAgentsDir, `${agent.name}.md`))) ? "用户层" : "内置";
@@ -114,7 +114,7 @@ export function resultText(input: { label: string; layer: LayerKey; written: num
   else if (input.outcome === "changed") lines.push(`确认期间 ${tilde(input.conventionsFile)} 被别处改动，这次没有写入；再运行 /one:examples 补写。`);
   else if (input.outcome === "failed" && input.writeError) {
     const code = (input.writeError as NodeJS.ErrnoException).code;
-    const reason = code === "EACCES" || code === "EPERM" ? `没有权限写入 ${tilde(input.writeDir ?? dirname(input.conventionsFile))}/` : code ?? input.writeError.message.split("\n")[0];
+    const reason = code === "EACCES" || code === "EPERM" ? `没有权限写入 ${tilde(input.writeDir ?? dirname(input.conventionsFile))}${sep}` : code ?? input.writeError.message.split("\n")[0];
     lines.push(`AGENTS.md 没有写入：${reason}；解决后再运行 /one:examples 补写。`);
   } else if (wrote && input.skipped.length === 0) lines.push("此后派出的代理按新规范工作。");
   return lines.join("\n  ");
@@ -123,7 +123,7 @@ export function resultText(input: { label: string; layer: LayerKey; written: num
 export function copyFailureText(error: ExampleCopyError): string {
   const reason = error.code === "EACCES" || error.code === "EPERM" ? "没有权限写入"
     : error.code === "EEXIST" ? "目标位置已有别处写的同名文件" : error.message.split("\n")[0];
-  return `✗ 复制没有完成：${reason} ${tilde(error.dir)}/\n  已复制的 ${error.written} 个文件保留，AGENTS.md 没有动；解决后再运行 /one:examples 会接着补。`;
+  return `✗ 复制没有完成：${reason} ${tilde(error.dir)}${sep}\n  已复制的 ${error.written} 个文件保留，AGENTS.md 没有动；解决后再运行 /one:examples 会接着补。`;
 }
 
 export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
@@ -159,8 +159,8 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
     title: `把 ${row.label}样例复制到哪一层？`,
     lines: [],
     choices: [
-      { label: LAYER_NAME.user, description: `${tilde(agentDir)}/ · 对你的所有项目生效`, ...(userDone ? { disabled: "已全部复制，和样例一致" } : {}) },
-      { label: LAYER_NAME.project, description: `${tilde(repoRoot)}/ · 只对这个项目生效`,
+      { label: LAYER_NAME.user, description: `${tilde(agentDir)}${sep} · 对你的所有项目生效`, ...(userDone ? { disabled: "已全部复制，和样例一致" } : {}) },
+      { label: LAYER_NAME.project, description: `${tilde(repoRoot)}${sep} · 只对这个项目生效`,
         ...(!projectTrusted ? { disabled: "项目未受信任，暂不能复制到这里" } : projectDone ? { disabled: "已全部复制，和样例一致" } : {}) },
     ],
     cancelNote: SKIP_COPY,
