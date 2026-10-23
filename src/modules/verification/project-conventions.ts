@@ -2,7 +2,7 @@ import type { ProgramWindow, WindowAnswer, WindowChoice, WindowLine } from "../.
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { writeFileAtomic } from "../../core/storage/store.ts";
 
 export const CONVENTIONS_FILE = "AGENTS.md";
@@ -69,6 +69,11 @@ export function lineDiff(before: string, after: string): string[] {
   return lines;
 }
 
+function abbreviateHome(path: string): string {
+  const raw = homedir(), home = raw.endsWith(sep) ? raw.slice(0, -sep.length) : raw;
+  return home && path.startsWith(`${home}${sep}`) ? `~${path.slice(home.length)}` : path;
+}
+
 export async function symlinkTarget(file: string): Promise<string | null> {
   try {
     if (!(await lstat(file)).isSymbolicLink()) return null;
@@ -89,7 +94,7 @@ export async function updateConventions(input: { repositoryRoot: string; content
   if (before === input.content) return { status: "unchanged" };
   const linkTarget = await symlinkTarget(file);
   const lines: WindowLine[] = [
-    ...(linkTarget ? [{ text: `${CONVENTIONS_FILE} 是软链接，实际写到 ${linkTarget.startsWith(`${homedir()}/`) ? "~" + linkTarget.slice(homedir().length) : linkTarget}`, tone: "warning" } satisfies WindowLine] : []),
+    ...(linkTarget ? [{ text: `${CONVENTIONS_FILE} 是软链接，实际写到 ${abbreviateHome(linkTarget)}`, tone: "warning" } satisfies WindowLine] : []),
     { text: before === null ? `仓库里还没有 ${CONVENTIONS_FILE}，要写入的全文如下：` : `与仓库里现有的 ${CONVENTIONS_FILE} 相比的改动：`, tone: "muted" },
     ...lineDiff((before ?? "").replace(/\r\n/g, "\n"), input.content.replace(/\r\n/g, "\n")).map((line): WindowLine =>
       ({ text: line, tone: line.startsWith("+ ") ? "added" : line.startsWith("- ") ? "removed" : "muted" })),

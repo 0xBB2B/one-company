@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { SettingsPageView } from "../src/modules/settings/settings-page-ui.ts";
+import { SettingsPageView, tilde } from "../src/modules/settings/settings-page-ui.ts";
 import { AgentCopyError, copyAgentDefinition } from "../src/modules/agents/agent-copy.ts";
 import { projectSettingsPath, readAgentSettings, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../src/modules/agents/roles.ts";
@@ -1758,4 +1758,12 @@ test("定义开关：展开后开关行开启是绿色，关闭是灰色", async
   moveTo(off, "go-worker");
   off.press(ENTER);
   expect(switchRow(off)).toMatch(/<(muted|dim)>[^<]*关闭/u);
+});
+
+test("路径是家目录或在家目录下才写成 ~，名字以家目录名开头的别的目录原样显示", () => {
+  const home = homedir();
+  expect(tilde(home)).toBe("~");
+  expect(tilde(join(home, ".pi", "agent", "AGENTS.md"))).toBe("~/.pi/agent/AGENTS.md");
+  expect(tilde(`${home}2/proj/AGENTS.md`)).toBe(`${home}2/proj/AGENTS.md`);
+  expect(tilde(`${home}x/a`)).toBe(`${home}x/a`);
 });
