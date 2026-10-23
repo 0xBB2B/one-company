@@ -38,7 +38,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | prototype | 派原型设计师、"确认原型"窗口 | `src/modules/prototype` | `prototype-extension.ts`、`prototype-windows.ts` |
 | verification | 检查轮（所有 worker 任务审查通过后，PM 开的最后一轮全量测试和 QA 验收）、worker 改动的应用、写入保护、命令边界、项目规范（AGENTS.md）写入 | `src/modules/verification` | `CheckRoundService`、`change-apply.ts`、`write-guard.ts` |
 | explore | 只读检索的约定、派发、会话、联网，以及主窗口的 `one_company_agent_manage` 工具 | `src/modules/explore` | `agent-manage-extension.ts`、`explore-dispatch.ts`、`web-access.ts` |
-| settings | `/one:setting` 设置页、模型设定、PM 和内部代理用哪个模型、角色定义的开关、Git 交付档位和合并方式 | `src/modules/settings` | `settings-page-ui.ts`、`agent-settings.ts`、`internal-model.ts` |
+| settings | `/one:setting` 设置页、模型设定、PM 和内部代理用哪个模型、角色定义的开关、Git 交付档位和合并方式；`/one:examples` 把设计规范样例复制到用户层或项目层 | `src/modules/settings` | `settings-page-ui.ts`、`agent-settings.ts`、`internal-model.ts`、`examples-extension.ts`（`openExamplesPage`）、`spec-examples.ts` |
 | pm | 计划、派工、PM 提交与同步目标分支、PM 接手复核、需求读取工具、验证命令、子代理交结果 | `src/modules/pm` | `plan-manage.ts`、`task-dispatch.ts`、`PmIntakeService`、`pm-commit.ts`、`result-submit.ts` |
 | delivery | 关闭需求与归档提交、需求流程管理、Git 交付（远程：推送、建 PR/MR、合并；仅本地：合进主仓库当前分支）、需求工作区（worktree）管理 | `src/modules/delivery` | `RequirementCloseService`、`archive-commit.ts`、`workflow-manage.ts`、`git-delivery.ts`（`deliverRequirement`）、`local-delivery.ts`（`deliverLocally`）、`WorkspaceManageService` |
 | panel | 状态面板、PM 概览、⚑ 事项（面板上等用户处理的事）的决策包（打开事项时插进对话、供主代理查原因的材料）、裁决（用户对上报事项做的决定，比如任务两次没完成时怎么办） | `src/modules/panel` | `pm-panel.ts`、`pm-overview.ts`、`adjudication.ts` |

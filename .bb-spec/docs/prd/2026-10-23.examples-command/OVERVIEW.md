@@ -56,3 +56,4 @@ features: [spec-examples]
   - 「项目层已有同名定义，用户层这份不生效」的提醒只在项目受信任时出现：项目未受信任时 pi 不加载项目层定义（`settings-extension.ts:80-82` 把 `projectTrusted` 传给 `loadRoleCatalog`），生效的就是用户层那份。
   - 项目层的三个目标都在主仓库目录下，在 worktree 里打开 pi 时也是：和设置页复制定义、存设置用的是同一个目录（`settings-extension.ts:23` `primaryWorktreeRoot`）。
   - 确认期间 `AGENTS.md` 被别处改了就不写，沿用现有项目规范写入的做法（`project-conventions.ts:94` `changed_concurrently`）。
+- 实现后补两处写法：只有一个定义要新复制时，开关那句写「<名字> 现在是开启」，不写「现在都是」；结果提示里「被改过、没有覆盖」那一行以「。」结尾，和确认过的预览一致。用户 2026-10-23 决定。
