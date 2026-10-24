@@ -151,7 +151,7 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     const retryStatus = stage === "review" && waiting.length ? "reviewing" : ({ execute: "pending", review: "awaiting_review", rework: "awaiting_rework" } as const)[stage];
     const status = parsed.choice === "retry" ? retryStatus : parsed.choice === "adjust" ? "needs_update" : "cancelled";
     const attempts = movedEscalation ? task.attempts.map((attempt) => { if (attempt !== lastAttempt) return attempt; const { escalation: _moved, ...rest } = attempt; return rest; }) : task.attempts;
-    const next = { ...task, status, attempts, userDecision, updatedAt: input.now ?? Date.now() } as TaskRecord;
+    const next = { ...task, status, attempts, userDecision, replanAllowance: 1, updatedAt: input.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, taskId!, row.version, next);
     return { kind: "task" as const, task: next };
   }));

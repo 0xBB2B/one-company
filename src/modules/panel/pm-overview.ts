@@ -1,7 +1,7 @@
 import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
 import { activeCheckRoundIn } from "../verification/check-round.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
-import { cycleCountedAttempts, implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, reviewRejections, sizeHoldPending, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
+import { cycleAttempts, cycleCountedAttempts, implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, reviewRejections, sizeHoldPending, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
 import type { TaskRecord } from "../pm/plan-manage.ts";
 import { reviewDispatchable } from "../pm/task-dispatch.ts";
 import { latestPmSubmission } from "../pm/pm-intake-runtime.ts";
@@ -138,7 +138,8 @@ function stallCauseOf(task: TaskRecord): string {
     return `${cycleCountedAttempts(task)} 次未完成`;
   }
   if (stage === "review") return reviewUnfinishedCause(task);
-  const rejectors = [...new Set(task.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome)).map((review) => review.agent))];
+  const current = new Set(cycleAttempts(task).map((attempt) => attempt.runId));
+  const rejectors = [...new Set(task.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome) && current.has(review.attemptRunId)).map((review) => review.agent))];
   return `${reviewRejections(task)} 次未通过审查${namesIn(rejectors)}`;
 }
 
