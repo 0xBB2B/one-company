@@ -68,7 +68,7 @@ test("M8O-AC1：实施中批准新版本后，所属任务被判为受影响并�
 });
 
 /** 任务 1（login）已完成、任务 2（failure）的 worker 正在运行时，用户批准了新版本。 */
-async function midway(body: string) {
+async function midway(body: string, options: { loginReviewed?: boolean } = {}) {
   const w = await createPmRunWorld(cleanups);
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
@@ -77,7 +77,10 @@ async function midway(body: string) {
   const planVersion = () => w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
   w.db((db) => {
     const row = db.read<TaskRecord>(TASKS, task("login").taskId)!;
-    db.update(TASKS, row.data.taskId, row.version, { ...row.data, status: "completed", attempts: [{ runId: uuidv7(), maxTurns: 5, turnsUsed: 3, reason: null, outcome: "completed" }] });
+    const attemptRunId = uuidv7();
+    const reviews = options.loginReviewed === false ? [] : [{ runId: uuidv7(), attemptRunId, maxTurns: 1, turnsUsed: 1, agent: "reviewer", round: 1, outcome: "clear" as const }];
+    db.update(TASKS, row.data.taskId, row.version, { ...row.data, status: options.loginReviewed === false ? "reviewing" : "completed", reviews,
+      attempts: [{ runId: attemptRunId, maxTurns: 5, turnsUsed: 3, reason: null, outcome: "completed" }] });
   });
   w.provider.queue.push({ type: "text", text: "慢慢写失败场景", chunkDelayMs: 30_000 });
   const run = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task("failure").taskId, retry: null });
@@ -132,4 +135,14 @@ test("M8O-AC1：用户先暂停了 PM（子代理连带暂停）再批准新版�
   await until(() => task("failure").attempts[0]!.outcome !== "running");
   expect(task("failure").attempts.map((attempt) => attempt.outcome)).toEqual(["superseded"]);
   expect(await w.runStore.get(run.runId)).toMatchObject({ ok: true, run: { stopCause: { reason: "replanned" } } });
+});
+
+test("M8O-AC4：login 执行完成但还没有审查记录（待审查），新版本判 login 受影响：PM 取消 login 并另加同角色同目标的 login-fix 被拒 goal_held，计划不变", async () => {
+  const { w, task, planVersion, assess } = await midway(BASE.replace("输入正确验证码后成功。", "输入正确验证码后成功并记住设备。"), { loginReviewed: false });
+  await assess("affected", "unaffected");
+  const before = planVersion();
+  await expect(w.plan.execute({ action: "update", planVersion: before, cancel: [{ taskId: task("login").taskId, version: task("login").version }],
+    add: [spec("login-fix", "goal.login", { objective: "登录补上记住设备" })] })).rejects.toMatchObject({ code: "goal_held" });
+  expect(planVersion()).toBe(before);
+  expect(task("login").status).not.toBe("cancelled");
 });

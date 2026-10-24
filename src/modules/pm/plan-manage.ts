@@ -93,6 +93,15 @@ export type TaskReview = Static<typeof Review>;
 export function countedAttempts(task: { attempts: readonly TaskAttempt[] }): number {
   return task.attempts.filter((attempt) => attempt.outcome !== "superseded" && !attempt.rework).length;
 }
+/** 复核会把已完成的任务改成待更新，占住目标只管没做完的任务，所以要认出复核前就已做完的任务。 */
+function finishedBeforeReview(task: Pick<TaskRecord, "role" | "attempts" | "reviews">): boolean {
+  const attempt = task.attempts.findLast((candidate) => candidate.outcome !== "superseded");
+  if (attempt?.outcome !== "completed") return false;
+  if (task.role !== "worker") return true;
+  const { reviews } = latestRound(task);
+  return reviews.some((review) => review.outcome === "clear") &&
+    reviews.every((review) => review.attemptRunId === attempt.runId && (review.outcome === "clear" || review.outcome === "skipped"));
+}
 /** 当前计数周期里的尝试：最近一次开新周期之后的；还没开过新周期时是全部。 */
 export function cycleAttempts<T extends TaskAttempt>(task: { attempts: readonly T[]; cycleStarts: readonly number[] }): T[] {
   return task.attempts.slice(task.cycleStarts.at(-1) ?? 0);
@@ -570,7 +579,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     // 复核判为受影响的已执行任务，只有用户对它选了调整并批准了新版本、或选了拆分才放开，其余照旧占住目标。
     // 不比较章节变化：任务的目标、约束章节由 PM 自己填，段落依赖由解读模型给，都不可信，拿它们判断会被填充或依赖变化绕过。
     const tried = current.tasks.filter((task) => countedAttempts(task) > 0 && task.status !== "completed" &&
-      (task.status !== "needs_update" || !(readjusted(task) || (resized(task) && adjustPending(task)))) &&
+      (task.status !== "needs_update" || !(finishedBeforeReview(task) || readjusted(task) || (resized(task) && adjustPending(task)))) &&
       (task.status !== "cancelled" || terminationPending([task], record.data.revision)));
     // 当前批准不再列为实施目标的段谁也拿不走：从已开工任务里去掉它、目标全都不在授权内时取消任务，都绕不开一次重试
     const authorized = implementScope(manifest, record.data.docSpec?.sections ?? []);
