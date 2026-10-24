@@ -1,6 +1,6 @@
 import { adjudicationSubject } from "./adjudication.ts";
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
-import { readPlanIn, unsentTask } from "../pm/plan-manage.ts";
+import { readPlanIn, sizeHoldPending } from "../pm/plan-manage.ts";
 import { pendingItemsIn } from "./pm-overview.ts";
 import type { PendingItem } from "./pm-overview.ts";
 import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
@@ -45,7 +45,7 @@ export function panelItemTarget(ref: { dataRoot: string; repoId: string }, requi
     const tasks = readPlanIn(db, requirementId)?.tasks ?? [];
     const item: PendingItem | undefined = pendingItemsIn({ ...ref, db, record, lease }, tasks).find((candidate) => candidate.itemId === itemId);
     const task = item?.kind === "adjudicate" ? tasks.find((candidate) => `task:${candidate.taskId}` === itemId) : undefined;
-    return { item, resize: task !== undefined && task.sizeHold !== undefined && unsentTask(task) };
+    return { item, resize: task !== undefined && task.sizeHold !== undefined && sizeHoldPending(task) };
   });
   const item = found.item ?? deny("item_not_pending");
   if (item.version !== itemVersion) deny("item_changed");

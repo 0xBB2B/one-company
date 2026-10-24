@@ -1,7 +1,7 @@
 import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
 import { activeCheckRoundIn } from "../verification/check-round.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
-import { countedAttempts, implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, reviewRejections, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
+import { countedAttempts, implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, reviewRejections, sizeHoldPending, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
 import type { TaskRecord } from "../pm/plan-manage.ts";
 import { reviewDispatchable } from "../pm/task-dispatch.ts";
 import { latestPmSubmission } from "../pm/pm-intake-runtime.ts";
@@ -157,7 +157,7 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
   for (const task of tasks) {
     if (task.status !== "awaiting_user") continue;
     const row = input.db.read<TaskRecord>("tasks", task.taskId)!;
-    const cause = task.sizeHold && unsentTask(task) ? task.sizeHold.join("；")
+    const cause = task.sizeHold && sizeHoldPending(task) ? task.sizeHold.join("；")
       : task.attempts.at(-1)?.escalation !== undefined || task.holdNote !== undefined && unsentTask(task) ? "PM 上报需要决定"
       : stallCauseOf(task);
     const label = `待裁决：任务 ${task.key} ${cause}`;
@@ -185,7 +185,7 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
   if (report) items.push({ itemId: `report:${report.data.reportId}`, kind: "acceptance", label: "待验收：PM 完成报告", version: `report:${report.data.reportId}:${report.version}` });
   const rejected = planRejectionsIn(input.db, input.lease.requirementId);
   if (rejected?.pmRunId === input.lease.runId && rejected.count >= 2) items.push({ itemId: `plan:${input.lease.requirementId}`, kind: "plan-rejected",
-    label: "待裁决：PM 计划两次提交被拒", version: `plan:${input.lease.requirementId}:${rejected.count}` });
+    label: `待裁决：PM 计划 ${rejected.count} 次提交被拒`, version: `plan:${input.lease.requirementId}:${rejected.count}` });
   // 已有别的事项交用户处理时，停下提醒是多余的
   const stall = stallIn(input.db, input.lease.requirementId);
   if (stall?.pmRunId === input.lease.runId && items.length === 0) items.push({ itemId: `stall:${input.lease.runId}`, kind: "stall",

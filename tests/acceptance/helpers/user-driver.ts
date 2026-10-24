@@ -113,8 +113,8 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
       if (!seen || reopen) {
         opened.set(key, { times: (seen?.times ?? 0) + 1, pmTurns });
         record({ type: "open-item", label, at: Date.now() });
-        // 主代理分析完会针对这个事项弹问答窗口：要登记决定的事项按台词作答；只作指示的事项（计划两次被拒、PM 停下）选主代理推荐的一项
-        const instruction = label.includes("计划两次提交被拒") || label.includes("PM 停下了");
+        // 主代理分析完会针对这个事项弹问答窗口：要登记决定的事项按台词作答；只作指示的事项（计划多次被拒、PM 停下）选主代理推荐的一项
+        const instruction = /PM 计划 \d+ 次提交被拒/.test(label) || label.includes("PM 停下了");
         let instructed = false;
         host.answerPanelWindow = (window) => instruction ? (instructed = true, recommendedChoice(window)) : label.includes("待验收")
           ? (/验收通过/.test(script.accept) && window.choices.includes("验收通过") ? "验收通过" : { other: script.accept })
