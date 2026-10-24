@@ -2,7 +2,7 @@ import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
 import { reviewRoundOpen } from "../pm/task-dispatch.ts";
-import { currentEscalation, confirmedPlanKey, latestRound, readPlanIn, REVIEW_UNFINISHED, reviewFailures, stalledStage, TASKS, terminationPending, unsentTask } from "../pm/plan-manage.ts";
+import { currentEscalation, confirmedPlanKey, latestRound, readPlanIn, REVIEW_UNFINISHED, reviewFailures, stalledStage, TASKS, sizeHoldPending, terminationPending, unsentTask } from "../pm/plan-manage.ts";
 import type { TaskRecord, UserDecision } from "../pm/plan-manage.ts";
 import { namesIn, pendingItemsIn, reviewLine, unfinishedReviewers } from "./pm-overview.ts";
 import { checked } from "../requirement/requirement-contracts.ts";
@@ -67,7 +67,7 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
       ?? deny("item_not_pending");
     const task = plan!.tasks.find((candidate) => `task:${candidate.taskId}` === itemId)!;
     const lines = [`任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`,
-      ...(task.sizeHold && unsentTask(task) ? [`拆分上限：${task.sizeHold.join("；")}`] : []),
+      ...(task.sizeHold && sizeHoldPending(task) ? [`拆分上限：${task.sizeHold.join("；")}`] : []),
       ...task.attempts.map((attempt, index) => `${attempt.rework ? "返修" : "尝试"} ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}${attempt.escalation ? " · PM 已上报" : ""}`),
       ...task.reviews.map(reviewLine),
       ...(currentEscalation(task) ? ["PM 已上报（审查中）"] : []),
@@ -203,7 +203,7 @@ export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string
       messages.push(decision.choice === "retry"
         ? `用户决定：任务 ${task.key} 再给一次机会，轮数上限 ${decision.maxTurns}。${task.status === "awaiting_rework" ? "可用 agent_manage dispatch 直接派 worker 返修，不带 rework"
           : task.status === "awaiting_review" || task.status === "reviewing" ? `可用 agent_manage dispatch 带 review 再派审查${namesIn(unfinishedReviewers(task))}，轮数按用户决定` : "可用 agent_manage dispatch 直接派出，不带 retry"}；这次不占你的重试机会。`
-        : decision.choice === "adjust" && task.sizeHold && unsentTask(task)
+        : decision.choice === "adjust" && task.sizeHold && sizeHoldPending(task)
           ? `用户决定：任务 ${task.key} 由你拆分或精简（${task.sizeHold.join("；")}）。用 plan_manage update 修改该任务，或取消后另加任务，不需要等新的批准版本；改完仍超出上限会再次交用户裁决。`
         : decision.choice === "adjust" && task.holdNote && unsentTask(task)
           ? `用户决定：任务 ${task.key} 按你上报的问题调整（${task.holdNote}）。用 plan_manage update 修改该任务，或取消后另加任务，不需要等新的批准版本。`

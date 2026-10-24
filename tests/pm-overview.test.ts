@@ -91,7 +91,7 @@ test("M7-AC33：2 次未完成的任务成为待裁决事项；PM 空闲且无�
     pendingItems: [{ itemId: `task:${login}`, kind: "adjudicate", label: "待裁决：任务 login 2 次未完成" }] });
 });
 
-test("M8L-AC1/AC4：计划提交被拒时状态行写明次数；被拒两次出现“待裁决：PM 计划两次提交被拒”，卡片列出两次原因、运行记录与三个选择", async () => {
+test("M8L-AC1/AC4：计划提交被拒时状态行写明次数；被拒两次出现“待裁决：PM 计划 2 次提交被拒”，卡片列出两次原因、运行记录与三个选择", async () => {
   const w = await world();
   const requirementId = w.fixture.requirementId;
   w.provider.queue.push({ type: "text", text: "规划中", chunkDelayMs: 30_000 });
@@ -100,7 +100,7 @@ test("M8L-AC1/AC4：计划提交被拒时状态行写明次数；被拒两次出
   await expect(w.plan.execute({ action: "propose", tasks: [spec("meta", "metadata")] })).rejects.toMatchObject({ code: "unit_not_authorized" });
   await until(async () => (await w.overview()).pendingItems.some((item) => item.kind === "plan-rejected"));
   expect(await w.overview()).toMatchObject({ doing: "规划中（计划提交被拒 2 次，等待决定）",
-    pendingItems: [{ itemId: `plan:${requirementId}`, kind: "plan-rejected", label: "待裁决：PM 计划两次提交被拒", version: `plan:${requirementId}:2` }] });
+    pendingItems: [{ itemId: `plan:${requirementId}`, kind: "plan-rejected", label: "待裁决：PM 计划 2 次提交被拒", version: `plan:${requirementId}:2` }] });
   const packet = w.manager.decisionPacket(requirementId, `plan:${requirementId}`);
   expect(packet).toMatch(/第 1 次被拒（propose）：[^\n]*goal\.unknown[\s\S]*第 2 次被拒（propose）：[^\n]*metadata/);
   expect(packet).toContain(`运行记录 `);
@@ -108,7 +108,7 @@ test("M8L-AC1/AC4：计划提交被拒时状态行写明次数；被拒两次出
   expect(packet).toContain("purpose=panel-item");
 });
 
-test("计划因 agent_invalid 连续被拒两次，计入计划被拒次数，出现“待裁决：PM 计划两次提交被拒”", async () => {
+test("计划因 agent_invalid 连续被拒两次，计入计划被拒次数，出现“待裁决：PM 计划 2 次提交被拒”", async () => {
   const w = await world();
   const requirementId = w.fixture.requirementId;
   w.provider.queue.push({ type: "text", text: "规划中", chunkDelayMs: 30_000 });
@@ -116,7 +116,7 @@ test("计划因 agent_invalid 连续被拒两次，计入计划被拒次数，�
   await expect(w.plan.execute({ action: "propose", tasks: [bad("x-reviewer")] })).rejects.toMatchObject({ code: "agent_invalid" });
   await expect(w.plan.execute({ action: "propose", tasks: [bad("y-reviewer")] })).rejects.toMatchObject({ code: "agent_invalid" });
   await until(async () => (await w.overview()).pendingItems.some((item) => item.kind === "plan-rejected"));
-  expect(await w.overview()).toMatchObject({ pendingItems: [{ itemId: `plan:${requirementId}`, kind: "plan-rejected", label: "待裁决：PM 计划两次提交被拒" }] });
+  expect(await w.overview()).toMatchObject({ pendingItems: [{ itemId: `plan:${requirementId}`, kind: "plan-rejected", label: "待裁决：PM 计划 2 次提交被拒" }] });
 });
 
 test("M8L-AC2：PM 停下且无人能唤醒时出现“待处理：PM 停下了”，卡片写明停下的事实、运行记录与 PM 最后的话（标明模型输出）", async () => {

@@ -149,6 +149,10 @@ describe("README 仓库合并设置提示框", () => {
 });
 
 describe("README 常量与实际代码一致", () => {
+  test("计划被拒的待裁决示例按实际次数写阿拉伯数字，与待处理事项文字一致", async () => {
+    expect(await readText(README)).toContain("待裁决：PM 计划 2 次提交被拒");
+  });
+
   test("空闲退出时限与守护进程默认空闲常量一致", async () => {
     const source = await readText(DAEMON_MAIN);
     const match = source.match(/Number\(raw \?\? "(\d+)"\)/);

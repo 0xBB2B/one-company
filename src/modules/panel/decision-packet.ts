@@ -1,5 +1,5 @@
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
-import { currentEscalation, readPlanIn, unsentTask } from "../pm/plan-manage.ts";
+import { currentEscalation, readPlanIn, sizeHoldPending, unsentTask } from "../pm/plan-manage.ts";
 import { pendingItemsIn, reviewLine } from "./pm-overview.ts";
 import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
 import { checked } from "../requirement/requirement-contracts.ts";
@@ -50,7 +50,7 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
           ...(attempt.escalation ? [`  PM 上报${MODEL_NOTE}：${quoted(attempt.escalation, 1024)}`] : []),
           ...(verdict ? [`  子代理自述${MODEL_NOTE}：${verdict.conclusion} · ${quoted(verdict.summary, 400)}`] : [])];
       });
-      const resize = task.sizeHold !== undefined && unsentTask(task);
+      const resize = task.sizeHold !== undefined && sizeHoldPending(task);
       return [...head, `任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`, ...(resize ? [`拆分上限：${task.sizeHold!.join("；")}`] : []), ...held, ...reported, ...attempts, ...task.reviews.map(reviewLine),
         resize ? "可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 PRD）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
           : task.holdNote !== undefined && unsentTask(task) ? "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（PM 直接修改任务，不需要改 PRD）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"

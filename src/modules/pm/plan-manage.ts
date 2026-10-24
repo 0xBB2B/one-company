@@ -97,6 +97,10 @@ export function countedAttempts(task: { attempts: readonly TaskAttempt[] }): num
 export function unsentTask(task: { attempts: readonly TaskAttempt[] }): boolean {
   return countedAttempts(task) === 0;
 }
+/** 拆分上限是否仍有效：这一版还没派出过，且执行机会没用完；机会用完时还按拆分上限放行 PM 直接改计划，就绕开了等新 PRD 版本的规矩，会放出第 3 次执行。 */
+export function sizeHoldPending(task: { attempts: readonly TaskAttempt[]; attemptBase: number }): boolean {
+  return countedAttempts(task) < 2 && countedAttempts({ attempts: task.attempts.slice(task.attemptBase) }) === 0;
+}
 /** 审查中 PM 上报的说明是否仍适用：只在裁决所在的那一轮、同一任务版本里有效。 */
 export function currentEscalation(task: Pick<TaskRecord, "reviews" | "userDecision" | "version">): string | undefined {
   const decision = task.userDecision;
@@ -523,8 +527,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     // 用户选择调整目标或范围后，须等新的批准版本才能按新范围修改该任务本身；只放开该任务修改时保留原目标的要求，且决定用过即失效
     const readjusted = (task: TaskRecord) => task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null &&
       record.data.revision > task.userDecision.revision;
-    // 因超出拆分上限或 PM 在派出前上报而被用户要求调整的任务还没派出过，PM 直接拆分或精简，不等新的批准版本
-    const resized = (task: TaskRecord) => (task.sizeHold !== undefined || task.holdNote !== undefined) && unsentTask(task);
+    // 因超出拆分上限（当前版本还没派出过）或 PM 在派出前上报（任务还没派出过）而被用户要求调整的任务，PM 直接拆分或精简，不等新的批准版本
+    const resized = (task: TaskRecord) => (task.sizeHold !== undefined && sizeHoldPending(task)) || (task.holdNote !== undefined && unsentTask(task));
     const waiting = (params.modify ?? []).filter((item) => { const task = byId.get(item.taskId)!; return task.userDecision?.choice === "adjust" && !readjusted(task) && !resized(task); });
     if (waiting.length) deny("task_not_ready", waiting.map((item) => `${byId.get(item.taskId)!.key} 等待调整后的新批准版本`));
     // 用户给的再一次机会还没用时只能改说明文字，机会随之带到新版本；改了别的，用户的决定就对不上原来的任务了
@@ -536,8 +540,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     if (beyondText.length) deny("task_not_ready", beyondText.map((key) => `${key} 有用户给的再一次机会还没用，这时只能改任务说明文字（objective、passCriteria、agentReason、reviewers 的理由）；要改其他内容，先把这一次派出去`));
     // 一次重试按目标计：有过尝试且未完成的任务不能取消，其目标也不能被同角色的其他新增或修改任务揽走；用户终止的任务在新的批准版本前同样占住其目标。
     // 只占同角色：QA 的目标本就覆盖验收单元，若跨角色占用，QA 一报问题就再也追加不了 worker 返修任务。
-    // 复核中判为受影响的任务按当前批准版本重排，不再占住目标
-    const tried = current.tasks.filter((task) => countedAttempts(task) > 0 && task.status !== "completed" && task.status !== "needs_update" &&
+    // 复核中判为受影响的任务按当前批准版本重排，不再占住目标；带着用户调整决定的待更新任务在新批准版本前同样占住其目标，否则 PM 可用同目标新任务绕开机会用完
+    const tried = current.tasks.filter((task) => countedAttempts(task) > 0 && task.status !== "completed" &&
+      (task.status !== "needs_update" || (task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null && !readjusted(task) && !resized(task))) &&
       (task.status !== "cancelled" || terminationPending([task], record.data.revision)));
     // 当前批准不再列为实施目标的段谁也拿不走：从已开工任务里去掉它、目标全都不在授权内时取消任务，都绕不开一次重试
     const authorized = implementScope(manifest, record.data.docSpec?.sections ?? []);
