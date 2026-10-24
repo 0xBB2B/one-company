@@ -400,6 +400,84 @@ test("worker 加载 [alpha-kit, beta-kit]、名单里开着的 extra-reviewer �
   expect(text).not.toContain("## skill：alpha-kit");
 });
 
+test("返修后第 2 轮：上一轮 go-reviewer 打回、vue-reviewer 通过，返修完再派审查时 reviewer、go-reviewer、vue-reviewer 全部重新启动，轮次为 2", async () => {
+  const t = await reviewWorld();
+  t.replies["go-reviewer"] = verdict(SUMMARIES["go-reviewer"], [{ kind: "blocking", trigger: "go 触发" }]);
+  await t.review({ maxTurns: 5 });
+  for (const name of Object.keys(SUMMARIES)) await t.release(name);
+  await until(() => t.record().status === "awaiting_rework");
+  await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: null, rework: { reason: "按审查意见返修", maxTurns: 3 } });
+  await until(() => t.record().status === "awaiting_review");
+  await t.review({ maxTurns: 5 });
+  expect(t.record().reviews.filter((entry) => entry.round === 2).map((entry) => entry.agent).sort()).toEqual(["go-reviewer", "reviewer", "vue-reviewer"]);
+  for (const name of Object.keys(SUMMARIES)) await t.release(name, 1);
+  await until(() => t.record().status !== "reviewing");
+});
+
+test("返修期间关掉 vue-reviewer：第 2 轮 vue-reviewer 记为跳过不启动；通用审查任务说明写明 alpha-kit 由 go-reviewer 核对、vue-reviewer 负责的 beta-kit 已加载给它核对", async () => {
+  const t = await reviewWorld();
+  for (const name of ["alpha-kit", "beta-kit"]) {
+    await mkdir(join(t.skillDir, name), { recursive: true });
+    await writeFile(join(t.skillDir, name, "SKILL.md"), `# ${name} 规范\n${name} 正文标记。\n`);
+  }
+  await t.define("two-skill-dev", "skills: [alpha-kit, beta-kit]\n");
+  await t.define("go-reviewer", "skills: [alpha-kit]\n", "你是 go-reviewer。", "reviewer");
+  await t.define("vue-reviewer", "skills: [beta-kit]\n", "你是 vue-reviewer。", "reviewer");
+  t.patchTask({ agent: "two-skill-dev", reviewers: [{ agent: "go-reviewer", reason: "专项审查" }, { agent: "vue-reviewer", reason: "专项审查" }] });
+  t.replies["go-reviewer"] = verdict(SUMMARIES["go-reviewer"], [{ kind: "blocking", trigger: "go 触发" }]);
+  await t.review({ maxTurns: 5 });
+  for (const name of Object.keys(SUMMARIES)) await t.release(name);
+  await until(() => t.record().status === "awaiting_rework");
+  await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: null, rework: { reason: "按审查意见返修", maxTurns: 3 } });
+  await until(() => t.record().status === "awaiting_review");
+  t.disabled.add("vue-reviewer");
+  await t.review({ maxTurns: 5 });
+  const round2 = t.record().reviews.filter((entry) => entry.round === 2);
+  expect(round2.map((entry) => [entry.agent, entry.outcome === "skipped" ? "skipped" : "started"]).sort()).toEqual([["go-reviewer", "started"], ["reviewer", "started"], ["vue-reviewer", "skipped"]]);
+  expect(round2.find((entry) => entry.agent === "vue-reviewer")).toMatchObject({ skipReason: "disabled" });
+  const generic = () => t.provider.requests.filter((request) => prompt(request).includes("审查任务：") && !prompt(request).includes("你是 go-reviewer。") && !prompt(request).includes("你是 vue-reviewer。")).at(-1);
+  await until(() => t.provider.requests.filter((request) => prompt(request).includes("审查任务：")).length >= 5);
+  const text = prompt(generic());
+  for (const name of ["reviewer", "go-reviewer"]) await t.release(name, 1);
+  expect(coveredBy(taskStatement(text), "alpha-kit", "go-reviewer")).toBe(true);
+  expect(loadedForGeneric(taskStatement(text), "beta-kit")).toBe(true);
+  expect(coveredBy(taskStatement(text), "beta-kit", "vue-reviewer")).toBe(false);
+  expect(text).toContain("## skill：beta-kit");
+  expect(text).not.toContain("## skill：alpha-kit");
+});
+
+test("第 2 轮 vue-reviewer 被跳过、通用审查没交结论，之后重新打开 vue-reviewer 再单独重派通用审查：任务说明仍写明 beta-kit 已加载给它核对，alpha-kit 由 go-reviewer 核对", async () => {
+  const t = await reviewWorld();
+  for (const name of ["alpha-kit", "beta-kit"]) {
+    await mkdir(join(t.skillDir, name), { recursive: true });
+    await writeFile(join(t.skillDir, name, "SKILL.md"), `# ${name} 规范\n${name} 正文标记。\n`);
+  }
+  await t.define("two-skill-dev", "skills: [alpha-kit, beta-kit]\n");
+  await t.define("go-reviewer", "skills: [alpha-kit]\n", "你是 go-reviewer。", "reviewer");
+  await t.define("vue-reviewer", "skills: [beta-kit]\n", "你是 vue-reviewer。", "reviewer");
+  t.patchTask({ agent: "two-skill-dev", reviewers: [{ agent: "go-reviewer", reason: "专项审查" }, { agent: "vue-reviewer", reason: "专项审查" }] });
+  t.replies["go-reviewer"] = [verdict(SUMMARIES["go-reviewer"], [{ kind: "blocking", trigger: "go 触发" }]), verdict(SUMMARIES["go-reviewer"])];
+  t.replies["reviewer"] = [verdict(SUMMARIES.reviewer), READ];
+  for (const name of Object.keys(SUMMARIES)) t.auto.add(name);
+  await t.review({ maxTurns: 5 });
+  await until(() => t.record().status === "awaiting_rework");
+  await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: null, rework: { reason: "按审查意见返修", maxTurns: 3 } });
+  await until(() => t.record().status === "awaiting_review");
+  t.disabled.add("vue-reviewer");
+  await t.review({ maxTurns: 1 });
+  await until(() => t.record().reviews.some((entry) => entry.round === 2 && entry.agent === "reviewer" && entry.outcome === "turn_limit_reached"));
+  await t.settle();
+  t.disabled.delete("vue-reviewer");
+  const before = t.provider.requests.length;
+  await t.review({ maxTurns: 5, agent: "reviewer" });
+  await until(() => t.provider.requests.slice(before).some((request) => prompt(request).includes("审查任务：")));
+  const text = prompt(t.provider.requests.slice(before).find((request) => prompt(request).includes("审查任务：")));
+  expect(loadedForGeneric(taskStatement(text), "beta-kit")).toBe(true);
+  expect(coveredBy(taskStatement(text), "beta-kit", "vue-reviewer")).toBe(false);
+  expect(coveredBy(taskStatement(text), "alpha-kit", "go-reviewer")).toBe(true);
+  expect(text).toContain("## skill：beta-kit");
+});
+
 test("审 node-worker 的任务、node-reviewer 被关掉：通用审查上下文加载 node-worker 的全部 skill（typescript-coding、node-pitfalls），任务说明写明已加载给它核对", async () => {
   const t = await reviewWorld();
   await t.define("node-reviewer", `skills: [${NODE_SKILLS}]\n`, "你是 node-reviewer。", "reviewer");
@@ -534,6 +612,11 @@ test("agent_manage 工具描述写明带 review 派一次审查、程序同时�
   expect(description).toContain("带 review 派一次审查，程序同时派出通用和专项审查");
   expect(description).toContain("返回本轮启动成功的审查运行编号");
   expect(description).toContain("用户明确指定的定义不可用或已关闭时");
+});
+
+test("agent_manage 工具描述写明返修后再派审查时通用审查和全部专项审查都重新审一遍", () => {
+  const { description } = agentManageTool({ alive: () => true, agents: {} } as unknown as PmToolsInput);
+  expect(description).toContain("返修后再派审查，通用审查和全部专项审查都重新审一遍");
 });
 
 test("A 整轮汇总按本轮还有没有审查在跑判断：三个审查在跑时任务被改成 needs_update，三个审查逐个结束后 PM 只收到一条汇总，且汇总不含 running", async () => {
@@ -1009,13 +1092,14 @@ test("有临时加条目时，只改审查理由的计划更新仍判为只改�
     .rejects.toThrow(/只能改任务说明文字/);
 });
 
-test("node-reviewer 临时加后打回、返修完成：下一轮派的是 reviewer 和 node-reviewer", async () => {
+test("node-reviewer 临时加后打回、返修完成：下一轮派的是 reviewer、go-reviewer 和 node-reviewer", async () => {
   const { t } = await tempAddRound("blocked");
   await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: null, rework: { reason: "按审查意见返修", maxTurns: 3 } });
   await until(() => t.record().status === "awaiting_review");
   await t.review({ maxTurns: 5 });
-  expect(t.record().reviews.filter((entry) => entry.round === 2).map((entry) => entry.agent).sort()).toEqual(["node-reviewer", "reviewer"]);
+  expect(t.record().reviews.filter((entry) => entry.round === 2).map((entry) => entry.agent).sort()).toEqual(["go-reviewer", "node-reviewer", "reviewer"]);
   await t.release("reviewer", 1);
+  await t.release("go-reviewer", 1);
   await t.release("node-reviewer", 1);
   await until(() => t.record().status !== "reviewing");
 });
@@ -1027,7 +1111,7 @@ test("计划改了、任务重新执行完：下一轮派 reviewer、go-reviewer
     spec: spec("login", { objective: "改了目标", reviewers: [{ agent: "go-reviewer", reason: "专项审查" }] } as Partial<TaskSpec>) }] });
   const planned = await login();
   await t.plan.execute({ action: "confirm", planVersion: planned.read.planVersion ?? planned.read.version ?? 2 }).catch(() => undefined);
-  await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: { reason: "计划已改", maxTurns: 3 } });
+  await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: null });
   await until(() => t.record().status === "awaiting_review");
   await t.review({ maxTurns: 5 });
   expect(t.record().reviews.filter((entry) => entry.round === 2).map((entry) => entry.agent).sort()).toEqual(["go-reviewer", "node-reviewer", "reviewer"]);
@@ -1173,7 +1257,7 @@ test("改计划后任务重新执行：旧一轮里等重派的 go-reviewer 记�
 test("改计划后重新执行两次都没完成进入等待用户裁决，用户再给一次机会：按执行阶段处理（不是 reviewing），单派 go-reviewer 被拒，派 worker 用这次用户决定", async () => {
   const t = await planChangedWhileGoWaiting();
   for (let attempt = 0; attempt < 3 && t.record().status !== "awaiting_user"; attempt += 1) {
-    await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: { reason: "重新执行", maxTurns: 2 } }).catch(() => undefined);
+    await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: attempt === 0 ? null : { reason: "重新执行", maxTurns: 2 } }).catch(() => undefined);
     await until(() => t.record().status !== "running" && t.record().attempts.every((entry) => entry.outcome !== "running"));
   }
   expect(t.record().status).toBe("awaiting_user");
@@ -1415,7 +1499,7 @@ test("任务版本变了（计划改过）后再引用旧版本那次尝试的�
     spec: spec("login", { objective: "改了目标", maxTurns: 6 }) }] }) as { planVersion?: number; version?: number };
   await t.plan.execute({ action: "confirm", planVersion: updated.planVersion ?? updated.version ?? 2 });
   t.scripts.push([t.run("true"), (request) => t.submitIds(() => [red, t.idOf(request)])(request)]);
-  const attempt = await t.dispatchTo("login", { reason: "按新计划重做", maxTurns: 6 });
+  const attempt = await t.dispatchTo("login", null);
   await until(() => t.rejections.length > 0);
   expect(t.rejections[0]).toMatch(/out_of_scope|invalid_binding|超出了本运行允许的范围/);
   expect(t.workerVerdicts(attempt.runId)).toHaveLength(0);

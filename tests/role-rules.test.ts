@@ -33,7 +33,7 @@ describe("职责规矩文件", () => {
       "不自填 PASS，不新增验收门槛"], ["核对说明注释"]],
     ["qa", ["按测试名写明的期望结果", "对应不上的标未验证", "不读源码、不修改文件", "分为阻塞、建议、未验证"], []],
     ["explore", [EXPLORE_FIRST_LINE], []],
-    ["pm", [PM_FIRST_LINE, "nextCursor 不为 null 时带上它继续查", "不可用或已关闭时", "写进任务的 reviewers", "由程序自动挂上", "全部通过任务才算完成", "依赖它的任务才能派出", "累计两轮打回"], ["reviewAgent"]],
+    ["pm", [PM_FIRST_LINE, "nextCursor 不为 null 时带上它继续查", "不可用或已关闭时", "写进任务的 reviewers", "由程序自动挂上", "全部通过任务才算完成", "依赖它的任务才能派出", "本周期两轮打回"], ["reviewAgent"]],
   ] as const)("%s 的职责规矩含约定内容且不含已移除内容", (role, included, excluded) => {
     const rules = loadRoleRules(role);
     for (const phrase of included) expect(rules).toContain(phrase);
@@ -76,6 +76,14 @@ describe("pm 职责规矩的审查重试", () => {
   test("写明审查没交结论时看原因单独重派、必要时调大轮数上限或补条件，需要额外角度时可临时加专项审查并写理由", () => {
     const rules = loadRoleRules("pm");
     for (const phrase of ["单独重派", "调大轮数上限", "补条件", "不要靠改任务说明", "escalate", "缺什么", "临时加专项审查", "写理由"]) expect(rules).toContain(phrase);
+  });
+});
+
+describe("pm 职责规矩的返修后审查", () => {
+  test("写明返修后再派审查，通用 reviewer 和全部专项审查都重新审一遍，不含只会重审的说法", () => {
+    const rules = loadRoleRules("pm");
+    expect(rules).toContain("返修后再派审查，通用 reviewer 和全部专项审查都重新审一遍");
+    expect(rules).not.toContain("只会重审");
   });
 });
 

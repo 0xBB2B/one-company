@@ -297,13 +297,12 @@ test("任务行 AC-1/AC-2：审查任务带审查代理子行，用 │ ├ └ 
   ]);
 });
 
-test("任务行 AC-2/AC-3：审查代理各状态的文字与颜色：打回 ✗、没交出结论 dim、跳过 warning、上一轮已通过整行 dim、通过的 ✓ 为 success", () => {
+test("任务行 AC-2/AC-3：审查代理各状态的文字与颜色：打回 ✗、没交出结论 dim、跳过 warning、通过的 ✓ 为 success", () => {
   const { instance, calls } = taskPanel({ taskRows: [review("T1", [
     { agent: "a-reviewer", state: "blocked", turns: 6, maxTurns: 10, elapsedMs: 9_000 },
     { agent: "b-reviewer", state: "awaiting_retry", reason: "turn_limit_reached", turns: 7, maxTurns: 10, elapsedMs: 9_000 },
     { agent: "go-reviewer", state: "skipped_disabled" },
     { agent: "c-reviewer", state: "skipped_missing" },
-    { agent: "vue-reviewer", state: "passed_earlier" },
     { agent: "d-reviewer", state: "clear", turns: 4, maxTurns: 10, elapsedMs: 30_000 },
   ])] });
   const lines = instance.render(200).slice(3).map(body);
@@ -311,14 +310,12 @@ test("任务行 AC-2/AC-3：审查代理各状态的文字与颜色：打回 ✗
   expect(lines[1]).toMatch(/^– b-reviewer 没交出结论（轮数用满），等 PM 重派 · ↻7\/10/);
   expect(lines[2]).toBe("– go-reviewer 已关闭，本轮未审");
   expect(lines[3]).toBe("– c-reviewer 已不存在，本轮未审");
-  expect(lines[4]).toBe("✓ vue-reviewer 上一轮已通过");
-  expect(lines[5]).toMatch(/^✓ d-reviewer 通过 · ↻4\/10/);
+  expect(lines[4]).toMatch(/^✓ d-reviewer 通过 · ↻4\/10/);
   const has = (kind: string, part: string) => calls.some(([k, text]) => k === kind && text.includes(part));
   expect(has("dim", "b-reviewer 没交出结论（轮数用满），等 PM 重派")).toBe(true);
   expect(has("warning", "go-reviewer 已关闭，本轮未审")).toBe(true);
   expect(has("warning", "c-reviewer 已不存在，本轮未审")).toBe(true);
-  expect(has("dim", "✓ vue-reviewer 上一轮已通过")).toBe(true);
-  expect(calls.some(([k, text]) => k === "success" && text.includes("vue-reviewer"))).toBe(false);
+  expect(lines.some((line) => line.includes("上一轮已通过"))).toBe(false);
   expect(has("success", "✓")).toBe(true);
   expect(has("muted", "d-reviewer 通过")).toBe(true);
   expect(calls.some(([k, text]) => k === "success" && text.includes("通过"))).toBe(false);
@@ -444,7 +441,7 @@ test("任务行 AC-7：带 ANSI 着色时，宽度 1 到 12 列逐个渲染，�
         { agent: "exh-reviewer", state: "exhausted", attempt: 2, turns: 2, maxTurns: 10, elapsedMs: 5_000 },
         { agent: "sup-reviewer", state: "awaiting_retry", reason: "superseded", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
         { agent: "go-reviewer", state: "skipped_disabled" },
-        { agent: "vue-reviewer", state: "passed_earlier" },
+        { agent: "vue-reviewer", state: "clear", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
       ]),
       exec("T3"),
     ],
@@ -459,12 +456,11 @@ test("任务行 AC-7：带 ANSI 着色时，宽度 1 到 12 列逐个渲染，�
   }
 });
 
-test("任务行 AC-2：在跑和打回的审查代理行不着灰；没交出结论、上一轮已通过整行 dim；通过的 ✓ 为 success、后面文字为 muted", () => {
+test("任务行 AC-2：在跑和打回的审查代理行不着灰；没交出结论整行 dim；通过的 ✓ 为 success、后面文字为 muted", () => {
   const { instance, calls } = taskPanel({ taskRows: [review("T1", [
     { agent: "run-reviewer", state: "running", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
     { agent: "blk-reviewer", state: "blocked", turns: 6, maxTurns: 10, elapsedMs: 9_000 },
     { agent: "end-reviewer", state: "awaiting_retry", reason: "failed", turns: 7, maxTurns: 10, elapsedMs: 9_000 },
-    { agent: "vue-reviewer", state: "passed_earlier" },
     { agent: "clr-reviewer", state: "clear", turns: 4, maxTurns: 10, elapsedMs: 30_000 },
     { agent: "go-reviewer", state: "skipped_disabled" },
   ])] });
@@ -474,7 +470,6 @@ test("任务行 AC-2：在跑和打回的审查代理行不着灰；没交出结
   expect(grey.some(([, text]) => text.includes("blk-reviewer"))).toBe(false);
   const has = (kind: string, part: string) => calls.some(([k, text]) => k === kind && text.includes(part));
   expect(has("dim", "end-reviewer 没交出结论（运行失败），等 PM 重派")).toBe(true);
-  expect(has("dim", "✓ vue-reviewer 上一轮已通过")).toBe(true);
   expect(has("success", "✓")).toBe(true);
   expect(has("muted", "clr-reviewer 通过")).toBe(true);
   expect(has("dim", "clr-reviewer")).toBe(false);

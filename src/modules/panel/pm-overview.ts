@@ -1,7 +1,7 @@
 import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
 import { activeCheckRoundIn } from "../verification/check-round.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
-import { countedAttempts, implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, reviewRejections, sizeHoldPending, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
+import { cycleAttempts, cycleCountedAttempts, implementScope, latestRound, readPlanIn, REVIEW_OUTCOME_LABEL, REVIEW_REJECTED, reviewFailures, reviewRejections, sizeHoldPending, stalledStage, terminationPending, unsentTask } from "../pm/plan-manage.ts";
 import type { TaskRecord } from "../pm/plan-manage.ts";
 import { reviewDispatchable } from "../pm/task-dispatch.ts";
 import { latestPmSubmission } from "../pm/pm-intake-runtime.ts";
@@ -26,7 +26,7 @@ export interface PendingItem {
 
 export interface PanelRunStats { turns: number; maxTurns: number | null; elapsedMs: number }
 
-export type PanelReviewerState = "running" | "clear" | "blocked" | "awaiting_retry" | "exhausted" | "skipped_disabled" | "skipped_missing" | "passed_earlier";
+export type PanelReviewerState = "running" | "clear" | "blocked" | "awaiting_retry" | "exhausted" | "skipped_disabled" | "skipped_missing";
 export interface PanelReviewerRow extends Partial<PanelRunStats> {
   agent: string;
   state: PanelReviewerState;
@@ -134,11 +134,12 @@ function reviewUnfinishedCause(task: TaskRecord): string {
 function stallCauseOf(task: TaskRecord): string {
   const stage = stalledStage(task);
   if (stage === "execute") {
-    if (task.attempts.length === task.attemptBase && task.attempts.at(-1)?.outcome === "completed" && countedAttempts(task) >= 2) return "改计划后要重做，执行机会已用完";
-    return `${countedAttempts(task)} 次未完成`;
+    if (task.attempts.length === task.attemptBase && task.attempts.at(-1)?.outcome === "completed" && cycleCountedAttempts(task) >= 2) return "改计划后要重做，执行机会已用完";
+    return `${cycleCountedAttempts(task)} 次未完成`;
   }
   if (stage === "review") return reviewUnfinishedCause(task);
-  const rejectors = [...new Set(task.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome)).map((review) => review.agent))];
+  const current = new Set(cycleAttempts(task).map((attempt) => attempt.runId));
+  const rejectors = [...new Set(task.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome) && current.has(review.attemptRunId)).map((review) => review.agent))];
   return `${reviewRejections(task)} 次未通过审查${namesIn(rejectors)}`;
 }
 
@@ -250,10 +251,6 @@ function reviewerRowsOf(task: TaskRecord, round: number, runs: ReadonlyMap<strin
     if (outcome === "skipped") return { agent: review.agent, state: review.skipReason === "missing" ? "skipped_missing" : "skipped_disabled" };
     return { agent: review.agent, state: outcome === "clear" ? "clear" : "blocked", ...stats };
   });
-  const present = new Set(rows.map((row) => row.agent));
-  const earlier = new Map<string, TaskRecord["reviews"][number]>();
-  for (const review of task.reviews) if (review.round < round) earlier.set(review.agent, review);
-  for (const [agent, review] of earlier) if (review.outcome === "clear" && !present.has(agent)) rows.push({ agent, state: "passed_earlier" });
   return rows;
 }
 

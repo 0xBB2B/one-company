@@ -284,19 +284,23 @@ test("轮次用满和被停止也算没交出结论：同一代理同一轮各�
   expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 2 次审查未完成（vue-reviewer）"]);
 });
 
+/** 第一次改计划先用掉 PM 的重算额度，第二次改计划时次数接着累计。 */
 async function modifiedAfterTwoAttempts(lastOutcome: "completed" | "turn_limit_reached") {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("T1", "goal.login"), spec("other", "scenario.failure")] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
   const id = w.taskId("T1");
-  w.db((db) => {
+  const seed = (change: (data: TaskRecord) => Partial<TaskRecord>) => w.db((db) => {
     const row = db.read<TaskRecord>(TASKS, id)!;
-    db.update(TASKS, id, row.version, { ...row.data, status: lastOutcome === "completed" ? "awaiting_review" : "awaiting_parent",
-      attempts: [{ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" },
-        { runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: "估计不足", outcome: lastOutcome }] } as TaskRecord);
+    db.update(TASKS, id, row.version, { ...row.data, ...change(row.data) } as TaskRecord);
   });
-  const task = w.db((db) => db.read<TaskRecord>(TASKS, id)!);
-  await w.plan.execute({ action: "update", planVersion: 1, modify: [{ taskId: id, version: task.data.version, spec: { ...spec("T1", "goal.login"), objective: "改过的目标" } }] });
+  const read = () => w.db((db) => db.read<TaskRecord>(TASKS, id)!);
+  seed(() => ({ status: "awaiting_parent", attempts: [{ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" }] }));
+  await w.plan.execute({ action: "update", planVersion: 1, modify: [{ taskId: id, version: read().data.version, spec: { ...spec("T1", "goal.login"), objective: "先用掉重算额度" } }] });
+  seed((data) => ({ status: lastOutcome === "completed" ? "awaiting_review" : "awaiting_parent",
+    attempts: [...data.attempts, { runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" },
+      { runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: "估计不足", outcome: lastOutcome }] }));
+  await w.plan.execute({ action: "update", planVersion: 2, modify: [{ taskId: id, version: read().data.version, spec: { ...spec("T1", "goal.login"), objective: "改过的目标" } }] });
   return { w, id };
 }
 
@@ -441,16 +445,26 @@ test("任务行：本轮被打回（blocked 或 unverified）的审查代理状�
     ["reviewer", "running"], ["go-reviewer", "blocked"], ["vue-reviewer", "blocked"]]);
 });
 
-test("任务行：第 2 轮只派 reviewer、go-reviewer 时，上一轮已通过的 vue-reviewer 以 passed_earlier 排在末尾，被关闭跳过的 go-reviewer 为 skipped_disabled", async () => {
+test("任务行：返修后第 2 轮每个专项审查一行写本轮状态，被关闭跳过的 go-reviewer 为 skipped_disabled，没有 passed_earlier", async () => {
   const { w, reviewing, reviewersOf } = await rowsWorld();
   await reviewing("T1", [
     { agent: "reviewer", round: 1, outcome: "blocked" }, { agent: "vue-reviewer", round: 1, outcome: "clear" },
     { agent: "reviewer", round: 2, outcome: "running", turns: 1, maxTurns: 15 },
-    { agent: "go-reviewer", round: 2, outcome: "skipped", skipReason: "disabled" }]);
+    { agent: "go-reviewer", round: 2, outcome: "skipped", skipReason: "disabled" },
+    { agent: "vue-reviewer", round: 2, outcome: "clear", turns: 2, maxTurns: 15 }]);
   const row = await reviewersOf("T1");
   expect(row?.round).toBe(2);
   expect(row?.reviewers.map((reviewer) => [reviewer.agent, reviewer.state])).toEqual([
-    ["reviewer", "running"], ["go-reviewer", "skipped_disabled"], ["vue-reviewer", "passed_earlier"]]);
+    ["reviewer", "running"], ["go-reviewer", "skipped_disabled"], ["vue-reviewer", "clear"]]);
+});
+
+test("任务行：返修后第 2 轮没有这个专项审查的记录时，审查代理状态里没有 passed_earlier", async () => {
+  const { w, reviewing, reviewersOf } = await rowsWorld();
+  await reviewing("T1", [
+    { agent: "reviewer", round: 1, outcome: "blocked" }, { agent: "vue-reviewer", round: 1, outcome: "clear" },
+    { agent: "reviewer", round: 2, outcome: "running", turns: 1, maxTurns: 15 }]);
+  const row = await reviewersOf("T1");
+  expect(row?.reviewers.map((reviewer) => reviewer.state)).not.toContain("passed_earlier");
 });
 
 test("任务行：已不存在而被跳过的审查代理状态为 skipped_missing", async () => {

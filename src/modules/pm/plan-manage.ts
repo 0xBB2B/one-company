@@ -93,13 +93,30 @@ export type TaskReview = Static<typeof Review>;
 export function countedAttempts(task: { attempts: readonly TaskAttempt[] }): number {
   return task.attempts.filter((attempt) => attempt.outcome !== "superseded" && !attempt.rework).length;
 }
+/** 复核会把已完成的任务改成待更新，占住目标只管没做完的任务，所以要认出复核前就已做完的任务。 */
+function finishedBeforeReview(task: Pick<TaskRecord, "role" | "attempts" | "reviews">): boolean {
+  const attempt = task.attempts.findLast((candidate) => candidate.outcome !== "superseded");
+  if (attempt?.outcome !== "completed") return false;
+  if (task.role !== "worker") return true;
+  const { reviews } = latestRound(task);
+  return reviews.some((review) => review.outcome === "clear") &&
+    reviews.every((review) => review.attemptRunId === attempt.runId && (review.outcome === "clear" || review.outcome === "skipped"));
+}
+/** 当前计数周期里的尝试：最近一次开新周期之后的；还没开过新周期时是全部。 */
+export function cycleAttempts<T extends TaskAttempt>(task: { attempts: readonly T[]; cycleStarts: readonly number[] }): T[] {
+  return task.attempts.slice(task.cycleStarts.at(-1) ?? 0);
+}
+/** 当前计数周期里计入次数的执行数，口径同 countedAttempts。 */
+export function cycleCountedAttempts(task: { attempts: readonly TaskAttempt[]; cycleStarts: readonly number[] }): number {
+  return countedAttempts({ attempts: cycleAttempts(task) });
+}
 /** 任务还没派出过：没有计入次数的尝试（作废的不算）。 */
 export function unsentTask(task: { attempts: readonly TaskAttempt[] }): boolean {
   return countedAttempts(task) === 0;
 }
 /** 拆分上限是否仍有效：这一版还没派出过，且执行机会没用完；机会用完时还按拆分上限放行 PM 直接改计划，就绕开了等新 PRD 版本的规矩，会放出第 3 次执行。 */
-export function sizeHoldPending(task: { attempts: readonly TaskAttempt[]; attemptBase: number }): boolean {
-  return countedAttempts(task) < 2 && countedAttempts({ attempts: task.attempts.slice(task.attemptBase) }) === 0;
+export function sizeHoldPending(task: { attempts: readonly TaskAttempt[]; attemptBase: number; cycleStarts: readonly number[] }): boolean {
+  return cycleCountedAttempts(task) < 2 && countedAttempts({ attempts: task.attempts.slice(task.attemptBase) }) === 0;
 }
 /** 审查中 PM 上报的说明是否仍适用：只在裁决所在的那一轮、同一任务版本里有效。 */
 export function currentEscalation(task: Pick<TaskRecord, "reviews" | "userDecision" | "version">): string | undefined {
@@ -121,9 +138,10 @@ export function latestRound(task: { reviews: readonly TaskReview[] }): { round: 
   for (const review of task.reviews) if (review.round === round) byAgent.set(review.agent, review);
   return { round, reviews: [...byAgent.values()] };
 }
-/** 有打回的轮数：返修机会按此单独计数，同一轮多个代理打回只算一轮。 */
-export function reviewRejections(task: { reviews: readonly TaskReview[] }): number {
-  return new Set(task.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome)).map((review) => review.round)).size;
+/** 当前计数周期里有打回的轮数：返修机会按此单独计数，同一轮多个代理打回只算一轮。 */
+export function reviewRejections(task: { reviews: readonly TaskReview[]; attempts: readonly TaskAttempt[]; cycleStarts: readonly number[] }): number {
+  const earlier = new Set(task.attempts.slice(0, task.cycleStarts.at(-1) ?? 0).map((attempt) => attempt.runId));
+  return new Set(task.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome) && !earlier.has(review.attemptRunId)).map((review) => review.round)).size;
 }
 /** 某个审查代理在最近一轮里没交出结论的次数：与执行尝试同样允许一次再派，新一轮重新数。 */
 export function reviewFailures(reviews: readonly TaskReview[], agent: string): number {
@@ -170,6 +188,10 @@ const TaskRecord = object({
   holdNote: Type.Optional(text),
   /** 当前任务版本开始时已有的尝试数：此后的尝试才属于当前版本，先红后绿的验证引用只在当前版本内有效。 */
   attemptBase: Type.Integer({ minimum: 0 }),
+  /** 每个新计数周期开始时已有的尝试数，按时间顺序；最后一个是当前周期的起点，空数组表示还在第 1 个周期。 */
+  cycleStarts: Type.Array(Type.Integer({ minimum: 1 }), { maxItems: 64 }),
+  /** PM 自己改计划还能开几次新周期：用户两次决定之间只有 1 次，用户做决定时恢复为 1。 */
+  replanAllowance: Type.Union([Type.Literal(0), Type.Literal(1)]),
   lastAssessedRevision: positive, updatedAt: positive,
 });
 export type TaskRecord = Static<typeof TaskRecord>;
@@ -382,7 +404,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       .flatMap((spec) => spec.writePaths.filter((path) => !writePathAllowed(path)).map((path) => `${spec.key} 的 ${path} 不能由 worker 写入`));
     if (unwritable.length) deny("dependency_invalid", unwritable);
     const keys = specs.map((spec) => spec.key);
-    if (new Set(keys).size !== keys.length || keys.some((value) => known.has(value) && !specs.some((spec) => spec.key === value))) deny("dependency_invalid", ["任务 key 重复"]);
+    if (new Set(keys).size !== keys.length) deny("dependency_invalid", ["任务 key 重复"]);
     for (const spec of specs) for (const dep of spec.dependsOn) if (!keys.includes(dep) && !known.has(dep)) deny("dependency_invalid", [`${spec.key} 依赖未知任务 ${dep}`]);
   }
 
@@ -442,7 +464,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
   }
 
   async function materialize(manifest: ApprovalManifest, specs: TaskSpec[], existingKeys: Map<string, string>, revision: number,
-    previous?: Map<string, TaskRecord>) {
+    previous?: Map<string, TaskRecord>, authorized: ReadonlySet<string> = new Set()) {
+    const chances: string[] = [];
     const ids = new Map(existingKeys);
     for (const spec of specs) if (!ids.has(spec.key)) ids.set(spec.key, uuidv7());
     const records: TaskRecord[] = [];
@@ -454,20 +477,30 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       const reviewers = [...(spec.reviewers ?? []), ...(prior?.reviewers ?? []).filter((entry) => entry.added && !spec.reviewers?.some((kept) => kept.agent === entry.agent))];
       if (reviewers.length > MAX_REVIEWERS) deny("agent_invalid", [`${spec.key} 的审查名单合并 PM 临时加的专项审查后有 ${reviewers.length} 条，超过上限 ${MAX_REVIEWERS}，请减少 reviewers`]);
       const decision = prior?.userDecision && carriedDecision(prior.userDecision, version);
+      let cycleStarts = prior?.cycleStarts ?? [], replanAllowance: 0 | 1 = prior?.replanAllowance ?? 1;
+      if (prior && !(prior.userDecision?.choice === "retry" && prior.userDecision.usedByRunId === null) && cycleCountedAttempts(prior) > 0) {
+        if (authorized.has(taskId) || replanAllowance === 1) {
+          cycleStarts = [...cycleStarts, prior.attempts.length];
+          if (!authorized.has(taskId)) replanAllowance = 0;
+          chances.push(`${spec.key} 开始新的计数周期：重新计 2 次执行机会和 1 次返修机会`);
+        } else {
+          chances.push(`${spec.key} 的重算额度已用完，次数接着累计：本周期已执行 ${cycleCountedAttempts(prior)} 次、打回 ${reviewRejections(prior)} 轮`);
+        }
+      }
       // 两次机会已用完又没有能用的用户决定时，待派出也派不出去，只能交回用户裁决
-      const exhausted = prior !== undefined && countedAttempts(prior) >= 2 && !(decision && decision.usedByRunId === null &&
+      const exhausted = prior !== undefined && cycleCountedAttempts({ attempts: prior.attempts, cycleStarts }) >= 2 && !(decision && decision.usedByRunId === null &&
         ((decision.choice === "retry" && decision.taskVersion === version) || (decision.choice === "adjust" && version > decision.taskVersion)));
       records.push(checked(TaskRecord, { format: "plan-task/v1", taskId, requirementId: grant.requirementId, version, key: spec.key, role: spec.role,
         goalUnitIds: spec.goalUnitIds, constraintUnitIds: spec.constraintUnitIds, closure: closureOf(manifest, spec.goalUnitIds, spec.constraintUnitIds),
         dependsOn: spec.dependsOn.map((dep) => ids.get(dep)!), writePaths: spec.writePaths, blockedByQuestionIds: spec.blockedByQuestionIds,
         maxTurns: spec.maxTurns, ...(spec.agent ? { agent: spec.agent } : {}), ...(spec.agentReason ? { agentReason: spec.agentReason } : {}),
         ...(reviewers.length ? { reviewers } : {}),
-        attemptBase: prior?.attempts.length ?? 0,
+        attemptBase: prior?.attempts.length ?? 0, cycleStarts, replanAllowance,
         detail: await writeDetail(taskId, version, spec), status: hold.length || exhausted ? "awaiting_user" : "pending", ...(hold.length ? { sizeHold: hold } : {}), attempts: previous?.get(taskId)?.attempts ?? [], reviews: previous?.get(taskId)?.reviews ?? [],
         ...(previous?.get(taskId)?.userDecision ? { userDecision: carriedDecision(previous.get(taskId)!.userDecision!, version) } : {}),
         lastAssessedRevision: revision, updatedAt: now() }));
     }
-    return records;
+    return { records, chances };
   }
 
   /** 写入前逐任务比对快照时的内容：快照后被派工或结局登记改动过的任务不被覆盖。 */
@@ -503,7 +536,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     validateSpecs(manifest, implementScope(manifest, record.data.docSpec?.sections ?? []), specs, new Map());
     const directory = await agentDirectory();
     validateAgents(specs, directory);
-    const tasks = await materialize(manifest, withAutoReviewers(specs, directory), new Map(), record.data.revision);
+    const { records: tasks } = await materialize(manifest, withAutoReviewers(specs, directory), new Map(), record.data.revision);
     assertAcyclic(tasks);
     const plan = checked(PlanRecord, { format: "plan/v1", requirementId: grant.requirementId, planVersion: 1, confirmedVersion: null, confirmedTasks: [],
       taskIds: tasks.map((task) => task.taskId), knownUnits: manifest.units.map((unit) => ({ unitId: unit.id, hash: unit.hash })),
@@ -518,18 +551,21 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     if (current.plan.planVersion !== params.planVersion) deny("version_conflict", ["计划版本已变化"]);
     const byId = new Map(current.tasks.map((task) => [task.taskId, task]));
     const keys = new Map(current.tasks.map((task) => [task.key, task.taskId]));
+    const duplicated = (params.add ?? []).filter((spec) => keys.has(spec.key));
+    if (duplicated.length) deny("dependency_invalid", duplicated.map((spec) => `${spec.key} 任务 key 重复：已有任务只能用 modify 修改`));
     for (const item of [...(params.modify ?? []), ...(params.cancel ?? [])]) {
       const task = byId.get(item.taskId);
       if (!task || task.version !== item.version) deny("version_conflict", [`任务 ${item.taskId} 版本已变化`]);
       if (task.status === "awaiting_user") deny("task_not_ready", [`${task.key} 等待用户裁决，不能修改或取消`]);
       if (task.userDecision?.choice === "terminate") deny("task_not_ready", [`${task.key} 已被用户终止，不能修改或取消`]);
     }
+    const adjustPending = (task: TaskRecord) => task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null;
     // 用户选择调整目标或范围后，须等新的批准版本才能按新范围修改该任务本身；只放开该任务修改时保留原目标的要求，且决定用过即失效
-    const readjusted = (task: TaskRecord) => task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null &&
-      record.data.revision > task.userDecision.revision;
+    const readjusted = (task: TaskRecord) => adjustPending(task) && record.data.revision > task.userDecision!.revision;
     // 因超出拆分上限（当前版本还没派出过）或 PM 在派出前上报（任务还没派出过）而被用户要求调整的任务，PM 直接拆分或精简，不等新的批准版本
     const resized = (task: TaskRecord) => (task.sizeHold !== undefined && sizeHoldPending(task)) || (task.holdNote !== undefined && unsentTask(task));
-    const waiting = (params.modify ?? []).filter((item) => { const task = byId.get(item.taskId)!; return task.userDecision?.choice === "adjust" && !readjusted(task) && !resized(task); });
+    const waiting = (params.modify ?? []).filter((item) => { const task = byId.get(item.taskId)!;
+      return adjustPending(task) && !readjusted(task) && !resized(task); });
     if (waiting.length) deny("task_not_ready", waiting.map((item) => `${byId.get(item.taskId)!.key} 等待调整后的新批准版本`));
     // 用户给的再一次机会还没用时只能改说明文字，机会随之带到新版本；改了别的，用户的决定就对不上原来的任务了
     const beyondText: string[] = [];
@@ -540,9 +576,10 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     if (beyondText.length) deny("task_not_ready", beyondText.map((key) => `${key} 有用户给的再一次机会还没用，这时只能改任务说明文字（objective、passCriteria、agentReason、reviewers 的理由）；要改其他内容，先把这一次派出去`));
     // 一次重试按目标计：有过尝试且未完成的任务不能取消，其目标也不能被同角色的其他新增或修改任务揽走；用户终止的任务在新的批准版本前同样占住其目标。
     // 只占同角色：QA 的目标本就覆盖验收单元，若跨角色占用，QA 一报问题就再也追加不了 worker 返修任务。
-    // 复核中判为受影响的任务按当前批准版本重排，不再占住目标；带着用户调整决定的待更新任务在新批准版本前同样占住其目标，否则 PM 可用同目标新任务绕开机会用完
+    // 复核判为受影响的已执行任务，只有用户对它选了调整并批准了新版本、或选了拆分才放开，其余照旧占住目标。
+    // 不比较章节变化：任务的目标、约束章节由 PM 自己填，段落依赖由解读模型给，都不可信，拿它们判断会被填充或依赖变化绕过。
     const tried = current.tasks.filter((task) => countedAttempts(task) > 0 && task.status !== "completed" &&
-      (task.status !== "needs_update" || (task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null && !readjusted(task) && !resized(task))) &&
+      (task.status !== "needs_update" || !(finishedBeforeReview(task) || readjusted(task) || (resized(task) && adjustPending(task)))) &&
       (task.status !== "cancelled" || terminationPending([task], record.data.revision)));
     // 当前批准不再列为实施目标的段谁也拿不走：从已开工任务里去掉它、目标全都不在授权内时取消任务，都绕不开一次重试
     const authorized = implementScope(manifest, record.data.docSpec?.sections ?? []);
@@ -564,7 +601,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     validateSpecs(manifest, authorized, specs, keys);
     const directory = await agentDirectory();
     validateAgents(specs, directory);
-    const changed = await materialize(manifest, withAutoReviewers(specs, directory), keys, record.data.revision, byId);
+    const userAuthorized = new Set((params.modify ?? []).map((item) => byId.get(item.taskId)!)
+      .filter((task) => readjusted(task) || (resized(task) && adjustPending(task))).map((task) => task.taskId));
+    const { records: changed, chances } = await materialize(manifest, withAutoReviewers(specs, directory), keys, record.data.revision, byId, userAuthorized);
     const cancelled = (params.cancel ?? []).map((item) => ({ ...byId.get(item.taskId)!, status: "cancelled" as const, updatedAt: now() }));
     const merged = new Map(current.tasks.map((task) => [task.taskId, task]));
     for (const task of [...changed, ...cancelled]) merged.set(task.taskId, task);
@@ -572,7 +611,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     for (const task of live) for (const dep of task.dependsOn) if (merged.get(dep)?.status === "cancelled") deny("dependency_invalid", [`${task.key} 依赖已取消的任务`]);
     assertAcyclic(live);
     const plan = checked(PlanRecord, { ...current.plan, planVersion: current.plan.planVersion + 1, taskIds: [...merged.keys()], updatedAt: now() });
-    return commit({ planVersion: current.plan.planVersion, recordVersion: record.version, tasks: byId }, plan, [...changed, ...cancelled]);
+    return { ...commit({ planVersion: current.plan.planVersion, recordVersion: record.version, tasks: byId }, plan, [...changed, ...cancelled]), chances };
   }
 
   async function confirm(planVersion: number) {

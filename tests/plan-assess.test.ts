@@ -167,7 +167,7 @@ test("M7-AC30：任务仍有运行中的尝试时不能再次派出，旧版本�
     .toThrow("task_not_ready");
   const finished = finishTaskAttempt({ ...ref, taskId: login.taskId, runId: oldRun, turnsUsed: 5, outcome: "completed" });
   expect(finished).toMatchObject({ version: 2, status: "pending" });
-  expect(() => beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId: uuidv7(), retry: { reason: "改写后重试", maxTurns: 40 } })).not.toThrow();
+  expect(() => beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId: uuidv7(), retry: null })).not.toThrow();
 });
 
 test("M9：QA 只验已确认的实施目标段与验收段，未验证项指向待定段时拒收并说明原因；已确认的实施目标段、验收段与非章节引用照常收下", async () => {
@@ -233,7 +233,7 @@ test("M8M-AC1：任务已有 16 条尝试和 16 条审查记录时，用户再�
   expect(w.byKey(view, "login").status).toBe("running");
 });
 
-test("M8O-AC3：上一版本下做过尝试的任务被判为受影响后，可以取消并由新任务接手它的目标；没被判为受影响的已尝试任务仍占住目标", async () => {
+test("M8O-AC3：上一版本下做过尝试的任务被判为受影响后仍占住目标：取消并另加同目标任务被拒，只能修改它本身；没被判为受影响的同样占住目标", async () => {
   const w = await world();
   const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
   withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => {
@@ -247,8 +247,10 @@ test("M8O-AC3：上一版本下做过尝试的任务被判为受影响后，可�
   const assessed = await w.assess([[w.byKey(w.first, "login"), "affected"], [w.byKey(w.first, "failure"), "unaffected"]]);
   await expect(w.run({ action: "update", planVersion: assessed.plan.planVersion, add: [spec("failure-again", "scenario.failure")] }))
     .rejects.toMatchObject({ code: "goal_held" });
-  const replanned = await w.run({ action: "update", planVersion: assessed.plan.planVersion,
-    cancel: [{ taskId: login.taskId, version: w.byKey(assessed, "login").version }], add: [spec("login-fix", "goal.login")] });
-  expect(w.byKey(replanned, "login").status).toBe("cancelled");
-  expect(w.byKey(replanned, "login-fix").status).toBe("pending");
+  await expect(w.run({ action: "update", planVersion: assessed.plan.planVersion,
+    cancel: [{ taskId: login.taskId, version: w.byKey(assessed, "login").version }], add: [spec("login-fix", "goal.login")] }))
+    .rejects.toMatchObject({ code: "goal_held" });
+  const modified = await w.run({ action: "update", planVersion: assessed.plan.planVersion,
+    modify: [{ taskId: login.taskId, version: w.byKey(assessed, "login").version, spec: { ...spec("login", "goal.login"), maxTurns: 40 } }] });
+  expect(w.byKey(modified, "login").status).toBe("pending");
 });
