@@ -33,7 +33,7 @@ describe("职责规矩文件", () => {
       "不自填 PASS，不新增验收门槛"], ["核对说明注释"]],
     ["qa", ["按测试名写明的期望结果", "对应不上的标未验证", "不读源码、不修改文件", "分为阻塞、建议、未验证"], []],
     ["explore", [EXPLORE_FIRST_LINE], []],
-    ["pm", [PM_FIRST_LINE, "nextCursor 不为 null 时带上它继续查", "不可用或已关闭时", "写进任务的 reviewers", "由程序自动挂上", "全部通过任务才算完成", "依赖它的任务才能派出", "累计两轮打回"], ["reviewAgent"]],
+    ["pm", [PM_FIRST_LINE, "nextCursor 不为 null 时带上它继续查", "不可用或已关闭时", "写进任务的 reviewers", "由程序自动挂上", "全部通过任务才算完成", "依赖它的任务才能派出", "本周期两轮打回"], ["reviewAgent"]],
   ] as const)("%s 的职责规矩含约定内容且不含已移除内容", (role, included, excluded) => {
     const rules = loadRoleRules(role);
     for (const phrase of included) expect(rules).toContain(phrase);
