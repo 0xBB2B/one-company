@@ -97,6 +97,7 @@ test.each([
   { kind: "data", version: 2, error: OLD_VERSION_MESSAGE("data\\.db") },
   { kind: "data", version: 3, error: OLD_VERSION_MESSAGE("data\\.db") },
   { kind: "data", version: 4, error: OLD_VERSION_MESSAGE("data\\.db") },
+  { kind: "data", version: 5, error: OLD_VERSION_MESSAGE("data\\.db") },
   { kind: "data", version: 99, error: /不支持的数据库版本/ },
   { kind: "index", version: 1, error: OLD_VERSION_MESSAGE("index\\.db") },
   { kind: "index", version: 99, error: /不支持的数据库版本/ },
@@ -112,9 +113,9 @@ test.each([
   expect(existsSync(path + "-wal")).toBe(false);
 });
 
-test("新建的 data.db、index.db、global.db 版本号分别是 5、2、1", async () => {
+test("新建的 data.db、index.db、global.db 版本号分别是 6、2、1", async () => {
   const w = await world();
-  const expected = { data: 5, index: 2, global: 1 } as const;
+  const expected = { data: 6, index: 2, global: 1 } as const;
   for (const kind of ["data", "index", "global"] as const) {
     const path = databaseFile(w.directory, kind);
     new LocalDatabase(path).close();

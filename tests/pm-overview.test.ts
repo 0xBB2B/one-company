@@ -284,19 +284,23 @@ test("轮次用满和被停止也算没交出结论：同一代理同一轮各�
   expect(await pendingLabels(w)).toEqual(["待裁决：任务 T3 2 次审查未完成（vue-reviewer）"]);
 });
 
+/** 第一次改计划先用掉 PM 的重算额度，第二次改计划时次数接着累计。 */
 async function modifiedAfterTwoAttempts(lastOutcome: "completed" | "turn_limit_reached") {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("T1", "goal.login"), spec("other", "scenario.failure")] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
   const id = w.taskId("T1");
-  w.db((db) => {
+  const seed = (change: (data: TaskRecord) => Partial<TaskRecord>) => w.db((db) => {
     const row = db.read<TaskRecord>(TASKS, id)!;
-    db.update(TASKS, id, row.version, { ...row.data, status: lastOutcome === "completed" ? "awaiting_review" : "awaiting_parent",
-      attempts: [{ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" },
-        { runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: "估计不足", outcome: lastOutcome }] } as TaskRecord);
+    db.update(TASKS, id, row.version, { ...row.data, ...change(row.data) } as TaskRecord);
   });
-  const task = w.db((db) => db.read<TaskRecord>(TASKS, id)!);
-  await w.plan.execute({ action: "update", planVersion: 1, modify: [{ taskId: id, version: task.data.version, spec: { ...spec("T1", "goal.login"), objective: "改过的目标" } }] });
+  const read = () => w.db((db) => db.read<TaskRecord>(TASKS, id)!);
+  seed(() => ({ status: "awaiting_parent", attempts: [{ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" }] }));
+  await w.plan.execute({ action: "update", planVersion: 1, modify: [{ taskId: id, version: read().data.version, spec: { ...spec("T1", "goal.login"), objective: "先用掉重算额度" } }] });
+  seed((data) => ({ status: lastOutcome === "completed" ? "awaiting_review" : "awaiting_parent",
+    attempts: [...data.attempts, { runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" },
+      { runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: "估计不足", outcome: lastOutcome }] }));
+  await w.plan.execute({ action: "update", planVersion: 2, modify: [{ taskId: id, version: read().data.version, spec: { ...spec("T1", "goal.login"), objective: "改过的目标" } }] });
   return { w, id };
 }
 

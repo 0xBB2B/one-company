@@ -665,7 +665,7 @@ test("M8L-AC3：取消或拒绝整个需求用 itemId=requirement:<编号> 的�
     choices: [choice("调整需求"), choice("取消需求", true), choice("拒绝需求")] })).rejects.toThrow("事项在用户做决定后已变化");
 });
 
-test("用户再给一次机会后，那次运行因批准新版本、任务被改而被取代：任务交回用户裁决，不停在派不出去的待派出；用户再给机会后按用户上限派出", async () => {
+test("用户再给一次机会后，那次运行因批准新版本、任务被改而被取代：PM 还有重算额度，任务开始新周期回到待派出，事项不留在面板，不带 retry 派出被接受", async () => {
   const w = await world();
   const state = async (id: string) => { const run = await w.runStore.get(id); return run.ok ? run.run.state : "missing"; };
   const planVersion = () => w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
@@ -690,16 +690,11 @@ test("用户再给一次机会后，那次运行因批准新版本、任务被�
   await until(async () => await state(third.runId) === "stopped");
   await until(() => w.task("login").attempts.at(-1)!.outcome === "superseded");
 
-  expect(w.task("login").status).toBe("awaiting_user");
-  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.login, retry: null })).rejects.toMatchObject({ code: "task_not_ready" });
-  expect((await w.manager.overviews())[0]!.pendingItems.map((item) => item.itemId)).toContain(w.itemId);
-  const result = await w.adjudicate("再给一次机会，给 4 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:4"])]);
-  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
-  expect(result).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 4, taskStatus: "pending" });
-  await until(() => w.provider.queue.length === 0);
+  expect(w.task("login").status).toBe("pending");
+  expect((await w.manager.overviews())[0]!.pendingItems.map((item) => item.itemId)).not.toContain(w.itemId);
   w.provider.queue.push({ type: "text", text: "第四次" }, { type: "text", text: "PM 收到" });
   const fourth = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.login, retry: null });
-  expect(fourth.maxTurns).toBe(4);
+  expect(fourth.maxTurns).toBe(1);
 });
 
 type StuckReview = { agent: string; round: number; outcome: TaskRecord["reviews"][number]["outcome"] };
@@ -716,33 +711,41 @@ async function reviewStuckWorld(reviews: StuckReview[]) {
 }
 
 const REDO_LABEL = "待裁决：任务 login 改计划后要重做，执行机会已用完";
-async function modifiedLogin(stage: Partial<TaskRecord>, attempts: Array<"turn_limit_reached" | "completed">, spec2: Partial<TaskSpec> = { objective: "改过的目标" }) {
+async function modifiedLogin(stage: Partial<TaskRecord>, attempts: Array<"turn_limit_reached" | "completed">, spec2: Partial<TaskSpec> = { objective: "改过的目标" }, quotaSpent = false) {
   const w = await pendingWorld();
   const id = w.task("login").taskId;
+  if (quotaSpent) {
+    w.db((db) => {
+      const row = db.read<TaskRecord>(TASKS, id)!;
+      db.update(TASKS, id, row.version, { ...row.data, status: "awaiting_parent", attempts: [{ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" }] });
+    });
+    await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version, spec: spec("login", "goal.login", { objective: "先用掉重算额度" }) }] });
+  }
+  const earlier = w.task("login").attempts;
   const attemptRuns = attempts.map(() => uuidv7());
   w.db((db) => {
     const row = db.read<TaskRecord>(TASKS, id)!;
     db.update(TASKS, id, row.version, { ...row.data, ...stage,
-      attempts: attempts.map((outcome, index) => ({ runId: attemptRuns[index]!, maxTurns: 1, turnsUsed: 1, reason: index === 0 ? null : "估计不足", outcome })),
+      attempts: [...earlier, ...attempts.map((outcome, index) => ({ runId: attemptRuns[index]!, maxTurns: 1, turnsUsed: 1, reason: index === 0 ? null : "估计不足", outcome }))],
       reviews: (stage.reviews ?? []).map((review) => ({ ...review, attemptRunId: attemptRuns.at(-1)! })) } as TaskRecord);
   });
-  await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version, spec: spec("login", "goal.login", spec2) }] });
-  return { w, id, itemId: `task:${id}` };
+  const updated = await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version, spec: spec("login", "goal.login", spec2) }] }) as { chances: string[] };
+  return { w, id, itemId: `task:${id}`, updated };
 }
 const reviewRow = (agent: string, round: number, outcome: TaskRecord["reviews"][number]["outcome"]) =>
   ({ runId: uuidv7(), attemptRunId: "", maxTurns: 1, turnsUsed: 1, agent, round, outcome }) as TaskRecord["reviews"][number];
 const pendingLabelsOf = async (w: Awaited<ReturnType<typeof pendingWorld>>) => (await w.manager.overviews())[0]!.pendingItems.map((item) => item.label);
 const grantRetry = async (w: Awaited<ReturnType<typeof pendingWorld>>) => userAdjudicates(w, "login", ["choice:retry", "max-turns:3"]);
 
-test("返修中改计划：第 2 次执行完成、审查打回 1 轮、任务待返修时 PM 修改该任务，待裁决原因是改计划后要重做、执行机会已用完；用户选再给一次机会后任务回到 pending", async () => {
-  const { w } = await modifiedLogin({ status: "awaiting_rework", reviews: [reviewRow("reviewer", 1, "blocked")] }, ["turn_limit_reached", "completed"]);
+test("重算额度已用掉后返修中改计划：第 2 次执行完成、审查打回 1 轮、任务待返修时 PM 修改该任务，待裁决原因是改计划后要重做、执行机会已用完；用户选再给一次机会后任务回到 pending", async () => {
+  const { w } = await modifiedLogin({ status: "awaiting_rework", reviews: [reviewRow("reviewer", 1, "blocked")] }, ["turn_limit_reached", "completed"], undefined, true);
   expect(await pendingLabelsOf(w)).toEqual([REDO_LABEL]);
   expect(await grantRetry(w)).toMatchObject({ status: "recorded", choice: "retry", taskStatus: "pending" });
   expect(w.task("login").status).toBe("pending");
 });
 
-test("审查中改计划：第 2 次执行完成、通用审查已交结论而另一个审查没交结论时 PM 修改该任务，待裁决原因同上；用户选再给一次机会后任务回到 pending", async () => {
-  const { w } = await modifiedLogin({ status: "reviewing", reviews: [reviewRow("reviewer", 1, "clear"), reviewRow("go-reviewer", 1, "failed")] }, ["turn_limit_reached", "completed"]);
+test("重算额度已用掉后审查中改计划：第 2 次执行完成、通用审查已交结论而另一个审查没交结论时 PM 修改该任务，待裁决原因同上；用户选再给一次机会后任务回到 pending", async () => {
+  const { w } = await modifiedLogin({ status: "reviewing", reviews: [reviewRow("reviewer", 1, "clear"), reviewRow("go-reviewer", 1, "failed")] }, ["turn_limit_reached", "completed"], undefined, true);
   expect(await pendingLabelsOf(w)).toEqual([REDO_LABEL]);
   expect(await grantRetry(w)).toMatchObject({ status: "recorded", choice: "retry", taskStatus: "pending" });
   expect(w.task("login").status).toBe("pending");
@@ -808,7 +811,7 @@ test("任务第 1 次没做完后被改到申请 150 轮，用户选让 PM 拆�
   expect(w.task("login")).toMatchObject({ status: "pending", maxTurns: 80 });
 });
 
-test("用户对超出上限的任务选照做、按这个版本派出又没做完：再进待裁决时原因是“2 次未完成”，决策包没有拆分上限一行，选项和窗口固定选项是 retry 那一组", async () => {
+test("用户对超出上限的任务选照做、按这个版本派出没做完、PM 带 retry 重试一次后又没做完：再进待裁决时原因是“2 次未完成”，决策包没有拆分上限一行，选项和窗口固定选项是 retry 那一组", async () => {
   const { w, id, itemId } = await resizeAfterOneAttempt();
   expect(await userAdjudicates(w, "login", ["choice:retry", "max-turns:1"])).toMatchObject({ status: "recorded", choice: "retry", taskStatus: "pending" });
   w.provider.queue.push({ type: "text", text: "PM 收到照做" });
@@ -816,6 +819,9 @@ test("用户对超出上限的任务选照做、按这个版本派出又没做�
   await w.plan.execute({ action: "confirm", planVersion: planVersionOf(w) });
   w.provider.queue.push({ type: "toolcall", name: "read", input: { path: "README.md" } }, { type: "text", text: "PM 看到到限" });
   await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: id, retry: null });
+  await until(() => w.task("login").status === "awaiting_parent" && w.provider.queue.length === 0);
+  w.provider.queue.push({ type: "toolcall", name: "read", input: { path: "README.md" } }, { type: "text", text: "PM 看到再次到限" });
+  await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: id, retry: { reason: "再试一次", maxTurns: 1 } });
   await until(() => w.task("login").status === "awaiting_user" && w.provider.queue.length === 0);
 
   expect(await pendingLabelsOf(w)).toEqual(["待裁决：任务 login 2 次未完成"]);
@@ -854,9 +860,9 @@ test("申请 120 轮仍超限：用户让 PM 拆分后 PM 只改到 120 轮，�
 describe.each([
   { name: "两次都没做完", stage: { status: "awaiting_parent" } as Partial<TaskRecord>, attempts: ["turn_limit_reached", "turn_limit_reached"] as Array<"turn_limit_reached" | "completed">, label: "2 次未完成" },
   { name: "第 2 次完成后在等返修", stage: { status: "awaiting_rework", reviews: [reviewRow("reviewer", 1, "blocked")] } as Partial<TaskRecord>, attempts: ["turn_limit_reached", "completed"] as Array<"turn_limit_reached" | "completed">, label: "改计划后要重做，执行机会已用完" },
-])("执行机会已用完的任务被 PM 改计划（$name）", ({ stage, attempts, label }) => {
+])("重算额度已用掉、执行机会已用完的任务被 PM 改计划（$name）", ({ stage, attempts, label }) => {
   test.each([150, 80])("改成 %i 轮：以执行机会用完为准，不另算拆分上限；用户选调整目标或范围后 PM 直接改被拒，不能派出第 3 次", async (maxTurns) => {
-    const { w, id, itemId } = await modifiedLogin(stage, attempts, { maxTurns });
+    const { w, id, itemId } = await modifiedLogin(stage, attempts, { maxTurns }, true);
     expect(w.task("login").status).toBe("awaiting_user");
     expect(await pendingLabelsOf(w)).toEqual([`待裁决：任务 login ${label}`]);
     const packet = w.manager.decisionPacket(w.fixture.requirementId, itemId);
@@ -873,7 +879,7 @@ describe.each([
     await expect(w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version, spec: spec("login", "goal.login", { maxTurns: 80 }) }] }))
       .rejects.toMatchObject({ code: "task_not_ready" });
     await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: id, retry: null })).rejects.toMatchObject({ code: "plan_not_confirmed" });
-    expect(w.task("login").attempts).toHaveLength(2);
+    expect(w.task("login").attempts).toHaveLength(attempts.length + 1);
   });
 });
 
@@ -970,17 +976,6 @@ test("任务只执行过 1 次、被改到 150 轮后用户选让 PM 拆分或�
   expect(w.task("login-again")).toMatchObject({ status: "pending", goalUnitIds: ["goal.login"] });
 });
 
-test("复核判为受影响而待更新、没有用户调整决定的任务不占目标：取消原任务并另加同目标新任务被接受", async () => {
-  const w = await pendingWorld();
-  const id = w.task("login").taskId;
-  w.db((db) => { const row = db.read<TaskRecord>(TASKS, id)!;
-    db.update(TASKS, id, row.version, { ...row.data, status: "needs_update",
-      attempts: [{ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" }] }); });
-  await w.plan.execute({ action: "update", planVersion: planVersionOf(w), cancel: [{ taskId: id, version: w.task("login").version }], add: [spec("login-again", "goal.login")] });
-  expect(w.task("login").status).toBe("cancelled");
-  expect(w.task("login-again")).toMatchObject({ status: "pending", goalUnitIds: ["goal.login"] });
-});
-
 test("从没派出过的任务被 PM 改到申请 150 轮：原因是上限原文，决策包有拆分上限一行和 resize 选项，用户选让 PM 拆分后 PM 收到同样的话并可直接改回", async () => {
   const w = await pendingWorld();
   const id = w.task("login").taskId, itemId = `task:${id}`;
@@ -997,8 +992,8 @@ test("从没派出过的任务被 PM 改到申请 150 轮：原因是上限原�
   expect(w.task("login").status).toBe("pending");
 });
 
-test("派出过 2 次都没做完的任务被 PM 改计划且没超出上限：待裁决原因仍是“2 次未完成”，决策包没有拆分上限一行，选项是 retry 那一组", async () => {
-  const { w, itemId } = await modifiedLogin({ status: "awaiting_parent" }, ["turn_limit_reached", "turn_limit_reached"]);
+test("重算额度已用掉、派出过 2 次都没做完的任务被 PM 改计划且没超出上限：待裁决原因仍是“2 次未完成”，决策包没有拆分上限一行，选项是 retry 那一组", async () => {
+  const { w, itemId } = await modifiedLogin({ status: "awaiting_parent" }, ["turn_limit_reached", "turn_limit_reached"], undefined, true);
   expect(await pendingLabelsOf(w)).toEqual(["待裁决：任务 login 2 次未完成"]);
   const packet = w.manager.decisionPacket(w.fixture.requirementId, itemId);
   expect(packet).not.toContain("拆分上限");
@@ -1077,4 +1072,402 @@ test("名单为空时事项文字、决策包和告知 PM 的文字都不带空�
   const notice = JSON.stringify(w.provider.requests.findLast((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("再给一次机会，轮数上限 3"))!.messages.at(-1));
   expect(notice).toContain("再派审查");
   expect(notice).not.toContain("（）");
+});
+
+const CYCLE_START = "login 开始新的计数周期：重新计 2 次执行机会和 1 次返修机会";
+const confirmPlan = (w: Awaited<ReturnType<typeof pendingWorld>>) => w.plan.execute({ action: "confirm", planVersion: planVersionOf(w) });
+
+test("PM 还有重算额度时，第 2 次执行完成、审查打回 1 轮、待返修的任务被 PM 修改：开始新的计数周期回到 pending，没有待裁决事项", async () => {
+  const { w, updated } = await modifiedLogin({ status: "awaiting_rework", reviews: [reviewRow("reviewer", 1, "blocked")] }, ["turn_limit_reached", "completed"]);
+  expect(updated.chances).toEqual([CYCLE_START]);
+  expect(w.task("login").status).toBe("pending");
+  expect((await pendingLabelsOf(w)).filter((label) => label.startsWith("待裁决"))).toEqual([]);
+});
+
+test("PM 还有重算额度时，派出过 2 次都没做完的任务被 PM 修改：开始新的计数周期回到 pending，不带 retry 派出被接受", async () => {
+  const { w, id } = await modifiedLogin({ status: "awaiting_parent" }, ["turn_limit_reached", "turn_limit_reached"]);
+  expect(w.task("login").status).toBe("pending");
+  expect((await pendingLabelsOf(w)).filter((label) => label.startsWith("待裁决"))).toEqual([]);
+  await confirmPlan(w);
+  w.provider.queue.push({ type: "text", text: "新周期第 1 次" }, { type: "text", text: "PM 收到" });
+  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: id, retry: null })).resolves.toMatchObject({ runId: expect.any(String) });
+});
+
+async function splitAfterOneRun() {
+  const w = await pendingWorld();
+  const id = w.task("login").taskId;
+  w.provider.queue.push({ type: "toolcall", name: "read", input: { path: "README.md" } }, { type: "text", text: "PM 看到到限" });
+  await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: id, retry: null });
+  await until(() => w.task("login").status === "awaiting_parent" && w.provider.queue.length === 0);
+  await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version, spec: spec("login", "goal.login", { maxTurns: 150 }) }] });
+  expect(w.task("login").status).toBe("awaiting_user");
+  await userAdjudicates(w, "login", ["choice:adjust"]);
+  w.provider.queue.push({ type: "text", text: "PM 收到调整" });
+  await until(() => w.provider.queue.length === 0);
+  return { w, id };
+}
+
+test("用户对超限任务（已执行 1 次后被改到 150 轮）选让 PM 拆分或精简，PM 改回 80 轮：开始新周期，不带 retry 派出被接受，没做完仍有第 2 次机会，第 2 次再没做完才交用户裁决", async () => {
+  const { w, id } = await splitAfterOneRun();
+  await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version, spec: spec("login", "goal.login", { maxTurns: 80 }) }] });
+  await confirmPlan(w);
+  w.provider.queue.push({ type: "text", text: "没做完" }, { type: "text", text: "PM 收到" });
+  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: id, retry: null })).resolves.toMatchObject({ maxTurns: 80 });
+  await until(() => w.task("login").status === "awaiting_parent" && w.provider.queue.length === 0);
+  w.provider.queue.push({ type: "text", text: "还是没做完" }, { type: "text", text: "PM 收到" });
+  await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: id, retry: { reason: "再试一次", maxTurns: 80 } });
+  await until(() => w.task("login").status === "awaiting_user" && w.provider.queue.length === 0);
+});
+
+test("用户对超限任务（已执行 1 次后被改到 150 轮）选让 PM 拆分或精简：PM 取消原任务另加两个同目标新任务被接受，新任务不带 retry 派出被接受", async () => {
+  const { w, id } = await splitAfterOneRun();
+  await w.plan.execute({ action: "update", planVersion: planVersionOf(w), cancel: [{ taskId: id, version: w.task("login").version }],
+    add: [spec("login-a", "goal.login"), spec("login-b", "goal.login", { writePaths: ["lib/"] })] });
+  expect(w.task("login").status).toBe("cancelled");
+  await confirmPlan(w);
+  w.provider.queue.push({ type: "text", text: "做 login-a" }, { type: "text", text: "PM 收到" });
+  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.task("login-a").taskId, retry: null })).resolves.toMatchObject({ runId: expect.any(String) });
+});
+
+test("用户选调整并批准新 PRD 版本、复核判受影响后 PM 修改该任务：结果写开始新周期，不用重算额度；执行 1 次没做完后 PM 自己再改，仍开始新周期", async () => {
+  const w = await world();
+  expect(await w.adjudicate("先改需求范围，短信用测试桩", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:adjust"])])).toMatchObject({ choice: "adjust", taskStatus: "needs_update" });
+  w.provider.queue.push({ type: "text", text: "PM 收到调整决定" }, { type: "text", text: "PM 收到新版本差异" });
+  await until(() => w.provider.queue.length === 1);
+  const planVersion = () => w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
+  const modify = (objective: string) => w.plan.execute({ action: "update", planVersion: planVersion(), modify: [{ taskId: w.login, version: w.task("login").version,
+    spec: spec("login", "goal.stub", { objective }) }] }) as Promise<{ chances: string[] }>;
+  await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 测试桩登录 {#goal.stub}\n短信用测试桩。\n" });
+  await until(() => w.owner().context.baseline?.revision === 2);
+  await w.readDiffs(["revision 1 → 2"]);
+  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    { taskId: w.login, version: w.task("login").version, assessment: "affected", rationale: "登录目标改为测试桩" },
+    { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
+    global: { assessment: "unaffected", rationale: "无全局变化" } });
+  expect((await modify("用测试桩实现登录")).chances).toContain(CYCLE_START);
+  await w.plan.execute({ action: "confirm", planVersion: planVersion() });
+
+  w.provider.queue.push({ type: "text", text: "没做完" }, { type: "text", text: "PM 收到" });
+  await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.login, retry: null });
+  await until(() => w.task("login").status === "awaiting_parent" && w.provider.queue.length === 0);
+  expect((await modify("测试桩登录，补充说明")).chances).toContain(CYCLE_START);
+  expect(w.task("login").status).toBe("pending");
+});
+
+test("用户给的再一次机会还没用，PM 只改通过条件文字：结果的 chances 为空，用户给的机会照旧：不带 retry 按用户给的轮数上限派出", async () => {
+  const w = await world();
+  await w.adjudicate("再给它一次机会，这次给 3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
+  await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("再给一次机会，轮数上限 3")));
+  const planVersion = () => w.db((db) => db.read<{ planVersion: number }>("plans", w.fixture.requirementId)!.data.planVersion);
+  const updated = await w.plan.execute({ action: "update", planVersion: planVersion(), modify: [{ taskId: w.login, version: w.task("login").version,
+    spec: spec("login", "goal.login", { passCriteria: ["可观察通过", "补一条通过条件"] }) }] }) as { chances: string[] };
+  expect(updated.chances).toEqual([]);
+  await w.plan.execute({ action: "confirm", planVersion: planVersion() });
+  w.provider.queue.push({ type: "text", text: "第三次" }, { type: "text", text: "PM 收到" });
+  const third = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.login, retry: null });
+  expect(third.maxTurns).toBe(3);
+  expect(w.task("login").userDecision?.usedByRunId).toBe(third.runId);
+});
+
+const QUOTA_SPENT_AT_ONE_RUN = "login 的重算额度已用完，次数接着累计：本周期已执行 1 次、打回 0 轮";
+async function quotaSpentThenOversized() {
+  const w = await pendingWorld();
+  const id = w.task("login").taskId;
+  const stuck = async (retry: { reason: string; maxTurns: number } | null) => {
+    w.provider.queue.push({ type: "toolcall", name: "read", input: { path: "README.md" } }, { type: "text", text: "PM 看到到限" });
+    await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: id, retry });
+    await until(() => w.task("login").status === "awaiting_parent" && w.provider.queue.length === 0);
+  };
+  const modify = (patch: Partial<TaskSpec>) => w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version,
+    spec: spec("login", "goal.login", patch) }] }) as Promise<{ chances: string[] }>;
+  await stuck(null);
+  await modify({ objective: "先用掉重算额度" });
+  await confirmPlan(w);
+  await stuck(null);
+  const oversized = await modify({ maxTurns: 150 });
+  expect(oversized.chances).toEqual([QUOTA_SPENT_AT_ONE_RUN]);
+  expect(w.task("login").status).toBe("awaiting_user");
+  return { w, id, modify };
+}
+
+test("重算额度已用完、任务带着拆分上限待用户裁决，用户没对它做决定只批准了只改无关章节的新 PRD 版本，复核判受影响后 PM 改回 80 轮：不开新周期，chances 写额度已用完、次数接着累计", async () => {
+  const { w, id, modify } = await quotaSpentThenOversized();
+  w.provider.queue.push({ type: "text", text: "PM 空闲" });
+  await approveAndAssessLoginAffected(w, id, FAILURE_CHANGED_BODY);
+  expect((await modify({ maxTurns: 80 })).chances).toEqual([QUOTA_SPENT_AT_ONE_RUN]);
+});
+
+test("重算额度已用完、任务带着拆分上限待用户裁决，用户选让 PM 拆分或精简，PM 改回 80 轮：开始新周期，不带 retry 派出被接受", async () => {
+  const { w, id, modify } = await quotaSpentThenOversized();
+  await userAdjudicates(w, "login", ["choice:adjust"]);
+  w.provider.queue.push({ type: "text", text: "PM 收到调整" });
+  await until(() => w.provider.queue.length === 0);
+  expect((await modify({ maxTurns: 80 })).chances).toEqual([CYCLE_START]);
+  await confirmPlan(w);
+  w.provider.queue.push({ type: "text", text: "新周期第 1 次" }, { type: "text", text: "PM 收到" });
+  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: id, retry: null })).resolves.toMatchObject({ maxTurns: 80 });
+});
+
+test("重算额度已用完后，用户给的再一次机会对应的运行因批准新版本、任务被改而被取代：任务交回用户裁决，事项留在面板，不停在派不出去的待派出", async () => {
+  const w = await pendingWorld();
+  const login = w.task("login").taskId, itemId = `task:${login}`;
+  const state = async (id: string) => { const run = await w.runStore.get(id); return run.ok ? run.run.state : "missing"; };
+  const stuck = async (retry: { reason: string; maxTurns: number } | null, status: TaskRecord["status"]) => {
+    w.provider.queue.push({ type: "toolcall", name: "read", input: { path: "README.md" } }, { type: "text", text: "PM 看到到限" });
+    await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry });
+    await until(() => w.task("login").status === status && w.provider.queue.length === 0);
+  };
+  const modify = (objective: string) => w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: login, version: w.task("login").version,
+    spec: spec("login", "goal.login", { objective }) }] });
+  await stuck(null, "awaiting_parent");
+  await modify("先用掉重算额度");
+  await confirmPlan(w);
+  await stuck(null, "awaiting_parent");
+  await stuck({ reason: "估计不足", maxTurns: 1 }, "awaiting_user");
+  expect(w.task("login").status).toBe("awaiting_user");
+
+  await grantRetry(w);
+  w.provider.queue.push({ type: "text", text: "PM 收到用户决定" });
+  await until(() => w.provider.queue.length === 0);
+  w.provider.queue.push({ type: "text", text: "第三次慢慢写", chunkDelayMs: 30_000 });
+  const third = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: null });
+  await until(async () => await state(third.runId) === "running" && w.provider.queue.length === 0);
+
+  w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" }, { type: "text", text: "PM 空闲" });
+  await w.fixture.approveRevision({ body: FAILURE_CHANGED_BODY });
+  await until(async () => await state(third.runId) === "paused");
+  await until(() => w.owner().context.baseline?.revision === 2);
+  await w.readDiffs(["revision 1 → 2"]);
+  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    { taskId: login, version: w.task("login").version, assessment: "affected", rationale: "复核认为登录受影响" },
+    { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "affected", rationale: "失败场景的章节变了" }],
+    global: { assessment: "unaffected", rationale: "无全局变化" } });
+  await modify("登录说明补充");
+  await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: w.task("failure").taskId, version: w.task("failure").version,
+    spec: spec("failure", "scenario.failure", { objective: "失败场景补充提示" }) }] });
+  await confirmPlan(w);
+  await until(async () => await state(third.runId) === "stopped");
+  await until(() => w.task("login").attempts.at(-1)!.outcome === "superseded");
+
+  expect(w.task("login").status).toBe("awaiting_user");
+  expect((await w.manager.overviews())[0]!.pendingItems.map((item) => item.itemId)).toContain(itemId);
+});
+
+const UNRELATED_EDIT = "错误验证码显示失败，并提示重新获取。";
+const LOGIN_BODY = "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n";
+async function affectedLoginAfterRevision(failureBody: string, loginBody = LOGIN_BODY) {
+  const w = await pendingWorld();
+  const id = w.task("login").taskId;
+  w.db((db) => { const row = db.read<TaskRecord>(TASKS, id)!;
+    db.update(TASKS, id, row.version, { ...row.data, status: "awaiting_parent",
+      attempts: [{ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" }] }); });
+  w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" });
+  await w.fixture.approveRevision({ body: `${loginBody}# 验证码失败 {#scenario.failure}\n${failureBody}\n` });
+  await until(() => w.owner().context.baseline?.revision === 2);
+  await w.readDiffs(["revision 1 → 2"]);
+  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    { taskId: id, version: w.task("login").version, assessment: "affected", rationale: "复核认为登录受影响" },
+    { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: failureBody === UNRELATED_EDIT ? "affected" : "unaffected", rationale: "失败场景的章节是否变了" }],
+    global: { assessment: "unaffected", rationale: "无全局变化" } });
+  return { w, id };
+}
+
+describe("复核判受影响、没有用户调整决定的已执行任务：不管新版本改了哪个章节都占住目标", () => {
+  test("新批准版本只改了无关章节，PM 取消 login 并另加同角色同目标的新任务：被拒 goal_held，计划不变", async () => {
+    const { w, id } = await affectedLoginAfterRevision(UNRELATED_EDIT);
+    const before = planVersionOf(w);
+    await expect(w.plan.execute({ action: "update", planVersion: before, cancel: [{ taskId: id, version: w.task("login").version }], add: [spec("login-again", "goal.login")] }))
+      .rejects.toMatchObject({ code: "goal_held" });
+    expect(w.task("login").status).not.toBe("cancelled");
+    expect(planVersionOf(w)).toBe(before);
+  });
+
+  test("新批准版本只改了无关章节，PM 不取消 login，只另加同角色同目标的新任务：被拒 goal_held，计划不变", async () => {
+    const { w } = await affectedLoginAfterRevision(UNRELATED_EDIT);
+    const before = planVersionOf(w);
+    await expect(w.plan.execute({ action: "update", planVersion: before, add: [spec("login-again", "goal.login")] })).rejects.toMatchObject({ code: "goal_held" });
+    expect(planVersionOf(w)).toBe(before);
+  });
+
+  test("新批准版本只改了无关章节，PM 只修改 login 本身（改通过条件）：被接受", async () => {
+    const { w, id } = await affectedLoginAfterRevision(UNRELATED_EDIT);
+    await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version,
+      spec: spec("login", "goal.login", { passCriteria: ["可观察通过", "补一条通过条件"] }) }] });
+    expect(w.task("login").status).not.toBe("cancelled");
+  });
+
+  test("新批准版本改了 login 的目标章节（用户没对 login 做决定），PM 取消 login 并另加同角色同目标的新任务：被拒 goal_held，计划不变", async () => {
+    const { w, id } = await affectedLoginAfterRevision("错误验证码显示失败。", "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，短信用测试桩。\n");
+    const before = planVersionOf(w);
+    await expect(w.plan.execute({ action: "update", planVersion: before, cancel: [{ taskId: id, version: w.task("login").version }], add: [spec("login-again", "goal.login")] }))
+      .rejects.toMatchObject({ code: "goal_held" });
+    expect(w.task("login").status).not.toBe("cancelled");
+    expect(planVersionOf(w)).toBe(before);
+  });
+
+  test("新批准版本改了 goal.login 正文（用户没对 login 做决定），复核判受影响：PM 只修改 login 本身（不减少目标）被接受", async () => {
+    const { w, id } = await affectedLoginAfterRevision("错误验证码显示失败。", "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，短信用测试桩。\n");
+    await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version,
+      spec: spec("login", "goal.login", { passCriteria: ["可观察通过", "补一条通过条件"] }) }] });
+    expect(w.task("login").status).not.toBe("cancelled");
+    expect(w.task("login").goalUnitIds).toEqual(["goal.login"]);
+  });
+
+  test("login 被改到 150 轮停在待用户裁决，用户没做决定，只批准了无关章节的新版本并被判受影响后，PM 取消 login 并另加同角色同目标的新任务：被拒 goal_held，计划不变", async () => {
+    const { w, id } = await resizeAfterOneAttempt();
+    w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" });
+    await w.fixture.approveRevision({ body: `${LOGIN_BODY}# 验证码失败 {#scenario.failure}\n${UNRELATED_EDIT}\n` });
+    await until(() => w.owner().context.baseline?.revision === 2);
+    await w.readDiffs(["revision 1 → 2"]);
+    await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+      { taskId: id, version: w.task("login").version, assessment: "affected", rationale: "复核认为登录受影响" },
+      { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "affected", rationale: "失败场景的章节变了" }],
+      global: { assessment: "unaffected", rationale: "无全局变化" } });
+    const before = planVersionOf(w);
+    await expect(w.plan.execute({ action: "update", planVersion: before, cancel: [{ taskId: id, version: w.task("login").version }], add: [spec("login-again", "goal.login")] }))
+      .rejects.toMatchObject({ code: "goal_held" });
+    expect(w.task("login").status).not.toBe("cancelled");
+    expect(planVersionOf(w)).toBe(before);
+  });
+});
+
+const GOAL_CHANGED_BODY = "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，短信用测试桩。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n";
+const FAILURE_CHANGED_BODY = `${LOGIN_BODY}# 验证码失败 {#scenario.failure}\n${UNRELATED_EDIT}\n`;
+
+async function approveAndAssessLoginAffected(w: Awaited<ReturnType<typeof pendingWorld>>, loginId: string, body: string) {
+  w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" });
+  await w.fixture.approveRevision({ body });
+  await until(() => w.owner().context.baseline?.revision === 2);
+  await w.readDiffs(["revision 1 → 2"]);
+  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    { taskId: loginId, version: w.task("login").version, assessment: "affected", rationale: "复核认为登录受影响" },
+    { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "affected", rationale: "失败场景的章节变了" }],
+    global: { assessment: "unaffected", rationale: "无全局变化" } });
+}
+
+describe("用户选调整目标或范围后批准新版本：不管新版本改没改 login 的章节，复核判受影响就放开目标", () => {
+  test("login 两次没做完，用户选调整，批准的新版本只改了无关章节，复核判 login 受影响：PM 取消 login 并另加同角色同目标的新任务被接受", async () => {
+    const { w, planVersion, cancelLogin } = await adjustedAfterTwoAttempts();
+    await approveAndAssessLoginAffected(w as never, w.login, FAILURE_CHANGED_BODY);
+    await w.plan.execute({ action: "update", planVersion: planVersion(), cancel: [cancelLogin()], add: [spec("login-again", "goal.login")] });
+    expect(w.task("login").status).toBe("cancelled");
+    expect(w.task("login-again")).toMatchObject({ status: "pending", goalUnitIds: ["goal.login"] });
+  });
+
+  test("login 两次没做完，用户选调整，批准的新版本只改了无关章节，复核判 login 受影响：PM 不取消 login，只另加同角色同目标的新任务被接受", async () => {
+    const { w, planVersion } = await adjustedAfterTwoAttempts();
+    await approveAndAssessLoginAffected(w as never, w.login, FAILURE_CHANGED_BODY);
+    await w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("login-again", "goal.login")] });
+    expect(w.task("login-again")).toMatchObject({ status: "pending", goalUnitIds: ["goal.login"] });
+  });
+});
+
+describe("约束章节变了不算放开目标", () => {
+  test("scenario.failure 是 login 的约束章节，login 两次没做完停在待裁决、用户没做决定，批准只改 scenario.failure 的新版本且 login 判受影响：PM 取消 login 另加同目标新任务被拒 goal_held，计划不变", async () => {
+    const w = await pendingWorld();
+    const id = w.task("login").taskId;
+    await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version,
+      spec: spec("login", "goal.login", { constraintUnitIds: ["scenario.failure"] }) }] });
+    w.db((db) => { const row = db.read<TaskRecord>(TASKS, id)!;
+      db.update(TASKS, id, row.version, { ...row.data, status: "awaiting_parent",
+        attempts: [1, 2].map(() => ({ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" as const })) }); });
+    expect(w.task("login").constraintUnitIds).toEqual(["scenario.failure"]);
+    await w.escalate(id, "两次都没做完，需要你决定");
+    expect(w.task("login").status).toBe("awaiting_user");
+    await approveAndAssessLoginAffected(w, id, FAILURE_CHANGED_BODY);
+    const before = planVersionOf(w);
+    await expect(w.plan.execute({ action: "update", planVersion: before, cancel: [{ taskId: id, version: w.task("login").version }], add: [spec("login-again", "goal.login")] }))
+      .rejects.toMatchObject({ code: "goal_held" });
+    expect(w.task("login").status).not.toBe("cancelled");
+    expect(planVersionOf(w)).toBe(before);
+  });
+});
+
+describe("用户没对任务做决定、只批准改了目标章节的新版本：PM 修改该任务按重算额度计", () => {
+  test("login 执行 1 次没做完、PM 改计划用掉额度、再执行 1 次没做完，批准改了 goal.login 的新版本且判受影响（用户没对 login 做决定）：PM 修改 login 的结果写额度已用完、次数接着累计，不开新周期", async () => {
+    const w = await pendingWorld();
+    const id = w.task("login").taskId;
+    const stuck = async () => {
+      w.provider.queue.push({ type: "toolcall", name: "read", input: { path: "README.md" } }, { type: "text", text: "PM 看到到限" });
+      await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: id, retry: null });
+      await until(() => w.task("login").status === "awaiting_parent" && w.provider.queue.length === 0);
+    };
+    const modify = (objective: string) => w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version,
+      spec: spec("login", "goal.login", { objective }) }] }) as Promise<{ chances: string[] }>;
+    await stuck();
+    await modify("先用掉重算额度");
+    await confirmPlan(w);
+    await stuck();
+    await approveAndAssessLoginAffected(w, id, GOAL_CHANGED_BODY);
+    expect((await modify("按新目标改")).chances).toEqual([QUOTA_SPENT_AT_ONE_RUN]);
+  });
+});
+
+describe("plan_manage update 的 add 只能加新任务：key 与已有任务（含已取消）相同时整次被拒", () => {
+  const oneAttemptStuck = async () => {
+    const w = await pendingWorld();
+    const id = w.task("login").taskId;
+    w.db((db) => { const row = db.read<TaskRecord>(TASKS, id)!;
+      db.update(TASKS, id, row.version, { ...row.data, status: "awaiting_parent",
+        attempts: [{ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" }] }); });
+    return { w, id };
+  };
+
+  test("login 执行 1 次没做完、用户没决定：add 同 key login 换目标 scenario.failure 被拒 dependency_invalid，计划版本与 login 记录不变", async () => {
+    const { w } = await oneAttemptStuck();
+    const before = planVersionOf(w), login = w.task("login");
+    await expect(w.plan.execute({ action: "update", planVersion: before, add: [spec("login", "scenario.failure")] })).rejects.toMatchObject({ code: "dependency_invalid" });
+    expect(planVersionOf(w)).toBe(before);
+    expect(w.task("login")).toEqual(login);
+  });
+
+  test("login 本周期 2 次没做完停在待用户裁决、用户没决定：add 同 key login 被拒 dependency_invalid，login 仍是 awaiting_user", async () => {
+    const w = await pendingWorld();
+    const id = w.task("login").taskId;
+    w.db((db) => { const row = db.read<TaskRecord>(TASKS, id)!;
+      db.update(TASKS, id, row.version, { ...row.data, status: "awaiting_parent",
+        attempts: [1, 2].map(() => ({ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" as const })) }); });
+    await w.escalate(id, "两次都没做完，需要你决定");
+    expect(w.task("login").status).toBe("awaiting_user");
+    const before = planVersionOf(w), login = w.task("login");
+    await expect(w.plan.execute({ action: "update", planVersion: before, add: [spec("login", "scenario.failure")] })).rejects.toMatchObject({ code: "dependency_invalid" });
+    expect(planVersionOf(w)).toBe(before);
+    expect(w.task("login")).toEqual(login);
+    expect(w.task("login").status).toBe("awaiting_user");
+  });
+
+  test("用户对 login 选了调整目标或范围、还没批准新版本：add 同 key login 被拒 dependency_invalid，用户的调整决定没被用掉", async () => {
+    const { w, planVersion } = await adjustedAfterTwoAttempts();
+    const before = planVersion(), login = w.task("login");
+    await expect(w.plan.execute({ action: "update", planVersion: before, add: [spec("login", "scenario.failure")] })).rejects.toMatchObject({ code: "dependency_invalid" });
+    expect(planVersion()).toBe(before);
+    expect(w.task("login")).toEqual(login);
+    expect(w.task("login").userDecision).toMatchObject({ choice: "adjust", usedByRunId: null });
+  });
+
+  test("add 一个与已取消任务同 key 的任务被拒 dependency_invalid，计划版本不变", async () => {
+    const w = await pendingWorld();
+    const failure = w.task("failure");
+    await w.plan.execute({ action: "update", planVersion: planVersionOf(w), cancel: [{ taskId: failure.taskId, version: failure.version }] });
+    expect(w.task("failure").status).toBe("cancelled");
+    const before = planVersionOf(w);
+    await expect(w.plan.execute({ action: "update", planVersion: before, add: [spec("failure", "scenario.failure")] })).rejects.toMatchObject({ code: "dependency_invalid" });
+    expect(planVersionOf(w)).toBe(before);
+  });
+
+  test("login 执行 1 次没做完、用户没决定，只批准新版本、复核判 login 受影响：PM modify login 把目标改成 scenario.failure（减少目标）被拒 goal_held", async () => {
+    const { w, id } = await affectedLoginAfterRevision(UNRELATED_EDIT);
+    const before = planVersionOf(w);
+    await expect(w.plan.execute({ action: "update", planVersion: before, modify: [{ taskId: id, version: w.task("login").version, spec: spec("login", "scenario.failure") }] }))
+      .rejects.toMatchObject({ code: "goal_held" });
+    expect(w.task("login").goalUnitIds).toEqual(["goal.login"]);
+    expect(planVersionOf(w)).toBe(before);
+  });
+
+  test("add 全新 key 的任务照常被接受", async () => {
+    const { w } = await oneAttemptStuck();
+    await w.plan.execute({ action: "update", planVersion: planVersionOf(w), add: [spec("extra", "scenario.failure")] });
+    expect(w.task("extra")).toMatchObject({ status: "pending", goalUnitIds: ["scenario.failure"] });
+  });
 });

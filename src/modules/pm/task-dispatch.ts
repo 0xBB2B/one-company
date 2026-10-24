@@ -6,7 +6,7 @@ import { registeredApprovalManifestIn } from "../requirement/approval-manifest-s
 import { activeCheckRoundIn } from "../verification/check-round.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
-import { countedAttempts, implementScope, latestRound, PlanManageError, readPlanIn, replanPending, reviewFailures, reviewRejections, REVIEW_REJECTED, MAX_REVIEWERS, REVIEW_UNFINISHED, reviewRoster, TASKS, terminationPending, unsentTask } from "./plan-manage.ts";
+import { cycleCountedAttempts, implementScope, latestRound, PlanManageError, readPlanIn, replanPending, reviewFailures, reviewRejections, REVIEW_REJECTED, MAX_REVIEWERS, REVIEW_UNFINISHED, reviewRoster, TASKS, terminationPending, unsentTask } from "./plan-manage.ts";
 import type { TaskAttempt, TaskRecord, TaskReview } from "./plan-manage.ts";
 import { evaluatePmIntakeGate } from "./pm-intake-runtime.ts";
 import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
@@ -149,7 +149,7 @@ export function beginTaskAttempt(request: TaskDispatchRequest & { runId: string;
       if (rework) deny("rework_not_needed");
       // 两次尝试之后只有用户的新决定能再开一次：再给一次机会按用户给的上限，调整范围须任务已按新批准版本修改
       const decision = task.userDecision;
-      const counted = countedAttempts(task);
+      const counted = cycleCountedAttempts(task);
       // PM 上报的任务可能只尝试过一次，用户的新决定同样生效
       grantedDecision = decision !== undefined && decision.usedByRunId === null &&
         ((decision.choice === "retry" && task.version === decision.taskVersion) || (decision.choice === "adjust" && task.version > decision.taskVersion));
@@ -210,7 +210,7 @@ export function reviewRoundOpen(task: Pick<TaskRecord, "attempts" | "reviews" | 
  * 整轮审查的任务状态：本轮没结束则仍在审查中；结束后有打回转待返修（打回轮数达 2 转等待用户裁决）；
  * 有代理没交出结论且已用尽再派机会转等待用户裁决；只有被作废的回待审查；其余完成。
  */
-function reviewSettledStatus(task: Pick<TaskRecord, "attempts" | "reviews" | "userDecision" | "version">): TaskRecord["status"] {
+function reviewSettledStatus(task: Pick<TaskRecord, "attempts" | "reviews" | "cycleStarts" | "userDecision" | "version">): TaskRecord["status"] {
   const { reviews } = latestRound(task);
   if (reviewRoundOpen(task)) return "reviewing";
   if (reviews.some((review) => REVIEW_REJECTED.has(review.outcome))) return reviewRejections(task) >= 2 ? "awaiting_user" : "awaiting_rework";
@@ -313,7 +313,7 @@ export function finishTaskAttempt(request: { dataRoot: string; repoId: string; t
     // 运行期间影响复核已把任务改为待更新或受阻时，结局只记入尝试，不覆盖复核结论
     const status = task.status !== "running" ? task.status
       : request.outcome === "completed" ? (task.role === "worker" ? "awaiting_review" : "completed") : request.outcome === "superseded" ? "pending"
-        : countedAttempts({ attempts }) >= 2 ? "awaiting_user" : "awaiting_parent";
+        : cycleCountedAttempts({ attempts, cycleStarts: task.cycleStarts }) >= 2 ? "awaiting_user" : "awaiting_parent";
     const next = { ...task, status, attempts, updatedAt: request.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, task.taskId, row.version, next);
     return next;

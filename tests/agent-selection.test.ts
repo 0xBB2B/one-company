@@ -1027,7 +1027,7 @@ test("计划改了、任务重新执行完：下一轮派 reviewer、go-reviewer
     spec: spec("login", { objective: "改了目标", reviewers: [{ agent: "go-reviewer", reason: "专项审查" }] } as Partial<TaskSpec>) }] });
   const planned = await login();
   await t.plan.execute({ action: "confirm", planVersion: planned.read.planVersion ?? planned.read.version ?? 2 }).catch(() => undefined);
-  await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: { reason: "计划已改", maxTurns: 3 } });
+  await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: null });
   await until(() => t.record().status === "awaiting_review");
   await t.review({ maxTurns: 5 });
   expect(t.record().reviews.filter((entry) => entry.round === 2).map((entry) => entry.agent).sort()).toEqual(["go-reviewer", "node-reviewer", "reviewer"]);
@@ -1173,7 +1173,7 @@ test("改计划后任务重新执行：旧一轮里等重派的 go-reviewer 记�
 test("改计划后重新执行两次都没完成进入等待用户裁决，用户再给一次机会：按执行阶段处理（不是 reviewing），单派 go-reviewer 被拒，派 worker 用这次用户决定", async () => {
   const t = await planChangedWhileGoWaiting();
   for (let attempt = 0; attempt < 3 && t.record().status !== "awaiting_user"; attempt += 1) {
-    await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: { reason: "重新执行", maxTurns: 2 } }).catch(() => undefined);
+    await t.manager.dispatchTask({ pmRunId: t.pm.runId, taskId: t.taskId, retry: attempt === 0 ? null : { reason: "重新执行", maxTurns: 2 } }).catch(() => undefined);
     await until(() => t.record().status !== "running" && t.record().attempts.every((entry) => entry.outcome !== "running"));
   }
   expect(t.record().status).toBe("awaiting_user");
@@ -1415,7 +1415,7 @@ test("任务版本变了（计划改过）后再引用旧版本那次尝试的�
     spec: spec("login", { objective: "改了目标", maxTurns: 6 }) }] }) as { planVersion?: number; version?: number };
   await t.plan.execute({ action: "confirm", planVersion: updated.planVersion ?? updated.version ?? 2 });
   t.scripts.push([t.run("true"), (request) => t.submitIds(() => [red, t.idOf(request)])(request)]);
-  const attempt = await t.dispatchTo("login", { reason: "按新计划重做", maxTurns: 6 });
+  const attempt = await t.dispatchTo("login", null);
   await until(() => t.rejections.length > 0);
   expect(t.rejections[0]).toMatch(/out_of_scope|invalid_binding|超出了本运行允许的范围/);
   expect(t.workerVerdicts(attempt.runId)).toHaveLength(0);
