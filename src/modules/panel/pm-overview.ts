@@ -26,7 +26,7 @@ export interface PendingItem {
 
 export interface PanelRunStats { turns: number; maxTurns: number | null; elapsedMs: number }
 
-export type PanelReviewerState = "running" | "clear" | "blocked" | "awaiting_retry" | "exhausted" | "skipped_disabled" | "skipped_missing" | "passed_earlier";
+export type PanelReviewerState = "running" | "clear" | "blocked" | "awaiting_retry" | "exhausted" | "skipped_disabled" | "skipped_missing";
 export interface PanelReviewerRow extends Partial<PanelRunStats> {
   agent: string;
   state: PanelReviewerState;
@@ -251,10 +251,6 @@ function reviewerRowsOf(task: TaskRecord, round: number, runs: ReadonlyMap<strin
     if (outcome === "skipped") return { agent: review.agent, state: review.skipReason === "missing" ? "skipped_missing" : "skipped_disabled" };
     return { agent: review.agent, state: outcome === "clear" ? "clear" : "blocked", ...stats };
   });
-  const present = new Set(rows.map((row) => row.agent));
-  const earlier = new Map<string, TaskRecord["reviews"][number]>();
-  for (const review of task.reviews) if (review.round < round) earlier.set(review.agent, review);
-  for (const [agent, review] of earlier) if (review.outcome === "clear" && !present.has(agent)) rows.push({ agent, state: "passed_earlier" });
   return rows;
 }
 

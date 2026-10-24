@@ -565,19 +565,46 @@ test("一轮审查：同一轮里既有打回又有没交出结论的代理时�
   expect(t.record().status).toBe("awaiting_rework");
 });
 
-test("返修后的新一轮：上一轮 go-reviewer 打回、vue-reviewer 通过时，第 2 轮只派通用 reviewer 与 go-reviewer", async () => {
+test("返修后的新一轮：上一轮 reviewer 打回、go-reviewer 与 vue-reviewer 通过时，第 2 轮派 reviewer、go-reviewer、vue-reviewer", async () => {
+  const t = await reviewWorld();
+  const ids = t.begin(["reviewer", "go-reviewer", "vue-reviewer"]);
+  t.finish(ids, "reviewer", "blocked");
+  t.finish(ids, "go-reviewer", "clear");
+  t.finish(ids, "vue-reviewer", "clear");
+  t.reworkDone();
+  expect(reviewRoundMembers(t.record())).toEqual({ round: 2, agents: ["reviewer", "go-reviewer", "vue-reviewer"] });
+  t.begin(["reviewer", "go-reviewer", "vue-reviewer"]);
+  expect(t.rows().slice(3)).toEqual([["reviewer", 2, "running"], ["go-reviewer", 2, "running"], ["vue-reviewer", 2, "running"]]);
+});
+
+test("返修后的新一轮：上一轮 go-reviewer 打回、vue-reviewer 通过时，第 2 轮同样派 reviewer、go-reviewer、vue-reviewer", async () => {
   const t = await reviewWorld();
   const ids = t.begin(["reviewer", "go-reviewer", "vue-reviewer"]);
   t.finish(ids, "reviewer", "clear");
   t.finish(ids, "go-reviewer", "blocked");
   t.finish(ids, "vue-reviewer", "clear");
   t.reworkDone();
-  expect(reviewRoundMembers(t.record())).toEqual({ round: 2, agents: ["reviewer", "go-reviewer"] });
-  t.begin(["reviewer", "go-reviewer"]);
-  expect(t.rows().slice(3)).toEqual([["reviewer", 2, "running"], ["go-reviewer", 2, "running"]]);
+  expect(reviewRoundMembers(t.record())).toEqual({ round: 2, agents: ["reviewer", "go-reviewer", "vue-reviewer"] });
+  t.begin(["reviewer", "go-reviewer", "vue-reviewer"]);
+  expect(t.rows().slice(3)).toEqual([["reviewer", 2, "running"], ["go-reviewer", 2, "running"], ["vue-reviewer", 2, "running"]]);
 });
 
-test("返修后的新一轮：上一轮 go-reviewer 打回、vue-reviewer 没交结论、react-reviewer 通过时，第 2 轮派 reviewer、go-reviewer、vue-reviewer", async () => {
+test("返修后的新一轮：第 2 轮 go-reviewer 没交出结论时，同一轮只重派 go-reviewer，轮次仍是 2", async () => {
+  const t = await reviewWorld();
+  const first = t.begin(["reviewer", "go-reviewer", "vue-reviewer"]);
+  t.finish(first, "reviewer", "blocked");
+  t.finish(first, "go-reviewer", "clear");
+  t.finish(first, "vue-reviewer", "clear");
+  t.reworkDone();
+  const second = t.begin(["reviewer", "go-reviewer", "vue-reviewer"]);
+  t.finish(second, "reviewer", "clear");
+  t.finish(second, "vue-reviewer", "clear");
+  t.finish(second, "go-reviewer", "failed");
+  expect(t.record().status).toBe("reviewing");
+  expect(reviewRoundMembers(t.record())).toEqual({ round: 2, agents: ["go-reviewer"] });
+});
+
+test("返修后的新一轮：上一轮 go-reviewer 打回、vue-reviewer 没交结论、react-reviewer 通过时，第 2 轮派 reviewer、go-reviewer、vue-reviewer、react-reviewer", async () => {
   const t = await reviewWorld(["go-reviewer", "vue-reviewer", "react-reviewer"]);
   const ids = t.begin(["reviewer", "go-reviewer", "vue-reviewer", "react-reviewer"]);
   t.finish(ids, "reviewer", "clear");
@@ -588,17 +615,30 @@ test("返修后的新一轮：上一轮 go-reviewer 打回、vue-reviewer 没交
   t.finish(t.begin(["vue-reviewer"]), "vue-reviewer", "turn_limit_reached");
   expect(t.record().status).toBe("awaiting_rework");
   t.reworkDone();
-  expect(reviewRoundMembers(t.record())).toEqual({ round: 2, agents: ["reviewer", "go-reviewer", "vue-reviewer"] });
+  expect(reviewRoundMembers(t.record())).toEqual({ round: 2, agents: ["reviewer", "go-reviewer", "vue-reviewer", "react-reviewer"] });
 });
 
-test("返修后的新一轮：上一轮被跳过的专项审查不算打回也不算没交结论，下一轮不派", async () => {
+test("返修后的新一轮：上一轮被跳过的专项审查仍在名单里，第 2 轮成员含它们（是否跳过在登记时按开关和文件判定）", async () => {
   const t = await reviewWorld();
   const ids = t.begin(["reviewer", ["go-reviewer", "disabled"], "vue-reviewer"]);
   t.finish(ids, "reviewer", "blocked");
   t.finish(ids, "vue-reviewer", "clear");
   expect(t.record().status).toBe("awaiting_rework");
   t.reworkDone();
-  expect(reviewRoundMembers(t.record())).toEqual({ round: 2, agents: ["reviewer"] });
+  expect(reviewRoundMembers(t.record())).toEqual({ round: 2, agents: ["reviewer", "go-reviewer", "vue-reviewer"] });
+});
+
+test("返修后的新一轮：返修期间关掉 vue-reviewer，第 2 轮登记时它记为 skipped、reviewer 与 go-reviewer 在跑", async () => {
+  const t = await reviewWorld();
+  const first = t.begin(["reviewer", "go-reviewer", "vue-reviewer"]);
+  t.finish(first, "reviewer", "clear");
+  t.finish(first, "go-reviewer", "blocked");
+  t.finish(first, "vue-reviewer", "clear");
+  t.reworkDone();
+  const members = reviewRoundMembers(t.record());
+  expect(members.agents).toContain("vue-reviewer");
+  t.begin(["reviewer", "go-reviewer", ["vue-reviewer", "disabled"]]);
+  expect(t.rows().slice(3)).toEqual([["reviewer", 2, "running"], ["go-reviewer", 2, "running"], ["vue-reviewer", 2, "skipped"]]);
 });
 
 test("累计有打回的轮数达到 2：第 1 轮 go-reviewer 打回、第 2 轮 reviewer 打回，任务转等待用户裁决", async () => {
@@ -609,8 +649,9 @@ test("累计有打回的轮数达到 2：第 1 轮 go-reviewer 打回、第 2 �
   t.finish(first, "go-reviewer", "blocked");
   expect(t.record().status).toBe("awaiting_rework");
   t.reworkDone();
-  const second = t.begin(["reviewer", "go-reviewer"]);
+  const second = t.begin(["reviewer", "go-reviewer", "vue-reviewer"]);
   t.finish(second, "go-reviewer", "clear");
+  t.finish(second, "vue-reviewer", "clear");
   t.finish(second, "reviewer", "blocked");
   expect(t.record().status).toBe("awaiting_user");
   expect(reviewRejections(t.record())).toBe(2);

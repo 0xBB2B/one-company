@@ -79,6 +79,14 @@ describe("pm 职责规矩的审查重试", () => {
   });
 });
 
+describe("pm 职责规矩的返修后审查", () => {
+  test("写明返修后再派审查，通用 reviewer 和全部专项审查都重新审一遍，不含只会重审的说法", () => {
+    const rules = loadRoleRules("pm");
+    expect(rules).toContain("返修后再派审查，通用 reviewer 和全部专项审查都重新审一遍");
+    expect(rules).not.toContain("只会重审");
+  });
+});
+
 describe("worker 职责规矩的重试验证引用", () => {
   test("写明重试时引用前一次尝试的红、自己再跑一次绿", () => {
     const rules = loadRoleRules("worker");

@@ -99,10 +99,9 @@ export class PmPanel {
       exhausted: `– ${row.agent} ${row.attempt} 次没交出结论，本轮结束后交你裁决${suffix}`,
       skipped_disabled: `– ${row.agent} 已关闭，本轮未审`,
       skipped_missing: `– ${row.agent} 已不存在，本轮未审`,
-      passed_earlier: `✓ ${row.agent} 上一轮已通过`,
     };
     const body = text[row.state];
-    const kind = row.state === "awaiting_retry" || row.state === "passed_earlier" ? "dim" : row.state === "exhausted" || row.state === "skipped_disabled" || row.state === "skipped_missing" ? "warning" : undefined;
+    const kind = row.state === "awaiting_retry" ? "dim" : row.state === "exhausted" || row.state === "skipped_disabled" || row.state === "skipped_missing" ? "warning" : undefined;
     return this.segments(row.state === "clear" ? [["dim", prefix], ["success", "✓"], ["muted", body]] : [["dim", prefix], [kind, body]], width);
   }
 

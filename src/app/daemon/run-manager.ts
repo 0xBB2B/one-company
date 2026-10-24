@@ -530,7 +530,7 @@ export class RunManager {
     let workerDefinition: WorkerDefinition = { name: task.agent ?? "worker", body: "", skillDivision: [] };
     try {
       if (review) {
-        const worker = await this.reviewedWorker(task, definition.name, input.resolved);
+        const worker = await this.reviewedWorker(task, definition.name, input.resolved, attemptRunId);
         workerDefinition = worker.definition;
         resolved = worker.resolved;
       }
@@ -599,18 +599,21 @@ export class RunManager {
   }
 
   /** 不核验被审 worker 的模型：它的凭据失效不该挡住审查。 */
-  private async reviewedWorker(task: PlanTask, reviewerName: string, resolved: ResolvedAgent): Promise<{ definition: WorkerDefinition; resolved: ResolvedAgent }> {
-    const name = task.agent ?? "worker";
+  private async reviewedWorker(dispatched: PlanTask, reviewerName: string, resolved: ResolvedAgent, attemptRunId: string): Promise<{ definition: WorkerDefinition; resolved: ResolvedAgent }> {
+    const name = dispatched.agent ?? "worker";
     const catalog = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
     const entry = catalog.find((candidate) => candidate.name === name && candidate.available && candidate.definition?.role === "worker");
     const definition: WorkerDefinition = { name, body: entry?.definition?.body ?? "", skillDivision: [] };
     const workerSkills = entry?.definition?.skills ?? [];
     if (!isGenericDefinition(reviewerName) || !workerSkills.length) return { definition, resolved };
-    const disabled = this.disabledAgents();
+    // 按本轮实际审了的专项审查算覆盖，不看当前开关：专项审查本轮被跳过后再打开，通用审查若被告知由它核对，这一轮就没人核对。
+    // 派工前拿到的 task 还没有本轮记录，所以重新读。
+    const task = withDatabase(this.database, (db) => readPlanIn(db, dispatched.requirementId)!.tasks.find((candidate) => candidate.taskId === dispatched.taskId)!);
+    const reviewed = new Set(latestRound(task).reviews.filter((review) => review.attemptRunId === attemptRunId && review.outcome !== "skipped").map((review) => review.agent));
     const covered = new Map<string, string[]>();
     for (const { agent } of task.reviewers ?? []) {
       const specialist = catalog.find((candidate) => candidate.name === agent);
-      if (disabled.has(agent) || !specialist?.available || specialist.definition?.role !== "reviewer") continue;
+      if (!reviewed.has(agent) || !specialist?.available || specialist.definition?.role !== "reviewer") continue;
       const shared = workerSkills.filter((skill) => specialist.definition!.skills?.includes(skill));
       if (shared.length) covered.set(agent, shared);
     }

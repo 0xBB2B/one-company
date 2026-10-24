@@ -445,16 +445,26 @@ test("任务行：本轮被打回（blocked 或 unverified）的审查代理状�
     ["reviewer", "running"], ["go-reviewer", "blocked"], ["vue-reviewer", "blocked"]]);
 });
 
-test("任务行：第 2 轮只派 reviewer、go-reviewer 时，上一轮已通过的 vue-reviewer 以 passed_earlier 排在末尾，被关闭跳过的 go-reviewer 为 skipped_disabled", async () => {
+test("任务行：返修后第 2 轮每个专项审查一行写本轮状态，被关闭跳过的 go-reviewer 为 skipped_disabled，没有 passed_earlier", async () => {
   const { w, reviewing, reviewersOf } = await rowsWorld();
   await reviewing("T1", [
     { agent: "reviewer", round: 1, outcome: "blocked" }, { agent: "vue-reviewer", round: 1, outcome: "clear" },
     { agent: "reviewer", round: 2, outcome: "running", turns: 1, maxTurns: 15 },
-    { agent: "go-reviewer", round: 2, outcome: "skipped", skipReason: "disabled" }]);
+    { agent: "go-reviewer", round: 2, outcome: "skipped", skipReason: "disabled" },
+    { agent: "vue-reviewer", round: 2, outcome: "clear", turns: 2, maxTurns: 15 }]);
   const row = await reviewersOf("T1");
   expect(row?.round).toBe(2);
   expect(row?.reviewers.map((reviewer) => [reviewer.agent, reviewer.state])).toEqual([
-    ["reviewer", "running"], ["go-reviewer", "skipped_disabled"], ["vue-reviewer", "passed_earlier"]]);
+    ["reviewer", "running"], ["go-reviewer", "skipped_disabled"], ["vue-reviewer", "clear"]]);
+});
+
+test("任务行：返修后第 2 轮没有这个专项审查的记录时，审查代理状态里没有 passed_earlier", async () => {
+  const { w, reviewing, reviewersOf } = await rowsWorld();
+  await reviewing("T1", [
+    { agent: "reviewer", round: 1, outcome: "blocked" }, { agent: "vue-reviewer", round: 1, outcome: "clear" },
+    { agent: "reviewer", round: 2, outcome: "running", turns: 1, maxTurns: 15 }]);
+  const row = await reviewersOf("T1");
+  expect(row?.reviewers.map((reviewer) => reviewer.state)).not.toContain("passed_earlier");
 });
 
 test("任务行：已不存在而被跳过的审查代理状态为 skipped_missing", async () => {

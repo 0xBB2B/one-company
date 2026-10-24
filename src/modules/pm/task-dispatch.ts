@@ -185,8 +185,7 @@ export function reviewDispatchable(task: Pick<TaskRecord, "reviews" | "userDecis
 }
 
 /**
- * 下一次整轮派要派的代理：最近完成的尝试还没审过是新一轮。第 1 轮、或新尝试不是返修（重新执行）时是通用 reviewer 加任务全部专项审查；
- * 返修后是通用 reviewer 加上一轮打回、没交结论或被作废的专项审查。已有本轮记录时在同一轮里只重派没交结论（还能重派）或被作废的代理。通用 reviewer 排第一。
+ * 下一次整轮派要派的代理：最近完成的尝试还没审过是新一轮。新一轮一律是通用 reviewer 加任务全部专项审查。已有本轮记录时在同一轮里只重派没交结论（还能重派）或被作废的代理。通用 reviewer 排第一。
  */
 export function reviewRoundMembers(task: Pick<TaskRecord, "attempts" | "reviews" | "reviewers" | "userDecision" | "version">): { round: number; agents: string[] } {
   const attempt = task.attempts.findLast((candidate) => candidate.outcome === "completed");
@@ -194,9 +193,7 @@ export function reviewRoundMembers(task: Pick<TaskRecord, "attempts" | "reviews"
   const inRound = attempt !== undefined && latest.reviews.some((review) => review.attemptRunId === attempt.runId);
   const unsettled = (review: TaskReview) => REVIEW_UNFINISHED.has(review.outcome) || review.outcome === "superseded";
   const agents = inRound ? latest.reviews.filter((review) => unsettled(review) && reviewDispatchable(task, review.agent)).map((review) => review.agent)
-    : ["reviewer", ...(latest.round > 0 && attempt?.rework
-      ? latest.reviews.filter((review) => REVIEW_REJECTED.has(review.outcome) || unsettled(review)).map((review) => review.agent)
-      : reviewRoster(task))];
+    : ["reviewer", ...reviewRoster(task)];
   return { round: inRound ? latest.round : latest.round + 1, agents: [...new Set(agents)].sort((a, b) => Number(b === "reviewer") - Number(a === "reviewer")) };
 }
 
