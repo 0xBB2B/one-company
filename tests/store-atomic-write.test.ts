@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { lstat, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFileAtomic } from "../src/core/storage/store.ts";
@@ -60,5 +60,46 @@ describe("writeFileAtomic 遇到软链接", () => {
     await writeFileAtomic(link, "新内容\n", { followSymlink: true });
     expect((await lstat(link)).isSymbolicLink()).toBe(false);
     expect(await readFile(link, "utf8")).toBe("新内容\n");
+  });
+});
+
+describe("writeFileAtomic 写入后的权限", () => {
+  const modeOf = async (path: string) => (await stat(path)).mode & 0o777;
+
+  test("覆盖 0644 的文件：写完仍是 0644", async () => {
+    const path = join(await makeRoot(), "AGENTS.md");
+    await writeFile(path, "原内容\n");
+    await chmod(path, 0o644);
+    await writeFileAtomic(path, "新内容\n");
+    expect(await modeOf(path)).toBe(0o644);
+  });
+
+  test("覆盖 0755 的脚本：写完仍可执行", async () => {
+    const path = join(await makeRoot(), "run.sh");
+    await writeFile(path, "#!/bin/sh\n");
+    await chmod(path, 0o755);
+    await writeFileAtomic(path, "#!/bin/sh\necho hi\n");
+    expect(await modeOf(path)).toBe(0o755);
+  });
+
+  test("传 followSymlink：软链接指向的 0644 真实文件写完仍是 0644", async () => {
+    const { real, link } = await linked();
+    await chmod(real, 0o644);
+    await writeFileAtomic(link, "新内容\n", { followSymlink: true });
+    expect(await modeOf(real)).toBe(0o644);
+  });
+
+  test("目标不存在：新建的文件是 0600", async () => {
+    const path = join(await makeRoot(), "new.md");
+    await writeFileAtomic(path, "内容\n");
+    expect(await modeOf(path)).toBe(0o600);
+  });
+
+  test("不传选项：软链接换成的普通文件是 0600，不沿用它指向的文件的权限", async () => {
+    const { real, link } = await linked();
+    await chmod(real, 0o644);
+    await writeFileAtomic(link, "新内容\n");
+    expect(await modeOf(link)).toBe(0o600);
+    expect(await modeOf(real)).toBe(0o644);
   });
 });
