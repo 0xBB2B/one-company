@@ -118,6 +118,7 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
         let instructed = false;
         host.answerPanelWindow = (window) => instruction ? (instructed = true, recommendedChoice(window)) : label.includes("待验收")
           ? (/验收通过/.test(script.accept) && window.choices.includes("验收通过") ? "验收通过" : { other: script.accept })
+          : label.includes("PM 请求拆分") ? (window.choices.includes("让 PM 按新版本拆分") ? "让 PM 按新版本拆分" : undefined)
           : label.includes("待裁决") && script.adjudicate ? { other: script.adjudicate } : undefined;
         const before = host.session.messages.length;
         // 面板光标会保留上次位置：先回到第一行，再按可选行（PM 行与事项行）数到目标
@@ -134,6 +135,7 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
         if (!host.panelLines().some((line) => line.includes(label))) continue;
         if (instruction) { if (!instructed) return stop(`主代理没有为事项弹出问答窗口：${label}`); }
         else if (label.includes("待验收")) { result = await say(script.accept); if (result) return result; }
+        else if (label.includes("PM 请求拆分")) return stop(`请求拆分事项在窗口作答后仍在：${label}`);
         else if (label.includes("待裁决") && script.adjudicate) { result = await say(script.adjudicate); if (result) return result; }
         else if (!label.includes("接手")) return stop(`出现台词未覆盖的事项：${label}`);
         continue;
