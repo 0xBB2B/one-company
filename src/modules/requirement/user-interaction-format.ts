@@ -73,9 +73,9 @@ export const AdjudicationSubject = object({
   summary: Type.String({ minLength: 1, maxLength: 2000 }),
 });
 export type AdjudicationSubject = Static<typeof AdjudicationSubject>;
-export const ADJUDICATION_CHOICES = ["retry", "adjust", "terminate", "cancel", "reject", "accept", "rework"] as const;
-/** 任务事项只能再给一次机会、调整或终止；需求事项只能取消或拒绝；完成报告只能通过或返工。 */
-const CHOICES_BY_SUBJECT: Readonly<Record<string, readonly string[]>> = { task: ["retry", "adjust", "terminate"], requirement: ["cancel", "reject"], report: ["accept", "rework"] };
+export const ADJUDICATION_CHOICES = ["retry", "adjust", "keep", "terminate", "cancel", "reject", "accept", "rework"] as const;
+/** 这里看不出任务是否请求拆分，按任务细分的选项在登记生效时再判。 */
+const CHOICES_BY_SUBJECT: Readonly<Record<string, readonly string[]>> = { task: ["retry", "adjust", "keep", "terminate"], requirement: ["cancel", "reject"], report: ["accept", "rework"] };
 const ADJUDICATION_PREFIXES = ["item:", "version:", "choice:", "max-turns:"];
 export type AdjudicationChoice = (typeof ADJUDICATION_CHOICES)[number];
 export const InteractionContext = object({

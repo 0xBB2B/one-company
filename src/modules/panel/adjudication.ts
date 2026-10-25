@@ -67,6 +67,7 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
       ?? deny("item_not_pending");
     const task = plan!.tasks.find((candidate) => `task:${candidate.taskId}` === itemId)!;
     const lines = [`任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`,
+      ...(task.splitRequest ? ["PM 请求拆分（需求改了）。可选：adjust 让 PM 按新版本拆分；keep 不拆，让 PM 原地改写；terminate 终止这个任务"] : []),
       ...(task.sizeHold && sizeHoldPending(task) ? [`拆分上限：${task.sizeHold.join("；")}`] : []),
       ...task.attempts.map((attempt, index) => `${attempt.rework ? "返修" : "尝试"} ${index + 1}：${attempt.turnsUsed}/${attempt.maxTurns} 轮 · 结局 ${attempt.outcome}${attempt.escalation ? " · PM 已上报" : ""}`),
       ...task.reviews.map(reviewLine),
@@ -134,7 +135,7 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     const row = db.read<TaskRecord>(TASKS, taskId!) ?? deny("task_missing");
     const task = row.data;
     if (task.requirementId !== input.requirementId || task.status !== "awaiting_user" || parsed.version !== `task:${taskId}:${row.version}` ||
-      !["retry", "adjust", "terminate"].includes(parsed.choice)) deny("item_changed");
+      !(task.splitRequest ? ["adjust", "keep", "terminate"] : ["retry", "adjust", "terminate"]).includes(parsed.choice)) deny("item_changed");
     const base = stalledStage(task);
     const stage = base !== "execute" && reviewRoundOpen(task) ? "review" : base;
     const round = latestRound(task);
@@ -145,13 +146,15 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     const escalation = movedEscalation ?? currentEscalation(task);
     const userDecision: UserDecision = { decisionId: input.decisionId, choice: parsed.choice as UserDecision["choice"], maxTurns: parsed.maxTurns,
       revision: record.revision, taskVersion: task.version, usedByRunId: null, notified: false,
+      ...(task.splitRequest && parsed.choice === "adjust" ? { split: true as const } : {}),
       confirmedPlan: confirmedPlanKey(readPlanIn(db, input.requirementId)?.plan), ...(escalation ? { escalation } : {}),
       ...(parsed.choice === "retry" && stage === "review" ? { agents: [...exhausted, ...waiting], baseline: Object.fromEntries(exhausted.map((agent) => [agent, reviewFailures(task.reviews, agent)])), round: round.round } : {}) };
     // 再给一次机会回到用完机会的那一环
     const retryStatus = stage === "review" && waiting.length ? "reviewing" : ({ execute: "pending", review: "awaiting_review", rework: "awaiting_rework" } as const)[stage];
-    const status = parsed.choice === "retry" ? retryStatus : parsed.choice === "adjust" ? "needs_update" : "cancelled";
+    const status = parsed.choice === "retry" ? retryStatus : parsed.choice === "adjust" || parsed.choice === "keep" ? "needs_update" : "cancelled";
+    const { splitRequest: _answered, ...taskWithoutSplit } = task;
     const attempts = movedEscalation ? task.attempts.map((attempt) => { if (attempt !== lastAttempt) return attempt; const { escalation: _moved, ...rest } = attempt; return rest; }) : task.attempts;
-    const next = { ...task, status, attempts, userDecision, replanAllowance: 1, updatedAt: input.now ?? Date.now() } as TaskRecord;
+    const next = { ...taskWithoutSplit, status, attempts, userDecision, replanAllowance: 1, updatedAt: input.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, taskId!, row.version, next);
     return { kind: "task" as const, task: next };
   }));
@@ -203,6 +206,10 @@ export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string
       messages.push(decision.choice === "retry"
         ? `用户决定：任务 ${task.key} 再给一次机会，轮数上限 ${decision.maxTurns}。${task.status === "awaiting_rework" ? "可用 agent_manage dispatch 直接派 worker 返修，不带 rework"
           : task.status === "awaiting_review" || task.status === "reviewing" ? `可用 agent_manage dispatch 带 review 再派审查${namesIn(unfinishedReviewers(task))}，轮数按用户决定` : "可用 agent_manage dispatch 直接派出，不带 retry"}；这次不占你的重试机会。`
+        : decision.split && decision.choice === "adjust"
+          ? `用户决定：任务 ${task.key} 由你按当前批准版本拆分或改写。用 plan_manage update 取消该任务另加任务、或修改该任务（目标可以减少），不需要等新的批准版本。`
+        : decision.choice === "keep"
+          ? `用户决定：任务 ${task.key} 不拆，由你原地改写。用 plan_manage update 修改该任务本身，目标不能减少；本批准版本内不能再为它请求拆分。`
         : decision.choice === "adjust" && task.sizeHold && sizeHoldPending(task)
           ? `用户决定：任务 ${task.key} 由你拆分或精简（${task.sizeHold.join("；")}）。用 plan_manage update 修改该任务，或取消后另加任务，不需要等新的批准版本；改完仍超出上限会再次交用户裁决。`
         : decision.choice === "adjust" && task.holdNote && unsentTask(task)
