@@ -1607,3 +1607,259 @@ describe("用户每做一次裁决，额度为 0 的任务重算额度恢复为 
     expect(w.task("login").replanAllowance).toBe(1);
   });
 });
+
+const SPLIT_BODY = `${LOGIN_BODY}# 测试桩登录 {#goal.stub}\n短信用测试桩。\n# 验证码失败 {#scenario.failure}\n${UNRELATED_EDIT}\n`;
+const NEXT_BODY = `${LOGIN_BODY}# 测试桩登录 {#goal.stub}\n短信用测试桩，并限制频率。\n# 验证码失败 {#scenario.failure}\n${UNRELATED_EDIT}\n`;
+const STUCK_ATTEMPT = () => ({ runId: uuidv7(), maxTurns: 1, turnsUsed: 1, reason: null, outcome: "turn_limit_reached" as const });
+type PendingWorld = Awaited<ReturnType<typeof pendingWorld>>;
+
+async function needsUpdateLogin(patch: Partial<TaskRecord> = {}) {
+  const w = await pendingWorld();
+  const id = w.task("login").taskId;
+  w.db((db) => { const row = db.read<TaskRecord>(TASKS, id)!;
+    db.update(TASKS, id, row.version, { ...row.data, status: "awaiting_parent", attempts: [STUCK_ATTEMPT()], ...patch }); });
+  await approveAndAssessLoginAffected(w, id, SPLIT_BODY);
+  expect(w.task("login").status).toBe("needs_update");
+  return { w, id };
+}
+
+const patchLogin = (w: PendingWorld, patch: (task: TaskRecord) => Partial<TaskRecord> & Record<string, unknown>) => w.db((db) => {
+  const row = db.read<TaskRecord>(TASKS, w.task("login").taskId)!;
+  db.update(TASKS, row.data.taskId, row.version, { ...row.data, ...patch(row.data) } as never);
+});
+const recordUserChoice = (w: PendingWorld, choice: "adjust" | "keep", revision = 2, split = false) => patchLogin(w, (task) => ({ status: "needs_update",
+  userDecision: { decisionId: uuidv7(), choice, maxTurns: null, revision, taskVersion: task.version, usedByRunId: null, notified: false, ...(split ? { split: true } : {}) } as never }));
+const extra = (w: PendingWorld) => w.task("login") as unknown as Record<string, unknown>;
+const failureOf = (error: unknown) => { const e = error as { code?: string; message?: string; detail?: unknown; advice?: unknown };
+  return { code: e?.code, text: `${e?.message}${JSON.stringify(e?.detail ?? "")}${JSON.stringify(e?.advice ?? "")}` }; };
+const escalateFailure = (w: PendingWorld, id: string) => w.escalate(id, "拆分才能做").then(() => undefined, failureOf);
+const rejectedHint = (w: PendingWorld) => w.provider.queue.push({ type: "text", text: "收到被拒原因" });
+const cancelLoginAddTwo = (w: PendingWorld, id: string) => w.plan.execute({ action: "update", planVersion: planVersionOf(w), cancel: [{ taskId: id, version: w.task("login").version }],
+  add: [spec("login-a", "goal.login"), spec("login-b", "goal.login", { writePaths: ["lib/"] })] });
+
+describe("待更新且占住目标的任务可以请求拆分", () => {
+  test("待更新、占住目标、没有运行中尝试的 login 被 PM 上报：被接受，任务待用户裁决，说明记在最近一次尝试上，任务记下当前批准版本的拆分请求", async () => {
+    const { w, id } = await needsUpdateLogin();
+    await w.escalate(id, "目标太大，请求拆分");
+    expect(w.task("login").status).toBe("awaiting_user");
+    expect(w.task("login").attempts.at(-1)?.escalation).toBe("目标太大，请求拆分");
+    expect(extra(w).splitRequest).toEqual({ revision: 2 });
+  });
+
+  test("待更新的 login 在复核前已做完并审查全部通过：上报被拒 task_not_ready，原因含“不占住目标”，任务仍是待更新", async () => {
+    const attemptRunId = uuidv7();
+    const { w, id } = await needsUpdateLogin({ status: "completed", attempts: [{ runId: attemptRunId, maxTurns: 5, turnsUsed: 3, reason: null, outcome: "completed" }],
+      reviews: [{ runId: uuidv7(), attemptRunId, maxTurns: 1, turnsUsed: 1, agent: "reviewer", round: 1, outcome: "clear" }] });
+    const error = failureOf(await w.escalate(id, "想拆分").then(() => undefined, (failure) => failure));
+    expect(error.code).toBe("task_not_ready");
+    expect(error.text).toContain("不占住目标");
+    expect(w.task("login").status).toBe("needs_update");
+  });
+
+  test("请求拆分后用户已选“拆分”、任务回到待更新：再次上报被拒 task_not_ready，原因含“不占住目标”", async () => {
+    const { w, id } = await needsUpdateLogin();
+    await w.escalate(id, "目标太大，请求拆分");
+    recordUserChoice(w, "adjust", 2, true);
+    const error = await escalateFailure(w, id);
+    expect(error).toMatchObject({ code: "task_not_ready" });
+    expect(error!.text).toContain("不占住目标");
+  });
+
+  test("worker 任务待更新、最近一次尝试已完成但本轮审查有在跑的记录：上报被拒 task_not_ready，原因含“运行”", async () => {
+    const { w, id } = await needsUpdateLogin();
+    const attemptRunId = uuidv7();
+    patchLogin(w, () => ({ attempts: [{ runId: attemptRunId, maxTurns: 5, turnsUsed: 3, reason: null, outcome: "completed" as const }],
+      reviews: [{ runId: uuidv7(), attemptRunId, maxTurns: 1, turnsUsed: 0, agent: "reviewer", round: 1, outcome: "running" as const }] }));
+    const error = await escalateFailure(w, id);
+    expect(error).toMatchObject({ code: "task_not_ready" });
+    expect(error!.text).toContain("运行");
+    expect(w.task("login").status).toBe("needs_update");
+  });
+
+  test("待更新的 login 有运行中的尝试：上报被拒 task_not_ready，原因含“运行”，任务仍是待更新", async () => {
+    const { w, id } = await needsUpdateLogin();
+    patchLogin(w, (task) => ({ attempts: [...task.attempts, { runId: uuidv7(), maxTurns: 1, turnsUsed: 0, reason: null, outcome: "running" as const }] }));
+    const error = await escalateFailure(w, id);
+    expect(error).toMatchObject({ code: "task_not_ready" });
+    expect(error!.text).toContain("运行");
+    expect(w.task("login").status).toBe("needs_update");
+  });
+
+  test("用户对当前批准版本选过“不拆”后再上报：被拒 task_not_ready，原因含“不拆”；批准下一个新版本并复核判受影响后再上报被接受，拆分请求记新版本号", async () => {
+    const { w, id } = await needsUpdateLogin();
+    await w.escalate(id, "目标太大，请求拆分");
+    recordUserChoice(w, "keep");
+    const error = await escalateFailure(w, id);
+    expect(error).toMatchObject({ code: "task_not_ready" });
+    expect(error!.text).toContain("不拆");
+
+    w.provider.queue.push({ type: "text", text: "PM 收到用户决定" }, { type: "text", text: "PM 收到新版本差异" });
+    await w.fixture.approveRevision({ body: NEXT_BODY });
+    await until(() => w.owner().context.baseline?.revision === 3);
+    await w.readDiffs(["revision 2 → 3"]);
+    await w.plan.execute({ action: "assess-update", revision: 3, assessmentId: uuidv7(), tasks: [
+      { taskId: id, version: w.task("login").version, assessment: "affected", rationale: "登录受影响" },
+      { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "affected", rationale: "失败场景受影响" }],
+      global: { assessment: "unaffected", rationale: "无全局变化" } });
+    expect(w.task("login").status).toBe("needs_update");
+    await w.escalate(id, "新版本后再请求拆分");
+    expect(w.task("login").status).toBe("awaiting_user");
+    expect(extra(w).splitRequest).toEqual({ revision: 3 });
+  });
+});
+
+describe("请求拆分后用户选“拆分”：不需要新的批准版本就能改计划", () => {
+  async function splitChosen() {
+    const x = await needsUpdateLogin();
+    patchLogin(x.w, () => ({ splitRequest: { revision: 2 } }));
+    recordUserChoice(x.w, "adjust", 2, true);
+    return x;
+  }
+
+  test("取消 login 并另加同角色同目标的两个新任务：被接受", async () => {
+    const { w, id } = await splitChosen();
+    await cancelLoginAddTwo(w, id);
+    expect(w.task("login").status).toBe("cancelled");
+    expect(w.task("login-a")).toMatchObject({ status: "pending", goalUnitIds: ["goal.login"] });
+    expect(w.task("login-b")).toMatchObject({ status: "pending", goalUnitIds: ["goal.login"] });
+  });
+
+  test("修改 login 并减少目标：被接受，开始新计数周期，重算额度不变", async () => {
+    const { w, id } = await splitChosen();
+    const before = { cycles: w.task("login").cycleStarts.length, allowance: w.task("login").replanAllowance };
+    await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version, spec: spec("login", "goal.stub") }] });
+    expect(w.task("login").goalUnitIds).toEqual(["goal.stub"]);
+    expect(w.task("login").cycleStarts).toHaveLength(before.cycles + 1);
+    expect(w.task("login").replanAllowance).toBe(before.allowance);
+  });
+
+  test("请求拆分时批准版本是 2，之后批准了 3 且复核判 login 无关、任务仍待裁决，用户在版本 3 下选拆分：照样放开，取消 login 并另加同目标新任务被接受", async () => {
+    const { w, id } = await needsUpdateLogin();
+    await w.escalate(id, "目标太大，请求拆分");
+    w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" });
+    await w.fixture.approveRevision({ body: NEXT_BODY });
+    await until(() => w.owner().context.baseline?.revision === 3);
+    await w.readDiffs(["revision 2 → 3"]);
+    await w.plan.execute({ action: "assess-update", revision: 3, assessmentId: uuidv7(), tasks: [
+      { taskId: id, version: w.task("login").version, assessment: "unaffected", rationale: "登录无关" },
+      { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "affected", rationale: "失败场景的章节变了" }],
+      global: { assessment: "unaffected", rationale: "无全局变化" } });
+    expect(w.task("login").status).toBe("awaiting_user");
+    expect(extra(w).splitRequest).toEqual({ revision: 2 });
+    recordUserChoice(w, "adjust", 3, true);
+    await w.plan.execute({ action: "update", planVersion: planVersionOf(w), cancel: [{ taskId: id, version: w.task("login").version }], add: [spec("login-again", "goal.login")] });
+    expect(w.task("login").status).toBe("cancelled");
+    expect(w.task("login-again")).toMatchObject({ status: "pending", goalUnitIds: ["goal.login"] });
+  });
+
+  test("选拆分后第一次修改 login 被接受（任务版本加 1、尚未派出），再修改一次 login 也被接受", async () => {
+    const { w, id } = await splitChosen();
+    const modify = (note: string) => w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version,
+      spec: spec("login", "goal.stub", { passCriteria: ["可观察通过", note] }) }] });
+    const version = w.task("login").version;
+    await modify("第一次改");
+    expect(w.task("login").version).toBe(version + 1);
+    await modify("第二次改");
+    expect(w.task("login").version).toBe(version + 2);
+  });
+});
+
+describe("任务上残留的拆分请求标记不产生授权：只有用户决定上的 split 才放开目标", () => {
+  async function staleMarkOnly() {
+    const x = await needsUpdateLogin();
+    patchLogin(x.w, () => ({ splitRequest: { revision: 2 } }));
+    recordUserChoice(x.w, "adjust", 2);
+    return x;
+  }
+
+  test("取消 login 并另加同角色同目标的新任务：被拒 goal_held", async () => {
+    const { w, id } = await staleMarkOnly();
+    rejectedHint(w);
+    await expect(w.plan.execute({ action: "update", planVersion: planVersionOf(w), cancel: [{ taskId: id, version: w.task("login").version }], add: [spec("login-again", "goal.login")] }))
+      .rejects.toMatchObject({ code: "goal_held" });
+  });
+
+  test("修改 login 并减少目标：被拒 task_not_ready，原因为等待调整后的新批准版本，login 目标不变", async () => {
+    const { w, id } = await staleMarkOnly();
+    rejectedHint(w);
+    const goalsBefore = w.task("login").goalUnitIds;
+    const error = failureOf(await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version, spec: spec("login", "goal.stub") }] })
+      .then(() => undefined, (failure) => failure));
+    expect(error.code).toBe("task_not_ready");
+    expect(error.text).toContain("等待调整后的新批准版本");
+    expect(w.task("login").goalUnitIds).toEqual(goalsBefore);
+  });
+
+  test("修改 login 本身：被拒 task_not_ready，原因为等待调整后的新批准版本", async () => {
+    const { w, id } = await staleMarkOnly();
+    rejectedHint(w);
+    const error = failureOf(await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version,
+      spec: spec("login", "goal.login", { passCriteria: ["可观察通过", "补一条通过条件"] }) }] }).then(() => undefined, (failure) => failure));
+    expect(error.code).toBe("task_not_ready");
+    expect(error.text).toContain("等待调整后的新批准版本");
+  });
+});
+
+describe("请求拆分后用户选“不拆”：任务照旧占住目标", () => {
+  async function keepChosen() {
+    const x = await needsUpdateLogin();
+    patchLogin(x.w, () => ({ splitRequest: { revision: 2 } }));
+    recordUserChoice(x.w, "keep");
+    return x;
+  }
+
+  test("取消 login 并另加同角色同目标的新任务：被拒 goal_held，计划不变", async () => {
+    const { w, id } = await keepChosen();
+    const before = planVersionOf(w);
+    rejectedHint(w);
+    await expect(w.plan.execute({ action: "update", planVersion: before, cancel: [{ taskId: id, version: w.task("login").version }], add: [spec("login-again", "goal.login")] }))
+      .rejects.toMatchObject({ code: "goal_held" });
+    expect(w.task("login").status).not.toBe("cancelled");
+    expect(planVersionOf(w)).toBe(before);
+  });
+
+  test("不取消 login，只另加同角色同目标的新任务：被拒 goal_held", async () => {
+    const { w } = await keepChosen();
+    rejectedHint(w);
+    await expect(w.plan.execute({ action: "update", planVersion: planVersionOf(w), add: [spec("login-again", "goal.login")] })).rejects.toMatchObject({ code: "goal_held" });
+  });
+
+  test("修改 login 并减少目标：被拒 goal_held", async () => {
+    const { w, id } = await keepChosen();
+    rejectedHint(w);
+    await expect(w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version, spec: spec("login", "goal.stub") }] }))
+      .rejects.toMatchObject({ code: "goal_held" });
+    expect(w.task("login").goalUnitIds).toEqual(["goal.login"]);
+  });
+
+  test("修改 login 本身（目标不变）：被接受，按 PM 自己改计划计：开新周期，重算额度用掉", async () => {
+    const { w, id } = await keepChosen();
+    patchLogin(w, () => ({ replanAllowance: 1 }));
+    const cycles = w.task("login").cycleStarts.length;
+    expect(w.task("login").attempts).toHaveLength(1);
+    await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: id, version: w.task("login").version,
+      spec: spec("login", "goal.login", { passCriteria: ["可观察通过", "补一条通过条件"] }) }] });
+    expect(w.task("login").goalUnitIds).toEqual(["goal.login"]);
+    expect(w.task("login").status).not.toBe("cancelled");
+    expect(w.task("login").cycleStarts).toHaveLength(cycles + 1);
+    expect(w.task("login").replanAllowance).toBe(0);
+  });
+
+  test("keep 决定不是派出授权：本周期已执行 2 次、任务改回 pending 后派出被拒 retry_exhausted", async () => {
+    const { w } = await keepChosen();
+    patchLogin(w, (task) => ({ status: "pending", attempts: [...task.attempts, STUCK_ATTEMPT()] }));
+    w.db((db) => { const row = db.read<Record<string, unknown>>("plans", w.fixture.requirementId)!; db.update("plans", w.fixture.requirementId, row.version, { ...row.data, confirmedRevision: 2 } as never); });
+    const taskId = w.task("login").taskId;
+    await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId, retry: null })).rejects.toMatchObject({ code: "retry_exhausted" });
+    await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId, retry: { reason: "再试", maxTurns: 1 } })).rejects.toMatchObject({ code: "retry_exhausted" });
+  });
+});
+
+describe("没有请求拆分的普通调整决定仍须等新的批准版本", () => {
+  test("login 执行 1 次、PM 上报、用户选调整、没有新批准版本：取消 login 并另加同目标新任务被拒 goal_held", async () => {
+    const { w, id } = await adjustedAfterOneAttemptEscalated();
+    rejectedHint(w);
+    await expect(w.plan.execute({ action: "update", planVersion: planVersionOf(w), cancel: [{ taskId: id, version: w.task("login").version }], add: [spec("login-again", "goal.login")] }))
+      .rejects.toMatchObject({ code: "goal_held" });
+  });
+});

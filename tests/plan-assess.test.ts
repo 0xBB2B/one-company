@@ -133,7 +133,7 @@ test("M7-AC32：当前批准的正文删掉某段后，以它为目标的任务�
   await expect(w.run({ action: "update", planVersion: assessed.plan.planVersion,
     modify: [{ taskId: login.taskId, version: login.version, spec: spec("login", "goal.login") }] })).rejects.toMatchObject({ code: "unknown_unit" });
   const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.fixture.lease, note: "登录目标不在当前实施授权内" };
-  expect(() => escalateTask({ ...ref, taskId: login.taskId })).toThrow("login:needs_update 不在等待 PM 处置");
+  expect(() => escalateTask({ ...ref, taskId: login.taskId })).toThrow("不占住目标");
   const cancelled = await w.run({ action: "update", planVersion: assessed.plan.planVersion, cancel: [{ taskId: login.taskId, version: login.version }] });
   expect(w.byKey(cancelled, "login").status).toBe("cancelled");
 });
