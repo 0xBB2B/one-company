@@ -16,6 +16,7 @@ description: 请求拆分的任务在面板、决策包、问答窗口显示三�
 - C-7：问答窗口固定选项依次为 `让 PM 按新版本拆分`、`不拆，让 PM 原地改写`、`终止这个任务`；主代理给的文字或顺序不同时提问被拒（沿用 fixedChoiceIssue）。
 - 用户回答到内部 choice：拆分 = `adjust`，不拆 = `keep`，终止 = `terminate`。请求拆分的任务只接受这三个；其他任务只接受 `retry`、`adjust`、`terminate`（`keep` 被拒）。解释器（模型）提示词写明：任务事项是请求拆分时 choice 只能是 adjust=让 PM 按新版本拆分、keep=不拆让 PM 原地改写、terminate=终止这个任务；给解释器的事项摘要里写出这三个选项。
 - C-8 / C-9：`adjust` 与 `keep` 都把任务置回 `needs_update`；`terminate` 与现有终止一致（C-10：任务取消、需求暂停）。
+- 用户对请求拆分的事项做决定时（任一选项），登记的决定都带 `split: true`，表示答复的是拆分请求（内核据此在选 adjust 时不等新的批准版本就放开目标；keep、terminate 带着也不放开任何东西）；只在待裁决事项是请求拆分时写，普通待裁决事项的决定不带 split。登记决定的同时清掉任务上的 `splitRequest`（此后它不再是请求拆分的待裁决事项）。
 - C-11：任一决定后 replanAllowance 恢复为 1（现有行为，保持）。
 - 通知 PM 的文字：adjust → `用户决定：任务 <key> 由你按当前批准版本拆分或改写。用 plan_manage update 取消该任务另加任务、或修改该任务（目标可以减少），不需要等新的批准版本。`；keep → `用户决定：任务 <key> 不拆，由你原地改写。用 plan_manage update 修改该任务本身，目标不能减少；本批准版本内不能再为它请求拆分。`
 - 其他待裁决任务的面板、决策包、窗口文字一律不变。
@@ -46,8 +47,8 @@ description: 请求拆分的任务在面板、决策包、问答窗口显示三�
 | 函数名 | 职责 |
 |---|---|
 | `adjudicationSubject` | 请求拆分的任务摘要加一行可选项（adjust / keep / terminate 的含义） |
-| `applyAdjudication` | 按任务是否请求拆分限定可接受的 choice；adjust、keep → needs_update；其余照旧 |
-| 通知 PM 的函数（现有 `decision.choice === "adjust"` 分支所在处） | 请求拆分后的 adjust、keep 两种通知文字，放在现有 adjust 分支之前 |
+| `applyAdjudication` | 按任务是否请求拆分（awaiting_user 且带 splitRequest）限定可接受的 choice；请求拆分时写入的 userDecision 带 `split: true`，并去掉任务上的 `splitRequest`；adjust、keep → needs_update；其余照旧 |
+| 通知 PM 的函数 `takeUnnotifiedDecisions`（现有 `decision.choice === "adjust"` 分支所在处） | 按 `decision.split` 与 choice 给出请求拆分后的 adjust、keep 两种通知文字，放在现有 adjust 分支之前；keep 不得落到终止的文字 |
 ### src/modules/requirement/user-interaction-format.ts
 | 位置 | 职责 |
 |---|---|
