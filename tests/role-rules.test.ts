@@ -280,3 +280,117 @@ describe("派工后子代理收到的提示词", () => {
     expect(prompt.indexOf(PM_FIRST_LINE)).toBeGreaterThan(prompt.indexOf("## 职责规矩"));
   });
 });
+
+describe("pm 职责规矩的需求更新后请求拆分", () => {
+  const sentencesOf = (text: string) => text.split(/[。\n]/);
+
+  test("已执行没完成的任务想拆分时用 escalate 带 taskId 与 note 请求用户决定", () => {
+    const rules = loadRoleRules("pm");
+    const sentence = sentencesOf(rules).find((line) => line.includes("escalate") && line.includes("拆分") && line.includes("taskId") && line.includes("note"));
+    expect(sentence).toBeDefined();
+    expect(rules).toMatch(/需求更新后[^。\n]*受影响[^。\n]*(已执行|占住目标)|(已执行|占住目标)[^。\n]*受影响/u);
+  });
+
+  test("请求拆分的那一句同时写明适用情形与请用户决定", () => {
+    const rules = loadRoleRules("pm");
+    const sentence = sentencesOf(rules).find((line) => line.includes("escalate") && line.includes("拆分") && line.includes("taskId"));
+    expect(sentence).toBeDefined();
+    expect(sentence).toContain("需求更新后");
+    expect(sentence).toMatch(/用户决定/u);
+  });
+
+  test("用户选拆分后可取消该任务把目标交给新任务，不等新的批准版本", () => {
+    const rules = loadRoleRules("pm");
+    const sentence = sentencesOf(rules).find((line) => line.includes("选拆分") && line.includes("取消") && line.includes("新任务"));
+    expect(sentence).toBeDefined();
+    expect(sentence).toMatch(/不需要等新的批准版本|不用等新的批准版本|不等新的批准版本/u);
+  });
+
+  test("没选调整或拆分时只能修改任务本身的通用限制同一句写明目标不能减少", () => {
+    const rules = loadRoleRules("pm");
+    const sentence = sentencesOf(rules).find((line) => line.includes("用户没对它选调整或拆分时只能修改它本身"));
+    expect(sentence).toBeDefined();
+    expect(sentence).toContain("目标不能减少");
+  });
+
+  test("用户选不拆就原地修改，且本批准版本内不要再请求拆分写在同一句", () => {
+    const rules = loadRoleRules("pm");
+    const sentence = sentencesOf(rules).find((line) => line.includes("不拆") && line.includes("原地修改"));
+    expect(sentence).toBeDefined();
+    expect(sentence).toContain("本批准版本内");
+    expect(sentence).toContain("不要再");
+  });
+
+  test("子代理还在暂停时先用 agent_manage stop 停掉再上报请求拆分", () => {
+    const rules = loadRoleRules("pm");
+    const item = rules.split("\n").find((line) => line.includes("收到已批准的需求更新时"))!;
+    expect(item).toBeDefined();
+    const sentence = item.split(/[。；]/).find((part) => part.includes("暂停") && part.includes("agent_manage") && part.includes("stop") && (part.includes("上报") || part.includes("请求拆分")));
+    expect(sentence).toBeDefined();
+  });
+
+  test("用户选不拆后本批准版本内不要再为它请求拆分", () => {
+    const rules = loadRoleRules("pm");
+    const sentence = sentencesOf(rules).find((line) => line.includes("本批准版本内") && line.includes("请求拆分"));
+    expect(sentence).toBeDefined();
+    expect(sentence).toMatch(/不要再/u);
+  });
+
+  test("用户选不拆与本批准版本内不要再请求拆分写在同一句", () => {
+    const rules = loadRoleRules("pm");
+    const sentence = sentencesOf(rules).find((line) => line.includes("不拆") && line.includes("本批准版本内"));
+    expect(sentence).toBeDefined();
+  });
+
+  test("收到已批准的需求更新那一条里「目标不能减少」只出现在一句话里", () => {
+    const rules = loadRoleRules("pm");
+    const item = rules.split("\n").find((line) => line.includes("收到已批准的需求更新时"))!;
+    expect(item).toBeDefined();
+    const hits = item.split(/[。；]/).filter((part) => part.includes("目标不能减少"));
+    expect(hits).toHaveLength(1);
+  });
+
+  test("计划与批准对不上时直接改计划的那句写明拆分要先上报的例外", () => {
+    const rules = loadRoleRules("pm");
+    const sentence = sentencesOf(rules).find((line) => line.includes("直接改计划"));
+    expect(sentence).toBeDefined();
+    expect(sentence).toContain("拆分");
+    expect(sentence).toContain("上报");
+  });
+
+  test("不要先把占住目标的任务原地改写成大任务再派出", () => {
+    const rules = loadRoleRules("pm");
+    const sentence = sentencesOf(rules).find((line) => line.includes("原地改写") && line.includes("大任务"));
+    expect(sentence).toBeDefined();
+    expect(sentence).toMatch(/不要先/u);
+  });
+
+  test("拆分请求相关文字不含「不再」「无需」「夹具」", () => {
+    const rules = loadRoleRules("pm");
+    const related = sentencesOf(rules).filter((line) => line.includes("拆分") || line.includes("不拆") || line.includes("原地改写"));
+    expect(related.length).toBeGreaterThan(0);
+    for (const line of related) for (const word of ["不再", "无需", "夹具"]) expect(line).not.toContain(word);
+  });
+});
+
+describe("PM 的 workflow_manage 工具说明", () => {
+  const workflowDescription = async () => {
+    const w = await createPmRunWorld(cleanups);
+    const tool = w.provider.requests[0]!.tools!.find((entry) => entry.name === "one_company_workflow_manage")!;
+    return tool.description;
+  };
+
+  test("escalate 的适用情形写明需求更新后受影响、已执行没完成的任务想拆分时", async () => {
+    const description = await workflowDescription();
+    const sentence = description.split(/[；。]/).find((part) => part.includes("escalate") && part.includes("拆分"));
+    expect(sentence).toBeDefined();
+    expect(sentence).toMatch(/需求更新后/u);
+    expect(sentence).toContain("已执行没完成");
+    expect(sentence).toMatch(/用户决定/u);
+  });
+
+  test("工具说明新增文字不含「不再」「无需」「夹具」", async () => {
+    const description = await workflowDescription();
+    for (const word of ["不再", "无需", "夹具"]) expect(description).not.toContain(word);
+  });
+});
