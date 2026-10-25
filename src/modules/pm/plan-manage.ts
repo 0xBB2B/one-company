@@ -189,7 +189,7 @@ const TaskRecord = object({
   /** 当前任务版本开始时已有的尝试数：此后的尝试才属于当前版本，先红后绿的验证引用只在当前版本内有效。 */
   attemptBase: Type.Integer({ minimum: 0 }),
   /** 每个新计数周期开始时已有的尝试数，按时间顺序；最后一个是当前周期的起点，空数组表示还在第 1 个周期。 */
-  cycleStarts: Type.Array(Type.Integer({ minimum: 1 }), { maxItems: 64 }),
+  cycleStarts: Type.Array(Type.Integer({ minimum: 1 })),
   /** PM 自己改计划还能开几次新周期：用户两次决定之间只有 1 次，用户做决定时恢复为 1。 */
   replanAllowance: Type.Union([Type.Literal(0), Type.Literal(1)]),
   lastAssessedRevision: positive, updatedAt: positive,
@@ -464,7 +464,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
   }
 
   async function materialize(manifest: ApprovalManifest, specs: TaskSpec[], existingKeys: Map<string, string>, revision: number,
-    previous?: Map<string, TaskRecord>, authorized: ReadonlySet<string> = new Set()) {
+    previous?: Map<string, TaskRecord>, authorized: ReadonlySet<string> = new Set(), holding = false) {
     const chances: string[] = [];
     const ids = new Map(existingKeys);
     for (const spec of specs) if (!ids.has(spec.key)) ids.set(spec.key, uuidv7());
@@ -477,14 +477,16 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       const reviewers = [...(spec.reviewers ?? []), ...(prior?.reviewers ?? []).filter((entry) => entry.added && !spec.reviewers?.some((kept) => kept.agent === entry.agent))];
       if (reviewers.length > MAX_REVIEWERS) deny("agent_invalid", [`${spec.key} 的审查名单合并 PM 临时加的专项审查后有 ${reviewers.length} 条，超过上限 ${MAX_REVIEWERS}，请减少 reviewers`]);
       const decision = prior?.userDecision && carriedDecision(prior.userDecision, version);
+      // 批准新版本挂起期间正在跑的运行已暂停，任务一被修改确认后就作废，所以不算执行过；个别没暂停住的照常结束并计入本周期，只会让 PM 少拿机会
+      const executed = prior ? countedAttempts({ attempts: cycleAttempts(prior).filter((attempt) => !(holding && attempt.outcome === "running")) }) : 0;
       let cycleStarts = prior?.cycleStarts ?? [], replanAllowance: 0 | 1 = prior?.replanAllowance ?? 1;
-      if (prior && !(prior.userDecision?.choice === "retry" && prior.userDecision.usedByRunId === null) && cycleCountedAttempts(prior) > 0) {
+      if (prior && !(prior.userDecision?.choice === "retry" && prior.userDecision.usedByRunId === null) && executed > 0) {
         if (authorized.has(taskId) || replanAllowance === 1) {
           cycleStarts = [...cycleStarts, prior.attempts.length];
           if (!authorized.has(taskId)) replanAllowance = 0;
           chances.push(`${spec.key} 开始新的计数周期：重新计 2 次执行机会和 1 次返修机会`);
         } else {
-          chances.push(`${spec.key} 的重算额度已用完，次数接着累计：本周期已执行 ${cycleCountedAttempts(prior)} 次、打回 ${reviewRejections(prior)} 轮`);
+          chances.push(`${spec.key} 的重算额度已用完，次数接着累计：本周期已执行 ${executed} 次、打回 ${reviewRejections(prior)} 轮`);
         }
       }
       // 两次机会已用完又没有能用的用户决定时，待派出也派不出去，只能交回用户裁决
@@ -603,7 +605,8 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     validateAgents(specs, directory);
     const userAuthorized = new Set((params.modify ?? []).map((item) => byId.get(item.taskId)!)
       .filter((task) => readjusted(task) || (resized(task) && adjustPending(task))).map((task) => task.taskId));
-    const { records: changed, chances } = await materialize(manifest, withAutoReviewers(specs, directory), keys, record.data.revision, byId, userAuthorized);
+    const { records: changed, chances } = await materialize(manifest, withAutoReviewers(specs, directory), keys, record.data.revision, byId, userAuthorized,
+      replanPending(current.plan, current.tasks, record.data.revision));
     const cancelled = (params.cancel ?? []).map((item) => ({ ...byId.get(item.taskId)!, status: "cancelled" as const, updatedAt: now() }));
     const merged = new Map(current.tasks.map((task) => [task.taskId, task]));
     for (const task of [...changed, ...cancelled]) merged.set(task.taskId, task);

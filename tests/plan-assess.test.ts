@@ -170,6 +170,32 @@ test("M7-AC30：任务仍有运行中的尝试时不能再次派出，旧版本�
   expect(() => beginTaskAttempt({ ...ref, lease: w.fixture.lease, taskId: login.taskId, runId: uuidv7(), retry: null })).not.toThrow();
 });
 
+test("场景：没有批准挂起时，PM 修改本周期唯一一次执行正在运行的任务 → 开新周期、重算额度变 0、chances 写开始新的计数周期", async () => {
+  const { beginTaskAttempt } = await import("../src/modules/pm/task-dispatch.ts");
+  const w = await world();
+  const login = w.byKey(w.first, "login");
+  beginTaskAttempt({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.fixture.lease, taskId: login.taskId, runId: uuidv7(), retry: null });
+  const updated = await w.run({ action: "update", planVersion: 1, modify: [{ taskId: login.taskId, version: 1, spec: { ...spec("login", "goal.login"), maxTurns: 40 } }] }) as View & { chances: string[] };
+  expect(updated.chances).toEqual(["login 开始新的计数周期：重新计 2 次执行机会和 1 次返修机会"]);
+  const row = withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => db.read<{ replanAllowance: number; cycleStarts: number[] }>(TASKS, login.taskId)!.data);
+  expect(row).toMatchObject({ replanAllowance: 0, cycleStarts: [1] });
+});
+
+test("场景：任务已有 64 个周期起点、本周期有 1 次已结束的执行、重算额度为 1，PM 修改该任务 → 修改成功，周期起点变 65 个", async () => {
+  const w = await world();
+  const login = w.byKey(w.first, "login");
+  const db = () => repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId);
+  withDatabase(db(), (d) => {
+    const row = d.read<Record<string, unknown>>(TASKS, login.taskId)!;
+    d.update(TASKS, login.taskId, row.version, { ...row.data, status: "awaiting_parent", replanAllowance: 1,
+      cycleStarts: Array.from({ length: 64 }, (_, index) => index + 1),
+      attempts: Array.from({ length: 65 }, () => ({ runId: uuidv7(), maxTurns: 30, turnsUsed: 30, reason: null, outcome: "turn_limit_reached" })) });
+  });
+  await w.run({ action: "update", planVersion: 1, modify: [{ taskId: login.taskId, version: w.byKey(await w.run({ action: "read" }), "login").version, spec: { ...spec("login", "goal.login"), maxTurns: 40 } }] });
+  const after = withDatabase(db(), (d) => d.read<{ cycleStarts: number[] }>(TASKS, login.taskId)!.data);
+  expect(after.cycleStarts).toHaveLength(65);
+});
+
 test("M9：QA 只验已确认的实施目标段与验收段，未验证项指向待定段时拒收并说明原因；已确认的实施目标段、验收段与非章节引用照常收下", async () => {
   const { CheckRoundService } = await import("../src/modules/verification/check-round.ts");
   const { createVerificationRunTool } = await import("../src/modules/pm/verification-run.ts");
