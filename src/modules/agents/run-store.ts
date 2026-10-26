@@ -20,10 +20,10 @@ export type RunState =
 
 /** 运行被停止的原因，只作记录，不影响停止行为。 */
 export type StopReason = "main_agent" | "stopped_by_pm" | "parent_stopped" | "superseded_by_new_pm" | "requirement_closing"
-  | "config_changed" | "replanned";
+  | "config_changed" | "replanned" | "held_before_start";
 export interface StopCause { reason: StopReason }
 const STOP_REASONS: readonly StopReason[] = ["main_agent", "stopped_by_pm", "parent_stopped", "superseded_by_new_pm", "requirement_closing",
-  "config_changed", "replanned"];
+  "config_changed", "replanned", "held_before_start"];
 
 export interface RunRecord {
   id: string;

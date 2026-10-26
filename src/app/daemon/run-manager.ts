@@ -208,6 +208,7 @@ const STOP_REASON_TEXT: Record<StopReason, string> = {
   requirement_closing: "需求正在关闭",
   config_changed: "角色定义或技能在暂停期间被修改，不能按原定义续接",
   replanned: "计划已修改，该任务被重新规划",
+  held_before_start: "需求在等重新确认计划或有任务被用户终止，这次运行还没开工就作废",
 };
 const errorMessage = (reason: unknown) => reason instanceof Error ? reason.message : String(reason);
 type SessionOutcome = "completed" | "turn_limit_reached" | "ended_without_result" | "failed" | "stopped" | "superseded";
@@ -218,7 +219,7 @@ function outcomeReason(outcome: SessionOutcome, failure?: string): string {
     case "ended_without_result": return "模型停止回复，但没有提交结果";
     case "failed": return `会话出错：${failure ?? "没有收到错误说明"}`;
     case "stopped": return "运行被停止";
-    case "superseded": return "被新派出的运行取代";
+    case "superseded": return "这次运行因计划变更或用户终止被作废，不计执行次数";
   }
 }
 function exploreReport(runId: string, outcome: SessionOutcome, research: ExploreResult | null, turnsUsed: number, log: string, failure?: string): Record<string, unknown> {
@@ -597,7 +598,7 @@ export class RunManager {
     }
     if (this.replanPending(lease.requirementId) || this.halted(lease.requirementId)) {
       this.supersededRuns.add(run.id);
-      await this.stop(run.id, { reason: "replanned" }).catch(() => {});
+      await this.stop(run.id, { reason: "held_before_start" }).catch(() => {});
       return;
     }
     handle.prompt(review ? "开始审查。" : "开始执行任务。");
@@ -747,6 +748,7 @@ export class RunManager {
       awaiting_parent: `请核对已有成果与原因后决定：用 retry 给出原因和新的轮次上限重试一次；自己处理不了时用 workflow_manage action=escalate taskId=${taskId} 写明卡在哪、需要用户决定什么，交用户裁决。`,
       awaiting_review: `任务待审查：用 agent_manage dispatch taskId=${taskId} 并带 review（轮次上限）派出 reviewer。`,
       awaiting_rework: `审查打回：核对问题后用 agent_manage dispatch taskId=${taskId} 并带 rework（原因与新的轮次上限）派 worker 返修一次。`,
+      pending: `确认基于当前批准版本的计划后，用 agent_manage dispatch taskId=${taskId} 重新派出；带不带 retry 按本周期已执行次数定。`,
       awaiting_user: "该任务已用完机会，进入等待用户裁决，不能再派工；请向主代理报告。",
     };
   }
