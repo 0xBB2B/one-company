@@ -39,7 +39,7 @@ async function writeJson(path: string, content: unknown) {
 const oneCompany = (entries: Record<string, unknown>) => ({ "one-company": entries });
 
 interface PageOptions {
-  trust?: "trusted" | "denied" | "unset"; state?: Record<string, unknown>; taken?: Record<string, string>; skills?: string; clean?: boolean; legacy?: boolean; longPath?: boolean; projectWorker?: boolean; noRole?: boolean; acmeWorker?: boolean; pairedBroken?: boolean;
+  trust?: "trusted" | "denied" | "unset"; state?: Record<string, unknown>; taken?: Record<string, string>; skills?: string; clean?: boolean; legacy?: boolean; longPath?: boolean; projectWorker?: boolean; noRole?: boolean; acmeWorker?: boolean; pairedBroken?: boolean; myWorker?: boolean; userWorker?: boolean;
   user?: unknown; project?: unknown; models?: unknown[]; mainModel?: unknown; mainThinking?: string;
   origin?: string | null; ghHosts?: string[]; glabHosts?: string[];
 }
@@ -56,6 +56,8 @@ async function page(options: PageOptions = {}) {
   await role(roleDirs.projectDir, "reviewer", "description: 本项目的审查\nrole: reviewer\nmodel: 5x/gpt-6-sol\nthinking: high");
   if (!options.clean) await role(roleDirs.userDir, "broken", "description: 坏\nrole: worker\nthinking: extreme");
   if (options.projectWorker) await role(roleDirs.projectDir, "proj-worker", "description: 项目的 worker\nrole: worker");
+  if (options.myWorker) await role(roleDirs.userDir, "my-worker", "description: 我自己的 worker\nrole: worker");
+  if (options.userWorker) await role(roleDirs.userDir, "worker", "description: 我的通用 worker\nrole: worker");
   if (options.acmeWorker) await role(roleDirs.userDir, "acme-worker", "description: 没有搭档的专项\nrole: worker");
   if (options.pairedBroken) {
     await role(roleDirs.userDir, "x-worker", "description: 正常的专项\nrole: worker");
@@ -195,6 +197,7 @@ test("焦点在目录时目录选中行铺底色；焦点进右栏后目录选�
   const navRow = () => p.lines().find((line) => /worker +8/u.test(plain(line)) && plain(line).includes("│"))!;
   expect(navPart(navRow())).toContain("[selectedBg]");
   p.press(RIGHT);
+  moveTo(p, "ui-worker");
   expect(navPart(navRow())).not.toContain("[selectedBg]");
   expect(navPart(navRow())).toMatch(/<accent>[^\n]*\*\*/u);
   const paneRow = p.lines().find((line) => plain(line).includes("▸ ui-worker"))!;
@@ -262,12 +265,14 @@ test("Esc 与 ← 回目录后的整屏完全相同", async () => {
 
 test("worker 展开详情后 Esc 回目录，详情收起，再 → 进右栏光标是 ▸ 不是 ▾", async () => {
   const p = await page();
-  p.press(RIGHT, ENTER);
+  p.press(RIGHT);
+  moveTo(p, "ui-worker");
+  p.press(ENTER);
   expect(selectedPaneLine(p)).toMatch(/^\s*▾ ui-worker/u);
   p.press(ESC);
   expect(p.pane()).not.toContain("┊");
   p.press(RIGHT);
-  expect(selectedPaneLine(p)).toMatch(/^\s*▸ ui-worker/u);
+  expect(selectedPaneLine(p)).toMatch(/^\s*▸ worker/u);
   expect(p.pane()).not.toContain("┊");
   expect(p.closed()).toBe(false);
 });
@@ -349,11 +354,14 @@ test("焦点在目录时底部写分类说明；职责分类写定义份数和�
   }
 });
 
-test("同一职责下用户层与项目层排在内置前面，被盖住的下层不再列出，底部说明随选中行变化", async () => {
+test("同一职责下通用定义在分隔线上，用户层与项目层排在内置前面，被盖住的下层不再列出，底部说明随选中行变化", async () => {
   const p = await page();
   p.press(RIGHT);
-  expect(p.pane()).toMatch(/▸ ui-worker +用户 +开启 +5x\/gpt-6-luna +medium/u);
+  expect(paneOrder(p, ["worker", SEPARATOR, "ui-worker", "go-worker", "java-worker", "node-worker", "python-worker", "react-worker", "vue-worker"]))
+    .toEqual(["worker", SEPARATOR, "ui-worker", "go-worker", "java-worker", "node-worker", "python-worker", "react-worker", "vue-worker"]);
+  moveTo(p, "ui-worker");
   expect(p.pane()).toMatch(/^ +worker +内置 +必须 +跟随主会话 +跟随 *$/mu);
+  expect(p.pane()).toMatch(/▸ ui-worker +用户 +开启 +5x\/gpt-6-luna +medium/u);
   expect(p.lines().join("\n")).toContain("<accent>5x/gpt-6-luna</>");
   expect(p.text()).toContain("界面设计与实现，产出 HTML 预览 · skills ui-basics");
   moveTo(p, "worker");
@@ -393,7 +401,9 @@ async function roleDirsOnly() {
 
 test("职责回车展开出说明、skills、MCP、正文、文件五行详情，光标变 ▾，再回车收起", async () => {
   const p = await page();
-  p.press(RIGHT, ENTER);
+  p.press(RIGHT);
+  moveTo(p, "ui-worker");
+  p.press(ENTER);
   expect(selectedPaneLine(p)).toMatch(/^\s*▾ ui-worker/u);
   const detail = p.pane().split("\n").filter((line) => line.includes("┊"));
   const at = ["说明", "skills", "MCP", "正文", "文件"].map((label) => detail.findIndex((line) => line.includes(label)));
@@ -409,7 +419,9 @@ test("展开详情里用顿号隔开的列表值放不下时在顿号之后断�
   const skills = ["ui-basics", "very-long-skill-name-number-one", "another-skill"];
   for (const width of [36, 40, 48, 64]) {
     const p = await page({ skills: skills.join(", ") });
-    p.press(RIGHT, ENTER);
+    p.press(RIGHT);
+    moveTo(p, "ui-worker");
+    p.press(ENTER);
     const detail = p.rows(width).filter((line) => line.includes("┊")).map((line) => line.replace(/^.*┊/u, "").trim());
     expect(detail.some((row) => row.includes("ui-basics")), `${width} ui-basics: ${detail.join("|")}`).toBe(true);
     expect(detail.some((row) => row.includes("another-skill")), `${width} another-skill: ${detail.join("|")}`).toBe(true);
@@ -439,7 +451,9 @@ test("复制：C 进入命名画面，格式不对或重名当场拦下，合规
 
 test("复制命名里 Esc 回到列表并提示已取消复制，下一次按键后提示消失", async () => {
   const p = await page();
-  p.press(RIGHT, "c", ESC);
+  p.press(RIGHT);
+  moveTo(p, "ui-worker");
+  p.press("c", ESC);
   expect(p.text()).toContain("已取消复制");
   expect(p.pane()).toMatch(/▸ ui-worker/u);
   expect(p.copies).toEqual([]);
@@ -1484,6 +1498,7 @@ test("state() 在右栏选中解释器时返回模型分类、右栏焦点、解
 test("state() 对定义行用定义名、对开关行用 git-delivery、在目录时焦点是 nav，都能还原", async () => {
   const d = await page();
   d.press(RIGHT);
+  moveTo(d, "ui-worker");
   expect(d.view.state()).toEqual({ section: "worker", focus: "pane", selectName: "ui-worker" });
   const d2 = await page({ state: d.view.state() });
   expect(selectedPaneLine(d2)).toMatch(/▸ ui-worker/u);
@@ -1541,7 +1556,9 @@ test("80 列下在 PM 上回车改模型、在开关上回车改开关、在 wor
 test("展开详情里很长的文件路径折成多行完整显示，不用 … 截断，每行不超宽", async () => {
   for (let width = 36; width <= 80; width++) {
     const p = await page({ longPath: true });
-    p.press(RIGHT, ENTER);
+    p.press(RIGHT);
+    moveTo(p, "ui-worker");
+    p.press(ENTER);
     const home = homedir();
     const full = join(p.root, "u", "ui-worker.md");
     const expected = full.startsWith(home) ? `~${full.slice(home.length)}` : full;
@@ -1866,4 +1883,142 @@ test("路径是家目录或在家目录下才写成 ~，名字以家目录名开
   expect(tilde(join(home, ".pi", "agent", "AGENTS.md"))).toBe("~/.pi/agent/AGENTS.md");
   expect(tilde(`${home}2/proj/AGENTS.md`)).toBe(`${home}2/proj/AGENTS.md`);
   expect(tilde(`${home}x/a`)).toBe(`${home}x/a`);
+});
+
+const SEPARATOR = "---";
+const paneOrder = (p: Page, expected: string[], width = 80) => {
+  const all = p.rows(width), start = all.findIndex((row) => /^\s*名称 +来源/u.test(rightParts([row])[0]!));
+  const end = all.findIndex((row, index) => index > start && (/^─+$/u.test(row) || row.includes("┴")));
+  return rightParts(all.slice(start + 1, end))
+    .map((line) => (/^ {3}─+$/u.test(line) ? SEPARATOR : /^\s*[▸▾]?\s*\S+\s+(用户|项目|内置)\s/u.test(line) ? firstWord(line)! : undefined))
+    .filter((name) => name !== undefined)
+    .map((name) => (name.endsWith("…") ? expected.find((full) => full.startsWith(name.slice(0, -1))) ?? name : name));
+};
+const REVIEWER_ORDER = ["reviewer", SEPARATOR, "go-reviewer", "java-reviewer", "node-reviewer", "python-reviewer", "react-reviewer", "vue-reviewer"];
+const WORKER_ORDER = ["worker", SEPARATOR, "my-worker", "ui-worker", "go-worker", "java-worker", "node-worker", "python-worker", "react-worker", "vue-worker"];
+const separatorLines = (p: Page, width: number) => p.lines(width).filter((line) => /^ {3}─+$/u.test(plain(line).slice(plain(line).includes("│") ? plain(line).indexOf("│") + 1 : 0).trimEnd()));
+
+test("通用定义排第一行：用户层有 my-worker 时 worker 第一，下面一条分隔线，其他定义用户层在前、内置在后、同类按名字排", async () => {
+  const p = await page({ myWorker: true });
+  p.press(RIGHT);
+  expect(paneOrder(p, WORKER_ORDER)).toEqual(WORKER_ORDER);
+  expect(rowOf(p, "worker")).toContain("内置");
+});
+
+test("通用定义排第一行：用户层的 worker.md 覆盖内置 worker 后第一行仍是 worker，来源写用户，且内置 worker 不再重复列出", async () => {
+  const p = await page({ userWorker: true });
+  p.press(RIGHT);
+  expect(paneOrder(p, WORKER_ORDER)).toEqual(["worker", SEPARATOR, "ui-worker", "go-worker", "java-worker", "node-worker", "python-worker", "react-worker", "vue-worker"]);
+  expect(rowOf(p, "worker")).toContain("用户");
+  expect(rowOf(p, "worker")).not.toContain("内置");
+});
+
+test("通用定义排第一行：项目层的 reviewer 覆盖内置后仍在第一行，来源写项目，专项 reviewer 在分隔线下", async () => {
+  const p = await page();
+  p.press(DOWN, RIGHT);
+  expect(paneOrder(p, REVIEWER_ORDER)).toEqual(["reviewer", SEPARATOR, "go-reviewer", "java-reviewer", "node-reviewer", "python-reviewer", "react-reviewer", "vue-reviewer"]);
+  expect(rowOf(p, "reviewer")).toContain("项目");
+});
+
+test("分区里只有通用定义时不画分隔线：qa、explore、prototype 各只有一行", async () => {
+  for (const [section, name] of [["qa", "qa"], ["explore", "explore"], ["prototype", "prototype"]] as const) {
+    const p = await page();
+    enterSection(p, section);
+    expect(paneOrder(p, [name]), section).toEqual([name]);
+    expect(p.rows().filter((row) => /^ {3}─+$/u.test(row.slice(row.indexOf("│") + 1).trimEnd())), section).toEqual([]);
+  }
+});
+
+test("分隔线：前面 3 列空白，后面灰色（dim）的 ─ 画到右栏最右边", async () => {
+  const p = await page({ myWorker: true });
+  p.press(RIGHT);
+  const lines = separatorLines(p, 80);
+  expect(lines).toHaveLength(1);
+  const rightSide = lines[0]!.slice(lines[0]!.indexOf("│") + 1);
+  expect(plain(rightSide)).toBe(`   ${"─".repeat(59 - 3)}`);
+  expect(rightSide).toContain(`<dim>${"─".repeat(59 - 3)}</>`);
+  expect(plain(rightSide).slice(0, 3)).toBe("   ");
+});
+
+test("分隔线不可选：光标在 worker 按 ↓ 到 my-worker，再按 ↑ 回 worker；一路 ↓ 到底依次经过每个定义行且不在分隔线上停留", async () => {
+  const p = await page({ myWorker: true });
+  p.press(RIGHT);
+  const selected = () => firstWord(selectedPaneLine(p));
+  expect(selected()).toBe("worker");
+  p.press(DOWN);
+  expect(selected()).toBe("my-worker");
+  p.press(UP);
+  expect(selected()).toBe("worker");
+  const walked = [selected()];
+  for (let i = 0; i < 12; i++) { p.press(DOWN); walked.push(selected()); }
+  expect(walked.slice(0, 9)).toEqual(WORKER_ORDER.filter((name) => name !== SEPARATOR));
+  expect(walked.slice(8).every((name) => name === "vue-worker")).toBe(true);
+  for (let i = 0; i < 12; i++) p.press(UP);
+  expect(selected()).toBe("worker");
+});
+
+test("回车、空格、C 只作用在定义行：分隔线上方的 worker 与下方的 my-worker 各自操作自己", async () => {
+  const p = await page({ myWorker: true });
+  p.press(RIGHT, DOWN, SPACE);
+  expect(p.toggles).toEqual(["my-worker"]);
+  p.press(UP, SPACE);
+  expect(p.toggles).toEqual(["my-worker"]);
+  expect(squeeze(p.text())).toContain(squeeze("worker 是通用定义，流程离不开它，不能关闭"));
+  p.press(DOWN, "C", "x", ENTER);
+  expect(p.copies).toEqual([{ name: "my-worker-copyx", entry: "my-worker" }]);
+});
+
+test("通用定义展开详情时，详情在 worker 行和分隔线之间；收起后分隔线紧跟 worker 行", async () => {
+  const p = await page({ myWorker: true });
+  p.press(RIGHT, ENTER);
+  const right = rightParts(p.rows());
+  const worker = right.findIndex((line) => /^\s*▾\s+worker\b/u.test(line)), separator = right.findIndex((line) => /^ {3}─+$/u.test(line));
+  const description = right.findIndex((line) => line.includes("说明"));
+  expect(worker).toBeGreaterThan(-1);
+  expect(description).toBeGreaterThan(worker);
+  expect(separator).toBeGreaterThan(description);
+  expect(right.findIndex((line) => line.includes("文件"))).toBeLessThan(separator);
+  expect(right.slice(separator + 1).find((line) => line.trim() !== "")).toMatch(/my-worker/u);
+  p.press(ENTER);
+  const collapsed = rightParts(p.rows());
+  expect(collapsed.findIndex((line) => /^ {3}─+$/u.test(line))).toBe(collapsed.findIndex((line) => /^\s*▸\s+worker\b/u.test(line)) + 1);
+});
+
+test("目录里每个分区的数字是定义个数，不算分隔线：worker 有 my-worker 时是 9，只有通用定义的 qa 仍是 1", async () => {
+  const p = await page({ myWorker: true });
+  expect(navCells(p.rows())).toEqual(expect.arrayContaining(["▸ worker 9", "reviewer 7", "qa 1"]));
+  expect(p.text()).toContain("worker：写代码 · 9 份定义（用户 2 · 内置 7）");
+});
+
+test("窄终端 36、44 列只显示右栏：分隔线不超过终端宽度，前 3 列空白、─ 画到终端最右边", async () => {
+  for (const width of [36, 44]) {
+    const p = await page({ myWorker: true });
+    p.press(RIGHT);
+    const rows = p.rows(width);
+    for (const row of rows) expect(visibleWidth(row), `${width} 列：${row}`).toBeLessThanOrEqual(width);
+    expect(rows.filter((row) => row === `   ${"─".repeat(width - 3)}`), `${width} 列`).toHaveLength(1);
+    expect(separatorLines(p, width)[0], `${width} 列`).toContain(`<dim>${"─".repeat(width - 3)}</>`);
+    expect(paneOrder(p, WORKER_ORDER, width), `${width} 列`).toEqual(WORKER_ORDER);
+  }
+});
+
+test("宽终端 60、80 列左右并排：分隔线画到右栏最右边，每行不超过终端宽度，页面高度够，最后一行定义不被截掉", async () => {
+  for (const width of [60, 80]) {
+    const p = await page({ myWorker: true });
+    const rows = p.rows(width);
+    for (const row of rows) expect(visibleWidth(row), `${width} 列：${row}`).toBeLessThanOrEqual(width);
+    const paneWidth = width - 21;
+    expect(rightParts(rows).filter((line) => line === `   ${"─".repeat(paneWidth - 3)}`), `${width} 列`).toHaveLength(1);
+    expect(paneOrder(p, WORKER_ORDER, width), `${width} 列`).toEqual(WORKER_ORDER);
+    const last = rows.findIndex((row) => row.includes("vue-w")), bottom = rows.findIndex((row) => row.includes("┴"));
+    expect(last, `${width} 列`).toBeGreaterThan(-1);
+    expect(bottom, `${width} 列`).toBeGreaterThan(last);
+  }
+});
+
+test("用户层既覆盖 worker 又有 my-worker 时：worker 来源是用户且第一，my-worker 在分隔线下的用户层里排前面", async () => {
+  const p = await page({ myWorker: true, userWorker: true });
+  p.press(RIGHT);
+  expect(paneOrder(p, WORKER_ORDER)).toEqual(["worker", SEPARATOR, "my-worker", "ui-worker", "go-worker", "java-worker", "node-worker", "python-worker", "react-worker", "vue-worker"]);
+  expect(rowOf(p, "worker")).toContain("用户");
 });

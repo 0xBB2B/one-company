@@ -242,7 +242,7 @@ async function copyWith(atWindow: () => void, afterCopy: (s: PageScreen) => void
   await mkdir(agentsDir(), { recursive: true });
   await writeFile(SOURCE(), "---\nname: ui-w\ndescription: d\nrole: worker\n---\n正文\n");
   const ctx = scripted([
-    (s) => { s.press(RIGHT); expect(s.now()).toMatch(/▸ ui-w +用户/u); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
+    (s) => { s.press(RIGHT); moveTo(s, "ui-w"); expect(s.now()).toMatch(/▸ ui-w +用户/u); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
     (s) => { atWindow(); s.press(ENTER); },
     (s) => { afterCopy(s); s.press(ESC, ESC); },
   ]);

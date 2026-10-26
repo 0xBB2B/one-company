@@ -251,7 +251,12 @@ export class SettingsPageView {
   private entries(section: Section = this.section): RoleCatalogEntry[] {
     return this.options.catalog.roles
       .filter((entry) => entry.available && entry.definition && entry.definition.role === section)
-      .sort((a, b) => Number(a.source === "default") - Number(b.source === "default") || a.name.localeCompare(b.name));
+      .sort((a, b) => Number(b.name === section) - Number(a.name === section) || Number(a.source === "default") - Number(b.source === "default") || a.name.localeCompare(b.name));
+  }
+
+  private hasSeparator(section: Section): boolean {
+    const entries = this.entries(section);
+    return entries.length > 1 && entries[0]!.name === section;
   }
 
   private rowNames(): string[] {
@@ -380,7 +385,7 @@ export class SettingsPageView {
     if (wide) {
       const nav = this.navRows(NAV_WIDTH);
       const pane = this.paneLines(paneWidth, true, modal);
-      const height = Math.max(nav.length, pane.length, ...this.sections().map((section) => 3 + this.rowCount(section)));
+      const height = Math.max(nav.length, pane.length, ...this.sections().map((section) => 3 + this.rowCount(section) + Number(this.hasSeparator(section))));
       body = Array.from({ length: height }, (_, index) => `${pad(nav[index] ?? "", NAV_WIDTH)}${dim("│")}${pane[index] ?? ""}`);
     } else {
       body = showPane ? this.paneLines(width, false, modal) : this.navRows(width);
@@ -446,6 +451,7 @@ export class SettingsPageView {
         [cols.thinking ? thinking : "", definition.thinking ? undefined : (text) => theme.fg("dim", text)],
       ]));
       if (selected && this.expanded) lines.push(...this.entryDetail(entry, width));
+      if (index === 0 && this.hasSeparator(this.section)) lines.push(`   ${theme.fg("dim", "─".repeat(Math.max(0, width - 3)))}`);
     });
     return lines;
   }
