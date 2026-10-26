@@ -39,7 +39,7 @@ async function writeJson(path: string, content: unknown) {
 const oneCompany = (entries: Record<string, unknown>) => ({ "one-company": entries });
 
 interface PageOptions {
-  trusted?: boolean; state?: Record<string, unknown>; taken?: Record<string, string>; skills?: string; clean?: boolean; legacy?: boolean; longPath?: boolean; projectWorker?: boolean; noRole?: boolean; acmeWorker?: boolean; pairedBroken?: boolean;
+  trust?: "trusted" | "denied" | "unset"; state?: Record<string, unknown>; taken?: Record<string, string>; skills?: string; clean?: boolean; legacy?: boolean; longPath?: boolean; projectWorker?: boolean; noRole?: boolean; acmeWorker?: boolean; pairedBroken?: boolean;
   user?: unknown; project?: unknown; models?: unknown[]; mainModel?: unknown; mainThinking?: string;
   origin?: string | null; ghHosts?: string[]; glabHosts?: string[];
 }
@@ -65,7 +65,7 @@ async function page(options: PageOptions = {}) {
   if (options.legacy) for (const name of ["pm", "interpreter", "draft-verifier"]) await role(roleDirs.userDir, name, `description: 旧定义\nrole: ${name}\nmodel: 5x/gpt-6-luna`);
   if (options.user !== undefined) await writeJson(userSettingsPath(agentDir), options.user);
   if (options.project !== undefined) await writeJson(projectSettingsPath(repositoryRoot), options.project);
-  const trusted = options.trusted ?? true;
+  const trust = options.trust ?? "trusted", trusted = trust === "trusted";
   const catalog = await loadRoleCatalog({ ...roleDirs, parseFrontmatter, projectTrusted: trusted });
   const gh = await installFakeGh();
   let settings: Awaited<ReturnType<typeof readAgentSettings>>;
@@ -81,7 +81,7 @@ async function page(options: PageOptions = {}) {
   const copies: Array<{ name: string; entry: string }> = [], saves: unknown[] = [], clears: unknown[] = [], switchSaves: unknown[] = [], switchClears: unknown[] = [];
   let closed = false;
   const view = new SettingsPageView({
-    catalog, theme, projectTrusted: trusted, untrustedProjectCount: 1, settings, models: options.models ?? [SOL, LUNA],
+    catalog, theme, projectTrust: trust, untrustedProjectCount: 1, settings, models: options.models ?? [SOL, LUNA],
     mainModel: "mainModel" in options ? options.mainModel : SOL, mainThinking: options.mainThinking ?? "high",
     ...(options.state ? { state: options.state } : {}),
     nameTaken: (name: string) => options.taken?.[name],
@@ -154,15 +154,28 @@ test("设置文件也写错时「问题」条数相加", async () => {
   expect(navCells(p.rows())).toContain("问题 2");
 });
 
-test("项目未受信任时标题下多一行黄字提示，「问题」条数多一条；受信任时没有这一行", async () => {
-  const u = await page({ trusted: false });
+test("项目授信记录为空时标题下多一行黄字写还没设为受信任，「问题」条数多一条", async () => {
+  const u = await page({ trust: "unset" });
+  const rows = u.rows();
+  expect(rows[2]).toBe(" ! 项目还没设为受信任：项目层的定义和设定都没有生效");
+  expect(u.lines()[2]).toContain("<warning>");
+  expect(rows[3]).toBe(`${"─".repeat(20)}┬${"─".repeat(59)}`);
+  expect(navCells(rows)).toContain("问题 2");
+});
+
+test("项目授信记录为不信任时标题下多一行黄字写项目未受信任，「问题」条数多一条", async () => {
+  const u = await page({ trust: "denied" });
   const rows = u.rows();
   expect(rows[2]).toBe(" ! 项目未受信任：项目层的定义和设定都没有生效");
   expect(u.lines()[2]).toContain("<warning>");
   expect(rows[3]).toBe(`${"─".repeat(20)}┬${"─".repeat(59)}`);
   expect(navCells(rows)).toContain("问题 2");
+});
+
+test("项目已受信任时标题下没有黄字提示", async () => {
   const t = await page();
-  expect(t.text()).not.toContain("项目未受信任：项目层的定义和设定都没有生效");
+  expect(t.text()).not.toContain("项目未受信任");
+  expect(t.text()).not.toContain("项目还没设为受信任");
   expect(t.rows()[2]).toContain("┬");
 });
 
@@ -470,13 +483,24 @@ test("问题分类写短原因，展开依次写原因、现在是、影响，�
   expect(p.pane()).toMatch(/┊ 影响 +这份定义没有生效/u);
   for (const row of p.rows(80)) expect(visibleWidth(row), row).toBeLessThanOrEqual(80);
   expect(p.text()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 收起");
-  const u = await page({ trusted: false });
+  const u = await page({ trust: "denied" });
   enterSection(u, "problems");
   moveToRowWith(u, ".pi/agents/");
   expect(selectedPaneLine(u)).toMatch(/\.pi\/agents\/ +项目/u);
-  expect(u.lines().join("\n")).toMatch(/<muted>项目未受信任/u);
+  expect(u.lines().join("\n")).toMatch(/<muted>项目未受信任，/u);
   u.press(ENTER);
   expect(squeeze(u.text())).toContain(squeeze("在 pi 里把这个项目设为受信任后，项目层的 1 份定义就会生效"));
+});
+
+test("授信记录为空时问题分类第一条灰字写项目还没设为受信任", async () => {
+  const u = await page({ trust: "unset" });
+  enterSection(u, "problems");
+  moveToRowWith(u, ".pi/agents/");
+  expect(selectedPaneLine(u)).toMatch(/\.pi\/agents\/ +项目/u);
+  expect(u.lines().join("\n")).toMatch(/<muted>项目还没设为受信任，/u);
+  expect(u.text()).not.toContain("项目未受信任");
+  u.press(ENTER);
+  expect(squeeze(u.pane().replaceAll("┊", ""))).toContain(squeeze("原因 项目还没设为受信任，项目层的定义和设定不会加载"));
 });
 
 test("设置文件里 git-delivery 写成 yes：展开依次是原因、现在是 \"yes\"、影响“这一项没有生效，改用下一层”、文件", async () => {
@@ -825,18 +849,45 @@ test("两家提供方都有 gpt-6.1-sol 时，选 openai 那一行保存的 mode
   expect(q.saves).toEqual([{ role: "pm", model: "gpt-6-luna", thinking: "high", layer: "project" }]);
 });
 
-test("项目未受信任时第 3 步项目层不可选并写明原因，光标停在用户层，回车存到用户层", async () => {
-  const p = await page({ trusted: false });
+const DENIED_NOTE = "你在 pi 里选过不信任这个项目。要存到项目层，先在 pi 里输入 /trust 选 Trust，再重开本页";
+const UNSET_NOTE = "选项目层会把这个项目设为受信任，和在 pi 里输入 /trust 选 Trust 一样；项目里已有的 .pi 设置和角色定义也会一起生效";
+
+test("授信记录为不信任时第 3 步项目层不可选并写你选过不信任，光标停在用户层，回车存到用户层", async () => {
+  const p = await page({ trust: "denied" });
   toModels(p);
   p.press(ENTER, ENTER, ENTER);
   const text = p.pane();
-  expect(text).toMatch(/项目层 +项目未受信任，项目层的设定不会生效/u);
-  expect(text).toContain("在 pi 里把这个项目设为受信任后，才能存到项目层");
+  expect(text).toMatch(/项目层 +你在 pi 里选过不信任这个项目/u);
+  expect(squeeze(text)).toContain(squeeze(DENIED_NOTE));
   expect(selectedPaneLine(p)).toMatch(/用户层/u);
   p.press(UP);
   expect(selectedPaneLine(p)).toMatch(/用户层/u);
   p.press(ENTER);
   expect(p.saves).toMatchObject([{ role: "pm", layer: "user" }]);
+});
+
+test("授信记录为空时第 3 步项目层可选并写选它会设为受信任，光标默认在项目层，下面灰字说明，回车保存到项目层", async () => {
+  const p = await page({ trust: "unset" });
+  toModels(p);
+  p.press(ENTER, ENTER, ENTER);
+  expect(p.pane()).toMatch(/项目层 +\.pi\/settings\.json · 选它会把本项目设为受信任/u);
+  expect(squeeze(p.pane())).toContain(squeeze(UNSET_NOTE));
+  expect(p.lines().join("\n")).toMatch(/<(dim|muted)>[^\n]*选项目层会把这个项目设为受信任/u);
+  expect(selectedPaneLine(p)).toMatch(/项目层/u);
+  p.press(DOWN);
+  expect(selectedPaneLine(p)).toMatch(/用户层/u);
+  p.press(UP, ENTER);
+  expect(p.saves).toMatchObject([{ role: "pm", layer: "project" }]);
+});
+
+test("授信记录是信任时第 3 步项目层写只对这个项目生效，没有灰字", async () => {
+  const p = await page();
+  toModels(p);
+  p.press(ENTER, ENTER, ENTER);
+  expect(p.pane()).toMatch(/项目层 +\.pi\/settings\.json · 只对这个项目生效/u);
+  expect(p.pane()).not.toContain("选它会把本项目设为受信任");
+  expect(squeeze(p.pane())).not.toContain(squeeze("选项目层会把这个项目设为受信任"));
+  expect(squeeze(p.pane())).not.toContain(squeeze("你在 pi 里选过不信任"));
 });
 
 test("Esc 逐步退回上一步，第一步 Esc 取消，什么也不保存，底部写已取消修改，页面不关闭", async () => {
@@ -1002,16 +1053,37 @@ test("把远程改为仅本地：第 2 步标题写改为仅本地，保存 mode
   expect(p.switchSaves).toEqual([{ key: "git-delivery", mode: "local", layer: "project" }]);
 });
 
-test("项目未受信任时 Git 交付第 2 步项目层不可选并写明原因，光标停在用户层", async () => {
-  const p = await page({ trusted: false });
+test("授信记录为不信任时 Git 交付第 2 步项目层不可选并写你选过不信任，光标停在用户层", async () => {
+  const p = await page({ trust: "denied" });
   toSwitches(p);
   p.press(ENTER, ENTER);
-  expect(p.pane()).toMatch(/项目层 +项目未受信任，项目层的设定不会生效/u);
+  expect(p.pane()).toMatch(/项目层 +你在 pi 里选过不信任这个项目/u);
+  expect(squeeze(p.pane())).toContain(squeeze(DENIED_NOTE));
   expect(selectedPaneLine(p)).toMatch(/用户层/u);
   p.press(UP);
   expect(selectedPaneLine(p)).toMatch(/用户层/u);
   p.press(ENTER);
   expect(p.switchSaves).toEqual([{ key: "git-delivery", mode: "remote", layer: "user" }]);
+});
+
+test("授信记录为空时 Git 交付第 2 步项目层可选，光标在项目层，下面灰字说明，回车保存到项目层", async () => {
+  const p = await page({ trust: "unset" });
+  toSwitches(p);
+  p.press(ENTER, ENTER);
+  expect(p.pane()).toMatch(/项目层 +\.pi\/settings\.json · 选它会把本项目设为受信任/u);
+  expect(squeeze(p.pane())).toContain(squeeze(UNSET_NOTE));
+  expect(selectedPaneLine(p)).toMatch(/项目层/u);
+  p.press(ENTER);
+  expect(p.switchSaves).toEqual([{ key: "git-delivery", mode: "remote", layer: "project" }]);
+});
+
+test("授信记录是信任时 Git 交付第 2 步项目层写只对这个项目生效，没有灰字", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(ENTER, ENTER);
+  expect(p.pane()).toMatch(/项目层 +\.pi\/settings\.json · 只对这个项目生效/u);
+  expect(squeeze(p.pane())).not.toContain(squeeze("选项目层会把这个项目设为受信任"));
+  expect(squeeze(p.pane())).not.toContain(squeeze("你在 pi 里选过不信任"));
 });
 
 test("Git 交付 Esc 逐步退回，第 1 步 Esc 取消并提示已取消修改，什么也不保存", async () => {
@@ -1100,13 +1172,33 @@ test("合并方式第 2 步 Esc 退回第 1 步并保留勾选，再 Esc 取消�
   expect(p.closed()).toBe(false);
 });
 
-test("项目未受信任时合并方式第 2 步项目层不可选，保存到用户层", async () => {
-  const p = await page({ trusted: false });
+test("授信记录为不信任时合并方式第 2 步项目层不可选并写你选过不信任，保存到用户层", async () => {
+  const p = await page({ trust: "denied" });
   toSwitches(p);
   p.press(DOWN, ENTER, SPACE, ENTER);
-  expect(p.pane()).toMatch(/项目层 +项目未受信任，项目层的设定不会生效/u);
+  expect(p.pane()).toMatch(/项目层 +你在 pi 里选过不信任这个项目/u);
+  expect(squeeze(p.pane())).toContain(squeeze(DENIED_NOTE));
   p.press(ENTER);
   expect(p.switchSaves).toEqual([{ key: "merge-methods", methods: ["merge", "rebase"], layer: "user" }]);
+});
+
+test("授信记录为空时合并方式第 2 步项目层可选，光标在项目层，下面灰字说明，回车保存到项目层", async () => {
+  const p = await page({ trust: "unset" });
+  toSwitches(p);
+  p.press(DOWN, ENTER, SPACE, ENTER);
+  expect(p.pane()).toMatch(/项目层 +\.pi\/settings\.json · 选它会把本项目设为受信任/u);
+  expect(squeeze(p.pane())).toContain(squeeze(UNSET_NOTE));
+  expect(selectedPaneLine(p)).toMatch(/项目层/u);
+  p.press(ENTER);
+  expect(p.switchSaves).toEqual([{ key: "merge-methods", methods: ["merge", "rebase"], layer: "project" }]);
+});
+
+test("授信记录是信任时合并方式第 2 步项目层写只对这个项目生效，没有灰字", async () => {
+  const p = await page();
+  toSwitches(p);
+  p.press(DOWN, ENTER, SPACE, ENTER);
+  expect(p.pane()).toMatch(/项目层 +\.pi\/settings\.json · 只对这个项目生效/u);
+  expect(squeeze(p.pane())).not.toContain(squeeze("选项目层会把这个项目设为受信任"));
 });
 
 test("来源是内置时按 R 提示已经是内置默认值，不调用清除：Git 交付和合并方式各一次", async () => {
@@ -1233,25 +1325,32 @@ test("36 到 38 列时选中任一职责分类，目录不超宽，选中的分�
 
 interface Screen { label: string; options?: PageOptions; keys: string[] }
 const toSection = (name: (typeof SECTIONS)[number], ...more: string[]) => [...inPane(SECTIONS.indexOf(name)), ...more];
+const TRUST_CYCLE = ["trusted", "denied", "unset"] as const;
 const SCREENS: Screen[] = [
   { label: "目录", keys: [] },
-  { label: "未受信任的目录", options: { trusted: false }, keys: [] },
+  { label: "记录为空的目录", options: { trust: "unset" }, keys: [] },
+  { label: "不信任的目录", options: { trust: "denied" }, keys: [] },
   ...SECTIONS.flatMap((name, index): Screen[] => [
-    { label: `${name} 列表`, options: { trusted: index % 2 === 0 }, keys: toSection(name) },
-    ...(["models", "switches"].includes(name) ? [] : [{ label: `${name} 展开`, options: { trusted: index % 2 === 0 }, keys: toSection(name, ENTER) }]),
+    { label: `${name} 列表`, options: { trust: TRUST_CYCLE[index % 3] }, keys: toSection(name) },
+    ...(["models", "switches"].includes(name) ? [] : [{ label: `${name} 展开`, options: { trust: TRUST_CYCLE[index % 3] }, keys: toSection(name, ENTER) }]),
   ]),
   { label: "复制命名", keys: [RIGHT, "c"] },
   { label: "模型第 1 步", options: { models: [SOL, LONG] }, keys: toSection("models", ENTER) },
   { label: "模型第 2 步", options: { models: [SOL, LONG] }, keys: toSection("models", ENTER, ENTER) },
   { label: "模型第 3 步", options: { models: [SOL, LONG] }, keys: toSection("models", ENTER, ENTER, ENTER) },
-  { label: "未受信任的模型第 3 步", options: { trusted: false }, keys: toSection("models", ENTER, ENTER, ENTER) },
+  { label: "记录为空的模型第 3 步", options: { trust: "unset", models: [SOL, LONG] }, keys: toSection("models", ENTER, ENTER, ENTER) },
+  { label: "不信任的模型第 3 步", options: { trust: "denied" }, keys: toSection("models", ENTER, ENTER, ENTER) },
   { label: "没有可选模型的第 1 步", options: { models: [] }, keys: toSection("models", ENTER) },
   { label: "模型不可用的列表", options: { user: oneCompany({ "draft-verifier": { model: "claude-opus-5-5-extended-context-preview-x", thinking: "medium" } }) }, keys: toSection("models", DOWN, DOWN) },
   { label: "跟随值的列表", options: { models: [SOL, LONG], mainThinking: "off", user: oneCompany({ pm: { model: "claude-opus-5-5-extended-context-preview", thinking: null }, interpreter: { model: null, thinking: "off" } }) }, keys: toSection("models") },
   { label: "第 2 步多出的跟随主会话", options: { mainThinking: "xhigh" }, keys: toSection("models", DOWN, ENTER, ENTER) },
   { label: "开关第 1 步", keys: toSection("switches", ENTER) },
   { label: "开关第 2 步", keys: toSection("switches", ENTER, ENTER) },
-  { label: "未受信任的开关第 2 步", options: { trusted: false }, keys: toSection("switches", ENTER, ENTER) },
+  { label: "记录为空的开关第 2 步", options: { trust: "unset" }, keys: toSection("switches", ENTER, ENTER) },
+  { label: "不信任的开关第 2 步", options: { trust: "denied" }, keys: toSection("switches", ENTER, ENTER) },
+  { label: "记录为空的合并方式第 2 步", options: { trust: "unset" }, keys: toSection("switches", DOWN, ENTER, ENTER) },
+  { label: "不信任的合并方式第 2 步", options: { trust: "denied" }, keys: toSection("switches", DOWN, ENTER, ENTER) },
+  { label: "记录为空的问题展开", options: { trust: "unset" }, keys: toSection("problems", ENTER) },
   { label: "合并方式第 1 步", keys: toSection("switches", DOWN, ENTER) },
   { label: "合并方式第 2 步", keys: toSection("switches", DOWN, ENTER, ENTER) },
   { label: "合并方式全取消后的第 1 步", keys: toSection("switches", DOWN, ENTER, " ", DOWN, " ", DOWN, " ", ENTER) },
@@ -1461,8 +1560,9 @@ const rowWith = (rows: string[], needle: string) => rows.find((row) => startCol(
 test("宽布局 60 和 80 列下，两条分隔线之间每一行的 │ 都恰好在第 21 个显示列，含目录空行和比目录长的右栏行", async () => {
   const screens: Array<[string, PageOptions, string[]]> = [
     ["目录", {}, []], ["职责展开", {}, [RIGHT, ENTER]], ["命名", {}, [RIGHT, "c"]], ["模型第 1 步", {}, toSection("models", ENTER)],
-    ["模型第 3 步", { models: [SOL, LONG] }, toSection("models", ENTER, ENTER, ENTER)], ["开关第 2 步", { trusted: false }, toSection("switches", ENTER, ENTER)],
-    ["问题展开", { trusted: false }, toSection("problems", ENTER)],
+    ["模型第 3 步", { models: [SOL, LONG] }, toSection("models", ENTER, ENTER, ENTER)], ["开关第 2 步", { trust: "denied" }, toSection("switches", ENTER, ENTER)],
+    ["记录为空的开关第 2 步", { trust: "unset" }, toSection("switches", ENTER, ENTER)], ["记录为空的模型第 3 步", { trust: "unset" }, toSection("models", ENTER, ENTER, ENTER)],
+    ["问题展开", { trust: "denied" }, toSection("problems", ENTER)],
   ];
   for (const [label, options, keys] of screens) {
     const p = await page(options);
