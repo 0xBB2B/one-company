@@ -41,6 +41,7 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     trustProject(agentDir, repositoryRoot);
     return TRUSTED_NOTE;
   };
+  let claimedNote = "";
   const applyChange = async (picked: Exclude<Picked, { copy: CopyRequest }>): Promise<{ text: string; fresh: string; tone?: PageNotice["tone"] }> => {
     if ("toggle" in picked) {
       const { name, source } = picked.toggle, layer: SettingsLayerName = source === "project" ? "project" : "user";
@@ -54,7 +55,7 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     if ("save" in picked) {
       const { role, layer, model, thinking } = picked.save;
       const { label, effect } = SETTINGS_ROLES.find((item) => item.key === role)!;
-      const note = layer === "project" ? claimProjectLayer() : "";
+      const note = claimedNote = layer === "project" ? claimProjectLayer() : "";
       await saveAgentSetting({ path: settingsPaths[layer], role, model, thinking });
       return { fresh: role, text: `✓ ${label} 改为 ${describeSetting(role, { model, thinking })}，存到${layerLabel[layer]}，${effect}${note}` };
     }
@@ -67,7 +68,7 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     }
     if ("saveSwitch" in picked) {
       const request = picked.saveSwitch, path = settingsPaths[request.layer];
-      const note = request.layer === "project" ? claimProjectLayer() : "";
+      const note = claimedNote = request.layer === "project" ? claimProjectLayer() : "";
       if (request.key === "git-delivery") {
         await saveGitDeliverySetting({ path, mode: request.mode });
         return { fresh: "git-delivery", text: `✓ Git 交付 改为${MODE_LABEL[request.mode]}，存到${layerLabel[request.layer]}，立即生效${note}` };
@@ -104,12 +105,13 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     });
     if (!picked) return;
     if (!("copy" in picked)) {
+      claimedNote = "";
       try {
         const { text, fresh, tone = "ok" } = await applyChange(picked);
         state = { ...picked.state, fresh, notice: { tone, text } };
       } catch (error) {
         const message = (error instanceof Error ? error.message : String(error)).split("\n")[0];
-        state = { ...picked.state, notice: { tone: "error", text: `✗ 没有保存：${message}` } };
+        state = { ...picked.state, notice: { tone: "error", text: `✗ 没有保存：${message}${claimedNote}` } };
       }
       continue;
     }
@@ -141,11 +143,11 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
       back({ tone: "ok", text: `✓ 已复制到 ${tilde(copied)}，打开它写专长、skills 和 mcp${note}` }, name, name);
     } catch (error) {
       const code = (error as { code?: unknown }).code;
-      const text = error instanceof AgentCopyError ? error.message
+      const text = (error instanceof AgentCopyError ? error.message
         : code === "ENOENT" ? "复制没有完成：源文件已经不存在，重新打开本页再试"
         : code === "EEXIST" ? `复制没有完成：${tilde(fileOf(targetDir, name))} 已经存在，换一个名字再复制`
         : code === "EACCES" || code === "EPERM" ? `复制没有完成：没有权限写入 ${tilde(targetDir)}`
-        : `复制没有完成：${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`;
+        : `复制没有完成：${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`) + note;
       back({ tone: "muted", text });
     }
   }

@@ -576,6 +576,151 @@ const copyToProject = (after: (s: Screen) => void) => scripted([
   (s) => { after(s); s.press(ESC, ESC); },
 ], { trust: "unset" });
 
+const brokenProjectSettings = () => writeSettings(projectFile(), "{坏的");
+
+test("记录为空时模型设定存项目层失败：信任记录保持 true，底部红字没有保存并带已把本项目设为受信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await brokenProjectSettings();
+  const ctx = scripted([
+    (s) => { pickPmModel(s); moveTo(s, "项目层"); s.press(ENTER); },
+    (s) => {
+      expect(s.raw()).toMatch(/<error>✗ 没有保存：.* · 已把本项目设为受信任<\/>/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+}, 5000);
+
+test("记录为空时先存项目层成功、再清除项目层失败：失败红字没有保存且不再带已把本项目设为受信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => { pickPmModel(s); moveTo(s, "项目层"); s.press(ENTER); },
+    (s) => {
+      expect(s.raw()).toContain("存到项目层，下次启动 PM 时生效 · 已把本项目设为受信任</>");
+      writeFileSync(projectFile(), "{坏的");
+      s.press("R");
+    },
+    (s) => {
+      expect(s.raw()).toMatch(/<error>✗ 没有保存：/u);
+      expect(s.raw()).not.toMatch(/<error>✗ 没有保存：[^\n]*已把本项目设为受信任/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+}, 5000);
+
+test("记录已是信任时模型设定存项目层失败：信任记录不变，提示没有已把本项目设为受信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await brokenProjectSettings();
+  const ctx = scripted([
+    (s) => { pickPmModel(s); moveTo(s, "项目层"); s.press(ENTER); },
+    (s) => {
+      expect(s.raw()).toContain("<error>✗ 没有保存：");
+      expect(s.now()).not.toContain("已把本项目设为受信任");
+      s.press(ESC, ESC);
+    },
+  ]);
+  const before = await readFile(trustFilePath(), "utf8");
+  await run(ctx);
+  expect(await readFile(trustFilePath(), "utf8")).toBe(before);
+}, 5000);
+
+test("记录为空时 Git 交付存项目层失败：信任记录保持 true，底部红字没有保存并带已把本项目设为受信任", async () => {
+  await writeSettings(userFile(), oneCompany({ "git-delivery": "remote" }));
+  await mkdir(repoDir(), { recursive: true });
+  await brokenProjectSettings();
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "switches");
+      s.press(ENTER);
+      moveTo(s, "仅本地");
+      s.press(ENTER);
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.raw()).toMatch(/<error>✗ 没有保存：.* · 已把本项目设为受信任<\/>/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+}, 5000);
+
+test("记录为空时合并方式存项目层失败：信任记录保持 true，底部红字没有保存并带已把本项目设为受信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await brokenProjectSettings();
+  const ctx = scripted([
+    (s) => { goTo(s, "switches"); s.press(DOWN, ENTER, SPACE, ENTER, ENTER); },
+    (s) => {
+      expect(s.raw()).toMatch(/<error>✗ 没有保存：.* · 已把本项目设为受信任<\/>/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+}, 5000);
+
+test("记录已是信任时 Git 交付存项目层失败：信任记录不变，提示没有已把本项目设为受信任", async () => {
+  await writeSettings(userFile(), oneCompany({ "git-delivery": "remote" }));
+  await mkdir(repoDir(), { recursive: true });
+  await brokenProjectSettings();
+  const ctx = scripted([
+    (s) => { goTo(s, "switches"); s.press(ENTER); moveTo(s, "仅本地"); s.press(ENTER); s.press(ENTER); },
+    (s) => {
+      expect(s.raw()).toContain("<error>✗ 没有保存：");
+      expect(s.now()).not.toContain("已把本项目设为受信任");
+      s.press(ESC, ESC);
+    },
+  ]);
+  const before = await readFile(trustFilePath(), "utf8");
+  await run(ctx);
+  expect(await readFile(trustFilePath(), "utf8")).toBe(before);
+}, 5000);
+
+test("记录为空时按 C 复制到项目层失败：信任记录保持 true，灰字复制没有完成并带已把本项目设为受信任", async (context) => {
+  if (process.getuid?.() === 0) context.skip();
+  await mkdir(join(repoDir(), ".pi", "agents"), { recursive: true });
+  await mkdir(agentsDir(), { recursive: true });
+  await writeFile(SOURCE(), COPY_SOURCE);
+  chmodSync(join(repoDir(), ".pi", "agents"), 0o555);
+  try {
+    await run(copyToProject((s) => {
+      expect(s.raw()).toMatch(/<muted>复制没有完成：.* · 已把本项目设为受信任<\/>/u);
+      expect(s.now()).not.toContain("✓ 已复制到");
+    }));
+  } finally {
+    chmodSync(join(repoDir(), ".pi", "agents"), 0o755);
+  }
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+  expect(existsSync(join(repoDir(), ".pi", "agents", "copy-w.md"))).toBe(false);
+}, 8000);
+
+test("记录已是信任时按 C 复制到项目层失败：信任记录不变，提示没有已把本项目设为受信任", async (context) => {
+  if (process.getuid?.() === 0) context.skip();
+  await mkdir(join(repoDir(), ".pi", "agents"), { recursive: true });
+  await mkdir(agentsDir(), { recursive: true });
+  await writeFile(SOURCE(), COPY_SOURCE);
+  chmodSync(join(repoDir(), ".pi", "agents"), 0o555);
+  const ctx = scripted([
+    (s) => { s.press(RIGHT); moveTo(s, "ui-w"); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
+    (s) => s.press(DOWN, ENTER),
+    (s) => {
+      expect(s.now()).toContain("复制没有完成：");
+      expect(s.now()).not.toContain("已把本项目设为受信任");
+      s.press(ESC, ESC);
+    },
+  ]);
+  const before = await readFile(trustFilePath(), "utf8");
+  try {
+    await run(ctx);
+  } finally {
+    chmodSync(join(repoDir(), ".pi", "agents"), 0o755);
+  }
+  expect(await readFile(trustFilePath(), "utf8")).toBe(before);
+}, 8000);
+
 test("记录为空时复制到项目层：先写信任记录再复制，提示末尾加已把本项目设为受信任；选用户层复制不写信任记录", async () => {
   await mkdir(repoDir(), { recursive: true });
   await mkdir(agentsDir(), { recursive: true });

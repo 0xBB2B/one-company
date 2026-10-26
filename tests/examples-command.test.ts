@@ -614,6 +614,23 @@ describe("授信记录为空时复制到项目层", () => {
   });
 });
 
+describe("授信记录已写入后复制失败", () => {
+  test.skipIf(process.getuid?.() === 0).each([["空：复制失败提示末尾另起一行带已把本项目设为受信任", undefined, true], ["信任：复制失败提示不带已把本项目设为受信任", true, false]] as const)("授信记录原为%s", async (_name, initial, hasLine) => {
+    await setup(initial === undefined ? {} : { trusted: initial });
+    await mkdir(join(repoDir, ".pi", "skills"), { recursive: true });
+    chmodSync(join(repoDir, ".pi", "skills"), 0o555);
+    try {
+      const result = await run([GOLANG, PROJECT_LAYER, COPY]);
+      expect(result.last()).toMatch(/^✗ 复制没有完成：/u);
+      if (hasLine) expect(result.last()).toMatch(/\n {2}· 已把本项目设为受信任$/u);
+      else expect(result.last()).not.toContain("已把本项目设为受信任");
+      expect(await readTrust()).toEqual({ [await realpath(repoDir)]: true });
+    } finally {
+      chmodSync(join(repoDir, ".pi", "skills"), 0o755);
+    }
+  });
+});
+
 describe("确认复制那一刻重新读授信记录", () => {
   test.each([["空", undefined], ["信任", true]] as const)("授信记录原为%s，确认窗口开着时被改成不信任：不写授信记录、不复制，提示去 /trust", async (_name, initial) => {
     await setup(initial === undefined ? {} : { trusted: initial });

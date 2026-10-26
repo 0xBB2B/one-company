@@ -208,7 +208,7 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
     written = await copyExampleFiles({ examplesDir: root, example: row.name, targets, inspection });
   } catch (error) {
     if (!(error instanceof ExampleCopyError)) throw error;
-    ctx.ui.notify(copyFailureText(error), "error");
+    ctx.ui.notify(copyFailureText(error) + (trustWritten ? "\n  · 已把本项目设为受信任" : ""), "error");
     return;
   }
 
