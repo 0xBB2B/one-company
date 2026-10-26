@@ -68,7 +68,7 @@ test("M8O-AC1：实施中批准新版本后，所属任务被判为受影响并�
 });
 
 /** 任务 1（login）已完成、任务 2（failure）的 worker 正在运行时，用户批准了新版本。 */
-async function midway(body: string, options: { loginReviewed?: boolean } = {}) {
+async function midway(body: string, options: { loginReviewed?: boolean; failureEarlierAttempt?: boolean } = {}) {
   const w = await createPmRunWorld(cleanups);
   await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login"), spec("failure", "scenario.failure")] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
@@ -82,8 +82,14 @@ async function midway(body: string, options: { loginReviewed?: boolean } = {}) {
     db.update(TASKS, row.data.taskId, row.version, { ...row.data, status: options.loginReviewed === false ? "reviewing" : "completed", reviews,
       attempts: [{ runId: attemptRunId, maxTurns: 5, turnsUsed: 3, reason: null, outcome: "completed" }] });
   });
+  if (options.failureEarlierAttempt) w.db((db) => {
+    const row = db.read<TaskRecord>(TASKS, task("failure").taskId)!;
+    db.update(TASKS, row.data.taskId, row.version, { ...row.data, status: "awaiting_parent", replanAllowance: 0,
+      attempts: [{ runId: uuidv7(), maxTurns: 5, turnsUsed: 5, reason: null, outcome: "turn_limit_reached" }] });
+  });
   w.provider.queue.push({ type: "text", text: "慢慢写失败场景", chunkDelayMs: 30_000 });
-  const run = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task("failure").taskId, retry: null });
+  const run = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task("failure").taskId,
+    retry: options.failureEarlierAttempt ? { reason: "估计不足", maxTurns: 5 } : null });
   await until(async () => await state(run.runId) === "running" && w.provider.queue.length === 0);
   w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" }, { type: "text", text: "PM 空闲" });
   await w.fixture.approveRevision({ body });
@@ -145,4 +151,30 @@ test("M8O-AC4：login 执行完成但还没有审查记录（待审查），新�
     add: [spec("login-fix", "goal.login", { objective: "登录补上记住设备" })] })).rejects.toMatchObject({ code: "goal_held" });
   expect(planVersion()).toBe(before);
   expect(task("login").status).not.toBe("cancelled");
+});
+
+const FAILURE_CHANGED = BASE.replace("错误验证码显示失败。", "错误验证码显示失败并提示重试。");
+const modifyFailure = (w: Awaited<ReturnType<typeof midway>>) => w.w.plan.execute({ action: "update", planVersion: w.planVersion(),
+  modify: [{ taskId: w.task("failure").taskId, version: w.task("failure").version, spec: spec("failure", "scenario.failure", { objective: "失败场景加提示重试" }) }] }) as Promise<{ chances: string[] }>;
+
+test("场景：批准新版本挂起期间，任务本周期唯一一次执行还在运行（已暂停），PM 修改该任务（用户没对它做决定）→ chances 为空、cycleStarts 不变、重算额度仍为 1，确认后那次运行被取代，不带 retry 派出被接受", async () => {
+  const m = await midway(FAILURE_CHANGED);
+  await m.assess("unaffected", "affected");
+  const before = m.task("failure");
+  const updated = await modifyFailure(m);
+  expect(updated.chances).toEqual([]);
+  expect(m.task("failure").cycleStarts).toEqual(before.cycleStarts);
+  expect(m.task("failure").replanAllowance).toBe(1);
+  await m.w.plan.execute({ action: "confirm", planVersion: m.planVersion() });
+  await until(() => m.task("failure").attempts[0]!.outcome === "superseded");
+  m.w.provider.queue.push({ type: "text", text: "重做失败场景", chunkDelayMs: 30_000 });
+  await expect(m.w.manager.dispatchTask({ pmRunId: m.w.pm.runId, taskId: m.task("failure").taskId, retry: null })).resolves.toBeDefined();
+});
+
+test("场景：批准新版本挂起期间，任务本周期第 1 次执行已结束、第 2 次正在运行（已暂停）、重算额度已用完，PM 修改该任务 → chances 写本周期已执行 1 次、打回 0 轮", async () => {
+  const m = await midway(FAILURE_CHANGED, { failureEarlierAttempt: true });
+  await m.assess("unaffected", "affected");
+  expect(m.task("failure").attempts.map((attempt) => attempt.outcome)).toEqual(["turn_limit_reached", "running"]);
+  const updated = await modifyFailure(m);
+  expect(updated.chances).toEqual(["failure 的重算额度已用完，次数接着累计：本周期已执行 1 次、打回 0 轮"]);
 });

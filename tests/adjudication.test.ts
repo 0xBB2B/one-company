@@ -1446,10 +1446,21 @@ describe("plan_manage update 的 add 只能加新任务：key 与已有任务（
   test("用户对 login 选了调整目标或范围、还没批准新版本：add 同 key login 被拒 dependency_invalid，用户的调整决定没被用掉", async () => {
     const { w, planVersion } = await adjustedAfterTwoAttempts();
     const before = planVersion(), login = w.task("login");
+    w.provider.queue.push({ type: "text", text: "收到被拒原因" });
     await expect(w.plan.execute({ action: "update", planVersion: before, add: [spec("login", "scenario.failure")] })).rejects.toMatchObject({ code: "dependency_invalid" });
     expect(planVersion()).toBe(before);
     expect(w.task("login")).toEqual(login);
     expect(w.task("login").userDecision).toMatchObject({ choice: "adjust", usedByRunId: null });
+
+    await approveAndAssessLoginAffected(w as never, w.login, FAILURE_CHANGED_BODY);
+    await w.plan.execute({ action: "update", planVersion: planVersion(), modify: [{ taskId: w.login, version: w.task("login").version,
+      spec: spec("login", "goal.login", { objective: "按调整后的范围实现登录" }) },
+      { taskId: w.task("failure").taskId, version: w.task("failure").version, spec: spec("failure", "scenario.failure", { objective: "失败场景补充提示" }) }] });
+    await w.plan.execute({ action: "confirm", planVersion: planVersion() });
+    expect(w.task("login").status).toBe("pending");
+    w.provider.queue.push({ type: "text", text: "按调整做" }, { type: "text", text: "PM 收到" });
+    const next = await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: w.login, retry: null });
+    expect(w.task("login").userDecision).toMatchObject({ choice: "adjust", usedByRunId: next.runId });
   });
 
   test("add 一个与已取消任务同 key 的任务被拒 dependency_invalid，计划版本不变", async () => {
