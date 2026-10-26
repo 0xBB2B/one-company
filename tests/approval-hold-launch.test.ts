@@ -30,6 +30,10 @@ const FAILURE_CHANGED = BASE.replace("错误验证码显示失败。", "错误�
 const spec = (key: string, goal: string, patch: Partial<TaskSpec> = {}): TaskSpec => ({ key, role: "worker", goalUnitIds: [goal], constraintUnitIds: [], dependsOn: [],
   writePaths: [`${key}/`], blockedByQuestionIds: [], maxTurns: 5, objective: `实现 ${key}`, passCriteria: ["可观察通过"], scope: { in: [key], out: [] }, performance: NA, ...patch });
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const HELD_STATE_REASON = "需求在等重新确认计划或有任务被用户终止，这次运行还没开工就作废";
+const SUPERSEDED_CAUSE = "这次运行因计划变更或用户终止被作废，不计执行次数";
+const endNotice = (w: World["w"], runId: string) => w.provider.requests.map((request) => JSON.stringify(request.messages.at(-1) ?? ""))
+  .find((text) => text.includes(`子代理运行 ${runId} 已结束`));
 
 /** 拦住指定角色的会话创建，直到调用返回的 release；期间派出已被接受、第一条提示还没发出。 */
 function holdLaunch(role: string) {
@@ -71,7 +75,7 @@ async function replanFailure(x: World) {
   await w.plan.execute({ action: "confirm", planVersion: planVersion() });
 }
 
-test("E1：worker 准备期间批准新版本，释放后不发第一条提示，运行即停止（replanned）、尝试记为被取代，确认新计划后不带 retry 可重新派出", async () => {
+test("E1：worker 准备期间批准新版本，释放后不发第一条提示，运行即停止（held_before_start）、尝试记为被取代，确认新计划后不带 retry 可重新派出", async () => {
   const x = await world();
   const { w, task, state, startPrompts } = x;
   const release = holdLaunch("worker");
@@ -88,7 +92,14 @@ test("E1：worker 准备期间批准新版本，释放后不发第一条提示�
   await until(async () => await state(runId) === "stopped");
   await until(() => task("failure").attempts[0]!.outcome !== "running");
   expect(task("failure").attempts).toMatchObject([{ runId, outcome: "superseded" }]);
-  expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { stopCause: { reason: "replanned" } } });
+  expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { stopCause: { reason: "held_before_start" }, stateReason: expect.stringContaining(HELD_STATE_REASON) } });
+  await until(() => endNotice(w, runId) !== undefined);
+  const notice = endNotice(w, runId)!;
+  expect(notice).toContain(SUPERSEDED_CAUSE);
+  expect(notice).not.toContain("被新派出的运行取代");
+  expect(notice).toContain(`确认基于当前批准版本的计划后，用 agent_manage dispatch taskId=${task("failure").taskId} 重新派出；带不带 retry 按本周期已执行次数定。`);
+  expect(notice).not.toContain("重新派出，不带 retry。");
+  expect(notice).not.toContain("请核对实际证据后再整合结果。");
 
   await replanFailure(x);
   expect(startPrompts("开始执行任务。")).toBe(0);
@@ -131,6 +142,7 @@ test("E2：worker 准备期间用户终止了需求中的另一个任务，释�
   await until(async () => await state(runId) === "stopped");
   await until(() => task("failure").attempts[0]!.outcome !== "running");
   expect(task("failure").attempts).toMatchObject([{ runId, outcome: "superseded" }]);
+  expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { stopCause: { reason: "held_before_start" }, stateReason: expect.stringContaining(HELD_STATE_REASON) } });
 });
 
 test("E3：worker 准备期间既没批准新版本也没终止任务，释放后收到第一条提示、运行状态为 running", async () => {
@@ -172,5 +184,44 @@ test("E4：任务级审查准备期间批准新版本，释放后审查不发第
   await until(async () => await state(reviewRunId) === "stopped");
   await until(() => task("failure").reviews.find((review) => review.runId === reviewRunId)!.outcome !== "running");
   expect(task("failure").reviews.find((review) => review.runId === reviewRunId)).toMatchObject({ outcome: "superseded" });
-  expect(await w.runStore.get(reviewRunId)).toMatchObject({ ok: true, run: { stopCause: { reason: "replanned" } } });
+  expect(await w.runStore.get(reviewRunId)).toMatchObject({ ok: true, run: { stopCause: { reason: "held_before_start" }, stateReason: expect.stringContaining(HELD_STATE_REASON) } });
+});
+
+test("E5：任务本周期已执行 1 次没做完，带 retry 第二次派出，准备期间批准新版本：这次运行作废，PM 收到的建议写按已执行次数定是否带 retry；确认计划后不带 retry 被拒、带 retry 被接受", async () => {
+  const x = await world({ maxTurns: 1 });
+  const { w, task, state } = x;
+  const login = task("login").taskId;
+  w.provider.queue.push({ type: "toolcall", name: "read", input: { path: "README.md" } }, { type: "text", text: "PM 看到到限" });
+  await w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: null });
+  await until(() => task("login").status === "awaiting_parent" && w.provider.queue.length === 0);
+
+  const release = holdLaunch("worker");
+  const retry = { reason: "估计不足", maxTurns: 1 };
+  const dispatched = w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry }).catch(() => undefined);
+  await until(() => gate.entered === 1 && task("login").attempts.length === 2);
+  const runId = task("login").attempts[1]!.runId;
+  await approveWhileHeld(x, `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n`);
+
+  w.provider.queue.push({ type: "text", text: "慢慢写登录", chunkDelayMs: 30_000 });
+  release();
+  await dispatched;
+  await until(async () => await state(runId) === "stopped");
+  await until(() => task("login").attempts[1]!.outcome !== "running");
+  expect(task("login").attempts).toMatchObject([{ outcome: "turn_limit_reached" }, { runId, outcome: "superseded" }]);
+  expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { stopCause: { reason: "held_before_start" }, stateReason: expect.stringContaining(HELD_STATE_REASON) } });
+  await until(() => endNotice(w, runId) !== undefined);
+  const notice = endNotice(w, runId)!;
+  expect(notice).toContain(`确认基于当前批准版本的计划后，用 agent_manage dispatch taskId=${login} 重新派出；带不带 retry 按本周期已执行次数定。`);
+  expect(notice).not.toContain("重新派出，不带 retry。");
+
+  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    { taskId: login, version: task("login").version, assessment: "unaffected", rationale: "登录" },
+    { taskId: task("failure").taskId, version: task("failure").version, assessment: "unaffected", rationale: "失败场景" }],
+    global: { assessment: "unaffected", rationale: "无全局变化" } });
+  await w.plan.execute({ action: "update", planVersion: x.planVersion(), add: [spec("resend", "goal.resend")] });
+  await w.plan.execute({ action: "confirm", planVersion: x.planVersion() });
+  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry: null })).rejects.toMatchObject({ code: "retry_required" });
+  w.provider.queue.length = 0;
+  w.provider.queue.push({ type: "text", text: "重做登录", chunkDelayMs: 30_000 });
+  await expect(w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: login, retry })).resolves.toBeDefined();
 });

@@ -65,7 +65,17 @@ test("M8O-AC1：实施中批准新版本后，所属任务被判为受影响并�
   await until(() => task("failure").attempts[0]!.outcome !== "running");
   expect(task("failure").status).toBe("pending");
   expect(task("failure").attempts).toMatchObject([{ runId: run.runId, outcome: "superseded" }]);
-  expect(await w.runStore.get(run.runId)).toMatchObject({ ok: true, run: { stopCause: { reason: "replanned" } } });
+  expect(await w.runStore.get(run.runId)).toMatchObject({ ok: true, run: { stopCause: { reason: "replanned" }, stateReason: expect.stringContaining("计划已修改，该任务被重新规划") } });
+});
+
+test("M8O-AC1：被暂停的子代理在计划确认时被停，PM 收到的结束消息写明作废原因，不写被新派出的运行取代", async () => {
+  const { w, task, state, run } = await approvedWhileRunning("affected");
+  await until(async () => await state(run.runId) === "stopped");
+  await until(() => task("failure").attempts[0]!.outcome !== "running");
+  const notice = () => w.provider.requests.map((request) => JSON.stringify(request.messages.at(-1) ?? "")).find((text) => text.includes(`子代理运行 ${run.runId} 已结束`));
+  await until(() => notice() !== undefined);
+  expect(notice()).toContain("这次运行因计划变更或用户终止被作废，不计执行次数");
+  expect(notice()).not.toContain("被新派出的运行取代");
 });
 
 /** 任务 1（login）已完成、任务 2（failure）的 worker 正在运行时，用户批准了新版本。 */
