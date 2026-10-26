@@ -595,6 +595,11 @@ export class RunManager {
       await this.runStore.update(run.id, { state: "failed", stateReason: `子代理启动失败：${(error as Error).message}` }).catch(() => {});
       throw error;
     }
+    if (this.replanPending(lease.requirementId) || this.halted(lease.requirementId)) {
+      this.supersededRuns.add(run.id);
+      await this.stop(run.id, { reason: "replanned" }).catch(() => {});
+      return;
+    }
     handle.prompt(review ? "开始审查。" : "开始执行任务。");
   }
 
@@ -1289,7 +1294,7 @@ export class RunManager {
   private readonly liveConnections = new Set<string>();
   connectionOpened(connectionId: string | undefined): void { if (connectionId) this.liveConnections.add(connectionId); }
   private readonly overviewFingerprints = new Map<string, string>();
-  /** 因计划变更被统一停止的子代理运行：其尝试记为因重新规划作废。 */
+  /** 因计划变更或用户终止被停止的子代理运行：其尝试记为被取代。 */
   private readonly supersededRuns = new Set<string>();
   private readonly reportedReviewRounds = new Set<string>();
   private readonly headingCache = new Map<string, { hash: string; titles: Map<string, string> }>();
