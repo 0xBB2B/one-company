@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, realpathSync, writeFileSync } from "node:fs";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +32,16 @@ async function setup(options: { trusted?: boolean } = {}) {
   await mkdir(agentDir, { recursive: true });
   await mkdir(repoDir, { recursive: true });
   execFileSync("git", ["init", "-q"], { cwd: repoDir });
-  if (options.trusted) await writeFile(join(agentDir, "trust.json"), JSON.stringify({ [await realpath(repoDir)]: true }));
+  if (options.trusted !== undefined) await setTrust(options.trusted);
+}
+
+const trustPath = () => join(agentDir, "trust.json");
+async function setTrust(value: boolean) {
+  await writeFile(trustPath(), JSON.stringify({ [await realpath(repoDir)]: value }));
+}
+const setTrustSync = (value: boolean) => writeFileSync(trustPath(), JSON.stringify({ [realpathSync(repoDir)]: value }));
+async function readTrust(): Promise<Record<string, boolean>> {
+  return JSON.parse(await readFile(trustPath(), "utf8"));
 }
 
 async function run(steps: Step[]) {
@@ -70,27 +79,112 @@ async function copyGolangToUser() {
   await run([GOLANG, USER_LAYER, COPY, WRITE]);
 }
 
-describe("空代理目录、项目未受信任", () => {
-  test("窗口一列出两个样例和各层状态，窗口二项目层变暗并写明原因", async () => {
+describe("空代理目录、授信记录为空", () => {
+  test("窗口一项目层写实际复制状态，窗口二项目层可选并写明选它会设为受信任", async () => {
     await setup();
     const screens: string[] = [];
     await run([capture(screens, GOLANG), capture(screens, CANCEL)]);
     expect(screens[0]).toContain("要用哪套设计规范样例？");
     expect(screens[0]).toContain("选中后再选复制到哪一层；skills、角色定义和 AGENTS.md 那一段一起复制。");
-    expect(screens[0]).toContain("Go 后端 · 用户层：未复制 · 项目层：未受信任");
-    expect(screens[0]).toMatch(/vue.*Vue 前端 · 用户层：未复制 · 项目层：未受信任/u);
+    expect(screens[0]).toContain("Go 后端 · 用户层：未复制 · 项目层：未复制");
+    expect(screens[0]).toMatch(/vue.*Vue 前端 · 用户层：未复制 · 项目层：未复制/u);
+    expect(screens[0]).not.toContain("未受信任");
     expect(screens[1]).toContain("把 Go 后端样例复制到哪一层？");
     expect(screens[1]).toContain(`${agentDir}/ · 对你的所有项目生效`);
-    expect(screens[1]).toContain("项目未受信任，暂不能复制到这里");
+    expect(screens[1]).toContain(`${await realpath(repoDir)}/ · 只对这个项目生效 · 选它会把本项目设为受信任`);
+    expect(screens[1]).not.toContain("暂不能复制到这里");
+    expect(screens[1]).not.toContain("先输入 /trust 选 Trust");
   });
 
-  test("项目受信任时窗口二的项目层写主仓库目录，窗口一项目层状态为未复制", async () => {
+  test("窗口一项目层写实际复制状态：项目层已复制时写已复制", async () => {
+    await setup({ trusted: true });
+    await run([GOLANG, PROJECT_LAYER, COPY, WRITE]);
+    await rm(trustPath());
+    const screens: string[] = [];
+    await run([capture(screens, CANCEL)]);
+    expect(screens[0]).toContain("Go 后端 · 用户层：未复制 · 项目层：已复制");
+  });
+
+  test("项目层已全部复制：窗口二项目层灰掉写已全部复制，和样例一致", async () => {
+    await setup({ trusted: true });
+    await run([GOLANG, PROJECT_LAYER, COPY, WRITE]);
+    await rm(trustPath());
+    const screens: string[] = [];
+    await run([GOLANG, capture(screens, CANCEL)]);
+    expect(screens[0]).toMatch(/项目层.*已全部复制，和样例一致/u);
+    expect(screens[0]).not.toContain("选它会把本项目设为受信任");
+  });
+});
+
+describe("空代理目录、你在 pi 里选过不信任", () => {
+  test("窗口一项目层写未受信任，窗口二项目层灰掉并写明去 /trust", async () => {
+    await setup({ trusted: false });
+    const screens: string[] = [];
+    await run([capture(screens, GOLANG), capture(screens, CANCEL)]);
+    expect(screens[0]).toContain("Go 后端 · 用户层：未复制 · 项目层：未受信任");
+    expect(screens[0]).toMatch(/vue.*Vue 前端 · 用户层：未复制 · 项目层：未受信任/u);
+    expect(screens[1]).toContain("你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust");
+    expect(screens[1]).not.toContain("选它会把本项目设为受信任");
+  });
+
+  test("项目层已复制过也写未受信任", async () => {
+    await setup({ trusted: true });
+    await run([GOLANG, PROJECT_LAYER, COPY, WRITE]);
+    await setTrust(false);
+    const screens: string[] = [];
+    await run([capture(screens, CANCEL)]);
+    expect(screens[0]).toContain("项目层：未受信任");
+  });
+
+  test("用户层已全部复制：提前结束，提示保持原文字", async () => {
+    await setup({ trusted: false });
+    await copyGolangToUser();
+    const screens: string[] = [];
+    const result = await run([capture(screens, GOLANG)]);
+    expect(screens[0]).toContain("Go 后端 · 用户层：已复制 · 项目层：未受信任");
+    expect(result.last()).toBe("Go 后端样例在用户层已全部复制，和样例一致；项目未受信任，不能复制到项目层。");
+  });
+});
+
+describe("授信记录为信任", () => {
+  test("项目受信任时窗口二的项目层写主仓库目录，不带设为受信任的说明，窗口一项目层状态为未复制", async () => {
     await setup({ trusted: true });
     const screens: string[] = [];
     await run([capture(screens, GOLANG), capture(screens, CANCEL)]);
     expect(screens[0]).toContain("Go 后端 · 用户层：未复制 · 项目层：未复制");
     expect(screens[1]).toContain(`${await realpath(repoDir)}/ · 只对这个项目生效`);
-    expect(screens[1]).not.toContain("项目未受信任，暂不能复制到这里");
+    expect(screens[1]).not.toContain("选它会把本项目设为受信任");
+    expect(screens[1]).not.toContain("先输入 /trust 选 Trust");
+  });
+});
+
+describe("用户层已全部复制时的提前结束", () => {
+  test("授信记录为空、项目层没复制：不提前结束，进入选层窗口，用户层灰掉、项目层可选", async () => {
+    await setup();
+    await copyGolangToUser();
+    const screens: string[] = [];
+    await run([GOLANG, capture(screens, CANCEL)]);
+    expect(screens[0]).toContain("把 Go 后端样例复制到哪一层？");
+    expect(screens[0]).toMatch(/用户层.*已全部复制，和样例一致/u);
+    expect(screens[0]).toContain("选它会把本项目设为受信任");
+  });
+
+  test("授信记录为空、项目层也已全部复制：提前结束，提示两层都和样例一致", async () => {
+    await setup({ trusted: true });
+    await run([GOLANG, USER_LAYER, COPY, WRITE]);
+    await run([GOLANG, PROJECT_LAYER, COPY, WRITE]);
+    await rm(trustPath());
+    const result = await run([GOLANG]);
+    expect(result.last()).toBe("Go 后端样例在用户层和项目层都已全部复制，和样例一致。");
+  });
+
+  test("授信记录为不信任、项目层已全部复制：仍提前结束，提示保持原文字", async () => {
+    await setup({ trusted: true });
+    await run([GOLANG, USER_LAYER, COPY, WRITE]);
+    await run([GOLANG, PROJECT_LAYER, COPY, WRITE]);
+    await setTrust(false);
+    const result = await run([GOLANG]);
+    expect(result.last()).toBe("Go 后端样例在用户层已全部复制，和样例一致；项目未受信任，不能复制到项目层。");
   });
 });
 
@@ -132,13 +226,12 @@ describe("golang 复制到用户层", () => {
     expect(result.last()).toContain("此后派出的代理按新规范工作。");
   });
 
-  test("再次运行：窗口一显示已复制，选 golang 不弹窗口二，提示用户层已全部复制", async () => {
+  test("再次运行：窗口一显示用户层已复制，授信记录为空时项目层写未复制", async () => {
     await setup();
     await copyGolangToUser();
     const screens: string[] = [];
-    const result = await run([capture(screens, GOLANG)]);
-    expect(screens[0]).toContain("Go 后端 · 用户层：已复制 · 项目层：未受信任");
-    expect(result.last()).toBe("Go 后端样例在用户层已全部复制，和样例一致；项目未受信任，不能复制到项目层。");
+    await run([capture(screens, GOLANG), CANCEL]);
+    expect(screens[0]).toContain("Go 后端 · 用户层：已复制 · 项目层：未复制");
   });
 
   test("用户层和项目层都已全部复制时，提示两层都和样例一致", async () => {
@@ -255,6 +348,18 @@ describe("取消", () => {
     expect(exists(join(agentDir, "skills"))).toBe(false);
     expect(exists(join(agentDir, "agents"))).toBe(false);
     expect(exists(join(agentDir, "AGENTS.md"))).toBe(false);
+    expect(exists(trustPath())).toBe(false);
+  });
+
+  test.each([
+    ["项目层窗口三 Esc", [GOLANG, PROJECT_LAYER, CANCEL]],
+    ["项目层窗口三选不复制", [GOLANG, PROJECT_LAYER, SKIP_COPY]],
+  ] as const)("授信记录为空，%s：不写授信记录、不复制", async (_name, steps) => {
+    await setup();
+    const result = await run([...steps]);
+    expect(result.last()).toBe("已取消，没有复制任何文件");
+    expect(exists(trustPath())).toBe(false);
+    expect(exists(join(repoDir, ".pi"))).toBe(false);
   });
 });
 
@@ -309,8 +414,15 @@ describe("项目层已有同名定义", () => {
     expect(await runVueToUser()).toContain("项目层已有 vue-reviewer，在这个项目里用的是项目层那份，用户层这份不生效。");
   });
 
-  test("项目未受信任：同样的布局不出现这一行", async () => {
+  test("授信记录为空、复制到用户层：项目层还没生效，不出现这一行", async () => {
     await setup();
+    await mkdir(join(repoDir, ".pi", "agents"), { recursive: true });
+    await cp(join(EXAMPLES, "vue", "agents", "vue-reviewer.md"), join(repoDir, ".pi", "agents", "vue-reviewer.md"));
+    expect(await runVueToUser()).not.toContain("项目层已有");
+  });
+
+  test("你在 pi 里选过不信任：同样的布局不出现这一行", async () => {
+    await setup({ trusted: false });
     await mkdir(join(repoDir, ".pi", "agents"), { recursive: true });
     await cp(join(EXAMPLES, "vue", "agents", "vue-reviewer.md"), join(repoDir, ".pi", "agents", "vue-reviewer.md"));
     expect(await runVueToUser()).not.toContain("项目层已有");
@@ -450,6 +562,86 @@ describe("软链接指向的目录不可写", () => {
       expect(last()).toContain(`AGENTS.md 没有写入：没有权限写入 ${await realpath(realDir)}/`);
     } finally {
       chmodSync(realDir, 0o755);
+    }
+  });
+});
+
+describe("授信记录为空时复制到项目层", () => {
+  test("确认复制：授信记录写 true，文件复制，完成提示末尾加已设为受信任", async () => {
+    await setup();
+    const result = await run([GOLANG, PROJECT_LAYER, COPY, WRITE]);
+    expect(await readTrust()).toEqual({ [await realpath(repoDir)]: true });
+    expect(exists(join(repoDir, ".pi", "skills", "api-design", "SKILL.md"))).toBe(true);
+    expect(await readFile(join(await realpath(repoDir), "AGENTS.md"), "utf8")).toBe(await sample("golang", "AGENTS.md"));
+    expect(result.notifications).toHaveLength(1);
+    expect(result.last()).toContain("✓ Go 后端样例已复制到项目层：新复制 12 个文件");
+    expect(result.last()).toMatch(/· 已把本项目设为受信任$/u);
+  });
+
+  test("授信记录已是信任：完成提示不加已设为受信任", async () => {
+    await setup({ trusted: true });
+    const result = await run([GOLANG, PROJECT_LAYER, COPY, WRITE]);
+    expect(result.last()).not.toContain("已把本项目设为受信任");
+  });
+
+  test("授信记录为空时复制到用户层：不写授信记录，提示不加已设为受信任", async () => {
+    await setup();
+    const result = await run([GOLANG, USER_LAYER, COPY, WRITE]);
+    expect(exists(trustPath())).toBe(false);
+    expect(result.last()).not.toContain("已把本项目设为受信任");
+  });
+
+  test("授信记录里有别的项目：保留别的项目的记录", async () => {
+    await setup();
+    await writeFile(trustPath(), JSON.stringify({ "/some/other/project": false }));
+    await run([GOLANG, PROJECT_LAYER, COPY, WRITE]);
+    expect(await readTrust()).toEqual({ "/some/other/project": false, [await realpath(repoDir)]: true });
+  });
+
+  test.skipIf(process.getuid?.() === 0)("文件复制阶段失败：沿用复制失败提示，授信记录已写入不回滚", async () => {
+    await setup();
+    await mkdir(join(repoDir, ".pi", "skills"), { recursive: true });
+    chmodSync(join(repoDir, ".pi", "skills"), 0o555);
+    try {
+      const result = await run([GOLANG, PROJECT_LAYER, COPY]);
+      expect(result.last().split("\n")[0]).toMatch(/^✗ 复制没有完成：没有权限写入 /u);
+      expect(result.last()).toContain("AGENTS.md 没有动");
+      expect(result.notifications[0]!.level).toBe("error");
+      expect(await readTrust()).toEqual({ [await realpath(repoDir)]: true });
+    } finally {
+      chmodSync(join(repoDir, ".pi", "skills"), 0o755);
+    }
+  });
+});
+
+describe("确认复制那一刻重新读授信记录", () => {
+  test.each([["空", undefined], ["信任", true]] as const)("授信记录原为%s，确认窗口开着时被改成不信任：不写授信记录、不复制，提示去 /trust", async (_name, initial) => {
+    await setup(initial === undefined ? {} : { trusted: initial });
+    const result = await run([GOLANG, PROJECT_LAYER, (screen) => { setTrustSync(false); COPY(screen); }]);
+    expect(result.last()).toBe("✗ 复制没有完成：你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust");
+    expect(result.notifications[0]!.level).toBe("error");
+    expect(await readTrust()).toEqual({ [await realpath(repoDir)]: false });
+    expect(exists(join(repoDir, ".pi"))).toBe(false);
+    expect(exists(join(repoDir, "AGENTS.md"))).toBe(false);
+  });
+});
+
+describe("写授信记录失败", () => {
+  test.skipIf(process.getuid?.() === 0)("确认窗口开着时代理目录变成不可写：不复制任何文件，error 提示带原因第一行和 trust.json 路径", async () => {
+    await setup();
+    try {
+      const result = await run([GOLANG, PROJECT_LAYER, (screen) => { chmodSync(agentDir, 0o555); COPY(screen); }]);
+      expect(result.notifications).toHaveLength(1);
+      expect(result.notifications[0]!.level).toBe("error");
+      const message = result.last();
+      expect(message.startsWith("✗ 复制没有完成：")).toBe(true);
+      expect(message.split("\n")).toHaveLength(1);
+      expect(message).toContain("trust.json");
+      expect(exists(join(repoDir, ".pi"))).toBe(false);
+      expect(exists(join(repoDir, "AGENTS.md"))).toBe(false);
+      expect(exists(trustPath())).toBe(false);
+    } finally {
+      chmodSync(agentDir, 0o755);
     }
   });
 });

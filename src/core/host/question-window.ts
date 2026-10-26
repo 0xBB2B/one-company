@@ -182,7 +182,8 @@ export class QuestionWindowView {
       const box = question.multiSelect ? `[${state.picked.has(i) || (this.isOther(index, i) && state.other.trim()) ? "x" : " "}] ` : "";
       const description = question.choices[i]?.description, disabled = question.choices[i]?.disabled;
       if (disabled) {
-        lines.push(`   ${muted(`${label}${" ".repeat(labelWidth - visibleWidth(label) + 3)}${disabled}`)}`);
+        const lead = `${label}${" ".repeat(labelWidth - visibleWidth(label) + 3)}`;
+        wrapPlain(disabled, Math.max(8, width - 3 - visibleWidth(lead))).forEach((piece, n) => lines.push(`   ${muted(`${n ? " ".repeat(visibleWidth(lead)) : lead}${piece}`)}`));
         return;
       }
       if (warning) {
