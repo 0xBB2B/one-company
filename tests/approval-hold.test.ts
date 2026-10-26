@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { uuidv7 } from "../src/core/storage/database.ts";
 import { TASKS } from "../src/modules/pm/plan-manage.ts";
+import { escalateTask } from "../src/modules/pm/task-dispatch.ts";
 import type { TaskRecord, TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
@@ -177,4 +178,24 @@ test("场景：批准新版本挂起期间，任务本周期第 1 次执行已�
   expect(m.task("failure").attempts.map((attempt) => attempt.outcome)).toEqual(["turn_limit_reached", "running"]);
   const updated = await modifyFailure(m);
   expect(updated.chances).toEqual(["failure 的重算额度已用完，次数接着累计：本周期已执行 1 次、打回 0 轮"]);
+});
+
+test("M8O-AC4：批准新版本时子代理被暂停（尝试仍是运行中）、任务判受影响待更新：先上报被拒并写明运行没结束；PM 停掉子代理后尝试记为已停止、任务仍待更新，再上报被接受并带拆分请求", async () => {
+  const { w, task, state, run, assess } = await midway(BASE.replace("输入正确验证码后成功。", "输入正确验证码后成功并记住设备。")
+    .replace("错误验证码显示失败。", "错误验证码显示失败并提示重试。"));
+  await assess("affected", "affected");
+  const request = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease, taskId: task("failure").taskId, note: "失败场景要拆" };
+  expect(task("failure").status).toBe("needs_update");
+  expect(task("failure").attempts.map((attempt) => attempt.outcome)).toEqual(["running"]);
+  expect(() => escalateTask(request)).toThrow("运行");
+  expect(task("failure").status).toBe("needs_update");
+
+  await w.manager.stop(run.runId, { reason: "stopped_by_pm" });
+  await until(async () => await state(run.runId) === "stopped");
+  await until(() => task("failure").attempts[0]!.outcome !== "running");
+  expect(task("failure").attempts.map((attempt) => attempt.outcome)).toEqual(["stopped"]);
+  expect(task("failure").status).toBe("needs_update");
+
+  escalateTask(request);
+  expect(task("failure")).toMatchObject({ status: "awaiting_user", splitRequest: { revision: 2 } });
 });

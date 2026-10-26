@@ -15,6 +15,7 @@ export class PanelItemAskError extends Error {
 export const FIXED_CHOICES = {
   retry: ["再给一次机会，轮数上限 N", "调整目标或范围", "终止这个任务"],
   resize: ["照做，轮数上限 N", "让 PM 拆分或精简", "终止这个任务"],
+  split: ["让 PM 按新版本拆分", "不拆，让 PM 原地改写", "终止这个任务"],
   acceptance: ["验收通过", "暂不验收"],
   requirement: ["调整需求", "取消需求", "拒绝需求"],
 } as const;
@@ -45,11 +46,11 @@ export function panelItemTarget(ref: { dataRoot: string; repoId: string }, requi
     const tasks = readPlanIn(db, requirementId)?.tasks ?? [];
     const item: PendingItem | undefined = pendingItemsIn({ ...ref, db, record, lease }, tasks).find((candidate) => candidate.itemId === itemId);
     const task = item?.kind === "adjudicate" ? tasks.find((candidate) => `task:${candidate.taskId}` === itemId) : undefined;
-    return { item, resize: task !== undefined && task.sizeHold !== undefined && sizeHoldPending(task) };
+    return { item, split: task?.splitRequest !== undefined, resize: task !== undefined && task.sizeHold !== undefined && sizeHoldPending(task) };
   });
   const item = found.item ?? deny("item_not_pending");
   if (item.version !== itemVersion) deny("item_changed");
-  if (item.kind === "adjudicate") return { label: item.label, decision: { itemId, itemVersion }, fixed: found.resize ? FIXED_CHOICES.resize : FIXED_CHOICES.retry };
+  if (item.kind === "adjudicate") return { label: item.label, decision: { itemId, itemVersion }, fixed: found.split ? FIXED_CHOICES.split : found.resize ? FIXED_CHOICES.resize : FIXED_CHOICES.retry };
   if (item.kind === "acceptance") return { label: item.label, decision: { itemId, itemVersion }, fixed: FIXED_CHOICES.acceptance, otherLabel: ACCEPTANCE_OTHER };
   if (item.kind === "adjust-requirement") {
     const requirement = `requirement:${requirementId}`;

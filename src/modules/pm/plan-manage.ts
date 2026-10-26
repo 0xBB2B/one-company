@@ -157,7 +157,7 @@ export function stalledStage(task: Pick<TaskRecord, "attempts" | "reviews" | "at
 }
 /** 用户对待裁决任务的决定：只由可信登记写入，PM 不能构造；revision/taskVersion 为登记时的批准版本与任务版本。 */
 const UserDecision = object({
-  decisionId: id, choice: Type.Union([Type.Literal("retry"), Type.Literal("adjust"), Type.Literal("terminate")]),
+  decisionId: id, choice: Type.Union([Type.Literal("retry"), Type.Literal("adjust"), Type.Literal("keep"), Type.Literal("terminate")]),
   maxTurns: Type.Union([positive, Type.Null()]), revision: positive, taskVersion: positive,
   usedByRunId: Type.Union([id, Type.Null()]), notified: Type.Boolean(),
   /** 审查卡住时的"再给一次机会"：裁决那一刻本轮等重派或已用尽的代理与轮次，只覆盖这些代理。 */
@@ -168,6 +168,8 @@ const UserDecision = object({
   escalation: Type.Optional(text),
   /** 登记决定那一刻已确认计划的任务清单指纹，终止后据此判断新计划是否有变更。 */
   confirmedPlan: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })),
+  /** 用户答复的是 PM 的拆分请求：选 adjust 时据此不等新的批准版本就放开目标。 */
+  split: Type.Optional(Type.Literal(true)),
 });
 export type UserDecision = Static<typeof UserDecision>;
 const TaskRecord = object({
@@ -184,6 +186,8 @@ const TaskRecord = object({
   attempts: Type.Array(Attempt),
   reviews: Type.Array(Review),
   userDecision: Type.Optional(UserDecision),
+  /** PM 请求拆分时的批准版本号：用来认出这件待裁决事项是拆分请求。 */
+  splitRequest: Type.Optional(object({ revision: positive })),
   sizeHold: Type.Optional(Type.Array(text, { minItems: 1, maxItems: 2 })),
   holdNote: Type.Optional(text),
   /** 当前任务版本开始时已有的尝试数：此后的尝试才属于当前版本，先红后绿的验证引用只在当前版本内有效。 */
@@ -301,6 +305,18 @@ export async function readTaskDetail(task: TaskRecord): Promise<Pick<TaskSpec, "
 /** 用户终止了某任务且此后尚无新的批准版本：该需求整体暂停，等待用户调整需求或取消需求。 */
 export function terminationPending(tasks: readonly TaskRecord[], revision: number): boolean {
   return tasks.some((task) => task.userDecision?.choice === "terminate" && task.userDecision.revision >= revision);
+}
+const adjustPending = (task: TaskRecord) => task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null;
+// 用户选择调整目标或范围后，须等新的批准版本才能按新范围修改该任务本身；用户对拆分请求选调整的（决定带 split），同一批准版本内即放开。只放开该任务修改时保留原目标的要求，且决定用过即失效
+const readjusted = (task: TaskRecord, revision: number) => adjustPending(task)
+  && (revision > task.userDecision!.revision || task.userDecision!.split === true);
+// 因超出拆分上限（当前版本还没派出过）或 PM 在派出前上报（任务还没派出过）而被用户要求调整的任务，PM 直接拆分或精简，不等新的批准版本
+const resized = (task: TaskRecord) => (task.sizeHold !== undefined && sizeHoldPending(task)) || (task.holdNote !== undefined && unsentTask(task));
+/** 任务按当前批准版本号是否占住目标：有过尝试且未完成的任务占住，复核判受影响后用户选了调整并放开、或已做完审查通过的除外；已取消的任务只在终止仍待处理时才占住。 */
+export function goalHeld(task: TaskRecord, revision: number): boolean {
+  return countedAttempts(task) > 0 && task.status !== "completed" &&
+    (task.status !== "needs_update" || !(finishedBeforeReview(task) || readjusted(task, revision) || (resized(task) && adjustPending(task)))) &&
+    (task.status !== "cancelled" || terminationPending([task], revision));
 }
 
 /** 用户终止任务后、或计划确认后又批准了新版本，须确认基于当前批准版本的计划才能派出或恢复子代理。 */
@@ -561,13 +577,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       if (task.status === "awaiting_user") deny("task_not_ready", [`${task.key} 等待用户裁决，不能修改或取消`]);
       if (task.userDecision?.choice === "terminate") deny("task_not_ready", [`${task.key} 已被用户终止，不能修改或取消`]);
     }
-    const adjustPending = (task: TaskRecord) => task.userDecision?.choice === "adjust" && task.userDecision.usedByRunId === null;
-    // 用户选择调整目标或范围后，须等新的批准版本才能按新范围修改该任务本身；只放开该任务修改时保留原目标的要求，且决定用过即失效
-    const readjusted = (task: TaskRecord) => adjustPending(task) && record.data.revision > task.userDecision!.revision;
-    // 因超出拆分上限（当前版本还没派出过）或 PM 在派出前上报（任务还没派出过）而被用户要求调整的任务，PM 直接拆分或精简，不等新的批准版本
-    const resized = (task: TaskRecord) => (task.sizeHold !== undefined && sizeHoldPending(task)) || (task.holdNote !== undefined && unsentTask(task));
+    const revision = record.data.revision;
     const waiting = (params.modify ?? []).filter((item) => { const task = byId.get(item.taskId)!;
-      return adjustPending(task) && !readjusted(task) && !resized(task); });
+      return adjustPending(task) && !readjusted(task, revision) && !resized(task); });
     if (waiting.length) deny("task_not_ready", waiting.map((item) => `${byId.get(item.taskId)!.key} 等待调整后的新批准版本`));
     // 用户给的再一次机会还没用时只能改说明文字，机会随之带到新版本；改了别的，用户的决定就对不上原来的任务了
     const beyondText: string[] = [];
@@ -580,14 +592,12 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     // 只占同角色：QA 的目标本就覆盖验收单元，若跨角色占用，QA 一报问题就再也追加不了 worker 返修任务。
     // 复核判为受影响的已执行任务，只有用户对它选了调整并批准了新版本、或选了拆分才放开，其余照旧占住目标。
     // 不比较章节变化：任务的目标、约束章节由 PM 自己填，段落依赖由解读模型给，都不可信，拿它们判断会被填充或依赖变化绕过。
-    const tried = current.tasks.filter((task) => countedAttempts(task) > 0 && task.status !== "completed" &&
-      (task.status !== "needs_update" || !(finishedBeforeReview(task) || readjusted(task) || (resized(task) && adjustPending(task)))) &&
-      (task.status !== "cancelled" || terminationPending([task], record.data.revision)));
+    const tried = current.tasks.filter((task) => goalHeld(task, revision));
     // 当前批准不再列为实施目标的段谁也拿不走：从已开工任务里去掉它、目标全都不在授权内时取消任务，都绕不开一次重试
     const authorized = implementScope(manifest, record.data.docSpec?.sections ?? []);
     const cancelTried = (params.cancel ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && task.goalUnitIds.some((unit) => authorized.has(unit))));
     if (cancelTried.length) deny("goal_held", cancelTried.map((item) => `${byId.get(item.taskId)!.key} 已有尝试，不能取消`));
-    const shrunk = (params.modify ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && !readjusted(task)
+    const shrunk = (params.modify ?? []).filter((item) => tried.some((task) => task.taskId === item.taskId && !readjusted(task, revision)
       && task.goalUnitIds.some((unit) => authorized.has(unit) && !item.spec.goalUnitIds.includes(unit))));
     if (shrunk.length) deny("goal_held", shrunk.map((item) => `${item.spec.key} 已有尝试，修改须保留原有目标`));
     const heldBy = (unit: string, role: string, except?: string) => tried.some((task) => task.taskId !== except && task.role === role && task.goalUnitIds.includes(unit));
@@ -604,7 +614,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const directory = await agentDirectory();
     validateAgents(specs, directory);
     const userAuthorized = new Set((params.modify ?? []).map((item) => byId.get(item.taskId)!)
-      .filter((task) => readjusted(task) || (resized(task) && adjustPending(task))).map((task) => task.taskId));
+      .filter((task) => readjusted(task, revision) || (resized(task) && adjustPending(task))).map((task) => task.taskId));
     const { records: changed, chances } = await materialize(manifest, withAutoReviewers(specs, directory), keys, record.data.revision, byId, userAuthorized,
       replanPending(current.plan, current.tasks, record.data.revision));
     const cancelled = (params.cancel ?? []).map((item) => ({ ...byId.get(item.taskId)!, status: "cancelled" as const, updatedAt: now() }));
@@ -624,7 +634,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     if (current.plan.planVersion !== planVersion) deny("version_conflict", ["计划版本已变化"]);
     const live = current.tasks.filter((task) => task.status !== "cancelled");
     const notReady = live.filter((task) => task.status === "needs_update" || task.status === "blocked");
-    if (notReady.length) deny("task_not_ready", notReady.map((task) => `${task.key}:${task.status}`));
+    const splitting = live.filter((task) => task.status === "awaiting_user" && task.splitRequest);
+    const blocking = [...notReady.map((task) => `${task.key}:${task.status}`), ...splitting.map((task) => `${task.key}:等用户裁决拆分请求`)];
+    if (blocking.length) deny("task_not_ready", blocking);
     const stale = live.filter((task) => !sameRefs(task.closure, closureOf(manifest, task.goalUnitIds, task.constraintUnitIds)));
     if (stale.length) deny("task_not_ready", stale.map((task) => `${task.key}:依据已变化`));
     const covered = new Set(live.flatMap((task) => task.goalUnitIds));

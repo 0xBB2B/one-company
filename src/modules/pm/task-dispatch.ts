@@ -6,7 +6,7 @@ import { registeredApprovalManifestIn } from "../requirement/approval-manifest-s
 import { activeCheckRoundIn } from "../verification/check-round.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
-import { cycleCountedAttempts, implementScope, latestRound, PlanManageError, readPlanIn, replanPending, reviewFailures, reviewRejections, REVIEW_REJECTED, MAX_REVIEWERS, REVIEW_UNFINISHED, reviewRoster, TASKS, terminationPending, unsentTask } from "./plan-manage.ts";
+import { cycleCountedAttempts, goalHeld, implementScope, latestRound, PlanManageError, readPlanIn, replanPending, reviewFailures, reviewRejections, REVIEW_REJECTED, MAX_REVIEWERS, REVIEW_UNFINISHED, reviewRoster, TASKS, terminationPending, unsentTask } from "./plan-manage.ts";
 import type { TaskAttempt, TaskRecord, TaskReview } from "./plan-manage.ts";
 import { evaluatePmIntakeGate } from "./pm-intake-runtime.ts";
 import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
@@ -278,6 +278,7 @@ export function beginTaskReview(request: Omit<TaskDispatchRequest, "retry" | "re
 /**
  * PM 对等待其处置或还没派出的任务放弃自行处理：转为等待用户裁决，说明记在最近一次尝试上；还没有尝试的记在任务的 holdNote 上。
  * PM 因此不多任何权限，之后只有用户的决定能让任务继续。
+ * 也接受待更新且占住目标的已执行任务（请求拆分）。
  */
 export function escalateTask(request: { dataRoot: string; repoId: string; lease: PmLease; taskId: string; note: string; now?: number }): TaskRecord {
   return withDatabase(repositoryDatabase(request.dataRoot, request.repoId), (db) => db.transaction(() => {
@@ -289,9 +290,15 @@ export function escalateTask(request: { dataRoot: string; repoId: string; lease:
     const unsent = task.status === "pending" && unsentTask(task);
     const waitingReview = task.role === "worker" && task.status === "reviewing";
     if (waitingReview && task.reviews.some((review) => review.outcome === "running")) deny("task_not_ready", [`${task.key} 本轮还有审查在跑，等它们结束后再上报`]);
-    if (task.status !== "awaiting_parent" && !unsent && !waitingReview) deny("task_not_ready", [`${task.key}:${task.status} 不在等待 PM 处置，也不是还没派出的任务`]);
+    const splitRevision = task.status === "needs_update" ? db.read<RequirementRecord>("requirements", task.requirementId)!.data.revision : undefined;
+    if (splitRevision !== undefined) {
+      const allRevoked = revokedGoalsIn(db, request.repoId, task).length === task.goalUnitIds.length;
+      if (!goalHeld(task, splitRevision) || allRevoked) deny("task_not_ready", [`${task.key} 不占住目标，直接改计划即可`]);
+      if (task.attempts.some((attempt) => attempt.outcome === "running") || task.reviews.some((review) => review.outcome === "running")) deny("task_not_ready", [`${task.key} 还有运行没结束，等运行结束后再上报`]);
+      if (task.userDecision?.choice === "keep" && task.userDecision.revision === splitRevision) deny("task_not_ready", [`${task.key} 用户已选不拆，本批准版本内不能再为它请求拆分`]);
+    } else if (task.status !== "awaiting_parent" && !unsent && !waitingReview) deny("task_not_ready", [`${task.key}:${task.status} 不在等待 PM 处置，也不是还没派出的任务`]);
     const attempts = unsent ? task.attempts : task.attempts.map((attempt, index) => index === task.attempts.length - 1 ? { ...attempt, escalation: request.note } : attempt);
-    const next = { ...task, status: "awaiting_user", attempts, ...(unsent ? { holdNote: request.note } : {}), updatedAt: request.now ?? Date.now() } as TaskRecord;
+    const next = { ...task, status: "awaiting_user", attempts, ...(unsent ? { holdNote: request.note } : {}), ...(splitRevision !== undefined ? { splitRequest: { revision: splitRevision } } : {}), updatedAt: request.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, task.taskId, row!.version, next);
     return next;
   }));

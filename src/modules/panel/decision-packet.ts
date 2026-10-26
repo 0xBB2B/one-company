@@ -51,12 +51,14 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
           ...(attempt.escalation ? [`  PM 上报${MODEL_NOTE}：${quoted(attempt.escalation, 1024)}`] : []),
           ...(verdict ? [`  子代理自述${MODEL_NOTE}：${verdict.conclusion} · ${quoted(verdict.summary, 400)}`] : [])];
       });
+      const split = task.splitRequest !== undefined;
       const resize = task.sizeHold !== undefined && sizeHoldPending(task);
       return [...head, `任务 ${task.key}（${task.role}）目标章节：${task.goalUnitIds.join("、")}`, ...(resize ? [`拆分上限：${task.sizeHold!.join("；")}`] : []), ...held, ...reported, ...attempts, ...task.reviews.map(reviewLine),
-        resize ? "可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 PRD；拆出的任务和精简后的本任务各重新计 2 次执行机会）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
+        split ? "可选：1 让 PM 按新版本拆分（PM 可取消本任务、把目标分给新任务，不需要再改 PRD；拆出的任务和改写后的本任务各重新计 2 次执行机会）；2 不拆，让 PM 原地改写（本任务照旧占住目标、目标不能减少；本版本内 PM 不能再为它请求拆分）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
+          : resize ? "可选：1 照做（须由用户给出轮数上限，最多 1000）；2 让 PM 拆分或精简（PM 直接修改任务，不需要改 PRD；拆出的任务和精简后的本任务各重新计 2 次执行机会）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
           : task.holdNote !== undefined && unsentTask(task) ? "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（PM 直接修改任务，不需要改 PRD）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。"
           : "可选：1 再给一次机会（须由用户给出轮数上限）；2 调整目标或范围（经 PRD 修改与批准后生效）；3 终止这个任务（整个需求暂停，须调整需求或取消需求）。",
-        windowLine(itemId, item.version, resize ? FIXED_CHOICES.resize : FIXED_CHOICES.retry),
+        windowLine(itemId, item.version, split ? FIXED_CHOICES.split : resize ? FIXED_CHOICES.resize : FIXED_CHOICES.retry),
         `用户在窗口里选中或自己写后，以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 登记。`].join("\n");
     }
     if (item.kind === "adjust-requirement") {

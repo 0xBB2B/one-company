@@ -158,7 +158,8 @@ export function pendingItemsIn(input: Pick<PmOverviewInput, "dataRoot" | "repoId
   for (const task of tasks) {
     if (task.status !== "awaiting_user") continue;
     const row = input.db.read<TaskRecord>("tasks", task.taskId)!;
-    const cause = task.sizeHold && sizeHoldPending(task) ? task.sizeHold.join("；")
+    const cause = task.splitRequest ? "需求改了，PM 请求拆分"
+      : task.sizeHold && sizeHoldPending(task) ? task.sizeHold.join("；")
       : task.attempts.at(-1)?.escalation !== undefined || task.holdNote !== undefined && unsentTask(task) ? "PM 上报需要决定"
       : stallCauseOf(task);
     const label = `待裁决：任务 ${task.key} ${cause}`;
