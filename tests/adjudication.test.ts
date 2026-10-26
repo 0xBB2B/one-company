@@ -2057,7 +2057,7 @@ describe("经真实裁决后 PM 能做什么", () => {
 });
 
 describe("请求拆分等用户裁决期间 PM 确认计划被拒，裁决并改完计划后被接受", () => {
-  test("login 请求拆分待裁决：PM 确认计划被拒 task_not_ready，原因含“依据已变化”；用户选拆分、PM 取消 login 并另加同目标的 login-a、login-b 后，确认被接受", async () => {
+  test("login 请求拆分待裁决：PM 确认计划被拒 task_not_ready，原因含“login:等用户裁决拆分请求”；用户选拆分、PM 取消 login 并另加同目标的 login-a、login-b 后，确认被接受", async () => {
     const w = await pendingWorld();
     const id = w.task("login").taskId;
     patchLogin(w, () => ({ status: "awaiting_parent", attempts: [STUCK_ATTEMPT()] }));
@@ -2074,13 +2074,52 @@ describe("请求拆分等用户裁决期间 PM 确认计划被拒，裁决并改
 
     const rejected = failureOf(await confirmPlan(w).then(() => undefined, (failure) => failure));
     expect(rejected.code).toBe("task_not_ready");
-    expect(rejected.text).toContain("依据已变化");
+    expect(rejected.text).toContain("login:等用户裁决拆分请求");
 
     const itemId = `task:${id}`;
     const x: SplitWorld = { w, id, itemId, version: () => `${itemId}:${w.db((db) => db.read<TaskRecord>(TASKS, id)!.version)}` };
     await decideAndSettle(x, "adjust");
     await cancelLoginAddTwo(w, id);
     expect(w.task("login").status).toBe("cancelled");
+    await expect(confirmPlan(w)).resolves.toBeDefined();
+  });
+
+  test("login 请求拆分待裁决，批准的新版本只改了 failure 的章节、复核仍判 login 受影响：PM 把 failure 按新版本改好后确认计划仍被拒 task_not_ready，原因含“login:等用户裁决拆分请求”", async () => {
+    const w = await pendingWorld();
+    const id = w.task("login").taskId;
+    patchLogin(w, () => ({ status: "awaiting_parent", attempts: [STUCK_ATTEMPT()] }));
+    await approveAndAssessLoginAffected(w, id, FAILURE_CHANGED_BODY);
+    await w.escalate(id, SPLIT_NOTE);
+    expect(w.task("login").status).toBe("awaiting_user");
+    await w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: w.task("failure").taskId, version: w.task("failure").version,
+      spec: spec("failure", "scenario.failure", { objective: "失败场景补充提示" }) }] });
+
+    const rejected = failureOf(await confirmPlan(w).then(() => undefined, (failure) => failure));
+    expect(rejected.code).toBe("task_not_ready");
+    expect(rejected.text).toContain("login:等用户裁决拆分请求");
+    expect(w.task("login").status).toBe("awaiting_user");
+  });
+
+  test("login 请求拆分待裁决、failure 判受影响还没改（待更新）：PM 确认计划被拒 task_not_ready，原因同时列出“login:等用户裁决拆分请求”和“failure:needs_update”", async () => {
+    const w = await pendingWorld();
+    const id = w.task("login").taskId;
+    patchLogin(w, () => ({ status: "awaiting_parent", attempts: [STUCK_ATTEMPT()] }));
+    await approveAndAssessLoginAffected(w, id, FAILURE_CHANGED_BODY);
+    await w.escalate(id, SPLIT_NOTE);
+    expect(w.task("login").status).toBe("awaiting_user");
+    expect(w.task("failure").status).toBe("needs_update");
+
+    const rejected = failureOf(await confirmPlan(w).then(() => undefined, (failure) => failure));
+    expect(rejected.code).toBe("task_not_ready");
+    expect(rejected.text).toContain("login:等用户裁决拆分请求");
+    expect(rejected.text).toContain("failure:needs_update");
+  });
+
+  test("failure 经普通上报（不是请求拆分）待用户裁决、其余任务都准备好且依据与当前批准一致：PM 确认计划被接受", async () => {
+    const w = await pendingWorld();
+    await w.escalate(w.task("failure").taskId, "设置页没有用户通过的原型，不能派");
+    expect(w.task("failure").status).toBe("awaiting_user");
+
     await expect(confirmPlan(w)).resolves.toBeDefined();
   });
 });

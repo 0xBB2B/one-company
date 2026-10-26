@@ -634,7 +634,9 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     if (current.plan.planVersion !== planVersion) deny("version_conflict", ["计划版本已变化"]);
     const live = current.tasks.filter((task) => task.status !== "cancelled");
     const notReady = live.filter((task) => task.status === "needs_update" || task.status === "blocked");
-    if (notReady.length) deny("task_not_ready", notReady.map((task) => `${task.key}:${task.status}`));
+    const splitting = live.filter((task) => task.status === "awaiting_user" && task.splitRequest);
+    const blocking = [...notReady.map((task) => `${task.key}:${task.status}`), ...splitting.map((task) => `${task.key}:等用户裁决拆分请求`)];
+    if (blocking.length) deny("task_not_ready", blocking);
     const stale = live.filter((task) => !sameRefs(task.closure, closureOf(manifest, task.goalUnitIds, task.constraintUnitIds)));
     if (stale.length) deny("task_not_ready", stale.map((task) => `${task.key}:依据已变化`));
     const covered = new Set(live.flatMap((task) => task.goalUnitIds));
