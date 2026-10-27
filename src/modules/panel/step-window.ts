@@ -38,6 +38,7 @@ function orderedSteps(steps: RunStep[]): Array<{ step: RunStep; indent: boolean 
 }
 
 export class StepWindow {
+  private readonly options: StepWindowOptions;
   private data: RunStepsView | undefined;
   private fetchedAt = 0;
   private error: string | undefined;
@@ -46,7 +47,7 @@ export class StepWindow {
   private frame = 0;
   private areaHeight = Math.max(3, DEFAULT_ROWS - 8);
 
-  constructor(private readonly options: StepWindowOptions) {}
+  constructor(options: StepWindowOptions) { this.options = options; }
 
   apply(view: RunStepsView): void {
     this.data = view;
