@@ -51,6 +51,20 @@ function wrapPlain(text: string, width: number): string[] {
   lines.push(line);
   return lines;
 }
+function wrapSegments(text: string, width: number): string[] {
+  const [first = "", ...rest] = text.split(" · ");
+  const lines = wrapPlain(first, width);
+  let line = lines.pop()!;
+  for (const segment of rest) {
+    if (visibleWidth(`${line} · ${segment}`) <= width) { line += ` · ${segment}`; continue; }
+    lines.push(line);
+    const pieces = wrapPlain(`· ${segment}`, width);
+    line = pieces.pop()!;
+    lines.push(...pieces);
+  }
+  lines.push(line);
+  return lines;
+}
 const TONE_COLOR: Record<LineTone, string | undefined> = { normal: undefined, muted: "muted", added: "toolDiffAdded", removed: "toolDiffRemoved", warning: "warning" };
 
 interface QuestionState { cursor: number; picked: Set<number>; other: string; answered: boolean }
@@ -189,7 +203,9 @@ export class QuestionWindowView {
       if (warning) {
         const text = `${box}${label}`;
         const padded = description ? text + " ".repeat(labelWidth - visibleWidth(label) + 3) : text;
-        lines.push((selected ? ` ${highlight(`→ ${text}`)}` : `   ${text}`) + (description ? padded.slice(text.length) + muted(description) : ""));
+        const pieces = description ? wrapSegments(description, Math.max(8, width - 3 - visibleWidth(padded))) : [];
+        lines.push((selected ? ` ${highlight(`→ ${text}`)}` : `   ${text}`) + (description ? padded.slice(text.length) + muted(pieces[0]!) : ""));
+        for (const piece of pieces.slice(1)) lines.push(" ".repeat(3 + visibleWidth(padded)) + muted(piece));
       } else {
         const choice = question.choices[i], number = `${box}${i + 1}. `, tag = choice?.recommended ? `  ${theme.fg("success", theme.bold("推荐"))}` : "";
         const pieces = wrapPlain(label, width - 3 - visibleWidth(number) - (tag ? 6 : 0));
