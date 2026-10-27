@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { chooseWindow, confirmWindow, QuestionWindowView } from "../src/core/host/question-window.ts";
+import { chooseOrWriteWindow, chooseWindow, confirmWindow, QuestionWindowView } from "../src/core/host/question-window.ts";
 import type { WindowAnswer, WindowHost } from "../src/core/host/question-window.ts";
 
 const UP = "\x1b[A", DOWN = "\x1b[B", RIGHT = "\x1b[C", LEFT = "\x1b[D", ENTER = "\r", ESC = "\x1b", SPACE = " ", BACKSPACE = "\x7f";
@@ -332,4 +332,119 @@ test("选项说明折成多行时，每一行说明都是灰色", async () => {
   const first = rendered.find((line) => line.includes("项目层"));
   expect(first).toContain("<muted>~/Projects/one-company/ · 只对这个项目生效</>");
   expect(rendered.some((line) => line.includes("<muted>· 选它会把本项目设为受信任</"))).toBe(true);
+});
+
+const NOTE_LABEL = "通过并补充说明（自己输入）";
+const noteQuestion = (extra: Record<string, unknown> = {}) => ({ question: "确认原型", choices: [{ label: "通过（写进需求草稿）" }, { label: NOTE_LABEL, writable: true }],
+  allowOther: true, otherLabel: "返工（自己输入要改什么）", otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版", ...extra });
+const noteView = (extra: Record<string, unknown> = {}) => view({ tone: "warning", questions: [noteQuestion(extra)] });
+const typeText = (window: { handleInput(data: string): void }, value: string) => { for (const char of value) window.handleInput(char); };
+
+test("可输入选项：三行按顺序渲染，光标在普通项时提示不含直接输入，移到可输入项后提示变为直接输入并出现输入栏", () => {
+  const { window, text } = noteView();
+  const first = plain(text());
+  expect(first.indexOf("通过（写进需求草稿）")).toBeGreaterThan(-1);
+  expect(first.indexOf(NOTE_LABEL)).toBeGreaterThan(first.indexOf("通过（写进需求草稿）"));
+  expect(first.indexOf("返工（自己输入要改什么）")).toBeGreaterThan(first.indexOf(NOTE_LABEL));
+  expect(text()).toContain("<muted>↑↓ 选择 · 回车确认 · Esc 放弃这一版</>");
+  expect(text()).not.toContain("›");
+  window.handleInput(DOWN);
+  expect(text()).toContain("<muted>直接输入 · 回车确认 · ↑↓ 选择 · Esc 放弃这一版</>");
+  const lines = text().split("\n");
+  const noteRow = lines.findIndex((line) => line.includes(NOTE_LABEL));
+  expect(lines[noteRow + 1]).toContain("<warning>›</> \x1b[7m \x1b[27m");
+});
+
+test("可输入选项：空输入或只有空白时回车不起作用", () => {
+  const { window, done } = noteView();
+  window.handleInput(DOWN);
+  window.handleInput(ENTER);
+  expect(done).toEqual([]);
+  typeText(window, "  ");
+  window.handleInput(ENTER);
+  expect(done).toEqual([]);
+});
+
+test("可输入选项：超过 otherMaxLength 时提示超出字数且回车不起作用，退格回到上限后可提交", () => {
+  const { window, text, done } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "字".repeat(4001));
+  expect(text()).toContain("超出 1 字，最多 4000 字");
+  window.handleInput(ENTER);
+  expect(done).toEqual([]);
+  window.handleInput(BACKSPACE);
+  expect(text()).not.toContain("超出");
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [NOTE_LABEL], other: "字".repeat(4000) }]]);
+});
+
+test("可输入选项：提交时 other 去掉首尾空白，choices 为该项名称", () => {
+  const { window, done } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "  用 B  ");
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [NOTE_LABEL], other: "用 B" }]]);
+});
+
+test("可输入选项：可输入项与其他行各自保留输入，光标移走再移回来字还在", () => {
+  const { window, text, done } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "乙");
+  window.handleInput(DOWN);
+  typeText(window, "甲");
+  window.handleInput(UP);
+  const lines = text().split("\n");
+  expect(lines[lines.findIndex((line) => line.includes(NOTE_LABEL)) + 1]).toContain("<warning>›</> 乙");
+  expect(lines[lines.findIndex((line) => line.includes("返工（自己输入要改什么）")) + 1]).toContain("<warning>›</> 甲");
+  window.handleInput(DOWN);
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [], other: "甲" }]]);
+});
+
+test("escapeChoice：按 Esc 返回指定答案；没有 escapeChoice 的窗口按 Esc 仍返回 undefined", () => {
+  const withEscape = noteView();
+  withEscape.window.handleInput(ESC);
+  expect(withEscape.done).toEqual([[{ choices: ["放弃这一版"] }]]);
+  const without = view({ tone: "warning", questions: [{ question: "确认原型", choices: [{ label: "通过" }], allowOther: true }] });
+  without.window.handleInput(ESC);
+  expect(without.done).toEqual([undefined]);
+});
+
+test("escapeChoice：在输入行里有字时按 Esc 也返回指定答案", () => {
+  const { window, done } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "乙");
+  window.handleInput(ESC);
+  expect(done).toEqual([[{ choices: ["放弃这一版"] }]]);
+});
+
+test("chooseOrWriteWindow 透传 writable 和 escapeChoice，signal 中断时返回 undefined", async () => {
+  const request = { title: "确认原型", lines: [], otherLabel: "返工（自己输入要改什么）", otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版",
+    choices: [{ label: "通过（写进需求草稿）" }, { label: NOTE_LABEL, writable: true }] };
+  expect(await chooseOrWriteWindow(fakeUi((c) => { c.handleInput(DOWN); typeText(c, " 用 B "); c.handleInput(ENTER); }), request))
+    .toEqual({ choices: [NOTE_LABEL], other: "用 B" });
+  expect(await chooseOrWriteWindow(fakeUi((c) => c.handleInput(ESC)), request)).toEqual({ choices: ["放弃这一版"] });
+  const abort = new AbortController();
+  const pending = chooseOrWriteWindow(fakeUi(() => {}), request, abort.signal);
+  abort.abort();
+  expect(await pending).toBeUndefined();
+});
+
+test("chooseOrWriteWindow 窗口已显示、输入行里有字时被中断，返回 undefined 而不是 Esc 的指定答案", async () => {
+  const request = { title: "确认原型", lines: [], otherLabel: "返工（自己输入要改什么）", otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版",
+    choices: [{ label: "通过（写进需求草稿）" }, { label: NOTE_LABEL, writable: true }] };
+  const abort = new AbortController();
+  const host = fakeUi((c) => { c.handleInput(DOWN); typeText(c, "用 B"); });
+  const pending = chooseOrWriteWindow(host, request, abort.signal);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(host.shown).toBe(1);
+  abort.abort();
+  expect(await pending).toBeUndefined();
+});
+
+test("光标在\"其他\"输入行时底部提示也是直接输入那组，Esc 那一段用 escapeHint", () => {
+  const { window, text } = view({ tone: "warning", questions: [{ question: "确认原型", choices: [{ label: "通过（写进需求草稿）" }, { label: NOTE_LABEL, writable: true }],
+    allowOther: true, otherLabel: "返工（自己输入要改什么）", otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版" }] });
+  window.handleInput(DOWN); window.handleInput(DOWN);
+  expect(text()).toContain("<muted>直接输入 · 回车确认 · ↑↓ 选择 · Esc 放弃这一版</>");
 });

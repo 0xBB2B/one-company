@@ -4,7 +4,7 @@ import { decodeKittyPrintable, matchesKey, visibleWidth, wrapTextWithAnsi } from
 
 export type LineTone = "normal" | "muted" | "added" | "removed" | "warning";
 export interface WindowLine { text: string; tone?: LineTone }
-export interface WindowChoice { label: string; description?: string; recommended?: boolean; recommendedReason?: string; /** 不可选时写原因：整行变暗，光标跳过。 */ disabled?: string }
+export interface WindowChoice { label: string; description?: string; recommended?: boolean; recommendedReason?: string; /** 不可选时写原因：整行变暗，光标跳过。 */ disabled?: string; /** 这一项本身是输入行：选中后可直接输入文字，回车提交该项名称和文字。 */ writable?: boolean }
 export interface WindowQuestion {
   header?: string;
   /** 问题上方的灰色一行，例如"提问 · 需求名（第 2 版）"。 */
@@ -23,6 +23,8 @@ export interface WindowQuestion {
   cancelNote?: string;
   /** 整个替换提示行里 Esc 那一段。 */
   escapeHint?: string;
+  /** 按 Esc 时窗口按"选了这个名称"作答。 */
+  escapeChoice?: string;
 }
 export interface WindowAnswer { choices: string[]; other?: string }
 export interface WindowTheme { fg(kind: string, text: string): string; bold(text: string): string }
@@ -67,9 +69,9 @@ function wrapSegments(text: string, width: number): string[] {
 }
 const TONE_COLOR: Record<LineTone, string | undefined> = { normal: undefined, muted: "muted", added: "toolDiffAdded", removed: "toolDiffRemoved", warning: "warning" };
 
-interface QuestionState { cursor: number; picked: Set<number>; other: string; answered: boolean }
+interface QuestionState { cursor: number; picked: Set<number>; other: string; drafts: Map<number, string>; answered: boolean }
 
-/** 通用问答窗口：一到多个问题，单选或多选，可带"其他（自己输入）"；Esc 取消时答案为 undefined。 */
+/** 通用问答窗口：一到多个问题，单选或多选，可带"其他（自己输入）"；Esc 取消时答案为 undefined，问题带 escapeChoice 时按它作答。 */
 export class QuestionWindowView {
   private tab = 0;
   private reviewCursor = 0;
@@ -80,7 +82,7 @@ export class QuestionWindowView {
     this.options = options;
     this.states = options.questions.map((question) => ({ cursor: Math.max(0, question.choices.findIndex((choice) => choice.recommended && !choice.disabled),
       question.choices.findIndex((choice) => !choice.disabled)),
-      picked: new Set<number>(), other: "", answered: false }));
+      picked: new Set<number>(), other: "", drafts: new Map<number, string>(), answered: false }));
   }
 
   private get multi(): boolean { return this.options.questions.length > 1; }
@@ -90,6 +92,12 @@ export class QuestionWindowView {
     return question.choices.length + (question.allowOther ? 1 : 0);
   }
   private isOther(index: number, cursor: number): boolean { return cursor === this.options.questions[index]!.choices.length; }
+  private isInput(index: number, cursor: number): boolean { return this.isOther(index, cursor) || !!this.options.questions[index]!.choices[cursor]?.writable; }
+  private textAt(index: number, cursor: number): string { return this.isOther(index, cursor) ? this.states[index]!.other : this.states[index]!.drafts.get(cursor) ?? ""; }
+  private setTextAt(index: number, cursor: number, value: string): void {
+    if (this.isOther(index, cursor)) this.states[index]!.other = value;
+    else this.states[index]!.drafts.set(cursor, value);
+  }
   private move(index: number, step: 1 | -1): void {
     const state = this.states[index]!, question = this.options.questions[index]!;
     for (let next = state.cursor + step; next >= 0 && next < this.choiceCount(index); next += step) {
@@ -112,12 +120,12 @@ export class QuestionWindowView {
   handleInput(data: string): void {
     if (this.onReview) { this.handleReview(data); return; }
     const index = this.tab, state = this.states[index]!, question = this.options.questions[index]!;
-    if (matchesKey(data, "escape")) { this.options.onDone(undefined); return; }
+    if (matchesKey(data, "escape")) { this.options.onDone(question.escapeChoice !== undefined ? [{ choices: [question.escapeChoice] }] : undefined); return; }
     if (this.multi && matchesKey(data, "right")) { this.tab = Math.min(this.tab + 1, this.options.questions.length); return; }
     if (this.multi && matchesKey(data, "left")) { this.tab = Math.max(this.tab - 1, 0); return; }
     if (matchesKey(data, "down")) { this.move(index, 1); return; }
     if (matchesKey(data, "up")) { this.move(index, -1); return; }
-    if (this.isOther(index, state.cursor)) { this.handleOther(data, index); return; }
+    if (this.isInput(index, state.cursor)) { this.handleOther(data, index); return; }
     if (question.multiSelect && matchesKey(data, "space")) {
       if (state.picked.has(state.cursor)) state.picked.delete(state.cursor);
       else state.picked.add(state.cursor);
@@ -129,18 +137,20 @@ export class QuestionWindowView {
     this.complete(index);
   }
 
-  /** 光标在"其他"一行时，按键直接进输入栏；有字时回车才提交。 */
+  /** 光标在输入行（"其他"或可输入选项）时，按键直接进输入栏；有字时回车才提交。 */
   private handleOther(data: string, index: number): void {
     const state = this.states[index]!, question = this.options.questions[index]!;
+    const text = this.textAt(index, state.cursor);
     if (matchesKey(data, "enter")) {
-      if (!state.other.trim() || (question.otherMaxLength !== undefined && state.other.trim().length > question.otherMaxLength)) return;
+      if (!text.trim() || (question.otherMaxLength !== undefined && text.trim().length > question.otherMaxLength)) return;
       if (!question.multiSelect) state.picked.clear();
+      if (!this.isOther(index, state.cursor)) { state.picked.add(state.cursor); state.other = text; }
       this.complete(index);
       return;
     }
-    if (matchesKey(data, "backspace")) { state.other = [...state.other].slice(0, -1).join(""); return; }
+    if (matchesKey(data, "backspace")) { this.setTextAt(index, state.cursor, [...text].slice(0, -1).join("")); return; }
     const printable = decodeKittyPrintable(data) ?? data;
-    if (!/[\u0000-\u001f\u007f]/u.test(printable)) state.other += printable;
+    if (!/[\u0000-\u001f\u007f]/u.test(printable)) this.setTextAt(index, state.cursor, text + printable);
   }
 
   private handleReview(data: string): void {
@@ -218,14 +228,15 @@ export class QuestionWindowView {
           lines.push(...wrapPlain(`推荐理由：${choice.recommendedReason}`, width - 6).map((piece) => `      ${theme.fg("success", piece)}`));
         }
       }
-      if (this.isOther(index, i) && (selected || state.other)) lines.push(`      ${highlight("›")} ${state.other}${selected ? CARET : ""}`);
-      const excess = this.isOther(index, i) && question.otherMaxLength !== undefined ? state.other.trim().length - question.otherMaxLength : 0;
+      const typed = this.textAt(index, i);
+      if (this.isInput(index, i) && (selected || typed)) lines.push(`      ${highlight("›")} ${typed}${selected ? CARET : ""}`);
+      const excess = this.isInput(index, i) && question.otherMaxLength !== undefined ? typed.trim().length - question.otherMaxLength : 0;
       if (excess > 0) lines.push(`      ${muted(`超出 ${excess} 字，最多 ${question.otherMaxLength} 字`)}`);
     });
 
     const enter = question.multiSelect && this.multi ? "回车下一题" : "回车确认";
     const hint = [
-      ...(this.isOther(index, state.cursor) ? ["直接输入", enter, "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
+      ...(this.isInput(index, state.cursor) ? ["直接输入", enter, "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
       ...(this.multi ? ["←→ 切换问题"] : []),
       question.escapeHint ?? `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
     ].join(" · ");
@@ -306,11 +317,12 @@ export async function chooseWindow(host: WindowHost, window: ProgramWindow & { c
   return answers?.[0]?.choices[0];
 }
 
-/** 带"其他"输入行的程序选择窗口：返回选中的选项或用户输入的文字，取消时为 undefined。 */
-export async function chooseOrWriteWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; otherLabel: string; otherMaxLength?: number; cancelNote?: string; escapeHint?: string }, signal?: AbortSignal): Promise<WindowAnswer | undefined> {
+/** 带"其他"输入行的程序选择窗口：返回选中的选项或用户输入的文字；Esc 时为 escapeChoice 的答案（没有则为 undefined），中断时为 undefined。 */
+export async function chooseOrWriteWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; otherLabel: string; otherMaxLength?: number; cancelNote?: string; escapeHint?: string; escapeChoice?: string }, signal?: AbortSignal): Promise<WindowAnswer | undefined> {
   const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices, allowOther: true, otherLabel: window.otherLabel,
     ...(window.otherMaxLength !== undefined ? { otherMaxLength: window.otherMaxLength } : {}),
-    ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}), ...(window.escapeHint ? { escapeHint: window.escapeHint } : {}) }], "warning", signal);
+    ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}), ...(window.escapeHint ? { escapeHint: window.escapeHint } : {}),
+    ...(window.escapeChoice !== undefined ? { escapeChoice: window.escapeChoice } : {}) }], "warning", signal);
   return answers?.[0];
 }
 
