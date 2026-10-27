@@ -3,10 +3,12 @@
 |---|---|---|---|
 | 01 | step-recording | done | 2026-10-27 |
 | 02 | steps-method | done | 2026-10-27 |
-| 03 | step-window | pending | — |
+| 03 | step-window | done | 2026-10-27 |
 | 04 | panel-select | pending | — |
 ## 当前
-正在执行 `03-step-window.md`：Red。
+正在执行 `04-panel-select.md`：Red。
+
+03 审查自修 1 次："下面还有 M 步"把思考中算进去、出错后底部提示仍是滚动提示、几处颜色与预览不一致（边框、读取中、思考中、出错说明、运行中文字）、结束后定时器空转；补测试后修好。
 
 02：测试漏改两条旧的审查代理期望（运行中的审查代理按 PRD 要带 runId），已补；审查指出主窗口原型设计没有 runs.steps 测试，已补一条。
 
