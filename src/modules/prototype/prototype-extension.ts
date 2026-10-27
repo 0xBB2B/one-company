@@ -81,10 +81,10 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     const answer = await chooseOrWriteWindow(ctx, { ...confirmWindowContent(pending, opened), otherMaxLength: OPINION_MAX_LENGTH }, signal);
     if (!answer) return "undecided";
     const picked = answer.choices[0];
-    const choice = picked === ACCEPT_LABEL || picked === ACCEPT_NOTE_LABEL ? "accept" : picked === ABANDON_LABEL ? "abandon" : answer.other ? "rework" : undefined;
+    const choice = picked === ACCEPT_LABEL || picked === ACCEPT_NOTE_LABEL ? "accept" : picked === ABANDON_LABEL ? "abandon" : answer.other ? "opinion" : undefined;
     if (!choice) return "undecided";
     const note = picked === ACCEPT_NOTE_LABEL ? answer.other ?? null : null;
-    const opinion = choice === "rework" ? answer.other ?? null : null;
+    const opinion = choice === "opinion" ? answer.other ?? null : null;
     try {
       await client.call("prototypes.decide", { ...input, version: pending.version, hash: pending.hash, choice, opinion, note });
     } catch (error) {
@@ -100,8 +100,14 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
       pi.sendMessage({ customType: "one-company.prototype-note", display: false,
         content: `用户通过了原型「${pending.name}」第 ${pending.version} 版，并补充说明：${note}\n这句说明已和这一版原型一起存下，批准需求后会原话交给 PM 和子代理。需求正文和这句说明对不上时，按它改正文。` }, { deliverAs: "nextTurn" });
     }
-    if (choice === "rework") {
-      tell("one-company.prototype-rework", `用户对原型「${pending.name}」第 ${pending.version} 版选了返工。\n上一版文件：${pending.path}\n用户原话：${answer.other}\n请按这句原话用 one_company_prototype dispatch 重派设计师。`);
+    if (choice === "opinion") {
+      tell("one-company.prototype-opinion", [
+        `用户对原型「${pending.name}」第 ${pending.version} 版提了意见，这一版仍在等用户确认。`,
+        `文件：${pending.path}`,
+        "用户原话：",
+        answer.other,
+        "如果是提问，先回答，再用 one_company_prototype confirm 重开这份原型的确认窗口；如果要修改，用 one_company_prototype dispatch 重派设计师，设计师会拿到这一版文件和这段原话，重派后这一版作废。",
+      ].join("\n"));
     }
     return choice === "abandon" ? "abandoned" : "decided";
   }
