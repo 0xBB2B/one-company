@@ -517,3 +517,26 @@ describe("openStepWindow：结束后停掉定时器", () => {
     clock.stopGapWatcher();
   });
 });
+
+describe("步骤窗口：来自模型的文字去掉双向文字控制符和零宽字符", () => {
+  const BIDI = "‮", ZW = "​";
+  const open = () => new StepWindow({ title: `导出${BIDI}页${ZW}（第 1 版）· prototype`, now: () => 0, onClose: () => {} });
+
+  test("标题、失败原因、步骤文字都去掉这些字符", () => {
+    const w = open();
+    w.apply(view({ state: "failed", reason: `模型${BIDI}请求${ZW}失败`, steps: [{ id: "a", text: `读 src/${BIDI}a${ZW}.ts`, status: "done" }] }));
+    const text = w.render(200).join("\n");
+    expect(text).toContain("导出页（第 1 版）· prototype");
+    expect(text).toContain("✗ 失败：模型请求失败");
+    expect(text).toContain("✓ 读 src/a.ts");
+    expect(text).not.toMatch(/[‮​]/);
+  });
+
+  test("读不到步骤的原因也去掉这些字符", () => {
+    const w = open();
+    w.fail(`连不上${BIDI}守护进程${ZW}`);
+    const text = w.render(200).join("\n");
+    expect(text).toContain("✗ 读不到步骤：连不上守护进程");
+    expect(text).not.toMatch(/[‮​]/);
+  });
+});
