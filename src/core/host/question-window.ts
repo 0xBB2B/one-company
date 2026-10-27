@@ -1,6 +1,6 @@
 import type { ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
-import type { KeybindingsManager, TUI } from "@earendil-works/pi-tui";
-import { decodeKittyPrintable, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { EditorTheme, KeybindingsManager, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Editor, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 export type LineTone = "normal" | "muted" | "added" | "removed" | "warning";
 export interface WindowLine { text: string; tone?: LineTone }
@@ -34,7 +34,14 @@ export type WindowTone = "warning" | "standard";
 const OTHER = "其他（自己输入）";
 const CLOSING = new Set([..."。，、；：？！）」』》,.;:!?)"]);
 const WORD = /[\w.~-]/u;
-const CARET = "\x1b[7m \x1b[27m";
+const INPUT_INDENT = 8;
+const EDITOR_THEME = { borderColor: (text: string) => text, selectList: {} } as unknown as EditorTheme;
+
+const CURSOR_MARK = "\x1b_pi:fc\x07";
+const PLAIN_BORDER = /^─+$/u;
+
+/** pi 的 TUI 靠原始光标标记决定画假光标还是硬件光标，所以有焦点时原样保留；没有焦点就去掉。 */
+const drawCursor = (line: string, focused: boolean) => (focused ? line : line.replace(/\x1b_pi:fc\x07/gu, "").replace(/\x1b_pi:\/fc\x07/gu, "")).trimEnd();
 
 /** 按显示宽度折行：放得下就放；行首不留句号逗号这类标点，英文单词与数字不从中间切开。 */
 function wrapPlain(text: string, width: number): string[] {
@@ -69,20 +76,27 @@ function wrapSegments(text: string, width: number): string[] {
 }
 const TONE_COLOR: Record<LineTone, string | undefined> = { normal: undefined, muted: "muted", added: "toolDiffAdded", removed: "toolDiffRemoved", warning: "warning" };
 
-interface QuestionState { cursor: number; picked: Set<number>; other: string; drafts: Map<number, string>; answered: boolean }
+interface QuestionState { cursor: number; picked: Set<number>; editors: Map<number, Editor>; answered: boolean }
 
 /** 通用问答窗口：一到多个问题，单选或多选，可带"其他（自己输入）"；Esc 取消时答案为 undefined，问题带 escapeChoice 时按它作答。 */
 export class QuestionWindowView {
   private tab = 0;
   private reviewCursor = 0;
   private readonly states: QuestionState[];
-  private readonly options: { questions: WindowQuestion[]; tone: WindowTone; theme: WindowTheme; onDone(answers: WindowAnswer[] | undefined): void };
+  private readonly options: { questions: WindowQuestion[]; tone: WindowTone; theme: WindowTheme; tui: Pick<TUI, "requestRender" | "terminal">; onDone(answers: WindowAnswer[] | undefined): void };
+  private editorWidth = 80 - INPUT_INDENT;
+  private bars: Array<{ index: number; cursor: number; start: number; end: number }> = [];
 
   constructor(options: QuestionWindowView["options"]) {
     this.options = options;
     this.states = options.questions.map((question) => ({ cursor: Math.max(0, question.choices.findIndex((choice) => choice.recommended && !choice.disabled),
       question.choices.findIndex((choice) => !choice.disabled)),
-      picked: new Set<number>(), other: "", drafts: new Map<number, string>(), answered: false }));
+      picked: new Set<number>(), editors: new Map<number, Editor>(), answered: false }));
+    this.states.forEach((state, index) => {
+      for (let cursor = 0; cursor < this.choiceCount(index); cursor++) {
+        if (this.isInput(index, cursor)) state.editors.set(cursor, new Editor(options.tui as TUI, EDITOR_THEME, { paddingX: 0 }));
+      }
+    });
   }
 
   private get multi(): boolean { return this.options.questions.length > 1; }
@@ -93,10 +107,14 @@ export class QuestionWindowView {
   }
   private isOther(index: number, cursor: number): boolean { return cursor === this.options.questions[index]!.choices.length; }
   private isInput(index: number, cursor: number): boolean { return this.isOther(index, cursor) || !!this.options.questions[index]!.choices[cursor]?.writable; }
-  private textAt(index: number, cursor: number): string { return this.isOther(index, cursor) ? this.states[index]!.other : this.states[index]!.drafts.get(cursor) ?? ""; }
-  private setTextAt(index: number, cursor: number, value: string): void {
-    if (this.isOther(index, cursor)) this.states[index]!.other = value;
-    else this.states[index]!.drafts.set(cursor, value);
+  private editorAt(index: number, cursor: number): Editor | undefined { return this.states[index]!.editors.get(cursor); }
+  private textAt(index: number, cursor: number): string { return this.editorAt(index, cursor)?.getExpandedText().trim() ?? ""; }
+  private otherText(index: number): string { return this.textAt(index, this.options.questions[index]!.choices.length); }
+  // 上下边框是纯横线说明那一侧没有被滚动藏起来的行
+  private cursorEdge(editor: Editor): { first: boolean; last: boolean } {
+    const lines = editor.render(this.editorWidth);
+    const at = lines.findIndex((line, i) => i > 0 && i < lines.length - 1 && line.includes(CURSOR_MARK));
+    return { first: at === 1 && PLAIN_BORDER.test(lines[0]!), last: at === lines.length - 2 && PLAIN_BORDER.test(lines[lines.length - 1]!) };
   }
   private move(index: number, step: 1 | -1): void {
     const state = this.states[index]!, question = this.options.questions[index]!;
@@ -108,7 +126,9 @@ export class QuestionWindowView {
   private answer(index: number): WindowAnswer {
     const question = this.options.questions[index]!, state = this.states[index]!;
     const choices = question.choices.filter((_, i) => state.picked.has(i)).map((choice) => choice.label);
-    return state.other.trim() ? { choices, other: state.other.trim() } : { choices };
+    const writable = [...state.picked].map((i) => this.textAt(index, i)).find(Boolean);
+    const other = writable ?? this.otherText(index);
+    return other ? { choices, other } : { choices };
   }
 
   private complete(index: number): void {
@@ -121,36 +141,48 @@ export class QuestionWindowView {
     if (this.onReview) { this.handleReview(data); return; }
     const index = this.tab, state = this.states[index]!, question = this.options.questions[index]!;
     if (matchesKey(data, "escape")) { this.options.onDone(question.escapeChoice !== undefined ? [{ choices: [question.escapeChoice] }] : undefined); return; }
+    const editor = this.editorAt(index, state.cursor);
+    if (editor) { this.handleInputRow(data, index, editor); return; }
     if (this.multi && matchesKey(data, "right")) { this.tab = Math.min(this.tab + 1, this.options.questions.length); return; }
     if (this.multi && matchesKey(data, "left")) { this.tab = Math.max(this.tab - 1, 0); return; }
     if (matchesKey(data, "down")) { this.move(index, 1); return; }
     if (matchesKey(data, "up")) { this.move(index, -1); return; }
-    if (this.isInput(index, state.cursor)) { this.handleOther(data, index); return; }
     if (question.multiSelect && matchesKey(data, "space")) {
       if (state.picked.has(state.cursor)) state.picked.delete(state.cursor);
       else state.picked.add(state.cursor);
       return;
     }
     if (!matchesKey(data, "enter") || question.choices[state.cursor]?.disabled) return;
-    if (question.multiSelect) { if (state.picked.size > 0 || state.other.trim()) this.complete(index); return; }
-    state.picked = new Set([state.cursor]); state.other = "";
+    if (question.multiSelect) { if (state.picked.size > 0 || this.otherText(index)) this.complete(index); return; }
+    state.picked = new Set([state.cursor]);
+    this.editorAt(index, question.choices.length)?.setText("");
     this.complete(index);
   }
 
-  /** 光标在输入行（"其他"或可输入选项）时，按键直接进输入栏；有字时回车才提交。 */
-  private handleOther(data: string, index: number): void {
+  /** 光标在输入行（"其他"或可输入选项）时，按键直接进该行的编辑器；有字时回车才提交。 */
+  private handleInputRow(data: string, index: number, editor: Editor): void {
     const state = this.states[index]!, question = this.options.questions[index]!;
-    const text = this.textAt(index, state.cursor);
-    if (matchesKey(data, "enter")) {
-      if (!text.trim() || (question.otherMaxLength !== undefined && text.trim().length > question.otherMaxLength)) return;
+    // Ctrl+J（"\n"）在 matchesKey 里也算 enter，但在输入栏里是换行
+    if (matchesKey(data, "enter") && data !== "\n") {
+      const text = this.textAt(index, state.cursor);
+      if (!text || (question.otherMaxLength !== undefined && text.length > question.otherMaxLength)) return;
       if (!question.multiSelect) state.picked.clear();
-      if (!this.isOther(index, state.cursor)) { state.picked.add(state.cursor); state.other = text; }
+      if (!this.isOther(index, state.cursor)) state.picked.add(state.cursor);
       this.complete(index);
       return;
     }
-    if (matchesKey(data, "backspace")) { this.setTextAt(index, state.cursor, [...text].slice(0, -1).join("")); return; }
-    const printable = decodeKittyPrintable(data) ?? data;
-    if (!/[\u0000-\u001f\u007f]/u.test(printable)) this.setTextAt(index, state.cursor, text + printable);
+    if (matchesKey(data, "up") && this.cursorEdge(editor).first) { this.move(index, -1); return; }
+    if (matchesKey(data, "down") && this.cursorEdge(editor).last) { this.move(index, 1); return; }
+    editor.handleInput(data);
+  }
+
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (event.type !== "click" || event.button !== "left") return undefined;
+    const bar = this.bars.find((item) => event.y >= item.start && event.y < item.end);
+    if (!bar || this.onReview) return undefined;
+    this.states[bar.index]!.cursor = bar.cursor;
+    const result = this.editorAt(bar.index, bar.cursor)!.handleMouse({ ...event, x: event.x - INPUT_INDENT, y: event.y - bar.start + 1, width: event.width - INPUT_INDENT });
+    return { ...result, handled: true };
   }
 
   private handleReview(data: string): void {
@@ -171,6 +203,8 @@ export class QuestionWindowView {
     const muted = (text: string) => theme.fg("muted", text);
     const wrap = (text: string, indent: number) => wrapTextWithAnsi(text, Math.max(8, width - indent)).map((line) => " ".repeat(indent) + line);
     const lines: string[] = [border];
+    this.bars = [];
+    this.editorWidth = Math.max(1, width - INPUT_INDENT);
     if (this.multi) lines.push(this.renderTabs(), "");
 
     if (this.onReview) {
@@ -203,7 +237,7 @@ export class QuestionWindowView {
     const labelWidth = Math.max(...labels.map((label) => visibleWidth(label)));
     labels.forEach((label, i) => {
       const selected = i === state.cursor;
-      const box = question.multiSelect ? `[${state.picked.has(i) || (this.isOther(index, i) && state.other.trim()) ? "x" : " "}] ` : "";
+      const box = question.multiSelect ? `[${state.picked.has(i) || (this.isOther(index, i) && this.otherText(index)) ? "x" : " "}] ` : "";
       const description = question.choices[i]?.description, disabled = question.choices[i]?.disabled;
       if (disabled) {
         const lead = `${label}${" ".repeat(labelWidth - visibleWidth(label) + 3)}`;
@@ -228,15 +262,22 @@ export class QuestionWindowView {
           lines.push(...wrapPlain(`推荐理由：${choice.recommendedReason}`, width - 6).map((piece) => `      ${theme.fg("success", piece)}`));
         }
       }
-      const typed = this.textAt(index, i);
-      if (this.isInput(index, i) && (selected || typed)) lines.push(`      ${highlight("›")} ${typed}${selected ? CARET : ""}`);
-      const excess = this.isInput(index, i) && question.otherMaxLength !== undefined ? typed.trim().length - question.otherMaxLength : 0;
+      const editor = this.editorAt(index, i);
+      if (!editor) return;
+      editor.focused = selected;
+      if (selected || editor.getText()) {
+        const start = lines.length;
+        editor.render(this.editorWidth).slice(1, -1).map((line) => drawCursor(line, selected))
+          .forEach((line, n) => lines.push(n ? " ".repeat(INPUT_INDENT) + line : `      ${highlight("›")} ${line}`));
+        this.bars.push({ index, cursor: i, start, end: lines.length });
+      }
+      const excess = question.otherMaxLength !== undefined ? this.textAt(index, i).length - question.otherMaxLength : 0;
       if (excess > 0) lines.push(`      ${muted(`超出 ${excess} 字，最多 ${question.otherMaxLength} 字`)}`);
     });
 
     const enter = question.multiSelect && this.multi ? "回车下一题" : "回车确认";
     const hint = [
-      ...(this.isInput(index, state.cursor) ? ["直接输入", enter, "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
+      ...(this.isInput(index, state.cursor) ? ["直接输入", enter, "Shift+Enter 换行", "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
       ...(this.multi ? ["←→ 切换问题"] : []),
       question.escapeHint ?? `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
     ].join(" · ");
@@ -293,9 +334,10 @@ export async function openProgramWindow<T>(host: ProgramWindowHost, factory: Win
 
 async function showWindow(host: WindowHost, questions: WindowQuestion[], tone: WindowTone, signal?: AbortSignal): Promise<WindowAnswer[] | undefined> {
   return openProgramWindow<WindowAnswer[]>(host, (tui, theme, _keybindings, done) => {
-    const view = new QuestionWindowView({ questions, tone, theme: theme as unknown as WindowTheme, onDone: done });
+    const view = new QuestionWindowView({ questions, tone, tui, theme: theme as unknown as WindowTheme, onDone: done });
     return { render: (width: number) => view.render(width), invalidate: () => view.invalidate(),
-      handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); } };
+      handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); },
+      handleMouse: (event: TuiMouseEvent) => { const result = view.handleMouse(event); tui.requestRender(); return result; } };
   }, signal);
 }
 
@@ -318,8 +360,8 @@ export async function chooseWindow(host: WindowHost, window: ProgramWindow & { c
 }
 
 /** 带"其他"输入行的程序选择窗口：返回选中的选项或用户输入的文字；Esc 时为 escapeChoice 的答案（没有则为 undefined），中断时为 undefined。 */
-export async function chooseOrWriteWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; otherLabel: string; otherMaxLength?: number; cancelNote?: string; escapeHint?: string; escapeChoice?: string }, signal?: AbortSignal): Promise<WindowAnswer | undefined> {
-  const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices, allowOther: true, otherLabel: window.otherLabel,
+export async function chooseOrWriteWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; otherLabel?: string; otherMaxLength?: number; cancelNote?: string; escapeHint?: string; escapeChoice?: string }, signal?: AbortSignal): Promise<WindowAnswer | undefined> {
+  const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices, allowOther: true, ...(window.otherLabel ? { otherLabel: window.otherLabel } : {}),
     ...(window.otherMaxLength !== undefined ? { otherMaxLength: window.otherMaxLength } : {}),
     ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}), ...(window.escapeHint ? { escapeHint: window.escapeHint } : {}),
     ...(window.escapeChoice !== undefined ? { escapeChoice: window.escapeChoice } : {}) }], "warning", signal);

@@ -6,9 +6,11 @@ import type { WindowAnswer, WindowHost } from "../src/core/host/question-window.
 const UP = "\x1b[A", DOWN = "\x1b[B", RIGHT = "\x1b[C", LEFT = "\x1b[D", ENTER = "\r", ESC = "\x1b", SPACE = " ", BACKSPACE = "\x7f";
 const theme = { fg: (kind: string, text: string) => `<${kind}>${text}</>`, bold: (text: string) => `<b>${text}</b>` };
 
-function view(options: Omit<ConstructorParameters<typeof QuestionWindowView>[0], "theme" | "onDone">) {
+const tuiStub = { requestRender() {}, terminal: { rows: 40, columns: 80 } };
+
+function view(options: Omit<ConstructorParameters<typeof QuestionWindowView>[0], "theme" | "onDone" | "tui">) {
   const done: Array<WindowAnswer[] | undefined> = [];
-  const window = new QuestionWindowView({ ...options, theme, onDone: (answers) => done.push(answers) });
+  const window = new QuestionWindowView({ ...options, tui: tuiStub, theme, onDone: (answers) => done.push(answers) });
   return { window, done, text: (width = 80) => window.render(width).join("\n") };
 }
 
@@ -97,15 +99,18 @@ test("M8D2-AC3：光标移到其他一行就能直接输入，退格可删，空
   expect(text()).not.toContain("›");
   window.handleInput(DOWN);
   expect(text()).toContain("<accent>→ 2. 其他（自己输入）</>");
-  expect(text()).toContain("<accent>›</> \x1b[7m \x1b[27m");
-  expect(text()).toContain("<muted>直接输入 · 回车确认 · ↑↓ 选择 · Esc 取消</>");
+  expect(bare(text())).toContain("      › ");
+  expect(text()).toContain("\x1b_pi:fc\x07");
+  expect(text()).toContain("<muted>直接输入 · 回车确认 · Shift+Enter 换行 · ↑↓ 选择 · Esc 取消</>");
   window.handleInput(ENTER);
   expect(done).toEqual([]);
   for (const char of "后端 统一x") window.handleInput(char);
   window.handleInput(BACKSPACE);
-  expect(text()).toContain("<accent>›</> 后端 统一\x1b[7m \x1b[27m");
+  expect(bare(text())).toContain("      › 后端 统一");
+  expect(text()).toContain("\x1b_pi:fc\x07");
   window.handleInput(UP);
-  expect(text()).toContain("<accent>›</> 后端 统一\n");
+  expect(bare(text())).toContain("      › 后端 统一\n");
+  expect(text()).not.toContain("\x1b_pi:fc\x07");
   expect(text()).toContain("<muted>↑↓ 选择 · 回车确认 · Esc 取消</>");
   window.handleInput(DOWN);
   window.handleInput(ENTER);
@@ -124,7 +129,7 @@ test("M8D2-AC3：多选题里其他一行按空格是输入空格，有字就算
   const { window, text, done } = view({ tone: "warning", questions: [{ question: "选哪些？", allowOther: true, otherLabel: "其他（自己输入修改意见）", multiSelect: true, choices: [{ label: "甲" }] }] });
   window.handleInput(SPACE); window.handleInput(DOWN);
   expect(text()).toContain("<warning>→ [ ] 其他（自己输入修改意见）</>");
-  expect(text()).toContain("<muted>直接输入 · 回车确认 · ↑↓ 选择 · Esc 取消</>");
+  expect(text()).toContain("<muted>直接输入 · 回车确认 · Shift+Enter 换行 · ↑↓ 选择 · Esc 取消</>");
   for (const char of "a b") window.handleInput(char);
   expect(text()).toContain("<warning>→ [x] 其他（自己输入修改意见）</>");
   window.handleInput(ENTER);
@@ -142,7 +147,7 @@ function fakeUi(script: (component: Keys) => void, hasUI = true): WindowHost & {
   const host = { hasUI, shown: 0, ui: { custom<T>(factory: (...args: unknown[]) => unknown) {
     host.shown++;
     return new Promise<T>((resolve) => {
-      const component = factory({ requestRender() {} }, theme, undefined, resolve) as Keys;
+      const component = factory(tuiStub, theme, undefined, resolve) as Keys;
       script(component);
     });
   } } } as unknown as WindowHost & { shown: number };
@@ -334,9 +339,24 @@ test("选项说明折成多行时，每一行说明都是灰色", async () => {
   expect(rendered.some((line) => line.includes("<muted>· 选它会把本项目设为受信任</"))).toBe(true);
 });
 
+function bare(value: string) {
+  return value.replace(/<\/?[a-zA-Z]*>/gu, "").replace(/\x1b\[[0-9;]*[A-Za-z~]|\x1b_[^\x07]*\x07/gu, "");
+}
+function barOf(rendered: string[], label: string) {
+  const lines = rendered.map(bare);
+  const row = lines.findIndex((line) => line.includes(label));
+  let end = row + 1;
+  while (end < lines.length && (lines[end]!.startsWith("      › ") || lines[end]!.startsWith(" ".repeat(8)))) end++;
+  return { row, lines: lines.slice(row + 1, end), raw: rendered.slice(row + 1, end) };
+}
+const OTHER_LABEL = "其他（自己输入）";
+const SHIFT_ENTER = "\x1b[13;2u", CTRL_J = "\n", HOME = "\x1b[H", END = "\x1b[F", DELETE = "\x1b[3~";
+const paste = (value: string) => "\x1b[200~" + value + "\x1b[201~";
+const click = (x: number, y: number) => ({ type: "click", button: "left", x, y, screenX: x, screenY: y, width: 80, height: 40, shift: false, alt: false, ctrl: false });
+
 const NOTE_LABEL = "通过并补充说明（自己输入）";
 const noteQuestion = (extra: Record<string, unknown> = {}) => ({ question: "确认原型", choices: [{ label: "通过（写进需求草稿）" }, { label: NOTE_LABEL, writable: true }],
-  allowOther: true, otherLabel: "返工（自己输入要改什么）", otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版", ...extra });
+  allowOther: true, otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版", ...extra });
 const noteView = (extra: Record<string, unknown> = {}) => view({ tone: "warning", questions: [noteQuestion(extra)] });
 const typeText = (window: { handleInput(data: string): void }, value: string) => { for (const char of value) window.handleInput(char); };
 
@@ -345,14 +365,14 @@ test("可输入选项：三行按顺序渲染，光标在普通项时提示不�
   const first = plain(text());
   expect(first.indexOf("通过（写进需求草稿）")).toBeGreaterThan(-1);
   expect(first.indexOf(NOTE_LABEL)).toBeGreaterThan(first.indexOf("通过（写进需求草稿）"));
-  expect(first.indexOf("返工（自己输入要改什么）")).toBeGreaterThan(first.indexOf(NOTE_LABEL));
+  expect(first.indexOf(OTHER_LABEL)).toBeGreaterThan(first.indexOf(NOTE_LABEL));
   expect(text()).toContain("<muted>↑↓ 选择 · 回车确认 · Esc 放弃这一版</>");
   expect(text()).not.toContain("›");
   window.handleInput(DOWN);
-  expect(text()).toContain("<muted>直接输入 · 回车确认 · ↑↓ 选择 · Esc 放弃这一版</>");
-  const lines = text().split("\n");
-  const noteRow = lines.findIndex((line) => line.includes(NOTE_LABEL));
-  expect(lines[noteRow + 1]).toContain("<warning>›</> \x1b[7m \x1b[27m");
+  expect(text()).toContain("<muted>直接输入 · 回车确认 · Shift+Enter 换行 · ↑↓ 选择 · Esc 放弃这一版</>");
+  const bar = barOf(text().split("\n"), NOTE_LABEL);
+  expect(bar.lines[0]).toMatch(/^ {6}› /u);
+  expect(bar.raw[0]).toContain("\x1b_pi:fc\x07");
 });
 
 test("可输入选项：空输入或只有空白时回车不起作用", () => {
@@ -386,19 +406,203 @@ test("可输入选项：提交时 other 去掉首尾空白，choices 为该项�
   expect(done).toEqual([[{ choices: [NOTE_LABEL], other: "用 B" }]]);
 });
 
-test("可输入选项：可输入项与其他行各自保留输入，光标移走再移回来字还在", () => {
+test("可输入选项：可输入项与其他行各自保留文字和光标位置，离开后显示文字但没有光标块", () => {
   const { window, text, done } = noteView();
   window.handleInput(DOWN);
-  typeText(window, "乙");
+  typeText(window, "乙丙");
+  window.handleInput(LEFT);
   window.handleInput(DOWN);
-  typeText(window, "甲");
+  typeText(window, "甲丁");
+  window.handleInput(LEFT);
   window.handleInput(UP);
-  const lines = text().split("\n");
-  expect(lines[lines.findIndex((line) => line.includes(NOTE_LABEL)) + 1]).toContain("<warning>›</> 乙");
-  expect(lines[lines.findIndex((line) => line.includes("返工（自己输入要改什么）")) + 1]).toContain("<warning>›</> 甲");
+  const left = barOf(text().split("\n"), OTHER_LABEL);
+  expect(left.lines[0]!.trimEnd()).toBe("      › 甲丁");
+  expect(left.raw.join("")).not.toContain("\x1b_pi:fc\x07");
+  const kept = barOf(text().split("\n"), NOTE_LABEL);
+  expect(kept.lines[0]!.trimEnd()).toBe("      › 乙丙");
+  expect(kept.raw.join("")).toContain("\x1b_pi:fc\x07");
+  typeText(window, "X");
   window.handleInput(DOWN);
+  typeText(window, "Y");
   window.handleInput(ENTER);
-  expect(done).toEqual([[{ choices: [], other: "甲" }]]);
+  expect(done).toEqual([[{ choices: [], other: "甲Y丁" }]]);
+});
+
+test("可输入选项：没字的输入行离开后不显示输入栏", () => {
+  const { window, text } = noteView();
+  window.handleInput(DOWN);
+  expect(bare(text())).toContain("›");
+  window.handleInput(UP);
+  expect(bare(text())).not.toContain("›");
+});
+
+test("其他行默认显示\"其他（自己输入）\"，chooseOrWriteWindow 不传 otherLabel 也能打开并返回答案", async () => {
+  const lines = noteView().text().split("\n").map(bare);
+  expect(lines.filter((line) => /^( → |   )/u.test(line) && line.trim())[2]).toContain(OTHER_LABEL);
+  const request = { title: "确认原型", lines: [], otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版",
+    choices: [{ label: "通过（写进需求草稿）" }, { label: NOTE_LABEL, writable: true }] };
+  expect(await chooseOrWriteWindow(fakeUi((c) => { c.handleInput(DOWN); c.handleInput(DOWN); typeText(c, "自己写"); c.handleInput(ENTER); }), request))
+    .toEqual({ choices: [], other: "自己写" });
+});
+
+test.each([36, 44, 60, 80])("输入栏在 %d 列下自动折行：第一行前缀 6 空格 › 1 空格，续行 8 空格，换行后的字母另起一行，每行都不超宽", (width) => {
+  const { window } = noteView();
+  window.handleInput(DOWN);
+  const han = "汉".repeat(100), letters = "abcdefghij".repeat(5);
+  typeText(window, han);
+  window.handleInput(SHIFT_ENTER);
+  typeText(window, letters);
+  const rendered = window.render(width);
+  for (const line of rendered) expect(visibleWidth(line.replace(/<\/?[a-zA-Z]*>/gu, "")), line).toBeLessThanOrEqual(width);
+  const bar = barOf(rendered, NOTE_LABEL).lines;
+  expect(bar[0]!.startsWith("      › ")).toBe(true);
+  for (const line of bar.slice(1)) expect(line.startsWith(" ".repeat(8))).toBe(true);
+  const content = bar.map((line) => line.slice(8).trimEnd());
+  const hanLines = content.filter((line) => line.includes("汉")), letterLines = content.filter((line) => /[a-j]/u.test(line));
+  expect(hanLines.length).toBeGreaterThan(1);
+  expect(hanLines.join("")).toBe(han);
+  expect(letterLines.join("")).toBe(letters);
+  expect(letterLines.some((line) => line.includes("汉"))).toBe(false);
+});
+
+test("输入栏按键：插入、Backspace、Delete、←→、Home、End、Shift+Enter 与 Ctrl+J 换行，回车提交", () => {
+  const { window, done } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "abc");
+  window.handleInput(LEFT);
+  typeText(window, "X");
+  window.handleInput(HOME);
+  typeText(window, "Y");
+  window.handleInput(END);
+  window.handleInput(BACKSPACE);
+  window.handleInput(DELETE);
+  window.handleInput(SHIFT_ENTER);
+  typeText(window, "d");
+  window.handleInput(CTRL_J);
+  typeText(window, "e");
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [NOTE_LABEL], other: "YabX\nd\ne" }]]);
+});
+
+test("输入栏按键：Delete 删光标后一个字，→ 向右移动", () => {
+  const { window, done } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "abcd");
+  window.handleInput(HOME);
+  window.handleInput(RIGHT);
+  window.handleInput(DELETE);
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [NOTE_LABEL], other: "acd" }]]);
+});
+
+test("输入栏 ↑↓ 在显示行间移动，首行 ↑ 到上一个选项，末行 ↓ 到下一个选项，回到输入行时回到离开时的光标位置", () => {
+  const { window, text } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "一"); window.handleInput(SHIFT_ENTER);
+  typeText(window, "二"); window.handleInput(SHIFT_ENTER);
+  typeText(window, "三");
+  window.handleInput(UP);
+  window.handleInput(UP);
+  typeText(window, "X");
+  expect(barOf(text().split("\n"), NOTE_LABEL).lines.map((line) => line.slice(8).trimEnd())).toEqual(["一X", "二", "三"]);
+  window.handleInput(UP);
+  expect(text()).toContain("<muted>↑↓ 选择 · 回车确认 · Esc 放弃这一版</>");
+  window.handleInput(DOWN);
+  expect(text()).toContain("直接输入");
+  typeText(window, "Y");
+  expect(barOf(text().split("\n"), NOTE_LABEL).lines.map((line) => line.slice(8).trimEnd())).toEqual(["一XY", "二", "三"]);
+  window.handleInput(DOWN); window.handleInput(DOWN);
+  typeText(window, "Z");
+  expect(barOf(text().split("\n"), NOTE_LABEL).lines.map((line) => line.slice(8).trimEnd())).toEqual(["一XY", "二", "三Z"]);
+  window.handleInput(DOWN);
+  const other = barOf(text().split("\n"), OTHER_LABEL);
+  expect(other.raw.join("")).toContain("\x1b_pi:fc\x07");
+  expect(barOf(text().split("\n"), NOTE_LABEL).raw.join("")).not.toContain("\x1b_pi:fc\x07");
+  window.handleInput(DOWN);
+  expect(barOf(text().split("\n"), OTHER_LABEL).raw.join("")).toContain("\x1b_pi:fc\x07");
+});
+
+test("输入栏回车：首尾空白去掉，中间换行保留", () => {
+  const { window, done } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "  第一行");
+  window.handleInput(SHIFT_ENTER);
+  typeText(window, "第二行  ");
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [NOTE_LABEL], other: "第一行\n第二行" }]]);
+});
+
+test("输入栏回车：只有换行和空白时不提交", () => {
+  const { window, done } = noteView();
+  window.handleInput(DOWN);
+  window.handleInput(SHIFT_ENTER);
+  typeText(window, " ");
+  window.handleInput(ENTER);
+  expect(done).toEqual([]);
+});
+
+test("粘贴超过 10 行显示为 [paste #序号 +行数 lines]，单行超过 1000 字显示为 [paste #序号 字数 chars]，提交换回原文", () => {
+  const { window, text, done } = noteView();
+  window.handleInput(DOWN);
+  const lines = Array.from({ length: 42 }, (_, n) => `第${n + 1}行`).join("\n"), long = "长".repeat(1200);
+  window.handleInput(paste(lines));
+  expect(bare(text())).toContain("[paste #1 +42 lines]");
+  expect(bare(text())).not.toContain("第20行");
+  window.handleInput(paste(long));
+  expect(bare(text())).toContain("[paste #2 1200 chars]");
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [NOTE_LABEL], other: lines + long }]]);
+});
+
+test("粘贴折叠部分按原文算字数：折叠 3990 字再输入 11 字，超出 1 字显示在输入栏最后一行下面且回车不提交", () => {
+  const { window, text, done } = noteView();
+  window.handleInput(DOWN);
+  window.handleInput(paste("折".repeat(3990)));
+  typeText(window, "尾".repeat(11));
+  const lines = text().split("\n").map(bare);
+  const last = lines.findIndex((line) => line.includes("尾".repeat(11)));
+  expect(last).toBeGreaterThan(-1);
+  expect(lines[last + 1]).toContain("超出 1 字，最多 4000 字");
+  window.handleInput(ENTER);
+  expect(done).toEqual([]);
+});
+
+test("鼠标点击输入栏的文字，光标移到那个输入行并定位到被点的字前面；点在行尾后面的空白定位到行尾；点在选项文字上状态不变", () => {
+  const setup = () => {
+    const made = noteView();
+    made.window.handleInput(DOWN); made.window.handleInput(DOWN);
+    typeText(made.window, "一二三四五六七"); made.window.handleInput(SHIFT_ENTER); typeText(made.window, "八九");
+    for (let n = 0; n < 5 && bare(made.text()).includes("直接输入"); n++) made.window.handleInput(UP);
+    expect(made.text()).toContain("<muted>↑↓ 选择 · 回车确认 · Esc 放弃这一版</>");
+    return made;
+  };
+  const at = (made: ReturnType<typeof setup>, startsWith: string) => made.window.render(80).map(bare).findIndex((line) => line.startsWith(startsWith));
+
+  const first = setup();
+  first.window.handleMouse(click(8 + visibleWidth("一二三四"), at(first, "      › 一二三四五六七")));
+  expect(first.text()).toContain("直接输入");
+  typeText(first.window, "X");
+  first.window.handleInput(ENTER);
+  expect(first.done).toEqual([[{ choices: [], other: "一二三四X五六七\n八九" }]]);
+
+  const second = setup();
+  second.window.handleMouse(click(70, at(second, "        八九")));
+  typeText(second.window, "Y");
+  expect(barOf(second.window.render(80), OTHER_LABEL).lines.map((line) => line.slice(8).trimEnd())).toEqual(["一二三四五六七", "八九Y"]);
+
+  const third = setup();
+  third.window.handleMouse(click(6, at(third, " → 通过（写进需求草稿）")));
+  expect(third.text()).toContain("<muted>↑↓ 选择 · 回车确认 · Esc 放弃这一版</>");
+  third.window.handleInput(ENTER);
+  expect(third.done).toEqual([[{ choices: ["通过（写进需求草稿）"] }]]);
+});
+
+test("输入栏有字时按 Esc：没有 escapeChoice 的窗口收到 undefined", () => {
+  const { window, done } = view({ tone: "warning", questions: [{ question: "确认原型", choices: [{ label: "通过" }, { label: NOTE_LABEL, writable: true }], allowOther: true }] });
+  window.handleInput(DOWN);
+  typeText(window, "乙");
+  window.handleInput(ESC);
+  expect(done).toEqual([undefined]);
 });
 
 test("escapeChoice：按 Esc 返回指定答案；没有 escapeChoice 的窗口按 Esc 仍返回 undefined", () => {
@@ -419,7 +623,7 @@ test("escapeChoice：在输入行里有字时按 Esc 也返回指定答案", () 
 });
 
 test("chooseOrWriteWindow 透传 writable 和 escapeChoice，signal 中断时返回 undefined", async () => {
-  const request = { title: "确认原型", lines: [], otherLabel: "返工（自己输入要改什么）", otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版",
+  const request = { title: "确认原型", lines: [], otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版",
     choices: [{ label: "通过（写进需求草稿）" }, { label: NOTE_LABEL, writable: true }] };
   expect(await chooseOrWriteWindow(fakeUi((c) => { c.handleInput(DOWN); typeText(c, " 用 B "); c.handleInput(ENTER); }), request))
     .toEqual({ choices: [NOTE_LABEL], other: "用 B" });
@@ -431,7 +635,7 @@ test("chooseOrWriteWindow 透传 writable 和 escapeChoice，signal 中断时返
 });
 
 test("chooseOrWriteWindow 窗口已显示、输入行里有字时被中断，返回 undefined 而不是 Esc 的指定答案", async () => {
-  const request = { title: "确认原型", lines: [], otherLabel: "返工（自己输入要改什么）", otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版",
+  const request = { title: "确认原型", lines: [], otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版",
     choices: [{ label: "通过（写进需求草稿）" }, { label: NOTE_LABEL, writable: true }] };
   const abort = new AbortController();
   const host = fakeUi((c) => { c.handleInput(DOWN); typeText(c, "用 B"); });
@@ -446,5 +650,118 @@ test("光标在\"其他\"输入行时底部提示也是直接输入那组，Esc 
   const { window, text } = view({ tone: "warning", questions: [{ question: "确认原型", choices: [{ label: "通过（写进需求草稿）" }, { label: NOTE_LABEL, writable: true }],
     allowOther: true, otherLabel: "返工（自己输入要改什么）", otherMaxLength: 4000, escapeChoice: "放弃这一版", escapeHint: "Esc 放弃这一版" }] });
   window.handleInput(DOWN); window.handleInput(DOWN);
-  expect(text()).toContain("<muted>直接输入 · 回车确认 · ↑↓ 选择 · Esc 放弃这一版</>");
+  expect(text()).toContain("<muted>直接输入 · 回车确认 · Shift+Enter 换行 · ↑↓ 选择 · Esc 放弃这一版</>");
+});
+
+const INPUT_HINT = "直接输入";
+const contentOf = (rendered: string[], label: string) => barOf(rendered, label).lines.map((line) => line.slice(8).trimEnd());
+
+test("光标在输入行上时输入栏保留 pi 编辑器的假光标标记，不出现 \\x1b[7m；光标不在该行时没有标记", () => {
+  const { window, text } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "ab");
+  window.handleInput(LEFT);
+  const raw = barOf(text().split("\n"), NOTE_LABEL).raw.join("");
+  expect(raw).toContain("\x1b_pi:fc\x07");
+  expect(raw).toContain("\x1b_pi:/fc\x07");
+  expect(raw).not.toContain("\x1b[7m");
+  expect(raw).toContain("\x1b_pi:c\x07");
+  window.handleInput(UP);
+  const left = barOf(text().split("\n"), NOTE_LABEL).raw.join("");
+  expect(left).not.toContain("\x1b_pi:fc\x07");
+  expect(left).not.toContain("\x1b_pi:c\x07");
+  expect(left).not.toContain("\x1b[7m");
+});
+
+test("输入栏长文字自动折行后，↑ 先在显示行之间上移，到第一显示行再按 ↑ 才到上一个选项", () => {
+  const { window } = noteView();
+  const text = () => window.render(36).join("\n");
+  window.handleInput(DOWN);
+  typeText(window, "汉".repeat(50));
+  const rows = barOf(window.render(36), NOTE_LABEL).lines.length;
+  expect(rows).toBeGreaterThanOrEqual(3);
+  for (let n = 0; n < rows - 1; n++) {
+    window.handleInput(UP);
+    expect(text()).toContain(INPUT_HINT);
+  }
+  window.handleInput(UP);
+  expect(text()).not.toContain(INPUT_HINT);
+});
+
+test("输入栏长文字自动折行后，按一次 ↑ 光标停在倒数第二个显示行", () => {
+  const { window } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "汉".repeat(50));
+  const before = barOf(window.render(36), NOTE_LABEL).lines.length;
+  window.handleInput(UP);
+  typeText(window, "X");
+  const lines = contentOf(window.render(36), NOTE_LABEL);
+  expect(lines.length).toBeGreaterThanOrEqual(before);
+  expect(lines.findIndex((line) => line.includes("X"))).toBe(before - 2);
+});
+
+test("含粘贴标记的折行：标记在第二显示行时按 ↑，光标仍在输入行并到第一显示行", () => {
+  const { window } = noteView();
+  const text = () => window.render(36).join("\n");
+  window.handleInput(DOWN);
+  typeText(window, "abcdefghij ");
+  window.handleInput(paste(Array.from({ length: 42 }, (_, n) => `第${n + 1}行`).join("\n")));
+  typeText(window, "xyz");
+  const before = contentOf(window.render(36), NOTE_LABEL);
+  expect(before.length).toBeGreaterThanOrEqual(2);
+  expect(before[1]).toContain("xyz");
+  window.handleInput(UP);
+  expect(text()).toContain(INPUT_HINT);
+  typeText(window, "Q");
+  const after = contentOf(window.render(36), NOTE_LABEL);
+  expect(after[0]).toContain("Q");
+});
+
+test("输入栏行数超过可见行数时，↑ 从第 8 行逐行上移到第 1 行，再 ↑ 才到上一个选项；↓ 同理", () => {
+  const small = { requestRender() {}, terminal: { rows: 10, columns: 80 } };
+  const done: Array<WindowAnswer[] | undefined> = [];
+  const window = new QuestionWindowView({ tui: small, theme, onDone: (answers) => done.push(answers), tone: "warning", questions: [noteQuestion()] } as never);
+  const text = () => window.render(80).join("\n");
+  window.handleInput(DOWN);
+  for (let n = 1; n <= 8; n++) { if (n > 1) window.handleInput(SHIFT_ENTER); typeText(window, String(n)); }
+  for (let n = 0; n < 7; n++) {
+    window.handleInput(UP);
+    expect(text(), `第 ${n + 1} 次 ↑`).toContain(INPUT_HINT);
+  }
+  typeText(window, "X");
+  expect(contentOf(window.render(80), NOTE_LABEL)).toContain("1X");
+  window.handleInput(UP);
+  expect(text()).not.toContain(INPUT_HINT);
+  window.handleInput(DOWN);
+  expect(text()).toContain(INPUT_HINT);
+  for (let n = 0; n < 7; n++) window.handleInput(DOWN);
+  typeText(window, "Z");
+  expect(contentOf(window.render(80), NOTE_LABEL)).toContain("8Z");
+  expect(contentOf(window.render(80), OTHER_LABEL)).toEqual([]);
+  window.handleInput(DOWN);
+  typeText(window, "W");
+  expect(contentOf(window.render(80), NOTE_LABEL)).not.toContain("W");
+  expect(contentOf(window.render(80), OTHER_LABEL)).toEqual(["W"]);
+});
+
+test.each([
+  ["move", "left"], ["press", "left"], ["drag", "left"], ["release", "left"], ["wheel", "left"], ["click", "right"],
+])("鼠标只认左键单击：%s（%s）事件不动光标", (type, button) => {
+  const { window, text } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "一二三");
+  window.handleInput(UP);
+  const row = window.render(80).map(bare).findIndex((line) => line.startsWith("      › 一二三"));
+  expect(window.handleMouse({ ...click(8, row), type, button, wheelDelta: 1 } as never)).toBeUndefined();
+  expect(text()).not.toContain(INPUT_HINT);
+  expect(text()).toContain("<muted>↑↓ 选择 · 回车确认 · Esc 放弃这一版</>");
+});
+
+test("小粘贴（3 行）原样插入：输入栏显示 3 行，提交的 other 是原文", () => {
+  const { window, text, done } = noteView();
+  window.handleInput(DOWN);
+  window.handleInput(paste("甲\n乙\n丙"));
+  expect(contentOf(text().split("\n"), NOTE_LABEL)).toEqual(["甲", "乙", "丙"]);
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [NOTE_LABEL], other: "甲\n乙\n丙" }]]);
 });
