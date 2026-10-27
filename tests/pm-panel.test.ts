@@ -80,16 +80,16 @@ const webExplore: ExplorePanelEntry = { repoId: "r", fetchedAt: 1_000,
 const localExplore: ExplorePanelEntry = { repoId: "r", fetchedAt: 1_000,
   explore: { runId: "01900000-0000-7000-8000-0000000000e2", source: "local", question: "守护进程断网后怎么恢复", turns: 5, maxTurns: 20, elapsedMs: 64_000 } };
 
-test("主窗口派出的检索：没有 PM 时面板只列检索，按拉取后经过的时间累加；检索行不可进入", () => {
+test("主窗口派出的检索：没有 PM 时面板只列检索，按拉取后经过的时间累加；检索行可选中", () => {
   const instance = new PmPanel({ now: () => 2_000, openItem: vi.fn(), togglePause: vi.fn() });
   instance.updateExplores([webExplore]);
   expect(instance.render(200)).toEqual(["● 1 个检索运行中", "└─ ⠋ 联网 · 企业微信自建应用 是否需要公网回调地址 · ↻2/15 · 13.3s"]);
-  expect(instance.hasRows()).toBe(false);
+  expect(instance.hasRows()).toBe(true);
   instance.updateExplores([]);
   expect(instance.render(200)).toEqual([]);
 });
 
-test("主窗口派出的检索：和 PM 同时在跑时列在 PM 下面，按派出先后排；↑↓ 只在 PM 与事项行间移动，按键提示在最后", () => {
+test("主窗口派出的检索：和 PM 同时在跑时列在 PM 下面，按派出先后排；↑↓ 先走完 PM 与事项行，再走检索行，按键提示在最后", () => {
   const { instance, openItem } = panel();
   instance.updateExplores([localExplore, webExplore]);
   instance.focus();
@@ -101,7 +101,7 @@ test("主窗口派出的检索：和 PM 同时在跑时列在 PM 下面，按派
     "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框",
   ]);
   for (let i = 0; i < 5; i++) instance.handleInput("\x1b[B");
-  instance.handleInput("\x1b[A");
+  for (let i = 0; i < 3; i++) instance.handleInput("\x1b[A");
   instance.handleInput("\r");
   expect(openItem).toHaveBeenCalledWith(expect.objectContaining({ overview: jump }), jump.pendingItems[0]);
   expect(instance.render(20).every((line) => visibleWidth(line) <= 20)).toBe(true);
@@ -169,7 +169,7 @@ test("主窗口派出的原型设计师：单独运行时只列设计一组，�
   const instance = new PmPanel({ now: () => 2_000, openItem: vi.fn(), togglePause: vi.fn() });
   instance.updatePrototypes([designing]);
   expect(instance.render(200)).toEqual(["● 1 个原型设计运行中", "└─ ⠋ 设置页（第 3 版）· prototype · ↻3/30 · 42.0s"]);
-  expect(instance.hasRows()).toBe(false);
+  expect(instance.hasRows()).toBe(true);
   instance.updatePrototypes([]);
   expect(instance.render(200)).toEqual([]);
 });
@@ -252,20 +252,20 @@ type Task = PmOverview["taskRows"][number];
 type Reviewer = Extract<Task, { kind: "review" }>["reviewers"][number];
 
 function taskPanel(patch: Partial<PmOverview>, now = 1_000, ansi = false) {
-  const openItem = vi.fn(), togglePause = vi.fn();
+  const openItem = vi.fn(), togglePause = vi.fn(), openSteps = vi.fn();
   let clock = now;
-  const instance = new PmPanel({ now: () => clock, openItem, togglePause });
+  const instance = new PmPanel({ now: () => clock, openItem, togglePause, openSteps });
   const entry: PmPanelEntry = { repoId: "r", overview: overview(patch), fetchedAt: 1_000 };
   instance.update([entry]);
   const calls: Array<[string, string]> = [];
   instance.setTheme(ansi
     ? { fg: (kind, text) => { calls.push([kind, text]); return `\x1b[31m${text}\x1b[39m`; }, bg: (_kind, text) => `\x1b[44m${text}\x1b[49m` }
     : { fg: (kind, text) => { calls.push([kind, text]); return text; } });
-  return { instance, openItem, calls, entry, setNow: (value: number) => { clock = value; } };
+  return { instance, openItem, togglePause, openSteps, calls, entry, setNow: (value: number) => { clock = value; } };
 }
 const body = (line: string) => line.replace(/^[ │├└]+/, "");
 const exec = (taskKey: string, extra: Partial<Extract<Task, { kind: "execute" }>> = {}): Task =>
-  ({ kind: "execute", taskKey, agent: "go-worker", attempt: 1, turns: 8, maxTurns: 20, elapsedMs: 182_000, ...extra });
+  ({ kind: "execute", taskKey, agent: "go-worker", attempt: 1, runId: `run-${taskKey}`, turns: 8, maxTurns: 20, elapsedMs: 182_000, ...extra });
 const review = (taskKey: string, reviewers: Reviewer[]): Task => ({ kind: "review", taskKey, round: 1, reviewers });
 const t1Item = { itemId: "task:t1", kind: "adjudicate" as const, label: "待裁决：任务 T1 2 次未完成", version: "task:t1:3", taskKey: "T1", taskText: "2 次未完成" };
 const reqItem = { itemId: "pm:intake", kind: "intake-review" as const, label: "待核对：PM 接手理解 r2", version: "pm:intake:1" };
@@ -342,8 +342,8 @@ test("任务行 AC-5：检索行写在任务行之后", () => {
   expect(lines[3]).toBe("     └ ⠋ explore 检索 · ↻3/12 · 5.0s");
 });
 
-test("任务行 AC-4：任务级待处理事项画成 ⚑ 行，选中后 Enter 打开决策包；任务进度行不可选中", () => {
-  const { instance, openItem, entry } = taskPanel({
+test("任务行 AC-4：任务级待处理事项画成 ⚑ 行，选中后 Enter 打开决策包；执行行可选中，Enter 打开步骤窗口", () => {
+  const { instance, openItem, openSteps, entry } = taskPanel({
     taskRows: [{ kind: "pending", taskKey: "T1", itemId: "task:t1", text: "2 次未完成" }, exec("T2")],
     pendingItems: [t1Item],
   });
@@ -357,12 +357,12 @@ test("任务行 AC-4：任务级待处理事项画成 ⚑ 行，选中后 Enter 
   expect(openItem).toHaveBeenLastCalledWith(expect.objectContaining({ overview: entry.overview }), t1Item);
   instance.handleInput("\x1b[B");
   instance.handleInput("\r");
-  expect(openItem).toHaveBeenCalledTimes(2);
-  expect(openItem).toHaveBeenLastCalledWith(expect.anything(), t1Item);
+  expect(openItem).toHaveBeenCalledTimes(1);
+  expect(openSteps).toHaveBeenCalledWith({ repoId: "r", runId: "run-T2", title: "T2 执行 · go-worker（第 1 次尝试）" });
 });
 
-test("任务行 AC-4：需求级事项以 ⚑ 事项文字排在任务行之后，↑↓ 顺序与画出顺序一致（需求行 → 任务级 ⚑ → 需求级 ⚑）", () => {
-  const { instance, openItem, entry } = taskPanel({
+test("任务行 AC-4：需求级事项以 ⚑ 事项文字排在任务行之后，↑↓ 顺序与画出顺序一致（需求行 → 任务级 ⚑ → 执行行 → 需求级 ⚑）", () => {
+  const { instance, openItem, openSteps, entry } = taskPanel({
     taskRows: [{ kind: "pending", taskKey: "T1", itemId: "task:t1", text: "2 次未完成" }, exec("T2")],
     pendingItems: [reqItem, t1Item],
   });
@@ -378,6 +378,9 @@ test("任务行 AC-4：需求级事项以 ⚑ 事项文字排在任务行之后�
   expect(openItem).toHaveBeenLastCalledWith(expect.objectContaining({ overview: entry.overview }), t1Item);
   instance.handleInput("\x1b[B");
   instance.handleInput("\r");
+  expect(openSteps).toHaveBeenCalledTimes(1);
+  instance.handleInput("\x1b[B");
+  instance.handleInput("\r");
   expect(openItem).toHaveBeenLastCalledWith(expect.objectContaining({ overview: entry.overview }), reqItem);
   instance.handleInput("\x1b[B");
   instance.handleInput("\r");
@@ -385,23 +388,28 @@ test("任务行 AC-4：需求级事项以 ⚑ 事项文字排在任务行之后�
   expect(openItem).toHaveBeenCalledTimes(3);
 });
 
-test("任务行 AC-4/AC-6：任务行有审查代理时 ↑↓ 只在需求行与 ⚑ 行之间移动，p 暂停所在 PM", () => {
-  const { instance, openItem } = taskPanel({
-    taskRows: [review("T1", [{ agent: "reviewer", state: "running", turns: 1, maxTurns: 10, elapsedMs: 1_000 }]), exec("T2")],
+test("任务行 AC-4/AC-6：任务行有审查代理时 ↑↓ 依次停在运行中的审查代理、执行行、⚑ 行，审查标题行跳过；p 暂停所在 PM", () => {
+  const { instance, openItem, openSteps, togglePause, entry } = taskPanel({
+    taskRows: [review("T1", [{ agent: "reviewer", state: "running", runId: "run-rv", turns: 1, maxTurns: 10, elapsedMs: 1_000 }]), exec("T2")],
     pendingItems: [reqItem],
   });
   instance.focus();
   expect(instance.render(200)[2]).toMatch(/T1 第 1 轮审查/);
   instance.handleInput("\x1b[B");
   instance.handleInput("\r");
+  expect(openSteps).toHaveBeenLastCalledWith({ repoId: "r", runId: "run-rv", title: "T1 第 1 轮审查 · reviewer" });
+  instance.handleInput("p");
+  expect(togglePause).toHaveBeenLastCalledWith(expect.objectContaining({ overview: entry.overview }));
+  instance.handleInput("\x1b[B");
+  instance.handleInput("\r");
+  expect(openSteps).toHaveBeenLastCalledWith({ repoId: "r", runId: "run-T2", title: "T2 执行 · go-worker（第 1 次尝试）" });
+  instance.handleInput("\x1b[B");
+  instance.handleInput("\r");
   expect(openItem).toHaveBeenLastCalledWith(expect.anything(), reqItem);
   instance.handleInput("\x1b[B");
   instance.handleInput("\r");
   expect(openItem).toHaveBeenCalledTimes(2);
-  instance.handleInput("\x1b[A");
-  instance.handleInput("\x1b[A");
-  instance.handleInput("\r");
-  expect(openItem).toHaveBeenCalledTimes(2);
+  expect(openSteps).toHaveBeenCalledTimes(2);
 });
 
 test("任务行 AC-5：taskRows 为空时照旧显示 doing 行和全部待处理事项", () => {
@@ -592,4 +600,300 @@ test("任务行 AC-2：通过、打回的审查代理行带轮数和用时时照
     "✓ a-reviewer 通过 · ↻6/12 · 1m40s",
     "✗ b-reviewer 打回 · ↻5/12 · 1m20s",
   ]);
+});
+
+const DOWN = "\x1b[B", UP = "\x1b[A";
+const stepExec: Task = { kind: "execute", taskKey: "T2", agent: "worker", attempt: 1, runId: "run-t2", turns: 3, maxTurns: 10, elapsedMs: 5_000 };
+const stepReview: Task = { kind: "review", taskKey: "T1", round: 1, reviewers: [
+  { agent: "reviewer", state: "running", runId: "run-rv", turns: 2, maxTurns: 10, elapsedMs: 5_000 },
+  { agent: "go-reviewer", state: "clear" },
+  { agent: "vue-reviewer", state: "blocked" },
+] };
+const stepExplore: Task = { kind: "explore", runId: "run-ex", turns: 1, maxTurns: 5, elapsedMs: 1_000 };
+const stepPrototype: PrototypePanelEntry = { repoId: "r", fetchedAt: 1_000,
+  prototype: { runId: "run-proto", requirementId: "01900000-0000-7000-8000-000000000001", name: "导出设置页", version: 1, agent: "prototype", turns: 3, maxTurns: 30, elapsedMs: 41_000 } };
+const stepMain: ExplorePanelEntry = { repoId: "r", fetchedAt: 1_000,
+  explore: { runId: "run-main", source: "local", question: "现在的导出入口在哪", turns: 2, maxTurns: 15, elapsedMs: 12_300 } };
+const stepOverview = (patch: Partial<PmOverview> = {}) => overview({ goals: ["导出"], taskRows: [stepExec, stepReview, stepExplore], ...patch });
+
+function stepPanel(options: { taskRows?: Task[]; pendingItems?: PmOverview["pendingItems"]; prototypes?: boolean; main?: boolean; entries?: boolean } = {}) {
+  const openItem = vi.fn(), togglePause = vi.fn(), openSteps = vi.fn();
+  const instance = new PmPanel({ now: () => 1_000, openItem, togglePause, openSteps } as never);
+  const entry: PmPanelEntry = { repoId: "r", overview: stepOverview({ ...(options.taskRows ? { taskRows: options.taskRows } : {}), ...(options.pendingItems ? { pendingItems: options.pendingItems } : {}) }), fetchedAt: 1_000 };
+  if (options.entries !== false) instance.update([entry]);
+  if (options.prototypes !== false) instance.updatePrototypes([stepPrototype]);
+  if (options.main !== false) instance.updateExplores([stepMain]);
+  instance.setTheme({ bg: (_kind, text) => `⟦${text}⟧` });
+  instance.focus();
+  return { instance, openItem, togglePause, openSteps, entry };
+}
+const marked = (instance: PmPanel): string[] => instance.render(200).filter((line) => line.includes("⟦")).map((line) => line.replace(/[⟦⟧]/g, ""));
+const press = (instance: PmPanel, key: string, times = 1) => { for (let i = 0; i < times; i++) instance.handleInput(key); };
+
+test("子代理行：↓ 依次停在需求、T2 执行、在跑的审查代理、PM 检索、原型设计、主窗口检索，到底不动，↑ 回到需求行；通过和打回的审查代理行与审查标题行跳过", () => {
+  const { instance } = stepPanel();
+  const expected = [/导出 · ↻5/, /T2 执行 · worker（第 1 次尝试）/, /⠋ reviewer · ↻2\/10/, /explore 检索/, /导出设置页（第 1 版）· prototype/, /本地 · 现在的导出入口在哪/];
+  expected.forEach((pattern, index) => {
+    if (index > 0) press(instance, DOWN);
+    const lines = marked(instance);
+    expect(lines, `第 ${index} 行`).toHaveLength(1);
+    expect(lines[0]).toMatch(pattern);
+  });
+  press(instance, DOWN, 3);
+  expect(marked(instance)).toHaveLength(1);
+  expect(marked(instance)[0]).toMatch(/本地 · 现在的导出入口在哪/);
+  for (let index = expected.length - 2; index >= 0; index--) {
+    press(instance, UP);
+    expect(marked(instance)).toHaveLength(1);
+    expect(marked(instance)[0]).toMatch(expected[index]!);
+  }
+  press(instance, UP, 3);
+  expect(marked(instance)[0]).toMatch(/导出 · ↻5/);
+});
+
+test("子代理行：任务级 ⚑ 事项行排在该任务的执行行之前，需求级 ⚑ 事项行排在 PM 检索行之后", () => {
+  const taskItem = { itemId: "task:t2", kind: "adjudicate" as const, label: "待裁决：任务 T2 2 次未完成", version: "task:t2:3", taskKey: "T2", taskText: "2 次未完成" };
+  const { instance } = stepPanel({
+    taskRows: [{ kind: "pending", taskKey: "T2", itemId: "task:t2", text: "2 次未完成" }, stepExec, stepExplore],
+    pendingItems: [taskItem, reqItem],
+    prototypes: false, main: false,
+  });
+  const seen: string[] = [];
+  for (let i = 0; i < 5; i++) { seen.push(marked(instance)[0]!); press(instance, DOWN); }
+  expect(seen[0]).toMatch(/导出 · ↻5/);
+  expect(seen[1]).toContain("⚑ T2 2 次未完成");
+  expect(seen[2]).toContain("T2 执行 · worker");
+  expect(seen[3]).toContain("explore 检索");
+  expect(seen[4]).toContain("⚑ 待核对：PM 接手理解 r2");
+});
+
+test("子代理行：没有任务行时需求行后面仍是 ⚑ 事项行，再后是原型设计行、主窗口检索行", () => {
+  const { instance } = stepPanel({ taskRows: [], pendingItems: [reqItem] });
+  const seen: string[] = [];
+  for (let i = 0; i < 4; i++) { seen.push(marked(instance)[0]!); press(instance, DOWN); }
+  expect(seen[1]).toContain("⚑ 待核对：PM 接手理解 r2");
+  expect(seen[2]).toContain("导出设置页（第 1 版）");
+  expect(seen[3]).toContain("本地 · 现在的导出入口在哪");
+});
+
+test("子代理行：光标在 T2 执行行时只有这一行带选中背景；主题没有 bg 时只把这一行行首换成 ›", () => {
+  const { instance } = stepPanel();
+  press(instance, DOWN);
+  const lines = instance.render(200);
+  expect(lines.filter((line) => line.includes("⟦"))).toEqual(["⟦     ├ ⠋ T2 执行 · worker（第 1 次尝试）· ↻3/10 · 5.0s⟧"]);
+
+  const plain = stepPanel();
+  plain.instance.setTheme({});
+  press(plain.instance, DOWN);
+  const rendered = plain.instance.render(200);
+  expect(rendered.filter((line) => line.startsWith("›"))).toEqual(["›    ├ ⠋ T2 执行 · worker（第 1 次尝试）· ↻3/10 · 5.0s"]);
+});
+
+test("子代理行：子代理行按回车用 { repoId, runId, title } 调用 openSteps；需求行回车不调用任何回调", () => {
+  const { instance, openSteps, openItem, togglePause } = stepPanel();
+  press(instance, "\r");
+  expect(openSteps).not.toHaveBeenCalled();
+  expect(openItem).not.toHaveBeenCalled();
+  expect(togglePause).not.toHaveBeenCalled();
+  const expected = [
+    { runId: "run-t2", title: "T2 执行 · worker（第 1 次尝试）" },
+    { runId: "run-rv", title: "T1 第 1 轮审查 · reviewer" },
+    { runId: "run-ex", title: "explore 检索" },
+    { runId: "run-proto", title: "导出设置页（第 1 版）· prototype" },
+    { runId: "run-main", title: "本地 · 现在的导出入口在哪" },
+  ];
+  for (const target of expected) {
+    press(instance, DOWN);
+    expect(instance.handleInput("\r")).toBe(true);
+    expect(openSteps).toHaveBeenLastCalledWith({ repoId: "r", ...target });
+  }
+  expect(openSteps).toHaveBeenCalledTimes(5);
+  expect(openItem).not.toHaveBeenCalled();
+});
+
+test("子代理行：联网检索写「联网」，问题里的连续空白合成一个空格", () => {
+  const { instance, openSteps } = stepPanel({ taskRows: [], prototypes: false, main: false });
+  instance.updateExplores([{ repoId: "r", fetchedAt: 1_000, explore: { ...stepMain.explore, source: "web", question: "企业微信\n\n  自建应用" } }]);
+  press(instance, DOWN);
+  press(instance, "\r");
+  expect(openSteps).toHaveBeenCalledWith({ repoId: "r", runId: "run-main", title: "联网 · 企业微信 自建应用" });
+});
+
+test("子代理行：⚑ 事项行回车照旧调用 openItem，不调用 openSteps", () => {
+  const taskItem = { itemId: "task:t2", kind: "adjudicate" as const, label: "待裁决：任务 T2 2 次未完成", version: "task:t2:3", taskKey: "T2", taskText: "2 次未完成" };
+  const { instance, openItem, openSteps } = stepPanel({ taskRows: [{ kind: "pending", taskKey: "T2", itemId: "task:t2", text: "2 次未完成" }, stepExec], pendingItems: [taskItem] });
+  press(instance, DOWN);
+  press(instance, "\r");
+  expect(openItem).toHaveBeenCalledWith(expect.objectContaining({ repoId: "r" }), taskItem);
+  expect(openSteps).not.toHaveBeenCalled();
+});
+
+test("子代理行：需求下面的子代理行按 p 调用 togglePause（参数是所属 entry）", () => {
+  const { instance, togglePause, entry } = stepPanel();
+  press(instance, DOWN);
+  expect(marked(instance)[0]).toContain("T2 执行");
+  expect(instance.handleInput("p")).toBe(true);
+  expect(togglePause).toHaveBeenLastCalledWith(entry);
+  press(instance, DOWN);
+  expect(marked(instance)[0]).toContain("⠋ reviewer");
+  press(instance, "p");
+  expect(togglePause).toHaveBeenLastCalledWith(entry);
+  press(instance, DOWN);
+  press(instance, "P");
+  expect(togglePause).toHaveBeenLastCalledWith(entry);
+  expect(togglePause).toHaveBeenCalledTimes(3);
+});
+
+test("子代理行：原型设计行、主窗口检索行按 p 不调用任何回调，但按键被吃掉", () => {
+  const { instance, togglePause, openItem, openSteps } = stepPanel();
+  press(instance, DOWN, 4);
+  expect(marked(instance)[0]).toContain("导出设置页");
+  expect(instance.handleInput("p")).toBe(true);
+  press(instance, DOWN);
+  expect(marked(instance)[0]).toContain("本地 · 现在的导出入口在哪");
+  expect(instance.handleInput("p")).toBe(true);
+  expect(togglePause).not.toHaveBeenCalled();
+  expect(openItem).not.toHaveBeenCalled();
+  expect(openSteps).not.toHaveBeenCalled();
+});
+
+test("子代理行：只有原型设计行或只有主窗口检索行时 hasRows 为真，什么都没有时为假", () => {
+  const options = { now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn(), openSteps: vi.fn() };
+  const onlyMain = new PmPanel(options);
+  expect(onlyMain.hasRows()).toBe(false);
+  onlyMain.updateExplores([stepMain]);
+  expect(onlyMain.hasRows()).toBe(true);
+  onlyMain.updateExplores([]);
+  expect(onlyMain.hasRows()).toBe(false);
+  const onlyPrototype = new PmPanel(options);
+  onlyPrototype.updatePrototypes([stepPrototype]);
+  expect(onlyPrototype.hasRows()).toBe(true);
+});
+
+test("子代理行：用含同一运行编号的数据刷新，光标不动，即使它前面多出了行", () => {
+  const { instance, entry } = stepPanel();
+  press(instance, DOWN);
+  const taskItem = { itemId: "task:t2", kind: "adjudicate" as const, label: "待裁决：任务 T2 2 次未完成", version: "task:t2:3", taskKey: "T2", taskText: "2 次未完成" };
+  instance.update([{ ...entry, fetchedAt: 1_000, overview: stepOverview({ pendingItems: [taskItem], taskRows: [{ kind: "pending", taskKey: "T2", itemId: "task:t2", text: "2 次未完成" }, { ...stepExec, turns: 4 } as Task, stepReview, stepExplore] }) }]);
+  expect(marked(instance)).toHaveLength(1);
+  expect(marked(instance)[0]).toContain("T2 执行 · worker（第 1 次尝试）· ↻4/10");
+});
+
+test("子代理行：选中的 T2 执行行不在新数据里时，光标落到相邻行，不越界、仍在可选行上", () => {
+  const { instance, entry, openSteps } = stepPanel();
+  press(instance, DOWN);
+  instance.update([{ ...entry, overview: stepOverview({ taskRows: [stepReview, stepExplore] }) }]);
+  const lines = marked(instance);
+  expect(lines).toHaveLength(1);
+  expect(lines[0]).toMatch(/导出 · ↻5|⠋ reviewer/);
+  press(instance, DOWN, 20);
+  expect(marked(instance)[0]).toContain("本地 · 现在的导出入口在哪");
+  press(instance, "\r");
+  expect(openSteps).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-main" }));
+});
+
+test("子代理行：选中的原型设计行、主窗口检索行刷新后同样按运行编号保持，消失后落到相邻行", () => {
+  const { instance } = stepPanel();
+  press(instance, DOWN, 5);
+  instance.updateExplores([{ ...stepMain, fetchedAt: 1_000, explore: { ...stepMain.explore, turns: 9 } }]);
+  expect(marked(instance)[0]).toContain("本地 · 现在的导出入口在哪");
+  instance.updateExplores([]);
+  expect(marked(instance)).toHaveLength(1);
+  expect(marked(instance)[0]).toContain("导出设置页");
+  instance.updatePrototypes([{ ...stepPrototype, fetchedAt: 1_000, prototype: { ...stepPrototype.prototype, turns: 9 } }]);
+  expect(marked(instance)[0]).toContain("导出设置页");
+  instance.updatePrototypes([]);
+  expect(marked(instance)).toHaveLength(1);
+  expect(marked(instance)[0]).toMatch(/explore 检索|⠋ reviewer/);
+});
+
+const FULL_LINES = [
+  "● 1 个需求运行中",
+  "└─ ⠋ 导出 · ↻5 · 5 tool uses · 33.8k token (62%) · 12.3s",
+  "     ├ ⠋ T2 执行 · worker（第 1 次尝试）· ↻3/10 · 5.0s",
+  "     ├ T1 第 1 轮审查",
+  "     │ ├ ⠋ reviewer · ↻2/10 · 5.0s",
+  "     │ ├ ✓ go-reviewer 通过",
+  "     │ └ ✗ vue-reviewer 打回",
+  "     └ ⠋ explore 检索 · ↻1/5 · 1.0s",
+  "● 1 个原型设计运行中",
+  "└─ ⠋ 导出设置页（第 1 版）· prototype · ↻3/30 · 41.0s",
+  "● 1 个检索运行中",
+  "└─ ⠋ 本地 · 现在的导出入口在哪 · ↻2/15 · 12.3s",
+];
+
+test("子代理行：含子代理行的同一份数据，未获得焦点时每行文字不变", () => {
+  const { instance } = stepPanel();
+  instance.blur();
+  instance.setTheme({});
+  expect(instance.render(200)).toEqual(FULL_LINES);
+});
+
+test("子代理行：获得焦点后光标在任一行，去掉高亮的每行文字都不变，底部提示不变", () => {
+  const { instance } = stepPanel();
+  for (let i = 0; i < 6; i++) {
+    expect(instance.render(200).map((line) => line.replace(/[⟦⟧]/g, ""))).toEqual([...FULL_LINES, "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框"]);
+    press(instance, DOWN);
+  }
+});
+
+function extensionFixture(overviewItems: PmOverview[]) {
+  const fake = createFakePi();
+  const calls: Array<[string, Record<string, unknown>]> = [];
+  let present = true;
+  const client = {
+    connectionIdentity: () => ({ daemonInstanceId: "d", connectionId: "c", connectionSequence: 1 }),
+    call: async (method: string, params: Record<string, unknown>) => {
+      calls.push([method, params]);
+      if (method === "pm.overview") return { items: overviewItems };
+      if (method === "explore.list" || method === "prototypes.list") return { items: [] };
+      if (method === "runs.steps") return { state: "completed", turns: 1, maxTurns: 5, elapsedMs: 1_000, steps: [] };
+      throw new Error(`未预期的 RPC ${method}`);
+    },
+    subscribe: () => () => {},
+    state: () => ({ status: "connected" as const }),
+    close: () => {},
+  };
+  const window = { windowId: "w", sessionId: "s", workspace: { repos: [{ repoId: "r", path: "/r", commonDir: "/r/.git" }], skipped: [] },
+    clients: { forRepo: (id: string) => (present && id === "r" ? client : undefined), all: () => [client], skipped: () => [], closeAll: () => {} } };
+  pmPanelExtension(fake.pi as never, { windowReady: () => Promise.resolve(window) as never, createClock: () => createClock() });
+  let input: ((data: string) => unknown) | undefined;
+  let widget: { render(width: number): string[] } | undefined;
+  let component: { handleInput(data: string): void } | undefined;
+  const custom = vi.fn((factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown) =>
+    new Promise((resolve) => { component = factory({ requestRender: () => {} }, {}, {}, resolve) as typeof component; }));
+  const notify = vi.fn();
+  const ctx = { mode: "tui", hasUI: true, ui: { setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => typeof widget) => { if (factory) widget = factory({}, {}); },
+    onTerminalInput: (handler: (data: string) => unknown) => { input = handler; return () => {}; }, getEditorText: () => "", notify, custom } };
+  return { fake, ctx, calls, custom, notify, key: (data: string) => input!(data), widget: () => widget!, closeWindow: () => component?.handleInput("\x1b"), dropClient: () => { present = false; } };
+}
+
+test("子代理行：扩展层在子代理行按回车，用该仓库的客户端打开步骤窗口并请求 runs.steps", async () => {
+  const f = extensionFixture([stepOverview({ taskRows: [stepExec] })]);
+  await f.fake.trigger("session_start", { reason: "new" }, f.ctx);
+  await vi.waitFor(() => expect(f.widget().render(200).join("\n")).toContain("T2 执行"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  f.key(DOWN); f.key(DOWN); f.key("\r");
+  await vi.waitFor(() => expect(f.custom).toHaveBeenCalledTimes(1));
+  await vi.waitFor(() => expect(f.calls).toContainEqual(["runs.steps", { runId: "run-t2" }]));
+  expect(f.notify).not.toHaveBeenCalled();
+  f.closeWindow();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const lines = f.widget().render(200);
+  expect(lines.find((line) => line.includes("T2 执行"))!.startsWith("›")).toBe(true);
+  expect(lines.at(-1)).toBe("↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框");
+  await f.fake.trigger("session_shutdown", {}, f.ctx);
+});
+
+test("子代理行：找不到该仓库的守护进程连接时提示错误，不打开窗口", async () => {
+  const f = extensionFixture([stepOverview({ taskRows: [stepExec] })]);
+  await f.fake.trigger("session_start", { reason: "new" }, f.ctx);
+  await vi.waitFor(() => expect(f.widget().render(200).join("\n")).toContain("T2 执行"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  f.key(DOWN); f.key(DOWN);
+  f.dropClient();
+  f.key("\r");
+  expect(f.notify).toHaveBeenCalledWith("找不到该仓库的守护进程连接", "error");
+  expect(f.custom).not.toHaveBeenCalled();
+  await f.fake.trigger("session_shutdown", {}, f.ctx);
 });
