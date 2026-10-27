@@ -29,7 +29,7 @@ const PrototypeEntry = object({
   removed: Type.Boolean(),
   inFlight: Type.Union([object({ version: positive, runId: id, agent: Type.String(), status: Type.Union([Type.Literal("designing"), Type.Literal("awaiting")]),
     file: Type.Union([PrototypeFile, Type.Null()]) }), Type.Null()]),
-  lastRework: Type.Union([object({ version: positive, opinion: Type.String({ minLength: 1, maxLength: 4000 }) }), Type.Null()]),
+  lastOpinion: Type.Union([object({ version: positive, opinion: Type.String({ minLength: 1, maxLength: 4000 }) }), Type.Null()]),
   lastEnded: Type.Union([object({ version: positive, reason: Type.String({ maxLength: 500 }) }), Type.Null()]),
 });
 const PrototypeBoard = object({ requirementId: id, entries: Type.Array(PrototypeEntry, { maxItems: 50 }), updatedAt: positive });
@@ -116,18 +116,23 @@ export async function beginDesign(ref: Ref, input: { requirementId: string; name
       assertRequirementEditable(db, input.requirementId);
       let entry = entryNamed(board, input.name);
       if (entry?.inFlight) {
-        deny("in_flight", entry.inFlight.status === "designing" ? `原型「${input.name}」还在做` : `原型「${input.name}」还在等确认`,
-          entry.inFlight.status === "designing" ? "等设计师交稿后再处理" : "先让用户在窗口里确认这一版");
+        const { inFlight } = entry;
+        if (inFlight.status === "designing") deny("in_flight", `原型「${input.name}」还在做`, "等设计师交稿后再处理");
+        if (entry.lastOpinion?.version !== inFlight.version) {
+          deny("in_flight", `原型「${input.name}」第 ${inFlight.version} 版还在等用户确认，用户没有对它提意见，不能重派`, "先请用户在确认窗口里处理");
+        }
+        entry.lastEnded = { version: inFlight.version, reason: "用户提了意见后重派，这一版作废" };
+        entry.inFlight = null;
       }
       if (!entry) {
         const sameLooking = board.entries.find((other) => foldName(other.name) === foldName(input.name));
         if (sameLooking) deny("name_conflict", `已有原型「${sameLooking.name}」，名称只差大小写或写法`, "请用已有名称或换个名字");
         if (board.entries.length >= MAX_ENTRIES) deny("too_many_prototypes", `一个需求最多 ${MAX_ENTRIES} 份原型`, "复用已有名称");
-        entry = { name: input.name, lastVersion: 0, draft: null, approved: null, removed: false, inFlight: null, lastRework: null, lastEnded: null };
+        entry = { name: input.name, lastVersion: 0, draft: null, approved: null, removed: false, inFlight: null, lastOpinion: null, lastEnded: null };
         board.entries.push(entry);
       }
       const version = entry.lastVersion + 1;
-      const source = entry.lastRework ? { version: entry.lastRework.version, opinion: entry.lastRework.opinion as string | null }
+      const source = entry.lastOpinion ? { version: entry.lastOpinion.version, opinion: entry.lastOpinion.opinion as string | null }
         : (entry.draft ?? entry.approved) ? { version: (entry.draft ?? entry.approved)!.version, opinion: null } : null;
       const previous = source && { path: prototypeFilePath(ref, { requirementId: input.requirementId, name: input.name, version: source.version }), opinion: source.opinion };
       entry.lastVersion = version;
@@ -222,15 +227,15 @@ export async function pendingConfirmation(ref: Ref, input: { requirementId: stri
   const { entry, inFlight } = requireInFlight(board, input.name, "awaiting");
   const file = inFlight.file!;
   const path = await verifiedFile(ref, input.requirementId, input.name, file);
-  return { name: input.name, version: file.version, hash: file.hash, bytes: file.bytes, note: file.note, path, previousOpinion: entry.lastRework?.opinion ?? null };
+  return { name: input.name, version: file.version, hash: file.hash, bytes: file.bytes, note: file.note, path, previousOpinion: entry.lastOpinion && entry.lastOpinion.version < file.version ? entry.lastOpinion.opinion : null };
 }
 
-export async function decidePrototype(ref: Ref, input: { requirementId: string; name: string; version: number; hash: string; choice: "accept" | "rework" | "abandon"; opinion: string | null; note: string | null }): Promise<void> {
+export async function decidePrototype(ref: Ref, input: { requirementId: string; name: string; version: number; hash: string; choice: "accept" | "opinion" | "abandon"; opinion: string | null; note: string | null }): Promise<void> {
   withDatabase(databaseOf(ref), (db) => { assertRequirementEditable(db, input.requirementId); });
   const opinion = input.opinion?.trim() ?? "";
-  if (input.choice === "rework") {
-    if (!opinion) deny("opinion_required", "返工须写明要改什么", "输入修改意见后再提交");
-    if (opinion.length > OPINION_MAX_LENGTH) deny("opinion_too_long", `返工意见超过 ${OPINION_MAX_LENGTH} 字`, "精简意见后再提交");
+  if (input.choice === "opinion") {
+    if (!opinion) deny("opinion_required", "意见不能为空", "写上意见后再提交");
+    if (opinion.length > OPINION_MAX_LENGTH) deny("opinion_too_long", `意见超过 ${OPINION_MAX_LENGTH} 字`, "精简意见后再提交");
   }
   const userNote = input.choice === "accept" ? input.note?.trim() ?? null : null;
   if (userNote !== null) {
@@ -250,7 +255,8 @@ export async function decidePrototype(ref: Ref, input: { requirementId: string; 
     assertRequirementEditable(db, input.requirementId);
     const { entry, inFlight } = matched(current);
     if (input.choice === "accept") { entry.draft = { ...inFlight.file!, userNote }; entry.removed = false; }
-    entry.lastRework = input.choice === "rework" ? { version: inFlight.version, opinion } : null;
+    if (input.choice === "opinion") { entry.lastOpinion = { version: inFlight.version, opinion }; return; }
+    entry.lastOpinion = null;
     entry.inFlight = null;
   }));
 }
@@ -265,7 +271,6 @@ export async function removeFromDraft(ref: Ref, input: { requirementId: string; 
     if ((entry!.draft ?? entry!.approved)!.version !== input.version) deny("item_changed", "窗口显示的版本已不是草稿里的那一版", "请重新打开移除窗口");
     entry!.draft = null;
     entry!.removed = true;
-    entry!.lastRework = null;
   }));
 }
 
@@ -277,7 +282,7 @@ export async function inFlightSummary(ref: Ref, requirementId: string): Promise<
 export function inFlightBlock(items: Array<{ name: string; version: number; status: "designing" | "awaiting" }>): PrototypeBoardError | null {
   if (!items.length) return null;
   const why = `还不能批准：${items.map((item) => item.status === "awaiting" ? `原型「${item.name}」第 ${item.version} 版还在等你确认` : `原型「${item.name}」设计师还在做`).join("，")}`;
-  return new PrototypeBoardError("in_flight", why, `先把${items.length === 1 ? "它" : `这 ${items.length} 份`}处理完（通过、返工，或在确认窗口按 Esc 放弃），再说批准`);
+  return new PrototypeBoardError("in_flight", why, `先把${items.length === 1 ? "它" : `这 ${items.length} 份`}处理完（通过，或在确认窗口按 Esc 放弃），再说批准`);
 }
 
 export interface DraftItem { name: string; version: number; hash: string; bytes: number; note: string; userNote: string | null; label: "new" | "kept" | "removed" }

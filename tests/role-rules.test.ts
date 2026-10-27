@@ -104,6 +104,12 @@ describe("prototype 职责规矩", () => {
     }
     expect(rules).not.toContain("先红后绿");
   });
+
+  test("任务说明给出上一版文件和用户意见时，按用户原话改、没提到的保持不变，不含返工", () => {
+    const rules = loadRoleRules("prototype");
+    expect(rules).toContain("任务说明里给出上一版文件和用户的意见时，先用 read 读上一版，按用户原话改，没提到的地方保持不变");
+    expect(rules).not.toContain("返工");
+  });
 });
 
 describe("下游职责规矩的原型要求", () => {

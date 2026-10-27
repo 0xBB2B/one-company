@@ -438,3 +438,9 @@ test("prototypes.decide 必须带 note 字段，可以为 null，超过 4000 字
   expect(() => validateParams("prototypes.decide", { ...base, note: null })).not.toThrow();
   expect(() => validateParams("prototypes.decide", { ...base, note: "用 B" })).not.toThrow();
 });
+
+test("prototypes.decide 接受 opinion，拒绝已去掉的 rework", () => {
+  const base = { requirementId: "0192f3a4-7c1e-7b2a-9d4e-5f6a7b8c9d0e", name: "设置页", version: 1, hash: "a".repeat(64), note: null, opinion: "改成横向滚动" };
+  expect(() => validateParams("prototypes.decide", { ...base, choice: "opinion" })).not.toThrow();
+  expect(catchError(() => validateParams("prototypes.decide", { ...base, choice: "rework" }))?.code).toBe("bad_params");
+});

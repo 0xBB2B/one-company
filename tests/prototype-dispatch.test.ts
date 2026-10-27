@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { approvedPrototypeListLines, requirementPrototypeLines } from "../src/modules/prototype/prototype-dispatch.ts";
+import { approvedPrototypeListLines, prototypeContext, requirementPrototypeLines } from "../src/modules/prototype/prototype-dispatch.ts";
 import { RunManager, registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import { validateParams } from "../src/app/daemon/method-params.ts";
@@ -179,7 +179,7 @@ test("任务说明写明需求标题、原型名称、第几版、要求和轮�
   await w.call("runs.stop", { runId });
 });
 
-test("返工后重派时设计师能读上一版文件，任务说明带用户返工原话", async () => {
+test("提意见后重派时设计师能读上一版文件，任务说明带用户意见原话", async () => {
   const w = await world();
   const opinion = "按钮放大一点，主色换成深蓝";
   const first = uuidv7();
@@ -187,7 +187,7 @@ test("返工后重派时设计师能读上一版文件，任务说明带用户�
   await beginDesign(w.ref, { ...params, runId: first, agent: "prototype" });
   await submitDesign(w.ref, { ...params, runId: first, html: HTML, note: "第一版" });
   const pending = await pendingConfirmation(w.ref, params);
-  await decidePrototype(w.ref, { ...params, version: pending.version, hash: pending.hash, choice: "rework", opinion });
+  await decidePrototype(w.ref, { ...params, version: pending.version, hash: pending.hash, choice: "opinion", note: null, opinion });
   const previousPath = prototypeFilePath(w.ref, { ...params, version: 1 });
 
   w.provider.queue.push({ type: "toolcall", name: "read", input: { path: previousPath } }, w.slow);
@@ -508,4 +508,10 @@ test("任务说明的原型清单里，带说明的原型下面紧跟一行用�
 test("PM 看的原型清单里，带说明的写成用户说明括号，没有说明的和原来一样，空列表仍写这一版没有原型", () => {
   expect(approvedPrototypeListLines(noted)).toEqual(["当前批准版本附带的原型：", `- 设置页 第 1 版（用户说明：${NOTE}）`, "- 命令行输出 第 2 版"]);
   expect(approvedPrototypeListLines([])).toEqual(["这一版没有原型"]);
+});
+
+test("任务说明在有意见时写用户对上一版的意见原话，不出现返工字样", () => {
+  const text = prototypeContext({ title: "登录", name: "登录页", version: 2, brief: "要求", maxTurns: 12, previous: { path: "/p/v1.html", opinion: "改成横向滚动" } });
+  expect(text).toContain("用户对上一版的意见原话：改成横向滚动");
+  expect(text).not.toContain("返工");
 });

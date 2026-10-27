@@ -1114,7 +1114,7 @@ async function designed(w: World, requirementId: string, name: string, reworks =
     await submitDesign(boardRef(w), { requirementId, name, runId, html: PROTOTYPE_HTML, note: "三项状态横排" });
     const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
     await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash,
-      choice: accept ? "accept" : "rework", opinion: accept ? null : "再改一版", note: accept ? note : null });
+      choice: accept ? "accept" : "opinion", opinion: accept ? null : "再改一版", note: accept ? note : null });
   }
 }
 
@@ -1157,7 +1157,7 @@ describe("批准时连同草稿里的原型一起批准", () => {
       expect(error.message).toContain("原因：还不能批准：");
       expect(error.message).toContain("原型「设置页」第 1 版还在等你确认");
       expect(error.message).toContain("原型「命令行输出」设计师还在做");
-      expect(error.message).toContain("建议：先把这 2 份处理完（通过、返工，或在确认窗口按 Esc 放弃），再说批准");
+      expect(error.message).toContain("建议：先把这 2 份处理完（通过，或在确认窗口按 Esc 放弃），再说批准");
     }
     expect(w.windows).toHaveLength(0);
     expect(await readPrototypeBoard(boardRef(w), id)).toEqual(before);
@@ -1169,7 +1169,7 @@ describe("批准时连同草稿里的原型一起批准", () => {
     w.capture("同意");
     const error = await w.call({ action: "confirmUpdate", ...(await w.request(created)).input }).then(() => { throw new Error("批准没有被拒"); }, (caught: unknown) => caught as Error);
     expect(error.message).toContain("原因：还不能批准：原型「设置页」设计师还在做");
-    expect(error.message).toContain("建议：先把它处理完（通过、返工，或在确认窗口按 Esc 放弃），再说批准");
+    expect(error.message).toContain("建议：先把它处理完（通过，或在确认窗口按 Esc 放弃），再说批准");
   });
 
   test("原型名称很长时，名称和第几版之间仍至少隔两个空格", async () => {
@@ -1413,7 +1413,7 @@ describe("批准时核对原型文件和在途原型", () => {
     w.capture("同意"); scriptReview(w.provider, phoneReview);
     const error = await rejected(w.call({ action: "confirmUpdate", ...input }));
     expect(error.message).toContain("原型「另一份」设计师还在做");
-    expect(error.message).toMatch(/通过|返工|放弃/);
+    expect(error.message).toMatch(/通过|放弃/);
     expect(error.message).not.toContain("在批准过程中变了");
     expect(await prototypesAtRevision(boardRef(w), id, 1)).toEqual([]);
   });

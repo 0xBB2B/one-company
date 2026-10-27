@@ -39,7 +39,7 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   "prototypes.board": Type.Object({ requirementId: id }, { additionalProperties: false }),
   "prototypes.pending": Type.Object({ requirementId: id, name: Type.String() }, { additionalProperties: false }),
   "prototypes.decide": Type.Object({ requirementId: id, name: Type.String(), version: positive, hash,
-    choice: Type.Union([Type.Literal("accept"), Type.Literal("rework"), Type.Literal("abandon")]),
+    choice: Type.Union([Type.Literal("accept"), Type.Literal("opinion"), Type.Literal("abandon")]),
     opinion: Type.Union([Type.String({ maxLength: 4000 }), Type.Null()]),
     note: Type.Union([Type.String({ maxLength: 4000 }), Type.Null()]) }, { additionalProperties: false }),
   "prototypes.remove": Type.Object({ requirementId: id, name: Type.String(), version: positive }, { additionalProperties: false }),

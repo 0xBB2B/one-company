@@ -36,7 +36,7 @@ export function prototypeContext(input: { title: string; name: string; version: 
     `原型名称：${input.name}（第 ${input.version} 版）`,
     `要求：\n${input.brief}`,
     ...(input.previous ? [`上一版文件：${input.previous.path}`,
-      ...(input.previous.opinion ? [`用户对上一版的返工原话：${input.previous.opinion}`] : [])] : []),
+      ...(input.previous.opinion ? [`用户对上一版的意见原话：${input.previous.opinion}`] : [])] : []),
     `对话轮次上限：${input.maxTurns}。用满后运行时会停止，请在额度内提交原型。`,
   ].join("\n");
 }
