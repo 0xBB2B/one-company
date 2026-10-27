@@ -240,6 +240,33 @@ describe("完成与控制", () => {
     await expect(s.handle.result()).rejects.toThrow("停止");
   }, 20000);
 
+  test("工具开始执行时发出 tool_start，带工具名与参数", async () => {
+    const w = await world();
+    const s = await w.session("worker", [
+      { type: "toolcall", name: coreToolName("result_submit"), input: { note: "n1" } },
+      { type: "text", text: "已提交" },
+    ]);
+    const started: Array<{ toolCallId?: string; toolName?: string; args?: unknown }> = [];
+    s.handle.events.on("tool_start", (event) => started.push(event));
+    s.handle.prompt("完成任务");
+    await s.handle.result();
+    expect(started).toHaveLength(1);
+    expect(started[0]!.toolName).toBe(coreToolName("result_submit"));
+    expect(started[0]!.args).toEqual({ note: "n1" });
+    expect(typeof started[0]!.toolCallId).toBe("string");
+  }, 20000);
+
+  test("stop() 后发出 stopped 事件", async () => {
+    const w = await world();
+    const s = await w.session("pm", [{ type: "text", text: "第一轮" }]);
+    const idle: unknown[] = []; s.handle.events.on("idle", (event) => idle.push(event));
+    const stopped: unknown[] = []; s.handle.events.on("stopped", () => stopped.push(true));
+    s.handle.prompt("开始");
+    await until(() => idle.length === 1);
+    await s.handle.stop();
+    expect(stopped).toHaveLength(1);
+  }, 20000);
+
   test("连接故障当作暂停：状态为 paused、发出 network_paused 并拦住新请求，resume 后放行网络门并原地续接", async () => {
     const w = await world();
     const s = await w.session("pm", [{ type: "error", message: "fetch failed: connection reset (network)" }, { type: "text", text: "恢复后继续" }]);

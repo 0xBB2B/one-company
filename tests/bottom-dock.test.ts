@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { BottomDock } from "../src/core/host/dock.ts";
+import { PmPanel } from "../src/modules/panel/pm-panel.ts";
 
 const KEY = {
   down: "\x1b[B",
@@ -264,5 +265,27 @@ describe("Kitty 协议释放事件一律不消费", () => {
     const result = dock.handleKey(KEY.escapeKittyRelease);
     expect(result).toBeUndefined();
     expect(dock.focus()).toBe("panel");
+  });
+});
+
+describe("真实状态面板：只有检索行时也能进入", () => {
+  const mainExplore = { repoId: "r", fetchedAt: 0, explore: { runId: "run-main", source: "local" as const, question: "现在的导出入口在哪", turns: 1, maxTurns: 5, elapsedMs: 0 } };
+
+  function realDock(withExplore: boolean) {
+    const panel = new PmPanel({ now: () => 0, openItem: () => {}, togglePause: () => {}, openSteps: () => {} } as never);
+    if (withExplore) panel.updateExplores([mainExplore]);
+    return new BottomDock({ panel, getEditorText: () => "", isCompletionOpen: () => false, isOverlayOpen: () => false });
+  }
+
+  test("只有一个主窗口检索时，输入框为空按 ↓ 进入面板", () => {
+    const dock = realDock(true);
+    expect(dock.handleKey(KEY.down)?.consume).toBe(true);
+    expect(dock.focus()).toBe("panel");
+  });
+
+  test("什么都没有时，按 ↓ 不进入面板", () => {
+    const dock = realDock(false);
+    expect(dock.handleKey(KEY.down)).toBeUndefined();
+    expect(dock.focus()).toBe("editor");
   });
 });

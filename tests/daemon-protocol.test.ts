@@ -22,6 +22,7 @@ const EXPECTED_METHODS = [
   "ping",
   "shutdown",
   "runs.get",
+  "runs.steps",
   "runs.pause",
   "runs.resume",
   "runs.stop",
@@ -66,6 +67,7 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   ping: {},
   shutdown: {},
   "runs.get": { runId: "run-1" },
+  "runs.steps": { runId: "run-1" },
   "runs.pause": { runId: "run-1" },
   "runs.resume": { runId: "run-1" },
   "agents.dispatchPm": { requirementId: "req-1", model: { provider: "p", id: "m" }, thinking: "off" },
@@ -114,8 +116,8 @@ test("知识RPC严格拒绝模型身份/SQL/超限及非授权路径，仅接受
 });
 
 describe("协议常量", () => {
-  test("PROTOCOL_VERSION 为 5", () => {
-    expect(PROTOCOL_VERSION).toBe(5);
+  test("PROTOCOL_VERSION 为 6", () => {
+    expect(PROTOCOL_VERSION).toBe(6);
   });
 
   test("prototypes 方法的需求编号不是 UUIDv7 时以 bad_params 拒绝", () => {
@@ -373,6 +375,12 @@ describe("validateParams — 缺字段被拒绝", () => {
     expect(error).not.toBeNull();
     expect(error?.code).toBe("bad_params");
     expect(error?.message).toContain("runId");
+  });
+
+  test("runs.steps 只接受 runId，缺少或多带字段都抛出 bad_params", () => {
+    expect(() => validateParams("runs.steps", { runId: "run-1" })).not.toThrow();
+    expect(catchError(() => validateParams("runs.steps", {}))?.code).toBe("bad_params");
+    expect(catchError(() => validateParams("runs.steps", { runId: "run-1", extra: 1 }))?.code).toBe("bad_params");
   });
 
   test("shells.stop 缺少 expectedPid 抛出 bad_params", () => {

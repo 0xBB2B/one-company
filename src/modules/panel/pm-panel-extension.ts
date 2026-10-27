@@ -5,6 +5,7 @@ import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../../core/host/daemon-client.ts
 import { BottomDock } from "../../core/host/dock.ts";
 import type { PmOverview } from "./pm-overview.ts";
 import { mountPmPanel } from "./pm-panel.ts";
+import { openStepWindow } from "./step-window.ts";
 import type { ExplorePanelEntry, PmPanelEntry, PrototypePanelEntry } from "./pm-panel.ts";
 import type { MainExploreOverview } from "../explore/explore-dispatch.ts";
 import type { MainPrototypeOverview } from "../prototype/prototype-dispatch.ts";
@@ -62,6 +63,11 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
           const method = entry.overview.status === "paused" ? "runs.resume" : "runs.pause";
           void target.call(method, { runId: entry.overview.pmRunId }).then(() => refresh(entry.repoId))
             .catch((error: unknown) => ctx.ui.notify(`${method === "runs.resume" ? "恢复" : "暂停"}未完成：${message(error)}`, "warning"));
+        },
+        openSteps: ({ repoId, runId, title }) => {
+          const target = client(repoId);
+          if (!target) { ctx.ui.notify("找不到该仓库的守护进程连接", "error"); return; }
+          openStepWindow({ ctx, dock, clock, client: target, runId, title }).catch((error: unknown) => ctx.ui.notify(`步骤窗口无法打开：${message(error)}`, "warning"));
         },
       });
       if (!mounted) return;

@@ -1,4 +1,4 @@
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 export const PM_MESSAGE_MAX_CHARS = 4000;
 
@@ -7,6 +7,7 @@ export const METHODS = [
   "ping",
   "shutdown",
   "runs.get",
+  "runs.steps",
   "runs.pause",
   "runs.resume",
   "runs.stop",

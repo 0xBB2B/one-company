@@ -20,6 +20,7 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   ping: Type.Object({}, { additionalProperties: false }),
   shutdown: Type.Object({}, { additionalProperties: false }),
   "runs.get": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
+  "runs.steps": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "runs.pause": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "runs.resume": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "agents.dispatchPm": Type.Object({ requirementId: Type.String(), model: Type.Object({ provider: Type.String(), id: Type.String() }, { additionalProperties: false }),

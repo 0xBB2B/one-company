@@ -186,6 +186,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     pi.on("tool_result", (event) => filterSearchResult(event));
     pi.on("tool_execution_start", (event) => {
       activeTools.add(event.toolCallId);
+      events.emit("tool_start", { toolCallId: event.toolCallId, toolName: event.toolName, args: event.args, parentToolCallId: event.parentToolCallId });
     });
     pi.on("tool_execution_end", (event) => {
       activeTools.delete(event.toolCallId);
@@ -317,6 +318,7 @@ export async function createAgentRoleSession(options: CreateAgentSessionOptions)
     if (isTerminal()) return { stopped: activeTools.size === 0 && !prompting };
     // 先切到 stopped 再 abort：abort 引发的 aborted 消息不能被当作业务失败
     currentState = "stopped";
+    events.emit("stopped");
     rejectResult(new Error("会话已被停止"));
     await abortWithin();
     return { stopped: activeTools.size === 0 && !prompting };

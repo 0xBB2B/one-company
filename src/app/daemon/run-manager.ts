@@ -34,7 +34,7 @@ import { closeDecisionProblem, takeUnnotifiedDecisions } from "../../modules/pan
 import { decisionPacket, DecisionPacketError } from "../../modules/panel/decision-packet.ts";
 import { createWorkflowManageTool } from "../../modules/delivery/workflow-manage.ts";
 import { deliverApprovedEvents } from "../../modules/pm/pm-event-delivery.ts";
-import { headingTitlesOf, pmOverview } from "../../modules/panel/pm-overview.ts";
+import { headingTitlesOf, pmOverview, runStatsOf } from "../../modules/panel/pm-overview.ts";
 import type { PmOverview } from "../../modules/panel/pm-overview.ts";
 import { RequirementService } from "../../modules/requirement/requirement-service.ts";
 import { implementAuthorized, pmDecisionNotes, pmIntakeReviewNotice, pmSourceDirectory } from "../../modules/pm/pm-intake-runtime.ts";
@@ -51,6 +51,8 @@ import { PrototypeBoardError, assertRequirementOpenForPrototypes, prototypeFileP
 import { createResultSubmitTool, PROTOTYPE_SUBMIT_PARAMETERS, RESULT_SUBMIT_PARAMETERS } from "../../modules/pm/result-submit.ts";
 import { toPiTool } from "../../modules/agents/role-tools.ts";
 import { AdvisedError, adviceOf, failureText, toolFailure } from "../../core/exec/tool-failure.ts";
+import { RunStepBook } from "../../modules/agents/run-steps.ts";
+import type { RunStepsView } from "../../modules/agents/run-steps.ts";
 import { sessionFilePath } from "../../modules/agents/session-records.ts";
 import { clearPlanRejections, clearStall, markPlanRejectionWoken, notePlanRejectionText, noteStall, planRejectionsIn } from "../../modules/pm/pm-attention.ts";
 import { defaultPageGetter, defaultWebDeps, webFetch, webSearch } from "../../modules/explore/web-access.ts";
@@ -269,6 +271,7 @@ export class RunManager {
   private readonly emit: EmitFn;
   private readonly options: RunManagerOptions;
   private readonly sessions = new Map<string, SessionEntry>();
+  private readonly stepBook = new RunStepBook();
   private started = false;
   private resolveStarted!: () => void;
   private readonly startedPromise: Promise<void>;
@@ -578,6 +581,7 @@ export class RunManager {
     }
     const toolSet = tools;
     this.sessions.set(run.id, { kind: "role", handle, subagent: { parentRunId: input.pmRunId, taskId: task.taskId, review, dispose: () => toolSet.dispose() } });
+    this.stepBook.track(run.id, handle);
     registered = true;
     handle.events.on("turn_counted", () => { void this.runStore.recordTurn(run.id).catch(() => {}); });
     this.trackUsage(run.id, handle);
@@ -847,12 +851,14 @@ export class RunManager {
     const capture = () => captured;
     if (requirementId) {
       this.sessions.set(runId, { kind: "role", handle, explore: { parentRunId: parent.parentRunId, dispose: () => result.dispose(), result: capture } });
+      this.stepBook.track(runId, handle);
       handle.events.on("turn_counted", () => { void this.runStore.recordTurn(runId).catch(() => {}); });
       this.trackUsage(runId, handle);
       this.trackNetworkPause(runId, handle);
       await this.runStore.update(runId, { state: "running" });
     } else {
       const request = input.parent as Extract<ExploreParentRequest, { role: "main" }>;
+      this.stepBook.track(runId, handle, { maxTurns: input.maxTurns, owner: request.connectionId });
       this.mainExplores.set(runId, { handle, sessionId: request.sessionId, connectionId: request.connectionId, dispose: () => result.dispose(), result: capture, report: null,
         question: input.request.question, source: source.kind === "web" ? "web" : "local", maxTurns: input.maxTurns, startedAt: Date.now() });
       // 派出途中发起连接已断开：立即停止并作废，不留无人接收的检索
@@ -923,6 +929,7 @@ export class RunManager {
       throw protocolError("subagent_session_failed", why, "按原因处理后重派；原因涉及模型或联网配置时交用户处理");
     }
     const tool = result;
+    this.stepBook.track(runId, handle, { maxTurns: request.maxTurns, owner: parent.connectionId });
     this.mainPrototypes.set(runId, { handle, sessionId: parent.sessionId, connectionId: parent.connectionId, requirementId: request.requirementId, name: request.name,
       version, agent, maxTurns: request.maxTurns, startedAt: Date.now(), submitted: false, dispose: () => tool.dispose() });
     const unavailable = await assertRequirementOpenForPrototypes(ref, request.requirementId).then(() => undefined, (denied: unknown) => denied);
@@ -1180,6 +1187,24 @@ export class RunManager {
     const outcome = main.report?.outcome;
     return { id: runId, kind: "explore", state: outcome === undefined ? "running" : outcome === "completed" ? "completed" : "failed",
       turns: main.handle.turnsUsed(), delivery: "结果到达后以卡片插入本会话" };
+  }
+
+  /** 步骤窗口的内容：有运行记录的取记录，主窗口派出的取会话快照，且只认派出它的连接。 */
+  async runSteps(runId: string, connectionId: string): Promise<RunStepsView> {
+    const steps = this.stepBook.steps(runId);
+    const notFound = () => protocolError("not_found", "守护进程里没有这个子代理的步骤", "守护进程重启后，之前的步骤就没有了");
+    if (!steps) throw notFound();
+    const record = await this.runStore.get(runId);
+    if (record.ok) {
+      const { run } = record, { turns, maxTurns, elapsedMs } = runStatsOf(run, Date.now());
+      return { state: run.state, ...(run.stateReason ? { reason: run.stateReason } : {}), turns, maxTurns, elapsedMs, steps };
+    }
+    const main = this.stepBook.mainStatus(runId, connectionId);
+    if (!main) throw notFound();
+    const limited = main.state === "turn_limit_reached" || main.state === "ended_without_result";
+    const reason = limited ? outcomeReason(main.state as SessionOutcome) : main.state === "failed" ? main.reason : undefined;
+    return { state: (limited ? "failed" : main.state) as RunStepsView["state"], ...(reason === undefined ? {} : { reason }), turns: main.turns, maxTurns: main.maxTurns,
+      elapsedMs: (main.endedAt ?? Date.now()) - main.startedAt, steps };
   }
 
   /** 主窗口面板列出自己派出、还在运行的 explore：只认派出它的那条连接。 */
@@ -1767,6 +1792,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     if (!result.ok) throw protocolError("not_found", "运行不存在");
     return { run: result.run };
   });
+  register("runs.steps", async (params, client) => ({ ...await manager.runSteps(params.runId as string, client.connectionId ?? "") }));
   register("runs.pause", async (params, client) => { refuseMainSessionControl(params, client); return manager.pause(params.runId as string); });
   register("runs.stop", async (params, client) => await manager.stopMainExplore(params.runId as string, client.connectionId) ?? await manager.stopMainPrototype(params.runId as string, client.connectionId) ?? manager.stop(params.runId as string, { reason: "main_agent" }));
   register("shells.list", async () => ({ tasks: shellRegistry.list().map(shellMetadata) }));

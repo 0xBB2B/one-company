@@ -30,6 +30,8 @@ export type PanelReviewerState = "running" | "clear" | "blocked" | "awaiting_ret
 export interface PanelReviewerRow extends Partial<PanelRunStats> {
   agent: string;
   state: PanelReviewerState;
+  /** 运行中的行带运行编号，面板据此打开步骤窗口。 */
+  runId?: string;
   /** 运行中的行表示本轮第几次派这个代理（只在大于 1 时给出）；用满的行表示本轮没交出结论的次数。 */
   attempt?: number;
   /** awaiting_retry 时没交出结论的原因。 */
@@ -37,10 +39,10 @@ export interface PanelReviewerRow extends Partial<PanelRunStats> {
 }
 
 export type PanelTaskRow =
-  | ({ kind: "execute"; taskKey: string; agent: string; attempt: number } & PanelRunStats)
+  | ({ kind: "execute"; taskKey: string; agent: string; attempt: number; runId: string } & PanelRunStats)
   | { kind: "review"; taskKey: string; round: number; reviewers: PanelReviewerRow[] }
   | { kind: "pending"; taskKey: string; itemId: string; text: string }
-  | ({ kind: "explore" } & PanelRunStats);
+  | ({ kind: "explore"; runId: string } & PanelRunStats);
 export type PmOverviewStatus = "running" | "pausing" | "paused" | "waiting";
 export interface PmOverview {
   requirementId: string;
@@ -228,7 +230,7 @@ function doingOf(input: PmOverviewInput, tasks: TaskRecord[], plan: ReturnType<t
   return "空闲";
 }
 
-function runStatsOf(run: RunRecord, now: number): PanelRunStats {
+export function runStatsOf(run: RunRecord, now: number): PanelRunStats {
   const end = run.endedAt ? Date.parse(run.endedAt) : now;
   const pausedNow = run.pausedAt ? Math.max(0, end - Date.parse(run.pausedAt)) : 0;
   return { turns: run.turns, maxTurns: run.maxTurns ?? null, elapsedMs: Math.max(0, end - Date.parse(run.startedAt) - (run.pausedMs ?? 0) - pausedNow) };
@@ -240,7 +242,7 @@ function reviewerRowsOf(task: TaskRecord, round: number, runs: ReadonlyMap<strin
     if (outcome === "running") {
       const run = runs.get(review.runId);
       const attempt = task.reviews.filter((entry) => entry.round === round && entry.agent === review.agent).length;
-      return { agent: review.agent, state: "running", ...(attempt > 1 ? { attempt } : {}), ...(run ? runStatsOf(run, now) : {}) };
+      return { agent: review.agent, state: "running", runId: review.runId, ...(attempt > 1 ? { attempt } : {}), ...(run ? runStatsOf(run, now) : {}) };
     }
     const run = runs.get(review.runId);
     const stats = run ? runStatsOf(run, now) : { turns: review.turnsUsed, maxTurns: review.maxTurns };
@@ -263,14 +265,14 @@ function taskRowsOf(input: PmOverviewInput, tasks: TaskRecord[], items: PendingI
     for (const item of items) if (item.taskKey === task.key) rows.push({ kind: "pending", taskKey: task.key, itemId: item.itemId, text: item.taskText! });
     const attemptIndex = task.attempts.findIndex((attempt) => attempt.outcome === "running");
     const run = attemptIndex >= 0 ? runs.get(task.attempts[attemptIndex]!.runId) : undefined;
-    if (run) rows.push({ kind: "execute", taskKey: task.key, agent: run.agent?.name ?? ROLE_LABEL[run.role ?? ""] ?? "子代理", attempt: attemptIndex + 1, ...runStatsOf(run, input.now) });
+    if (run) rows.push({ kind: "execute", taskKey: task.key, agent: run.agent?.name ?? ROLE_LABEL[run.role ?? ""] ?? "子代理", attempt: attemptIndex + 1, runId: run.id, ...runStatsOf(run, input.now) });
     const { round, reviews } = latestRound(task);
     if (task.status === "reviewing" || reviews.some((review) => review.outcome === "running")) {
       rows.push({ kind: "review", taskKey: task.key, round, reviewers: reviewerRowsOf(task, round, runs, input.now) });
     }
   }
   for (const child of input.children) {
-    if (child.role === "one-company.explore" && ACTIVE_CHILD.has(child.state)) rows.push({ kind: "explore", ...runStatsOf(child, input.now) });
+    if (child.role === "one-company.explore" && ACTIVE_CHILD.has(child.state)) rows.push({ kind: "explore", runId: child.id, ...runStatsOf(child, input.now) });
   }
   return rows;
 }
