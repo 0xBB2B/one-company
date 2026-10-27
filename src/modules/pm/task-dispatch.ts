@@ -304,6 +304,14 @@ export function escalateTask(request: { dataRoot: string; repoId: string; lease:
   }));
 }
 
+// retry 机会绑定任务版本：版本变过的旧机会放行不了派出，却会让 PM 改任务时只能改说明文字，所以只退回仍有效的
+function refundedDecision(task: TaskRecord, runId: string, outcome: string): Pick<TaskRecord, "userDecision"> | Record<string, never> {
+  const decision = task.userDecision;
+  if (outcome !== "superseded" || decision?.usedByRunId !== runId) return {};
+  if (decision.choice === "retry" && decision.taskVersion !== task.version) return {};
+  return { userDecision: { ...decision, usedByRunId: null } };
+}
+
 /** 登记一次尝试的真实结局：worker 完成进入待审查，其他职责完成即完成；其余首次进入等待父代理处置，第二次进入等待用户裁决。计数来自运行时，不由子代理自报。 */
 export function finishTaskAttempt(request: { dataRoot: string; repoId: string; taskId: string; runId: string; turnsUsed: number;
   outcome: Exclude<TaskAttempt["outcome"], "running">; now?: number }): TaskRecord {
@@ -318,7 +326,7 @@ export function finishTaskAttempt(request: { dataRoot: string; repoId: string; t
     const status = task.status !== "running" ? task.status
       : request.outcome === "completed" ? (task.role === "worker" ? "awaiting_review" : "completed") : request.outcome === "superseded" ? "pending"
         : cycleCountedAttempts({ attempts, cycleStarts: task.cycleStarts }) >= 2 ? "awaiting_user" : "awaiting_parent";
-    const next = { ...task, status, attempts, updatedAt: request.now ?? Date.now() } as TaskRecord;
+    const next = { ...task, status, attempts, ...refundedDecision(task, request.runId, request.outcome), updatedAt: request.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, task.taskId, row.version, next);
     return next;
   }));
@@ -339,7 +347,7 @@ export function finishTaskReview(request: { dataRoot: string; repoId: string; ta
     const reviews = task.reviews.map((review, i) => i === index ? { ...review, outcome: request.outcome, turnsUsed: request.turnsUsed } : review);
     // 运行期间影响复核已把任务改为待更新或受阻时，结局只记入审查，不覆盖复核结论
     const status = task.status !== "reviewing" ? task.status : reviewSettledStatus({ ...task, reviews });
-    const next = { ...task, status, reviews, updatedAt: request.now ?? Date.now() } as TaskRecord;
+    const next = { ...task, status, reviews, ...refundedDecision(task, request.runId, request.outcome), updatedAt: request.now ?? Date.now() } as TaskRecord;
     db.update(TASKS, task.taskId, row.version, next);
     return next;
   }));
