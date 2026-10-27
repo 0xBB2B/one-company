@@ -2,6 +2,7 @@ import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth } from "@earend
 import { openProgramWindow } from "../../core/host/question-window.ts";
 import type { ProgramWindowHost } from "../../core/host/question-window.ts";
 import type { Clock } from "../../core/policy/clock.ts";
+import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import type { RunStep, RunStepsState, RunStepsView } from "../agents/run-steps.ts";
 import { SPINNER, formatElapsed } from "./pm-panel.ts";
 
@@ -22,7 +23,7 @@ const FINISHED = new Set<RunStepsState>(["completed", "failed", "stopped", "inte
 const LIVE = new Set<RunStepsState>(["queued", "running"]);
 const PAUSED = new Set<RunStepsState>(["pausing", "paused"]);
 const DEFAULT_ROWS = 24;
-const clean = (text: string): string => text.replace(/[\x00-\x1f\x7f-\x9f]/g, " ");
+const clean = (text: string): string => sanitizeText(text.replace(/[\x00-\x1f\x7f-\x9f]/g, " "));
 
 interface Item { text: string; icon: string; color: string; indent?: boolean; thinking?: boolean }
 
