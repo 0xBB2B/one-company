@@ -98,10 +98,10 @@ const CONFIRM_FRAME = (open: boolean, version: 1 | 2): string[] => [
   " {设计师的说明（模型写的，仅供参考）：「新增外观一栏」}",
   "",
   " → 通过（写进需求草稿）",
-  "   放弃这一版",
+  "   通过并补充说明（自己输入）",
   "   返工（自己输入要改什么）",
   "",
-  " {↑↓ 选择 · 回车确认 · Esc 暂不决定（之后让主代理再打开）}",
+  " {↑↓ 选择 · 回车确认 · Esc 放弃这一版}",
   "─".repeat(80),
 ];
 
@@ -134,12 +134,10 @@ test("选通过：decide 收到 accept 和指纹，记一条绿色程序记录�
   expect(h.sendMessage).not.toHaveBeenCalled();
 });
 
-test("选放弃：decide 收到 abandon，记一条程序记录，不触发主代理", async () => {
+test("按 Esc 放弃：decide 收到 abandon，记一条程序记录，不触发主代理", async () => {
   const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
   await h.emit("prototype.submitted", submitted("设置页", 2));
-  const view = await h.nextView();
-  view.handleInput("\x1b[B");
-  view.handleInput("\r");
+  (await h.nextView()).handleInput("\x1b");
   await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, note: null }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：放弃原型「设置页」第 2 版，它不再挡住批准。" }));
   expect(h.sendMessage).not.toHaveBeenCalled();
@@ -151,7 +149,7 @@ test("选返工：意见为空不能确认；输入原话后 decide 收到 rewor
   const view = await h.nextView();
   view.handleInput("\x1b[B");
   view.handleInput("\x1b[B");
-  expect(view.render(80)).toContain(" {直接输入 · 回车确认 · ↑↓ 选择 · Esc 暂不决定（之后让主代理再打开）}");
+  expect(view.render(80)).toContain(" {直接输入 · 回车确认 · ↑↓ 选择 · Esc 放弃这一版}");
   view.handleInput("\r");
   expect(h.called("prototypes.decide")).toEqual([]);
   for (const char of "深色下按钮边框太亮") view.handleInput(char);
@@ -166,13 +164,47 @@ test("选返工：意见为空不能确认；输入原话后 decide 收到 rewor
   expect(options).toEqual({ triggerTurn: true });
 });
 
-test("按 Esc 不登记任何决定，也没有程序记录和主代理消息", async () => {
+test("通过并补充说明：说明为空不能确认；输入后 decide 收到 accept 和 note，绿字带原话，主代理收到不触发回复的静默消息", async () => {
   const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
   await h.emit("prototype.submitted", submitted("设置页", 2));
-  (await h.nextView()).handleInput("\x1b");
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  const view = await h.nextView();
+  view.handleInput("\x1b[B");
+  expect(view.render(80)).toContain(" {直接输入 · 回车确认 · ↑↓ 选择 · Esc 放弃这一版}");
+  view.handleInput("\r");
   expect(h.called("prototypes.decide")).toEqual([]);
-  expect(h.appendEntry).not.toHaveBeenCalled();
+  for (const char of "用 B 方案") view.handleInput(char);
+  view.handleInput("\r");
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, note: "用 B 方案" }]));
+  await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「设置页」第 2 版通过，已写进需求草稿。你的说明：「用 B 方案」" }));
+  expect(h.sendMessage).toHaveBeenCalledTimes(1);
+  const [message, options] = h.sendMessage.mock.calls[0]!;
+  expect(message).toEqual({ customType: "one-company.prototype-note", display: false,
+    content: "用户通过了原型「设置页」第 2 版，并补充说明：用 B 方案\n这句说明已和这一版原型一起存下，批准需求后会原话交给 PM 和子代理。需求正文和这句说明对不上时，按它改正文。" });
+  expect(options).toEqual({ deliverAs: "nextTurn" });
+});
+
+test("补充说明超过 4000 字时窗口不能确认、不调用 decide；删到 4000 字后可以提交", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  const view = await h.nextView();
+  view.handleInput("\x1b[B");
+  view.handleInput("字".repeat(4001));
+  view.handleInput("\r");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(h.called("prototypes.decide")).toEqual([]);
+  view.handleInput("\x7f");
+  view.handleInput("\r");
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toHaveLength(1));
+  expect(h.called("prototypes.decide")[0]!.note).toBe("字".repeat(4000));
+});
+
+test("confirm 动作的窗口按 Esc 同样登记放弃，工具结果写明放弃", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  const done = h.run({ action: "confirm", repoId: REPO, requirementId: REQ, name: "设置页" });
+  (await h.nextView()).handleInput("\x1b");
+  const result = await done;
+  expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, note: null }]);
+  expect(result.content.map((part) => part.text).join("\n")).toContain("放弃");
   expect(h.sendMessage).not.toHaveBeenCalled();
 });
 
@@ -350,7 +382,7 @@ test("主代理的原型工具没有直接登记通过、返工、放弃的入�
   const h = await harness({ responses: { "prototypes.decide": decideOk, "prototypes.pending": () => pendingV2 } });
   const schema = JSON.stringify(h.tool().parameters);
   for (const action of ["designers", "dispatch", "status", "confirm", "remove"]) expect(schema).toContain(`"${action}"`);
-  for (const forbidden of ["decide", "accept", "rework", "abandon"]) expect(schema).not.toContain(forbidden);
+  for (const forbidden of ["decide", "accept", "rework", "abandon", "note"]) expect(schema).not.toContain(forbidden);
   const text = await h.outcome({ action: "decide", repoId: REPO, requirementId: REQ, name: "设置页", version: 2, choice: "accept" });
   expect(text.length).toBeGreaterThan(0);
   expect(h.called("prototypes.decide")).toEqual([]);
@@ -438,6 +470,21 @@ test("用户选通过但文件在交稿后被改过：提示用户这一版已�
   const [message, options] = h.sendMessage.mock.calls[0]!;
   expect(message.content).toContain("作废");
   expect(message.content).toContain("重派");
+  expect(options).toEqual({ triggerTurn: true });
+});
+
+test("通过并补充说明但文件在交稿后被改过：不记带说明的绿字，主代理只收到作废通知，没有补充说明的消息", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": () => { throw fileChanged(); } } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  const view = await h.nextView();
+  view.handleInput("\x1b[B");
+  for (const char of "用 B 方案") view.handleInput(char);
+  view.handleInput("\r");
+  await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
+  expect(h.appendEntry).not.toHaveBeenCalled();
+  const [message, options] = h.sendMessage.mock.calls[0]!;
+  expect(message.content).toContain("作废");
+  expect(message.content).not.toContain("补充说明");
   expect(options).toEqual({ triggerTurn: true });
 });
 
