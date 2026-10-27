@@ -19,7 +19,7 @@ beforeEach(() => {
 });
 afterEach(() => { rmSync(dataRoot, { recursive: true, force: true }); });
 
-const file = (name: string, version: number) => ({ name, version, hash: (name + version).length.toString(16).padStart(64, "0"), bytes: 100 + version });
+const file = (name: string, version: number) => ({ name, version, hash: (name + version).length.toString(16).padStart(64, "0"), bytes: 100 + version, userNote: null as string | null });
 const write = (revision: number, prototypes: ReturnType<typeof file>[], id = requirementId) =>
   withDatabase(repositoryDatabase(dataRoot, REPO), (db) => writePrototypeRevision(db, { requirementId: id, revision, prototypes }));
 
@@ -28,6 +28,14 @@ test("写下第 2 版需求的原型快照后，按版本号读回名称、版�
   await write(2, prototypes);
   const read = await prototypesAtRevision(ref, requirementId, 2);
   expect([...read].sort((a, b) => a.name.localeCompare(b.name))).toEqual([...prototypes].sort((a, b) => a.name.localeCompare(b.name)));
+});
+
+test("快照里原型带补充说明和没有说明的都能写入并按版本读回一致", async () => {
+  const prototypes = [{ ...file("设置页", 3), userNote: "用 B" }, file("命令行输出", 1)];
+  await write(2, prototypes);
+  const read = await prototypesAtRevision(ref, requirementId, 2);
+  expect([...read].sort((a, b) => a.name.localeCompare(b.name))).toEqual([...prototypes].sort((a, b) => a.name.localeCompare(b.name)));
+  expect(read.find((item) => item.name === "命令行输出")?.userNote).toBeNull();
 });
 
 test("版本号为 0 或该版本没有快照时读回空列表", async () => {

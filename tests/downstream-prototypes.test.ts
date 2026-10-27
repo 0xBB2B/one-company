@@ -25,8 +25,8 @@ const verdict = (summary: string): ScriptedReply => ({ type: "toolcall", name: "
   input: { action: "verdict", result: { checkRoundId: null, verificationIds: [], summary, findings: [] } } });
 const TITLE = (revision: number) => `需求第 ${revision} 版附带的原型（界面以它们为准）：`;
 
-const settings = (version: number): RevisionPrototype => ({ name: "设置页", version, hash: `5e77195${version}`.padEnd(64, "a"), bytes: 100 });
-const terminal: RevisionPrototype = { name: "命令行输出", version: 1, hash: "c11001ab9f".padEnd(64, "b"), bytes: 80 };
+const settings = (version: number): RevisionPrototype => ({ name: "设置页", version, hash: `5e77195${version}`.padEnd(64, "a"), bytes: 100, userNote: null });
+const terminal: RevisionPrototype = { name: "命令行输出", version: 1, hash: "c11001ab9f".padEnd(64, "b"), bytes: 80, userNote: null };
 
 async function world() {
   const w = await createPmRunWorld(cleanups);

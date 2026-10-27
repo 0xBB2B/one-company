@@ -1107,14 +1107,14 @@ const PROTOTYPE_HTML = "<!doctype html><html><body><h1>设置页</h1></body></ht
 type World = Awaited<ReturnType<typeof world>>;
 const boardRef = (w: World) => ({ dataRoot: w.dataRoot, repoId: w.repoId });
 
-async function designed(w: World, requirementId: string, name: string, reworks = 0) {
+async function designed(w: World, requirementId: string, name: string, reworks = 0, note: string | null = null) {
   for (let round = 0; round <= reworks; round++) {
     const runId = uuidv7(), accept = round === reworks;
     await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer" });
     await submitDesign(boardRef(w), { requirementId, name, runId, html: PROTOTYPE_HTML, note: "三项状态横排" });
     const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
     await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash,
-      choice: accept ? "accept" : "rework", opinion: accept ? null : "再改一版" });
+      choice: accept ? "accept" : "rework", opinion: accept ? null : "再改一版", note: accept ? note : null });
   }
 }
 
@@ -1157,7 +1157,7 @@ describe("批准时连同草稿里的原型一起批准", () => {
       expect(error.message).toContain("原因：还不能批准：");
       expect(error.message).toContain("原型「设置页」第 1 版还在等你确认");
       expect(error.message).toContain("原型「命令行输出」设计师还在做");
-      expect(error.message).toContain("建议：先把这 2 份处理完（通过、返工或放弃），再说批准");
+      expect(error.message).toContain("建议：先把这 2 份处理完（通过、返工，或在确认窗口按 Esc 放弃），再说批准");
     }
     expect(w.windows).toHaveLength(0);
     expect(await readPrototypeBoard(boardRef(w), id)).toEqual(before);
@@ -1169,7 +1169,7 @@ describe("批准时连同草稿里的原型一起批准", () => {
     w.capture("同意");
     const error = await w.call({ action: "confirmUpdate", ...(await w.request(created)).input }).then(() => { throw new Error("批准没有被拒"); }, (caught: unknown) => caught as Error);
     expect(error.message).toContain("原因：还不能批准：原型「设置页」设计师还在做");
-    expect(error.message).toContain("建议：先把它处理完（通过、返工或放弃），再说批准");
+    expect(error.message).toContain("建议：先把它处理完（通过、返工，或在确认窗口按 Esc 放弃），再说批准");
   });
 
   test("原型名称很长时，名称和第几版之间仍至少隔两个空格", async () => {
@@ -1298,6 +1298,16 @@ describe("批准时连同草稿里的原型一起批准", () => {
     const diff = String(interpreterContext(w).candidates[0].diff);
     expect(diff).toContain("第二版补充");
     expect(diff).not.toContain("原型变化");
+  });
+
+  test("通过时带补充说明，批准后这一版的原型快照带着它，只改正文再批准时新快照沿用这句说明", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    await designed(w, id, "设置页", 0, "用 B");
+    await approvedSaved(w, id, fresh(created));
+    await approvedSaved(w, id, await updatedBody(w, id, BODY + "第二版补充。\n"));
+    for (const revision of [1, 2]) {
+      expect((await prototypesAtRevision(boardRef(w), id, revision)).map((item) => [item.name, item.version, item.userNote])).toEqual([["设置页", 1, "用 B"]]);
+    }
   });
 });
 

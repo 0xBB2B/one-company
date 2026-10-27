@@ -83,7 +83,7 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     const choice = answer.other ? "rework" : answer.choices[0] === ACCEPT_LABEL ? "accept" : answer.choices[0] === ABANDON_LABEL ? "abandon" : undefined;
     if (!choice) return "undecided";
     try {
-      await client.call("prototypes.decide", { ...input, version: pending.version, hash: pending.hash, choice, opinion: answer.other ?? null });
+      await client.call("prototypes.decide", { ...input, version: pending.version, hash: pending.hash, choice, opinion: answer.other ?? null, note: null });
     } catch (error) {
       const advice = adviceOf(error);
       const voided = (error as { code?: unknown }).code === "file_changed";

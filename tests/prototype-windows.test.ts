@@ -129,7 +129,7 @@ test("选通过：decide 收到 accept 和指纹，记一条绿色程序记录�
   const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
   await h.emit("prototype.submitted", submitted("设置页", 2));
   (await h.nextView()).handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, note: null }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「设置页」第 2 版通过，已写进需求草稿。" }));
   expect(h.sendMessage).not.toHaveBeenCalled();
 });
@@ -140,7 +140,7 @@ test("选放弃：decide 收到 abandon，记一条程序记录，不触发主�
   const view = await h.nextView();
   view.handleInput("\x1b[B");
   view.handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, note: null }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：放弃原型「设置页」第 2 版，它不再挡住批准。" }));
   expect(h.sendMessage).not.toHaveBeenCalled();
 });
@@ -157,7 +157,7 @@ test("选返工：意见为空不能确认；输入原话后 decide 收到 rewor
   for (const char of "深色下按钮边框太亮") view.handleInput(char);
   expect(view.render(80).some((line) => line.includes("› 深色下按钮边框太亮"))).toBe(true);
   view.handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "rework", opinion: "深色下按钮边框太亮" }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "rework", opinion: "深色下按钮边框太亮", note: null }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「设置页」第 2 版返工，你的意见已原话交给主代理重派设计师。" }));
   expect(h.sendMessage).toHaveBeenCalledTimes(1);
   const [message, options] = h.sendMessage.mock.calls[0]!;

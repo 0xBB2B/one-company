@@ -8,7 +8,7 @@ import { hash as sha256Hex, id, object, positive } from "./requirement-contracts
 const REVISIONS = "requirement_prototype_revisions";
 
 const PrototypeRevision = object({ requirementId: id, revision: positive,
-  prototypes: Type.Array(object({ name: Type.String({ minLength: 1, maxLength: 40 }), version: positive, hash: sha256Hex, bytes: positive }), { maxItems: 50 }) });
+  prototypes: Type.Array(object({ name: Type.String({ minLength: 1, maxLength: 40 }), version: positive, hash: sha256Hex, bytes: positive, userNote: Type.Union([Type.String({ minLength: 1, maxLength: 4000 }), Type.Null()]) }), { maxItems: 50 }) });
 type PrototypeRevision = Static<typeof PrototypeRevision>;
 export type RevisionPrototype = PrototypeRevision["prototypes"][number];
 

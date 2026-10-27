@@ -20,7 +20,7 @@ const OPINION_MAX_LENGTH = 4000;
 const REASON_MAX_LENGTH = 500;
 const MAX_ENTRIES = 50;
 
-const PrototypeFile = object({ version: positive, hash: sha256Hex, bytes: Type.Integer({ minimum: 1, maximum: 1_048_576 }), note: Type.String({ maxLength: 2000 }) });
+const PrototypeFile = object({ version: positive, hash: sha256Hex, bytes: Type.Integer({ minimum: 1, maximum: 1_048_576 }), note: Type.String({ maxLength: 2000 }), userNote: Type.Union([Type.String({ minLength: 1, maxLength: 4000 }), Type.Null()]) });
 const PrototypeEntry = object({
   name: Type.String({ minLength: 1, maxLength: 40 }),
   lastVersion: positive,
@@ -151,7 +151,7 @@ export async function submitDesign(ref: Ref, input: { requirementId: string; nam
     const path = prototypeFilePath(ref, { requirementId: input.requirementId, name: input.name, version: inFlight.version });
     writeFileAtomicSync(path, input.html);
     inFlight.status = "awaiting";
-    inFlight.file = { version: inFlight.version, hash: sha256(input.html), bytes, note: input.note };
+    inFlight.file = { version: inFlight.version, hash: sha256(input.html), bytes, note: input.note, userNote: null };
   }));
 }
 
@@ -225,12 +225,17 @@ export async function pendingConfirmation(ref: Ref, input: { requirementId: stri
   return { name: input.name, version: file.version, hash: file.hash, bytes: file.bytes, note: file.note, path, previousOpinion: entry.lastRework?.opinion ?? null };
 }
 
-export async function decidePrototype(ref: Ref, input: { requirementId: string; name: string; version: number; hash: string; choice: "accept" | "rework" | "abandon"; opinion: string | null }): Promise<void> {
+export async function decidePrototype(ref: Ref, input: { requirementId: string; name: string; version: number; hash: string; choice: "accept" | "rework" | "abandon"; opinion: string | null; note: string | null }): Promise<void> {
   withDatabase(databaseOf(ref), (db) => { assertRequirementEditable(db, input.requirementId); });
   const opinion = input.opinion?.trim() ?? "";
   if (input.choice === "rework") {
     if (!opinion) deny("opinion_required", "返工须写明要改什么", "输入修改意见后再提交");
     if (opinion.length > OPINION_MAX_LENGTH) deny("opinion_too_long", `返工意见超过 ${OPINION_MAX_LENGTH} 字`, "精简意见后再提交");
+  }
+  const userNote = input.choice === "accept" ? input.note?.trim() ?? null : null;
+  if (userNote !== null) {
+    if (!userNote) deny("note_required", "补充说明不能为空", "写上补充说明，或改选\"通过\"");
+    if (userNote.length > OPINION_MAX_LENGTH) deny("note_too_long", `补充说明超过 ${OPINION_MAX_LENGTH} 字`, "精简补充说明后再提交");
   }
   const board = await readPrototypeBoard(ref, input.requirementId);
   const matched = (current: PrototypeBoard) => {
@@ -244,7 +249,7 @@ export async function decidePrototype(ref: Ref, input: { requirementId: string; 
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (current) => {
     assertRequirementEditable(db, input.requirementId);
     const { entry, inFlight } = matched(current);
-    if (input.choice === "accept") { entry.draft = inFlight.file; entry.removed = false; }
+    if (input.choice === "accept") { entry.draft = { ...inFlight.file!, userNote }; entry.removed = false; }
     entry.lastRework = input.choice === "rework" ? { version: inFlight.version, opinion } : null;
     entry.inFlight = null;
   }));
@@ -272,10 +277,10 @@ export async function inFlightSummary(ref: Ref, requirementId: string): Promise<
 export function inFlightBlock(items: Array<{ name: string; version: number; status: "designing" | "awaiting" }>): PrototypeBoardError | null {
   if (!items.length) return null;
   const why = `还不能批准：${items.map((item) => item.status === "awaiting" ? `原型「${item.name}」第 ${item.version} 版还在等你确认` : `原型「${item.name}」设计师还在做`).join("，")}`;
-  return new PrototypeBoardError("in_flight", why, `先把${items.length === 1 ? "它" : `这 ${items.length} 份`}处理完（通过、返工或放弃），再说批准`);
+  return new PrototypeBoardError("in_flight", why, `先把${items.length === 1 ? "它" : `这 ${items.length} 份`}处理完（通过、返工，或在确认窗口按 Esc 放弃），再说批准`);
 }
 
-export interface DraftItem { name: string; version: number; hash: string; bytes: number; note: string; label: "new" | "kept" | "removed" }
+export interface DraftItem { name: string; version: number; hash: string; bytes: number; note: string; userNote: string | null; label: "new" | "kept" | "removed" }
 
 function draftSet(board: PrototypeBoard): { items: DraftItem[]; digest: string } {
   const items = board.entries.flatMap((entry): DraftItem[] => {

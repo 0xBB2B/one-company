@@ -113,7 +113,7 @@ test("M7-AC1/AC5：PM 停止后不再向它投递；新 PM 须重新核对才建
   expect(w.diffPrompts()).toHaveLength(1);
 });
 
-const proto = (name: string, version: number) => ({ name, version, hash: String(version).repeat(64).slice(0, 64), bytes: 200 });
+const proto = (name: string, version: number) => ({ name, version, hash: String(version).repeat(64).slice(0, 64), bytes: 200, userNote: null });
 async function snapshots(w: Awaited<ReturnType<typeof world>>, byRevision: Record<number, ReturnType<typeof proto>[]>) {
   for (const [revision, prototypes] of Object.entries(byRevision)) {
     withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) =>

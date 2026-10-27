@@ -80,7 +80,7 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "prototypes.list": {},
   "prototypes.board": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10" },
   "prototypes.pending": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页" },
-  "prototypes.decide": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页", version: 1, hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", choice: "accept", opinion: null },
+  "prototypes.decide": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页", version: 1, hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", choice: "accept", opinion: null, note: null },
   "prototypes.remove": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页", version: 1 },
   "prototypes.removal": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页" },
   "pm.packet": { requirementId: "req-1", itemId: "task:x" },
@@ -429,4 +429,12 @@ describe("validateParams — 字段类型被校验", () => {
     expect(error).not.toBeNull();
     expect(error?.code).toBe("bad_params");
   });
+});
+
+test("prototypes.decide 必须带 note 字段，可以为 null，超过 4000 字被拒", () => {
+  const base = { requirementId: "0192f3a4-7c1e-7b2a-9d4e-5f6a7b8c9d0e", name: "设置页", version: 1, hash: "a".repeat(64), choice: "accept", opinion: null };
+  expect(catchError(() => validateParams("prototypes.decide", base))?.code).toBe("bad_params");
+  expect(catchError(() => validateParams("prototypes.decide", { ...base, note: "字".repeat(4001) }))?.code).toBe("bad_params");
+  expect(() => validateParams("prototypes.decide", { ...base, note: null })).not.toThrow();
+  expect(() => validateParams("prototypes.decide", { ...base, note: "用 B" })).not.toThrow();
 });
