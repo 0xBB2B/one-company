@@ -222,6 +222,12 @@ describe("旧命令与旧页面已清除", () => {
     expect(rules).not.toContain("未开启时推送与合并由用户在外部操作");
   });
 
+  test("主代理提示词的验收与关闭条目写明提问时先回答不登记返工，明确要求修改才登记返工", async () => {
+    const line = (await readText(join(PACKAGE_ROOT, "rules/01-main-session.md"))).split("\n").find((text) => text.includes("**验收与关闭**"))!;
+    expect(line).toContain("提问时先回答，不登记返工");
+    expect(line).toContain("明确要求修改时，才按原话登记返工");
+  });
+
   test("主代理提示词的提问条目写明问题等文字不用我、你、您，指人写用户或角色，指自己写 AI", async () => {
     const line = (await readText(join(PACKAGE_ROOT, "rules/01-main-session.md"))).split("\n").find((text) => text.includes("**提问**"))!;
     expect(line).toMatch(/不用[^\n]{0,12}我[^\n]{0,6}你[^\n]{0,6}您/u);

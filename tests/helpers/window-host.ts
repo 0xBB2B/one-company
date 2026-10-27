@@ -12,7 +12,7 @@ export function answeringUi(answer: (window: ShownWindow) => WindowDecision | Pr
   return {
     custom<T>(factory: (...args: never[]) => unknown): Promise<T> {
       return new Promise<T>((resolve, reject) => {
-        const component = (factory as (...args: unknown[]) => unknown)({ requestRender() {} }, plainTheme, undefined, resolve) as
+        const component = (factory as (...args: unknown[]) => unknown)({ requestRender() {}, terminal: { rows: 40, columns: 200 } }, plainTheme, undefined, resolve) as
           { render(width: number): string[]; handleInput(data: string): void };
         const lines = component.render(200).map((line) => line.trimEnd());
         // 选项行以" → "或三个空格开头；理由、推荐理由与折行续行缩进更深，不算选项
