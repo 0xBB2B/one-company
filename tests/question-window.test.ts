@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS, visibleWidth } from "@earendil-works/pi-tui";
 import { chooseOrWriteWindow, chooseWindow, confirmWindow, QuestionWindowView } from "../src/core/host/question-window.ts";
 import type { WindowAnswer, WindowHost } from "../src/core/host/question-window.ts";
 
@@ -445,24 +445,105 @@ test("其他行默认显示\"其他（自己输入）\"，chooseOrWriteWindow �
     .toEqual({ choices: [], other: "自己写" });
 });
 
-test.each([36, 44, 60, 80])("输入栏在 %d 列下自动折行：第一行前缀 6 空格 › 1 空格，续行 8 空格，换行后的字母另起一行，每行都不超宽", (width) => {
+test.each([36, 44, 60, 80])("输入栏在 %d 列下不自动折行：长行左右滚动，光标所在行末尾或开头出现灰色省略号，其余行从开头显示，每行都不超宽", (width) => {
   const { window } = noteView();
   window.handleInput(DOWN);
-  const han = "汉".repeat(100), letters = "abcdefghij".repeat(5);
-  typeText(window, han);
+  typeText(window, "汉".repeat(100));
   window.handleInput(SHIFT_ENTER);
-  typeText(window, letters);
+  typeText(window, "abcdefghij".repeat(10));
+  const check = () => {
+    const rendered = window.render(width);
+    for (const line of rendered) expect(visibleWidth(bare(line)), line).toBeLessThanOrEqual(width);
+    const bar = barOf(rendered, NOTE_LABEL);
+    expect(bar.lines.length).toBe(2);
+    expect(bar.lines[0]!.startsWith("      › 汉")).toBe(true);
+    expect(bar.lines[1]!.startsWith(" ".repeat(8))).toBe(true);
+    return bar.raw.map((line) => ctl(line).trimEnd());
+  };
+  const atEnd = check();
+  expect(atEnd[0]!.startsWith("      › 汉")).toBe(true);
+  expect(atEnd[0]!.endsWith(MUTED_DOTS)).toBe(true);
+  expect(atEnd[1]!.startsWith(" ".repeat(8) + MUTED_DOTS)).toBe(true);
+  expect(atEnd[1]!.endsWith(MUTED_DOTS)).toBe(false);
+  window.handleInput(HOME);
+  const atHome = check();
+  expect(atHome[0]!.endsWith(MUTED_DOTS)).toBe(true);
+  expect(atHome[1]!.startsWith(" ".repeat(8) + "abcdef")).toBe(true);
+  expect(atHome[1]!.endsWith(MUTED_DOTS)).toBe(true);
+});
+
+test("输入栏一行 100 个汉字，光标向左走出显示区后，显示区跟着光标移动：开头和末尾都是灰色省略号，光标标记所在的字就是光标处的字", () => {
+  const { window } = noteView();
+  window.handleInput(DOWN);
+  const han = distinct(100);
+  typeText(window, han);
+  for (let n = 0; n < 60; n++) window.handleInput(LEFT);
+  const rendered = window.render(80);
+  for (const line of rendered) expect(visibleWidth(bare(line)), line).toBeLessThanOrEqual(80);
+  const bar = barOf(rendered, NOTE_LABEL);
+  expect(bar.lines.length).toBe(1);
+  const line = ctl(bar.raw[0]!).trimEnd();
+  expect(line.startsWith("      › " + MUTED_DOTS)).toBe(true);
+  expect(line.endsWith(MUTED_DOTS)).toBe(true);
+  expect(bar.raw[0]!.match(/\x1b_pi:fc\x07(.*?)\x1b_pi:\/fc\x07/u)?.[1]).toBe(han[40]);
+});
+
+test("输入栏收起：光标不在输入行时只有一行字就显示这一行，没有光标标记；光标移回来时展开并回到原处", () => {
+  const { window, text, done } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "甲乙丙");
+  window.handleInput(UP);
+  const collapsed = barOf(text().split("\n"), NOTE_LABEL);
+  expect(collapsed.lines.map((line) => line.trimEnd())).toEqual(["      › 甲乙丙"]);
+  expect(collapsed.raw.join("")).not.toContain("\x1b_pi:");
+  window.handleInput(DOWN);
+  expect(text()).toContain(INPUT_HINT);
+  expect(barOf(text().split("\n"), NOTE_LABEL).raw.join("")).toContain("\x1b_pi:fc\x07");
+  typeText(window, "X");
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [NOTE_LABEL], other: "甲乙丙X" }]]);
+});
+
+test.each([36, 80])("输入栏收起：多行时在 %d 列下显示第一行开头加灰色\"…（共 3 行）\"，第一行太长就截短，每行不超宽", (width) => {
+  const { window } = noteView();
+  window.handleInput(DOWN); window.handleInput(DOWN);
+  typeText(window, "汉".repeat(100));
+  window.handleInput(SHIFT_ENTER); typeText(window, "二");
+  window.handleInput(SHIFT_ENTER); typeText(window, "三");
+  leave(window, () => window.render(width).join("\n"));
   const rendered = window.render(width);
-  for (const line of rendered) expect(visibleWidth(line.replace(/<\/?[a-zA-Z]*>/gu, "")), line).toBeLessThanOrEqual(width);
-  const bar = barOf(rendered, NOTE_LABEL).lines;
-  expect(bar[0]!.startsWith("      › ")).toBe(true);
-  for (const line of bar.slice(1)) expect(line.startsWith(" ".repeat(8))).toBe(true);
-  const content = bar.map((line) => line.slice(8).trimEnd());
-  const hanLines = content.filter((line) => line.includes("汉")), letterLines = content.filter((line) => /[a-j]/u.test(line));
-  expect(hanLines.length).toBeGreaterThan(1);
-  expect(hanLines.join("")).toBe(han);
-  expect(letterLines.join("")).toBe(letters);
-  expect(letterLines.some((line) => line.includes("汉"))).toBe(false);
+  for (const line of rendered) expect(visibleWidth(bare(line)), line).toBeLessThanOrEqual(width);
+  const bar = barOf(rendered, OTHER_LABEL);
+  expect(bar.lines.length).toBe(1);
+  expect(bar.lines[0]!.startsWith("      › 汉")).toBe(true);
+  expect(bar.lines[0]!.trimEnd().endsWith("…（共 3 行）")).toBe(true);
+  expect(bar.raw.join("")).not.toContain("\x1b_pi:");
+  expect(bare(rendered.join("\n"))).not.toContain("二");
+});
+
+test("输入栏收起：只有一行很长的字时显示成一行、末尾灰色省略号、没有共几行", () => {
+  const { window } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "汉".repeat(100));
+  window.handleInput(UP);
+  const rendered = window.render(80);
+  for (const line of rendered) expect(visibleWidth(bare(line)), line).toBeLessThanOrEqual(80);
+  const bar = barOf(rendered, NOTE_LABEL);
+  expect(bar.lines.length).toBe(1);
+  expect(bar.lines[0]!.startsWith("      › 汉")).toBe(true);
+  expect(ctl(bar.raw[0]!).trimEnd().endsWith(MUTED_DOTS)).toBe(true);
+  expect(bar.lines[0]).not.toContain("共");
+});
+
+test("输入栏收起：粘贴 42 行折叠后移走，收起行含 [paste #1 +42 lines] 和（共 42 行）", () => {
+  const { window, text } = noteView();
+  window.handleInput(DOWN);
+  window.handleInput(paste(Array.from({ length: 42 }, (_, n) => `第${n + 1}行`).join("\n")));
+  window.handleInput(UP);
+  const bar = barOf(text().split("\n"), NOTE_LABEL);
+  expect(bar.lines.length).toBe(1);
+  expect(bar.lines[0]).toContain("[paste #1 +42 lines]");
+  expect(bar.lines[0]).toContain("（共 42 行）");
 });
 
 test("输入栏按键：插入、Backspace、Delete、←→、Home、End、Shift+Enter 与 Ctrl+J 换行，回车提交", () => {
@@ -495,7 +576,7 @@ test("输入栏按键：Delete 删光标后一个字，→ 向右移动", () => 
   expect(done).toEqual([[{ choices: [NOTE_LABEL], other: "acd" }]]);
 });
 
-test("输入栏 ↑↓ 在显示行间移动，首行 ↑ 到上一个选项，末行 ↓ 到下一个选项，回到输入行时回到离开时的光标位置", () => {
+test("输入栏 ↑↓ 在各行间移动，首行 ↑ 到上一个选项，末行 ↓ 到下一个选项，回到输入行时回到离开时的光标位置", () => {
   const { window, text } = noteView();
   window.handleInput(DOWN);
   typeText(window, "一"); window.handleInput(SHIFT_ENTER);
@@ -520,6 +601,23 @@ test("输入栏 ↑↓ 在显示行间移动，首行 ↑ 到上一个选项，�
   expect(barOf(text().split("\n"), NOTE_LABEL).raw.join("")).not.toContain("\x1b_pi:fc\x07");
   window.handleInput(DOWN);
   expect(barOf(text().split("\n"), OTHER_LABEL).raw.join("")).toContain("\x1b_pi:fc\x07");
+});
+
+test("输入栏 ↑ 在各行之间移动：光标在第二行按 ↑ 到第一行，再输入的字出现在第一行，再 ↑ 到上一个选项", () => {
+  const { window, text } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "一"); window.handleInput(SHIFT_ENTER);
+  typeText(window, "二"); window.handleInput(SHIFT_ENTER);
+  typeText(window, "三");
+  window.handleInput(UP);
+  window.handleInput(UP);
+  typeText(window, "X");
+  expect(contentOf(text().split("\n"), NOTE_LABEL)).toEqual(["一X", "二", "三"]);
+  window.handleInput(UP);
+  expect(text()).not.toContain(INPUT_HINT);
+  window.handleInput(DOWN);
+  typeText(window, "Y");
+  expect(contentOf(text().split("\n"), NOTE_LABEL)).toEqual(["一XY", "二", "三"]);
 });
 
 test("输入栏回车：首尾空白去掉，中间换行保留", () => {
@@ -567,18 +665,19 @@ test("粘贴折叠部分按原文算字数：折叠 3990 字再输入 11 字，�
   expect(done).toEqual([]);
 });
 
-test("鼠标点击输入栏的文字，光标移到那个输入行并定位到被点的字前面；点在行尾后面的空白定位到行尾；点在选项文字上状态不变", () => {
+test("鼠标点击输入栏：展开时点字定位到那个字前面；收起成一行时点字或点\"…（共 N 行）\"，光标移到输入行并展开，定位到第一行里被点的字前面或第一行末尾；点在选项文字上状态不变", () => {
   const setup = () => {
     const made = noteView();
     made.window.handleInput(DOWN); made.window.handleInput(DOWN);
     typeText(made.window, "一二三四五六七"); made.window.handleInput(SHIFT_ENTER); typeText(made.window, "八九");
-    for (let n = 0; n < 5 && bare(made.text()).includes("直接输入"); n++) made.window.handleInput(UP);
+    leave(made.window, made.text);
     expect(made.text()).toContain("<muted>↑↓ 选择 · 回车确认 · Esc 放弃这一版</>");
     return made;
   };
   const at = (made: ReturnType<typeof setup>, startsWith: string) => made.window.render(80).map(bare).findIndex((line) => line.startsWith(startsWith));
 
   const first = setup();
+  expect(at(first, "        八九")).toBe(-1);
   first.window.handleMouse(click(8 + visibleWidth("一二三四"), at(first, "      › 一二三四五六七")));
   expect(first.text()).toContain("直接输入");
   typeText(first.window, "X");
@@ -586,9 +685,19 @@ test("鼠标点击输入栏的文字，光标移到那个输入行并定位到�
   expect(first.done).toEqual([[{ choices: [], other: "一二三四X五六七\n八九" }]]);
 
   const second = setup();
-  second.window.handleMouse(click(70, at(second, "        八九")));
+  second.window.handleMouse(click(8 + visibleWidth("一二三四五六七") + 2, at(second, "      › 一二三四五六七")));
+  expect(second.text()).toContain("直接输入");
   typeText(second.window, "Y");
-  expect(barOf(second.window.render(80), OTHER_LABEL).lines.map((line) => line.slice(8).trimEnd())).toEqual(["一二三四五六七", "八九Y"]);
+  expect(barOf(second.window.render(80), OTHER_LABEL).lines.map((line) => line.slice(8).trimEnd())).toEqual(["一二三四五六七Y", "八九"]);
+
+  const expanded = setup();
+  const barRow = at(expanded, "      › 一二三四五六七");
+  expanded.window.handleMouse(click(8, barRow));
+  const secondRow = at(expanded, "        八九");
+  expect(secondRow).toBeGreaterThan(-1);
+  expanded.window.handleMouse(click(8 + visibleWidth("八"), secondRow));
+  typeText(expanded.window, "Q");
+  expect(contentOf(expanded.window.render(80), OTHER_LABEL)).toEqual(["一二三四五六七", "八Q九"]);
 
   const third = setup();
   third.window.handleMouse(click(6, at(third, " → 通过（写进需求草稿）")));
@@ -654,6 +763,16 @@ test("光标在\"其他\"输入行时底部提示也是直接输入那组，Esc 
 });
 
 const INPUT_HINT = "直接输入";
+const ctl = (value: string) => value.replace(/\x1b\[[0-9;]*[A-Za-z~]|\x1b_[^\x07]*\x07/gu, "").replace("<warning>›</>", "›");
+const MUTED_DOTS = "<muted>…</>";
+const distinct = (count: number) => Array.from({ length: count }, (_, n) => String.fromCodePoint(0x4e00 + n)).join("");
+const leave = (window: { handleInput(data: string): void }, render: () => string) => { for (let n = 0; n < 20 && render().includes(INPUT_HINT); n++) window.handleInput(UP); };
+const viewRows = (rows: number) => {
+  const done: Array<WindowAnswer[] | undefined> = [];
+  const window = new QuestionWindowView({ tui: { requestRender() {}, terminal: { rows, columns: 80 } }, theme, onDone: (answers) => done.push(answers), tone: "warning", questions: [noteQuestion()] } as never);
+  return { window, done, text: (width = 80) => window.render(width).join("\n") };
+};
+
 const contentOf = (rendered: string[], label: string) => barOf(rendered, label).lines.map((line) => line.slice(8).trimEnd());
 
 test("光标在输入行上时输入栏保留 pi 编辑器的假光标标记，不出现 \\x1b[7m；光标不在该行时没有标记", () => {
@@ -673,48 +792,45 @@ test("光标在输入行上时输入栏保留 pi 编辑器的假光标标记，�
   expect(left).not.toContain("\x1b[7m");
 });
 
-test("输入栏长文字自动折行后，↑ 先在显示行之间上移，到第一显示行再按 ↑ 才到上一个选项", () => {
-  const { window } = noteView();
-  const text = () => window.render(36).join("\n");
-  window.handleInput(DOWN);
-  typeText(window, "汉".repeat(50));
-  const rows = barOf(window.render(36), NOTE_LABEL).lines.length;
-  expect(rows).toBeGreaterThanOrEqual(3);
-  for (let n = 0; n < rows - 1; n++) {
-    window.handleInput(UP);
-    expect(text()).toContain(INPUT_HINT);
-  }
-  window.handleInput(UP);
-  expect(text()).not.toContain(INPUT_HINT);
+test("输入栏超过可见行数：只显示一段并跟着光标上下移动，上面和下面藏起来的行数写在灰色提示行里，没藏行时不写", () => {
+  const { window } = viewRows(24);
+  const render = () => window.render(80);
+  window.handleInput(DOWN); window.handleInput(DOWN);
+  for (let n = 1; n <= 12; n++) { if (n > 1) window.handleInput(SHIFT_ENTER); typeText(window, String(n)); }
+
+  let bar = barOf(render(), OTHER_LABEL);
+  expect(ctl(bar.raw[0]!).trimEnd()).toBe("      › <muted>↑ 上面还有 5 行</>");
+  expect(bar.lines.map((line) => line.slice(8).trimEnd()).slice(1)).toEqual(["6", "7", "8", "9", "10", "11", "12"]);
+  expect(bar.lines.join("\n")).not.toContain("下面还有");
+
+  for (let n = 0; n < 8; n++) window.handleInput(UP);
+  bar = barOf(render(), OTHER_LABEL);
+  const above = /^ {6}› ↑ 上面还有 (\d+) 行$/u.exec(bar.lines[0]!.trimEnd());
+  const below = /^ {8}↓ 下面还有 (\d+) 行$/u.exec(bar.lines.at(-1)!.trimEnd());
+  expect(above).not.toBeNull();
+  expect(below).not.toBeNull();
+  expect(Number(above![1]) + Number(below![1]) + 7).toBe(12);
+  expect(ctl(bar.raw.at(-1)!).trimEnd()).toBe("        <muted>↓ 下面还有 " + below![1] + " 行</>");
+  const cursorRow = bar.raw.findIndex((line) => line.includes("\x1b_pi:fc\x07"));
+  expect(bar.lines[cursorRow]!.slice(8).trimEnd()).toBe("4");
+
+  for (let n = 0; n < 3; n++) window.handleInput(UP);
+  bar = barOf(render(), OTHER_LABEL);
+  expect(bar.lines[0]!.trimEnd()).toBe("      › 1");
+  expect(bar.lines.length).toBe(8);
+  expect(ctl(bar.raw[7]!).trimEnd()).toBe("        <muted>↓ 下面还有 5 行</>");
+  expect(bar.lines.slice(0, 7).join("\n")).not.toContain("上面还有");
 });
 
-test("输入栏长文字自动折行后，按一次 ↑ 光标停在倒数第二个显示行", () => {
-  const { window } = noteView();
-  window.handleInput(DOWN);
-  typeText(window, "汉".repeat(50));
-  const before = barOf(window.render(36), NOTE_LABEL).lines.length;
-  window.handleInput(UP);
-  typeText(window, "X");
-  const lines = contentOf(window.render(36), NOTE_LABEL);
-  expect(lines.length).toBeGreaterThanOrEqual(before);
-  expect(lines.findIndex((line) => line.includes("X"))).toBe(before - 2);
-});
-
-test("含粘贴标记的折行：标记在第二显示行时按 ↑，光标仍在输入行并到第一显示行", () => {
-  const { window } = noteView();
-  const text = () => window.render(36).join("\n");
-  window.handleInput(DOWN);
-  typeText(window, "abcdefghij ");
-  window.handleInput(paste(Array.from({ length: 42 }, (_, n) => `第${n + 1}行`).join("\n")));
-  typeText(window, "xyz");
-  const before = contentOf(window.render(36), NOTE_LABEL);
-  expect(before.length).toBeGreaterThanOrEqual(2);
-  expect(before[1]).toContain("xyz");
-  window.handleInput(UP);
-  expect(text()).toContain(INPUT_HINT);
-  typeText(window, "Q");
-  const after = contentOf(window.render(36), NOTE_LABEL);
-  expect(after[0]).toContain("Q");
+test("点击输入栏的\"上面还有 N 行\"提示行不改变光标位置", () => {
+  const { window } = viewRows(24);
+  window.handleInput(DOWN); window.handleInput(DOWN);
+  for (let n = 1; n <= 12; n++) { if (n > 1) window.handleInput(SHIFT_ENTER); typeText(window, String(n)); }
+  const row = window.render(80).map(bare).findIndex((line) => line.includes("↑ 上面还有"));
+  expect(row).toBeGreaterThan(-1);
+  window.handleMouse(click(10, row) as never);
+  typeText(window, "Z");
+  expect(contentOf(window.render(80), OTHER_LABEL).at(-1)).toBe("12Z");
 });
 
 test("输入栏行数超过可见行数时，↑ 从第 8 行逐行上移到第 1 行，再 ↑ 才到上一个选项；↓ 同理", () => {
@@ -764,4 +880,106 @@ test("小粘贴（3 行）原样插入：输入栏显示 3 行，提交的 other
   expect(contentOf(text().split("\n"), NOTE_LABEL)).toEqual(["甲", "乙", "丙"]);
   window.handleInput(ENTER);
   expect(done).toEqual([[{ choices: [NOTE_LABEL], other: "甲\n乙\n丙" }]]);
+});
+
+test("长行里光标往左移时显示区先不动，碰到左边缘才跟着左移，两头都显示灰色省略号", () => {
+  const { window } = noteView();
+  window.handleInput(DOWN);
+  const text = "用B方案顶部分栏A和C不要顶部分栏里的标签按使用频率排序最常用的放最左边深色模式下分栏底色用比背景亮一级的灰色";
+  typeText(window, text);
+  const barLine = () => window.render(80).map((line) => bare(line).trimEnd()).find((line) => line.startsWith("      › "))!;
+  const atEnd = barLine();
+  for (let i = 0; i < 5; i++) window.handleInput(LEFT);
+  expect(barLine()).toBe(atEnd);
+  for (let i = 0; i < 40; i++) window.handleInput(LEFT);
+  const moved = window.render(80).find((line) => bare(line).startsWith("      › "))!;
+  expect(moved).toContain(MUTED_DOTS);
+  expect(moved.indexOf(MUTED_DOTS)).not.toBe(moved.lastIndexOf(MUTED_DOTS));
+  expect(moved).toContain("\x1b_pi:fc\x07");
+});
+
+const scrolledRight = () => {
+  const han = distinct(100);
+  const made = noteView();
+  made.window.handleInput(DOWN);
+  typeText(made.window, han);
+  made.window.handleInput(HOME);
+  for (let n = 0; n < 50; n++) made.window.handleInput(RIGHT);
+  return { ...made, han };
+};
+
+test.each([9, 10])("长行向右滚动后点击输入栏第一个能看到的字（x=%d）：新输入插在这个字前面", (x) => {
+  const { window, done, han } = scrolledRight();
+  const rendered = window.render(80);
+  const bar = barOf(rendered, NOTE_LABEL);
+  expect(bar.lines[0]!.startsWith("      › …")).toBe(true);
+  const visible = bar.lines[0]![9]!;
+  const index = han.indexOf(visible);
+  expect(index).toBeGreaterThan(0);
+  window.handleMouse(click(x, bar.row + 1) as never);
+  typeText(window, "X");
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [NOTE_LABEL], other: han.slice(0, index) + "X" + han.slice(index) }]]);
+});
+
+test("长行里光标往右越过右边缘时显示区跟着右移：开头出现灰色省略号，光标标记可见，光标所在的字在可见文字最右边附近", () => {
+  const { window } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, distinct(100));
+  window.handleInput(HOME);
+  const first = window.render(80)[barOf(window.render(80), NOTE_LABEL).row + 1]!;
+  expect(ctl(first).startsWith("      › " + MUTED_DOTS)).toBe(false);
+  let raw = first;
+  for (let n = 0; n < 200 && !ctl(raw).startsWith("      › " + MUTED_DOTS); n++) {
+    window.handleInput(RIGHT);
+    const rendered = window.render(80);
+    for (const line of rendered) expect(visibleWidth(bare(line)), line).toBeLessThanOrEqual(80);
+    raw = rendered[barOf(rendered, NOTE_LABEL).row + 1]!;
+  }
+  expect(ctl(raw).startsWith("      › " + MUTED_DOTS)).toBe(true);
+  expect(raw).toContain("\x1b_pi:fc\x07");
+  const cursorChar = raw.match(/\x1b_pi:fc\x07(.*?)\x1b_pi:\/fc\x07/u)![1]!;
+  const visible = bare(raw).trimEnd().replace(/…$/u, "");
+  expect([...visible].slice(-2)).toContain(cursorChar);
+});
+
+test("滚动提示和超字提示的顺序：看得到的行之后先是\"下面还有 N 行\"，再下一行才是\"超出 N 字\"", () => {
+  const window = new QuestionWindowView({ tui: { requestRender() {}, terminal: { rows: 24, columns: 80 } }, theme, onDone: () => {}, tone: "warning", questions: [noteQuestion({ otherMaxLength: 30 })] } as never);
+  window.handleInput(DOWN); window.handleInput(DOWN);
+  for (let n = 1; n <= 12; n++) { if (n > 1) window.handleInput(SHIFT_ENTER); typeText(window, "甲甲甲"); }
+  for (let n = 0; n < 11; n++) window.handleInput(UP);
+  const rendered = window.render(80);
+  const at = rendered.findIndex((line) => line.includes("↓ 下面还有"));
+  expect(at).toBeGreaterThan(-1);
+  expect(ctl(rendered[at]!).trimEnd()).toBe("        <muted>↓ 下面还有 5 行</>");
+  expect(bare(rendered[at + 1]!)).toMatch(/超出 \d+ 字，最多 30 字/u);
+});
+
+test("收起成一行的输入栏：点击\"三\"，光标定位到\"三\"前面", () => {
+  const { window, done } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "一二三四五");
+  window.handleInput(UP);
+  const row = window.render(80).map(bare).findIndex((line) => line.startsWith("      › 一二三四五"));
+  expect(row).toBeGreaterThan(-1);
+  window.handleMouse(click(8 + visibleWidth("一二"), row) as never);
+  typeText(window, "X");
+  window.handleInput(ENTER);
+  expect(done).toEqual([[{ choices: [NOTE_LABEL], other: "一二X三四五" }]]);
+});
+
+test("编辑器\"上移\"键被改绑后点击多行收起行：在有限时间内返回", { timeout: 2000 }, () => {
+  const original = getKeybindings();
+  const { window } = noteView();
+  window.handleInput(DOWN);
+  typeText(window, "一二三"); window.handleInput(SHIFT_ENTER); typeText(window, "四五");
+  window.handleInput(DOWN);
+  const row = window.render(80).map(bare).findIndex((line) => line.startsWith("      › 一二三"));
+  expect(row).toBeGreaterThan(-1);
+  setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS, { "tui.editor.cursorUp": "ctrl+p" }));
+  try {
+    window.handleMouse(click(8 + visibleWidth("一"), row) as never);
+  } finally {
+    setKeybindings(original);
+  }
 });

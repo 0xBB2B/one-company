@@ -1,6 +1,6 @@
 import type { ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, KeybindingsManager, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { Editor, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { Editor, matchesKey, sliceByColumn, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 export type LineTone = "normal" | "muted" | "added" | "removed" | "warning";
 export interface WindowLine { text: string; tone?: LineTone }
@@ -39,9 +39,35 @@ const EDITOR_THEME = { borderColor: (text: string) => text, selectList: {} } as 
 
 const CURSOR_MARK = "\x1b_pi:fc\x07";
 const PLAIN_BORDER = /^─+$/u;
+const FAKE_CURSOR = /^\x1b_pi:fc\x07(.*?)\x1b_pi:\/fc\x07/su;
+const UP_KEY = "\x1b[A";
+// 足够宽，pi 编辑器不会自动折行，只按用户的换行分行
+const EDITOR_WIDTH = 10000;
 
-/** pi 的 TUI 靠原始光标标记决定画假光标还是硬件光标，所以有焦点时原样保留；没有焦点就去掉。 */
-const drawCursor = (line: string, focused: boolean) => (focused ? line : line.replace(/\x1b_pi:fc\x07/gu, "").replace(/\x1b_pi:\/fc\x07/gu, "")).trimEnd();
+interface BarRow { editorLine: number; start: number; dots: number }
+interface Bar { index: number; cursor: number; start: number; end: number; collapsed: boolean; textWidth: number; rows: Array<BarRow | undefined> }
+
+/** 一行放不下时截一段：带光标的行从上次的起点开始，光标出了可见范围才移动起点；被截掉的一侧放灰色省略号。 */
+function fitLine(raw: string, width: number, muted: (text: string) => string, previousStart: number): { text: string; start: number; dots: number } {
+  const total = visibleWidth(raw);
+  if (total <= width) return { text: raw, start: 0, dots: 0 };
+  const mark = raw.indexOf(CURSOR_MARK);
+  if (mark < 0) return { text: sliceByColumn(raw, 0, width - 1, true) + muted("…"), start: 0, dots: 0 };
+  const cursorStart = visibleWidth(raw.slice(0, mark));
+  const cursorEnd = cursorStart + (visibleWidth(FAKE_CURSOR.exec(raw.slice(mark))?.[1] ?? "") || 1);
+  const tail = total - (width - 1);
+  let start = Math.min(previousStart, tail);
+  if (cursorStart < start) start = cursorStart;
+  const dots = start > 0 ? 1 : 0;
+  if (total - start > width - dots && cursorEnd >= start + width - dots - 1) {
+    start = cursorEnd + 1 - (width - 2);
+    if (start >= tail) start = tail;
+  }
+  start = visibleWidth(sliceByColumn(raw, 0, start));
+  if (start <= 0) return { text: sliceByColumn(raw, 0, width - 1, true) + muted("…"), start: 0, dots: 0 };
+  if (total - start <= width - 1) return { text: muted("…") + sliceByColumn(raw, start, width), start, dots: 1 };
+  return { text: muted("…") + sliceByColumn(raw, start, width - 2, true) + muted("…"), start, dots: 1 };
+}
 
 /** 按显示宽度折行：放得下就放；行首不留句号逗号这类标点，英文单词与数字不从中间切开。 */
 function wrapPlain(text: string, width: number): string[] {
@@ -84,8 +110,8 @@ export class QuestionWindowView {
   private reviewCursor = 0;
   private readonly states: QuestionState[];
   private readonly options: { questions: WindowQuestion[]; tone: WindowTone; theme: WindowTheme; tui: Pick<TUI, "requestRender" | "terminal">; onDone(answers: WindowAnswer[] | undefined): void };
-  private editorWidth = 80 - INPUT_INDENT;
-  private bars: Array<{ index: number; cursor: number; start: number; end: number }> = [];
+  private bars: Bar[] = [];
+  private readonly scrolls = new Map<Editor, { line: number; start: number }>();
 
   constructor(options: QuestionWindowView["options"]) {
     this.options = options;
@@ -112,7 +138,7 @@ export class QuestionWindowView {
   private otherText(index: number): string { return this.textAt(index, this.options.questions[index]!.choices.length); }
   // 上下边框是纯横线说明那一侧没有被滚动藏起来的行
   private cursorEdge(editor: Editor): { first: boolean; last: boolean } {
-    const lines = editor.render(this.editorWidth);
+    const lines = editor.render(EDITOR_WIDTH);
     const at = lines.findIndex((line, i) => i > 0 && i < lines.length - 1 && line.includes(CURSOR_MARK));
     return { first: at === 1 && PLAIN_BORDER.test(lines[0]!), last: at === lines.length - 2 && PLAIN_BORDER.test(lines[lines.length - 1]!) };
   }
@@ -180,8 +206,17 @@ export class QuestionWindowView {
     if (event.type !== "click" || event.button !== "left") return undefined;
     const bar = this.bars.find((item) => event.y >= item.start && event.y < item.end);
     if (!bar || this.onReview) return undefined;
+    const row = bar.rows[event.y - bar.start];
+    if (!row) return undefined;
     this.states[bar.index]!.cursor = bar.cursor;
-    const result = this.editorAt(bar.index, bar.cursor)!.handleMouse({ ...event, x: event.x - INPUT_INDENT, y: event.y - bar.start + 1, width: event.width - INPUT_INDENT });
+    const editor = this.editorAt(bar.index, bar.cursor)!;
+    if (bar.collapsed) {
+      for (let n = editor.getCursor().line; n > 0; n--) editor.handleInput(UP_KEY);
+      editor.render(EDITOR_WIDTH);
+    }
+    const column = event.x - INPUT_INDENT - row.dots;
+    const x = bar.collapsed && column >= bar.textWidth ? EDITOR_WIDTH : row.start + Math.max(0, column);
+    const result = editor.handleMouse({ ...event, x, y: row.editorLine, width: EDITOR_WIDTH });
     return { ...result, handled: true };
   }
 
@@ -204,7 +239,6 @@ export class QuestionWindowView {
     const wrap = (text: string, indent: number) => wrapTextWithAnsi(text, Math.max(8, width - indent)).map((line) => " ".repeat(indent) + line);
     const lines: string[] = [border];
     this.bars = [];
-    this.editorWidth = Math.max(1, width - INPUT_INDENT);
     if (this.multi) lines.push(this.renderTabs(), "");
 
     if (this.onReview) {
@@ -266,10 +300,9 @@ export class QuestionWindowView {
       if (!editor) return;
       editor.focused = selected;
       if (selected || editor.getText()) {
-        const start = lines.length;
-        editor.render(this.editorWidth).slice(1, -1).map((line) => drawCursor(line, selected))
-          .forEach((line, n) => lines.push(n ? " ".repeat(INPUT_INDENT) + line : `      ${highlight("›")} ${line}`));
-        this.bars.push({ index, cursor: i, start, end: lines.length });
+        const bar = this.renderInput(editor, index, i, selected, width - INPUT_INDENT, lines.length, highlight, muted);
+        lines.push(...bar.lines);
+        this.bars.push(bar.bar);
       }
       const excess = question.otherMaxLength !== undefined ? this.textAt(index, i).length - question.otherMaxLength : 0;
       if (excess > 0) lines.push(`      ${muted(`超出 ${excess} 字，最多 ${question.otherMaxLength} 字`)}`);
@@ -283,6 +316,38 @@ export class QuestionWindowView {
     ].join(" · ");
     lines.push("", ...wrapPlain(hint, width - 1).map((piece) => ` ${muted(piece)}`), border);
     return lines;
+  }
+
+  private renderInput(editor: Editor, index: number, cursor: number, expanded: boolean, width: number, start: number,
+    highlight: (text: string) => string, muted: (text: string) => string): { lines: string[]; bar: Bar } {
+    const prefix = `      ${expanded ? highlight("›") : "›"} `;
+    const make = (lines: string[], rows: Array<BarRow | undefined>, textWidth = 0) =>
+      ({ lines, bar: { index, cursor, start, end: start + lines.length, collapsed: !expanded, textWidth, rows } });
+    if (!expanded) {
+      const first = editor.getLines()[0] ?? "";
+      const total = editor.getExpandedText().split("\n").length;
+      const suffix = total > 1 ? muted(`…（共 ${total} 行）`) : "";
+      const room = width - (total > 1 ? visibleWidth(`…（共 ${total} 行）`) : 0);
+      const fits = visibleWidth(first) <= room;
+      const body = fits ? first : sliceByColumn(first, 0, room - (total > 1 ? 0 : 1), true);
+      const text = body + (total > 1 ? suffix : fits ? "" : muted("…"));
+      return make([prefix + text], [{ editorLine: 1, start: 0, dots: 0 }], visibleWidth(body));
+    }
+    const rendered = editor.render(EDITOR_WIDTH);
+    const hidden = (border: string, arrow: string) => Number(new RegExp(`${arrow} (\\d+) more`, "u").exec(border)?.[1] ?? 0);
+    const above = hidden(rendered[0]!, "↑"), below = hidden(rendered[rendered.length - 1]!, "↓");
+    const lines: string[] = [], rows: Array<BarRow | undefined> = [];
+    const saved = this.scrolls.get(editor), cursorLine = editor.getCursor().line;
+    if (above) { lines.push(`      ${highlight("›")} ${muted(`↑ 上面还有 ${above} 行`)}`); rows.push(undefined); }
+    rendered.slice(1, -1).forEach((line, n) => {
+      const raw = line.trimEnd();
+      const fit = fitLine(raw, width, muted, saved?.line === cursorLine ? saved.start : 0);
+      if (raw.includes(CURSOR_MARK)) this.scrolls.set(editor, { line: cursorLine, start: fit.start });
+      lines.push((n || above ? " ".repeat(INPUT_INDENT) : prefix) + fit.text);
+      rows.push({ editorLine: n + 1, start: fit.start, dots: fit.dots });
+    });
+    if (below) { lines.push(`${" ".repeat(INPUT_INDENT)}${muted(`↓ 下面还有 ${below} 行`)}`); rows.push(undefined); }
+    return make(lines, rows);
   }
 
   private renderTabs(): string {

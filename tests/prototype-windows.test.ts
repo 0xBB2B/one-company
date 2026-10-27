@@ -553,7 +553,9 @@ test("其他一行的意见超过 4000 字时窗口不能确认、不调用 deci
   view.handleInput("\r");
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(h.called("prototypes.decide")).toEqual([]);
-  expect(view.render(80).some((line) => line.includes("› 字"))).toBe(true);
+  const shown = view.render(80);
+  expect(shown.some((line) => line.includes("›") && line.includes("字"))).toBe(true);
+  expect(shown.some((line) => line.includes("超出 1 字，最多 4000 字"))).toBe(true);
   view.handleInput("\x7f");
   view.handleInput("\r");
   await vi.waitFor(() => expect(h.called("prototypes.decide")).toHaveLength(1));
