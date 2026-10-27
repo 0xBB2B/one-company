@@ -11,7 +11,7 @@ import { readAgentSettings } from "../src/modules/settings/agent-settings.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../src/modules/agents/roles.ts";
 import { SettingsPageView } from "../src/modules/settings/settings-page-ui.ts";
 
-const RIGHT = "\x1b[C", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
+const RIGHT = "\x1b[C", DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b", BACKSPACE = "\x7f";
 const theme = { fg: (_kind: string, text: string) => text, bg: (_kind: string, text: string) => text, bold: (text: string) => text, inverse: (text: string) => text };
 
 let root = "", savedAgentDir: string | undefined;
@@ -116,9 +116,10 @@ test("展开写了正文的 vue-engineer 详情：正文行写已写，说明流
   await writeRole(d.userDir, "vue-engineer", "description: 写 Vue\nrole: worker\nskills: [a]\nmcp: [docs]", "擅长 Vue\n");
   const p = await viewOf(d);
   p.view.handleInput(RIGHT);
+  p.view.handleInput(DOWN);
   p.view.handleInput(ENTER);
   const lines = p.lines();
-  expect(p.text()).toMatch(/vue-engineer/u);
+  expect(p.text()).toMatch(/▾ vue-engineer/u);
   const at = (key: RegExp) => lines.findIndex((line) => key.test(line));
   const mcp = at(/┊ MCP/u), body = at(/┊ 正文/u), file = at(/┊ 文件/u);
   expect(lines[body]).toMatch(/┊ 正文 +已写 · 流程规矩由程序加上，优先于正文$/u);

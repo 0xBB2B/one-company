@@ -1,4 +1,5 @@
 import { expect, test } from "vitest";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { chooseWindow, confirmWindow, QuestionWindowView } from "../src/core/host/question-window.ts";
 import type { WindowAnswer, WindowHost } from "../src/core/host/question-window.ts";
 
@@ -182,6 +183,23 @@ test("chooseWindow 带 caption 时把灰字画在标题之上", async () => {
     { title: "合进 main，怎么合并？", caption: "交付到本地分支", lines: [], choices: [{ label: "压缩合并" }] });
   expect(rendered.indexOf(" <muted>交付到本地分支</>")).toBeGreaterThan(0);
   expect(rendered.indexOf(" <muted>交付到本地分支</>")).toBeLessThan(rendered.findIndex((line) => line.includes("合进 main，怎么合并？")));
+});
+
+test("不可选选项的原因太长时在原因列里折行，窄终端每行都不超宽", async () => {
+  const reason = "你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust";
+  for (const width of [36, 44, 60, 80]) {
+    let rendered: string[] = [];
+    await chooseWindow(fakeUi((c) => { rendered = (c as unknown as { render(width: number): string[] }).render(width); c.handleInput(ENTER); }),
+      { title: "复制到哪一层？", lines: [], choices: [{ label: "用户层" }, { label: "项目层", disabled: reason }] });
+    const lines = rendered.map((line) => line.replace(/<\/?[a-zA-Z]*>/gu, ""));
+    for (const line of lines) expect(visibleWidth(line), line).toBeLessThanOrEqual(width);
+    const start = lines.findIndex((line) => line.startsWith("   项目层"));
+    expect(start).toBeGreaterThan(0);
+    expect(lines.slice(start).join("").replaceAll(" ", "")).toContain(`项目层${reason.replaceAll(" ", "")}`);
+    const end = lines.findIndex((line, n) => n > start && !line.trim());
+    expect(end - start).toBeGreaterThan(width < 64 ? 1 : 0);
+    for (const line of lines.slice(start + 1, end)) expect(line.startsWith(" ".repeat(visibleWidth("   项目层   ")))).toBe(true);
+  }
 });
 
 test("M8D-AC8：不可选的选项整行变暗并写明原因，光标跳过它，停在它上面也按不下去", async () => {

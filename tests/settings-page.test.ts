@@ -26,6 +26,7 @@ afterEach(async () => {
   await gh.restore();
   if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
   await chmod(join(root, "agent", "agents"), 0o755).catch(() => undefined);
+  await chmod(join(root, "agent"), 0o755).catch(() => undefined);
   await rm(root, { recursive: true, force: true });
 });
 
@@ -39,6 +40,7 @@ async function writeSettings(path: string, content: unknown) {
 const readJson = async (path: string) => JSON.parse(await readFile(path, "utf8"));
 const oneCompany = (entries: Record<string, unknown>) => ({ "one-company": entries });
 const typed = (text: string) => [...text];
+const squeeze = (text: string) => text.replace(/\s+/gu, "");
 
 interface Screen { now(): string; raw(): string; press(...keys: string[]): void }
 type Step = (screen: Screen) => void;
@@ -61,9 +63,9 @@ async function run(ctx: SettingsExtensionContext, mainThinking = "high") {
 }
 
 /** 页面与程序窗口每次出现，按顺序交给下一步处理；两者都走 ui.custom。 */
-function scripted(steps: Step[], options: { trusted?: false; models?: unknown[]; authorized?: string[] } = {}): SettingsExtensionContext {
+function scripted(steps: Step[], options: { trust?: "unset" | "denied"; models?: unknown[]; authorized?: string[] } = {}): SettingsExtensionContext {
   const trustFile = join(agentDir(), "trust.json");
-  if (options.trusted !== false && !existsSync(trustFile)) { mkdirSync(agentDir(), { recursive: true }); writeFileSync(trustFile, JSON.stringify({ [repoDir()]: true })); }
+  if (options.trust !== "unset" && !existsSync(trustFile)) { mkdirSync(agentDir(), { recursive: true }); writeFileSync(trustFile, JSON.stringify({ [repoDir()]: options.trust !== "denied" })); }
   const models = options.models ?? [SOL, LUNA];
   const authorized = options.authorized ?? ["gpt-6.1-sol", "gpt-6-luna"];
   const ui = {
@@ -135,9 +137,33 @@ test("页内输入新名称，程序窗口列出两层与完整路径，复制�
   expect(await readFile(join(agentDir(), "agents", "api-worker.md"), "utf8")).toMatch(/^name: api-worker$/mu);
 });
 
-test("项目未受信任时项目层选项变暗并写明原因，页面不列项目层的定义", async () => {
+test("记录为空时设置页顶部黄字写还没设为受信任，不列项目层的定义，复制窗口里项目层可选并写明选它会设为受信任", async () => {
   await mkdir(join(repoDir(), ".pi", "agents"), { recursive: true });
   await writeFile(join(repoDir(), ".pi", "agents", "reviewer.md"), "---\nname: reviewer\ndescription: d\nrole: reviewer\n---\n");
+  let window = "";
+  const ctx = scripted([
+    (s) => {
+      expect(s.now()).toContain("! 项目还没设为受信任：项目层的定义和设定都没有生效");
+      expect(s.raw()).toContain("<warning>");
+      s.press(DOWN, RIGHT);
+      expect(s.now()).not.toMatch(/reviewer +项目/u);
+      s.press(LEFT, UP, RIGHT, "c", ENTER);
+    },
+    (s) => { window = s.now(); s.press(ESC); },
+    (s) => s.press(ESC, ESC),
+  ], { trust: "unset" });
+  await run(ctx);
+  expect(window).toContain(`${join(repoDir(), ".pi", "agents")}`);
+  expect(window).toMatch(/项目层 +\S+\.md · 选它会把本项目设为受信任/u);
+  expect(window).not.toContain("暂不能复制到这里");
+  expect(existsSync(join(agentDir(), "trust.json"))).toBe(false);
+});
+
+test("记录为不信任时设置页顶部黄字写项目未受信任，复制窗口里项目层灰掉并写明先输入 /trust 选 Trust，信任记录不变", async () => {
+  await mkdir(join(repoDir(), ".pi", "agents"), { recursive: true });
+  await writeFile(join(repoDir(), ".pi", "agents", "reviewer.md"), "---\nname: reviewer\ndescription: d\nrole: reviewer\n---\n");
+  await writeTrust({ [repoDir()]: false });
+  const before = await readFile(join(agentDir(), "trust.json"), "utf8");
   let window = "";
   const ctx = scripted([
     (s) => {
@@ -148,9 +174,10 @@ test("项目未受信任时项目层选项变暗并写明原因，页面不列�
     },
     (s) => { window = s.now(); s.press(ESC); },
     (s) => s.press(ESC, ESC),
-  ], { trusted: false });
+  ]);
   await run(ctx);
-  expect(window).toMatch(/项目层 +项目未受信任，暂不能复制到这里/u);
+  expect(window).toMatch(/项目层 +你在 pi 里选过不信任这个项目，先输入 \/trust 选 Trust/u);
+  expect(await readFile(join(agentDir(), "trust.json"), "utf8")).toBe(before);
 });
 
 async function writeTrust(entries: Record<string, boolean>) {
@@ -215,7 +242,7 @@ async function copyWith(atWindow: () => void, afterCopy: (s: PageScreen) => void
   await mkdir(agentsDir(), { recursive: true });
   await writeFile(SOURCE(), "---\nname: ui-w\ndescription: d\nrole: worker\n---\n正文\n");
   const ctx = scripted([
-    (s) => { s.press(RIGHT); expect(s.now()).toMatch(/▸ ui-w +用户/u); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
+    (s) => { s.press(RIGHT); moveTo(s, "ui-w"); expect(s.now()).toMatch(/▸ ui-w +用户/u); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
     (s) => { atWindow(); s.press(ENTER); },
     (s) => { afterCopy(s); s.press(ESC, ESC); },
   ]);
@@ -293,8 +320,10 @@ test("任一步连续 Esc 退出，两层设置文件都没有改动，底部写
   expect(existsSync(projectFile())).toBe(false);
 }, 5000);
 
-test("项目不受信任时第 3 步项目层不可选，回车存到用户层，项目设置文件不被创建", async () => {
+test("记录为不信任时第 3 步项目层不可选并写明你选过不信任，回车存到用户层，项目设置文件不被创建，信任记录不变", async () => {
   await mkdir(repoDir(), { recursive: true });
+  await writeTrust({ [repoDir()]: false });
+  const before = await readFile(join(agentDir(), "trust.json"), "utf8");
   const ctx = scripted([
     (s) => {
       goTo(s, "models");
@@ -303,18 +332,466 @@ test("项目不受信任时第 3 步项目层不可选，回车存到用户层�
       s.press(ENTER);
       moveTo(s, "medium");
       s.press(ENTER);
-      expect(s.now()).toMatch(/项目层 +项目未受信任，项目层的设定不会生效/u);
+      expect(s.now()).toMatch(/项目层 +你在 pi 里选过不信任这个项目/u);
+      expect(squeeze(s.now())).toContain(squeeze("你在 pi 里选过不信任这个项目。要存到项目层，先在 pi 里输入 /trust 选 Trust，再重开本页"));
       expect(selectedLine(s)).toMatch(/用户层/u);
       s.press(ENTER);
     },
     (s) => {
       expect(s.now()).toMatch(/▸ PM +用户 +gpt-6\.1-sol +medium/u);
       expect(s.now()).toContain("存到用户层，下次启动 PM 时生效");
+      expect(s.now()).not.toContain("已把本项目设为受信任");
       s.press(ESC, ESC);
     },
-  ], { trusted: false });
+  ]);
   await run(ctx);
   expect((await readJson(userFile()))["one-company"].pm).toEqual({ model: "gpt-6.1-sol", thinking: "medium" });
+  expect(existsSync(projectFile())).toBe(false);
+  expect(await readFile(join(agentDir(), "trust.json"), "utf8")).toBe(before);
+}, 5000);
+
+const trustFilePath = () => join(agentDir(), "trust.json");
+const pickPmModel = (s: Screen) => {
+  goTo(s, "models");
+  s.press(ENTER);
+  moveTo(s, "gpt-6-luna");
+  s.press(ENTER);
+  moveTo(s, "xhigh");
+  s.press(ENTER);
+};
+
+test("记录为空时第 3 步项目层可选并写明选它会设为受信任，光标默认在项目层，下面有灰字说明；打开页面和浏览不写信任记录", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "models");
+      s.press(ENTER);
+      moveTo(s, "gpt-6-luna");
+      s.press(ENTER);
+      moveTo(s, "xhigh");
+      s.press(ENTER);
+      expect(s.now()).toMatch(/项目层 +\.pi\/settings\.json · 选它会把本项目设为受信任/u);
+      expect(selectedLine(s)).toMatch(/项目层/u);
+      expect(squeeze(s.now())).toContain(squeeze("选项目层会把这个项目设为受信任，和在 pi 里输入 /trust 选 Trust 一样；项目里已有的 .pi 设置和角色定义也会一起生效"));
+      expect(s.raw()).toMatch(/<(dim|muted)>[^\n]*选项目层会把这个项目设为受信任/u);
+      expect(existsSync(trustFilePath())).toBe(false);
+      s.press(ESC, ESC, ESC, ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect(existsSync(trustFilePath())).toBe(false);
+  expect(existsSync(projectFile())).toBe(false);
+}, 5000);
+
+test("记录为空时在第 3 步选项目层回车：信任记录写成 true，项目设置文件写入，提示末尾加已把本项目设为受信任，顶部黄字消失，项目层定义立即显示", async () => {
+  await mkdir(join(repoDir(), ".pi", "agents"), { recursive: true });
+  await writeFile(join(repoDir(), ".pi", "agents", "reviewer.md"), "---\nname: reviewer\ndescription: d\nrole: reviewer\n---\n");
+  const ctx = scripted([
+    (s) => {
+      expect(s.now()).toContain("! 项目还没设为受信任");
+      pickPmModel(s);
+      moveTo(s, "项目层");
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.raw()).toContain("<success>✓ PM 改为 gpt-6-luna · xhigh，存到项目层，下次启动 PM 时生效 · 已把本项目设为受信任</>");
+      expect(s.now()).toMatch(/▸ PM +项目 +gpt-6-luna +xhigh/u);
+      expect(s.now()).not.toContain("项目还没设为受信任");
+      expect(s.now()).not.toContain("项目未受信任");
+      s.press(LEFT, UP, UP, UP, UP, RIGHT);
+      expect(s.now()).toMatch(/reviewer +项目/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+  expect((await readJson(projectFile()))["one-company"].pm).toEqual({ model: "gpt-6-luna", thinking: "xhigh" });
+  expect(existsSync(userFile())).toBe(false);
+}, 5000);
+
+test("记录为空时第 3 步选用户层保存、或在选择框按 Esc：都不写信任记录，提示末尾没有已把本项目设为受信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      pickPmModel(s);
+      s.press(ESC, ESC, ESC);
+      expect(s.now()).toContain("已取消修改");
+      expect(existsSync(trustFilePath())).toBe(false);
+      s.press(ENTER);
+      moveTo(s, "gpt-6-luna");
+      s.press(ENTER);
+      moveTo(s, "xhigh");
+      s.press(ENTER);
+      moveTo(s, "用户层");
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.now()).toContain("✓ PM 改为 gpt-6-luna · xhigh，存到用户层，下次启动 PM 时生效");
+      expect(s.now()).not.toContain("已把本项目设为受信任");
+      expect(s.now()).toContain("! 项目还没设为受信任");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect(existsSync(trustFilePath())).toBe(false);
+  expect(existsSync(projectFile())).toBe(false);
+  expect((await readJson(userFile()))["one-company"].pm).toEqual({ model: "gpt-6-luna", thinking: "xhigh" });
+}, 5000);
+
+test("记录为空时信任记录写不进去：不写项目设置文件，底部红字没有保存，信任记录仍是空", async (context) => {
+  if (process.getuid?.() === 0) context.skip();
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      chmodSync(agentDir(), 0o555);
+      pickPmModel(s);
+      moveTo(s, "项目层");
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.raw()).toContain("<error>✗ 没有保存：");
+      expect(s.now()).not.toContain("已把本项目设为受信任");
+      expect(s.now()).toContain("! 项目还没设为受信任");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  mkdirSync(agentDir(), { recursive: true });
+  await run(ctx);
+  expect(existsSync(trustFilePath())).toBe(false);
+  expect(existsSync(projectFile())).toBe(false);
+}, 5000);
+
+test("记录已是信任时第 3 步项目层写只对这个项目生效且没有灰字，存项目层不改信任记录，提示末尾没有已把本项目设为受信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      expect(s.now()).not.toContain("项目还没设为受信任");
+      pickPmModel(s);
+      expect(s.now()).toMatch(/项目层 +\.pi\/settings\.json · 只对这个项目生效/u);
+      expect(s.now()).not.toContain("选它会把本项目设为受信任");
+      expect(s.now()).not.toContain("选项目层会把这个项目设为受信任");
+      expect(s.now()).not.toContain("你在 pi 里选过不信任");
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.now()).toContain("存到项目层，下次启动 PM 时生效");
+      expect(s.now()).not.toContain("已把本项目设为受信任");
+      s.press(ESC, ESC);
+    },
+  ]);
+  const before = await readFile(trustFilePath(), "utf8");
+  await run(ctx);
+  expect(await readFile(trustFilePath(), "utf8")).toBe(before);
+}, 5000);
+
+test("记录为空时 Git 交付第 2 步项目层可选写明选它会设为受信任，选项目层后写信任记录，提示末尾加已把本项目设为受信任", async () => {
+  await writeSettings(userFile(), oneCompany({ "git-delivery": "remote" }));
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "switches");
+      s.press(ENTER);
+      moveTo(s, "仅本地");
+      s.press(ENTER);
+      expect(s.now()).toMatch(/项目层 +\.pi\/settings\.json · 选它会把本项目设为受信任/u);
+      expect(selectedLine(s)).toMatch(/项目层/u);
+      expect(squeeze(s.now())).toContain(squeeze("选项目层会把这个项目设为受信任，和在 pi 里输入 /trust 选 Trust 一样"));
+      expect(existsSync(trustFilePath())).toBe(false);
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.now()).toContain("✓ Git 交付 改为仅本地，存到项目层，立即生效 · 已把本项目设为受信任");
+      expect(s.now()).toMatch(/▸ Git 交付 +项目 +仅本地/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+  expect((await readJson(projectFile()))["one-company"]["git-delivery"]).toBe("local");
+}, 5000);
+
+test("记录为不信任时 Git 交付第 2 步项目层灰掉写你选过不信任，光标在用户层，存用户层不改信任记录", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await writeTrust({ [repoDir()]: false });
+  const before = await readFile(trustFilePath(), "utf8");
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "switches");
+      s.press(ENTER);
+      moveTo(s, "远程");
+      s.press(ENTER);
+      expect(s.now()).toMatch(/项目层 +你在 pi 里选过不信任这个项目/u);
+      expect(squeeze(s.now())).toContain(squeeze("你在 pi 里选过不信任这个项目。要存到项目层，先在 pi 里输入 /trust 选 Trust，再重开本页"));
+      expect(selectedLine(s)).toMatch(/用户层/u);
+      s.press(ENTER);
+    },
+    (s) => { expect(s.now()).toContain("存到用户层，立即生效"); s.press(ESC, ESC); },
+  ]);
+  await run(ctx);
+  expect(existsSync(projectFile())).toBe(false);
+  expect(await readFile(trustFilePath(), "utf8")).toBe(before);
+}, 5000);
+
+test("记录为空时合并方式第 2 步项目层可选写明选它会设为受信任，选项目层后写信任记录，提示末尾加已把本项目设为受信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "switches");
+      s.press(DOWN, ENTER, SPACE, ENTER);
+      expect(s.now()).toMatch(/项目层 +\.pi\/settings\.json · 选它会把本项目设为受信任/u);
+      expect(selectedLine(s)).toMatch(/项目层/u);
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.now()).toContain("存到项目层，立即生效 · 已把本项目设为受信任");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+  expect((await readJson(projectFile()))["one-company"]["merge-methods"]).toBeDefined();
+}, 5000);
+
+test("记录为不信任时合并方式第 2 步项目层灰掉写你选过不信任，存用户层", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await writeTrust({ [repoDir()]: false });
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "switches");
+      s.press(DOWN, ENTER, SPACE, ENTER);
+      expect(s.now()).toMatch(/项目层 +你在 pi 里选过不信任这个项目/u);
+      expect(selectedLine(s)).toMatch(/用户层/u);
+      s.press(ENTER);
+    },
+    (s) => { expect(s.now()).toContain("存到用户层，立即生效"); s.press(ESC, ESC); },
+  ]);
+  await run(ctx);
+  expect(existsSync(projectFile())).toBe(false);
+}, 5000);
+
+const COPY_SOURCE = "---\nname: ui-w\ndescription: d\nrole: worker\n---\n正文\n";
+const copyToProject = (after: (s: Screen) => void) => scripted([
+  (s) => { s.press(RIGHT); moveTo(s, "ui-w"); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
+  (s) => s.press(DOWN, ENTER),
+  (s) => { after(s); s.press(ESC, ESC); },
+], { trust: "unset" });
+
+const brokenProjectSettings = () => writeSettings(projectFile(), "{坏的");
+
+test("记录为空时模型设定存项目层失败：信任记录保持 true，底部红字没有保存并带已把本项目设为受信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await brokenProjectSettings();
+  const ctx = scripted([
+    (s) => { pickPmModel(s); moveTo(s, "项目层"); s.press(ENTER); },
+    (s) => {
+      expect(s.raw()).toMatch(/<error>✗ 没有保存：.* · 已把本项目设为受信任<\/>/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+}, 5000);
+
+test("记录为空时先存项目层成功、再清除项目层失败：失败红字没有保存且不再带已把本项目设为受信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => { pickPmModel(s); moveTo(s, "项目层"); s.press(ENTER); },
+    (s) => {
+      expect(s.raw()).toContain("存到项目层，下次启动 PM 时生效 · 已把本项目设为受信任</>");
+      writeFileSync(projectFile(), "{坏的");
+      s.press("R");
+    },
+    (s) => {
+      expect(s.raw()).toMatch(/<error>✗ 没有保存：/u);
+      expect(s.raw()).not.toMatch(/<error>✗ 没有保存：[^\n]*已把本项目设为受信任/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+}, 5000);
+
+test("记录已是信任时模型设定存项目层失败：信任记录不变，提示没有已把本项目设为受信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await brokenProjectSettings();
+  const ctx = scripted([
+    (s) => { pickPmModel(s); moveTo(s, "项目层"); s.press(ENTER); },
+    (s) => {
+      expect(s.raw()).toContain("<error>✗ 没有保存：");
+      expect(s.now()).not.toContain("已把本项目设为受信任");
+      s.press(ESC, ESC);
+    },
+  ]);
+  const before = await readFile(trustFilePath(), "utf8");
+  await run(ctx);
+  expect(await readFile(trustFilePath(), "utf8")).toBe(before);
+}, 5000);
+
+test("记录为空时 Git 交付存项目层失败：信任记录保持 true，底部红字没有保存并带已把本项目设为受信任", async () => {
+  await writeSettings(userFile(), oneCompany({ "git-delivery": "remote" }));
+  await mkdir(repoDir(), { recursive: true });
+  await brokenProjectSettings();
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "switches");
+      s.press(ENTER);
+      moveTo(s, "仅本地");
+      s.press(ENTER);
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.raw()).toMatch(/<error>✗ 没有保存：.* · 已把本项目设为受信任<\/>/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+}, 5000);
+
+test("记录为空时合并方式存项目层失败：信任记录保持 true，底部红字没有保存并带已把本项目设为受信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await brokenProjectSettings();
+  const ctx = scripted([
+    (s) => { goTo(s, "switches"); s.press(DOWN, ENTER, SPACE, ENTER, ENTER); },
+    (s) => {
+      expect(s.raw()).toMatch(/<error>✗ 没有保存：.* · 已把本项目设为受信任<\/>/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+}, 5000);
+
+test("记录已是信任时 Git 交付存项目层失败：信任记录不变，提示没有已把本项目设为受信任", async () => {
+  await writeSettings(userFile(), oneCompany({ "git-delivery": "remote" }));
+  await mkdir(repoDir(), { recursive: true });
+  await brokenProjectSettings();
+  const ctx = scripted([
+    (s) => { goTo(s, "switches"); s.press(ENTER); moveTo(s, "仅本地"); s.press(ENTER); s.press(ENTER); },
+    (s) => {
+      expect(s.raw()).toContain("<error>✗ 没有保存：");
+      expect(s.now()).not.toContain("已把本项目设为受信任");
+      s.press(ESC, ESC);
+    },
+  ]);
+  const before = await readFile(trustFilePath(), "utf8");
+  await run(ctx);
+  expect(await readFile(trustFilePath(), "utf8")).toBe(before);
+}, 5000);
+
+test("记录为空时按 C 复制到项目层失败：信任记录保持 true，灰字复制没有完成并带已把本项目设为受信任", async (context) => {
+  if (process.getuid?.() === 0) context.skip();
+  await mkdir(join(repoDir(), ".pi", "agents"), { recursive: true });
+  await mkdir(agentsDir(), { recursive: true });
+  await writeFile(SOURCE(), COPY_SOURCE);
+  chmodSync(join(repoDir(), ".pi", "agents"), 0o555);
+  try {
+    await run(copyToProject((s) => {
+      expect(s.raw()).toMatch(/<muted>复制没有完成：.* · 已把本项目设为受信任<\/>/u);
+      expect(s.now()).not.toContain("✓ 已复制到");
+    }));
+  } finally {
+    chmodSync(join(repoDir(), ".pi", "agents"), 0o755);
+  }
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+  expect(existsSync(join(repoDir(), ".pi", "agents", "copy-w.md"))).toBe(false);
+}, 8000);
+
+test("记录已是信任时按 C 复制到项目层失败：信任记录不变，提示没有已把本项目设为受信任", async (context) => {
+  if (process.getuid?.() === 0) context.skip();
+  await mkdir(join(repoDir(), ".pi", "agents"), { recursive: true });
+  await mkdir(agentsDir(), { recursive: true });
+  await writeFile(SOURCE(), COPY_SOURCE);
+  chmodSync(join(repoDir(), ".pi", "agents"), 0o555);
+  const ctx = scripted([
+    (s) => { s.press(RIGHT); moveTo(s, "ui-w"); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
+    (s) => s.press(DOWN, ENTER),
+    (s) => {
+      expect(s.now()).toContain("复制没有完成：");
+      expect(s.now()).not.toContain("已把本项目设为受信任");
+      s.press(ESC, ESC);
+    },
+  ]);
+  const before = await readFile(trustFilePath(), "utf8");
+  try {
+    await run(ctx);
+  } finally {
+    chmodSync(join(repoDir(), ".pi", "agents"), 0o755);
+  }
+  expect(await readFile(trustFilePath(), "utf8")).toBe(before);
+}, 8000);
+
+test("记录为空时复制到项目层：先写信任记录再复制，提示末尾加已把本项目设为受信任；选用户层复制不写信任记录", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await mkdir(agentsDir(), { recursive: true });
+  await writeFile(SOURCE(), COPY_SOURCE);
+  const target = join(repoDir(), ".pi", "agents", "copy-w.md");
+  await run(copyToProject((s) => {
+    expect(s.now()).toContain(`✓ 已复制到 ${target}，打开它写专长、skills 和 mcp · 已把本项目设为受信任`);
+    expect(s.now()).not.toContain("项目还没设为受信任");
+  }));
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(true);
+  expect(existsSync(target)).toBe(true);
+  rmSync(trustFilePath());
+  rmSync(target);
+  const ctx = scripted([
+    (s) => { s.press(RIGHT); moveTo(s, "ui-w"); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-u"), ENTER); },
+    (s) => s.press(ENTER),
+    (s) => { expect(s.now()).toContain("✓ 已复制到"); expect(s.now()).not.toContain("已把本项目设为受信任"); s.press(ESC, ESC); },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect(existsSync(trustFilePath())).toBe(false);
+}, 8000);
+
+test("记录为空时复制到项目层、信任记录写不进去：不复制，底部写复制没有完成，信任记录仍是空", async (context) => {
+  if (process.getuid?.() === 0) context.skip();
+  await mkdir(repoDir(), { recursive: true });
+  await mkdir(agentsDir(), { recursive: true });
+  await writeFile(SOURCE(), COPY_SOURCE);
+  chmodSync(agentDir(), 0o555);
+  await run(copyToProject((s) => {
+    expect(s.now()).toContain("复制没有完成：");
+    expect(s.now()).toContain("trust.json");
+    expect(s.now()).not.toContain("✓ 已复制到");
+  }));
+  expect(existsSync(trustFilePath())).toBe(false);
+  expect(existsSync(join(repoDir(), ".pi", "agents", "copy-w.md"))).toBe(false);
+}, 8000);
+
+test("页面打开时记录为空、复制前在别处改成不信任：项目层回车不改信任记录、不复制，写明选过不信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await mkdir(agentsDir(), { recursive: true });
+  await writeFile(SOURCE(), COPY_SOURCE);
+  const ctx = scripted([
+    (s) => { s.press(RIGHT); moveTo(s, "ui-w"); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
+    (s) => { writeFileSync(trustFilePath(), JSON.stringify({ [repoDir()]: false })); s.press(DOWN, ENTER); },
+    (s) => {
+      expect(s.now()).toContain("复制没有完成：你在 pi 里选过不信任这个项目");
+      expect(s.now()).not.toContain("已把本项目设为受信任");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(false);
+  expect(existsSync(join(repoDir(), ".pi", "agents", "copy-w.md"))).toBe(false);
+}, 8000);
+
+test("页面打开时记录为空、保存前在别处改成不信任：项目层回车不改信任记录、不写项目设置，写明选过不信任", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      pickPmModel(s);
+      moveTo(s, "项目层");
+      writeFileSync(trustFilePath(), JSON.stringify({ [repoDir()]: false }));
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.raw()).toContain("<error>✗ 没有保存：你在 pi 里选过不信任这个项目");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect((await readJson(trustFilePath()))[repoDir()]).toBe(false);
   expect(existsSync(projectFile())).toBe(false);
 }, 5000);
 

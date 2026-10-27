@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, sep } from "node:path";
-import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { chooseWindow, mutedLines } from "../../core/host/question-window.ts";
 import type { WindowChoice, WindowLine } from "../../core/host/question-window.ts";
@@ -12,6 +11,7 @@ import { lineDiff, symlinkTarget } from "../verification/project-conventions.ts"
 import { agentSwitchOf, readDisabledAgents } from "./agent-settings.ts";
 import { copyExampleFiles, ExampleCopyError, examplesDir, inspectExample, layerTargets, listExamples, mergeConventions } from "./spec-examples.ts";
 import type { ExampleInspection, ExampleTargets } from "./spec-examples.ts";
+import { readProjectTrust, trustProject } from "./project-trust.ts";
 import { tilde } from "./settings-page-ui.ts";
 
 export type ExamplesContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode">;
@@ -129,7 +129,8 @@ export function copyFailureText(error: ExampleCopyError): string {
 export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
   const agentDir = dirname(dataRoot(process.env));
   const repoRoot = await primaryWorktreeRoot(ctx.cwd);
-  const projectTrusted = new ProjectTrustStore(agentDir).get(repoRoot) === true;
+  const trust = readProjectTrust(agentDir, repoRoot);
+  const projectDenied = trust === "denied";
   const root = examplesDir();
   const targetsOf: Record<LayerKey, ExampleTargets> = { user: layerTargets("user", { agentDir, repoRoot }), project: layerTargets("project", { agentDir, repoRoot }) };
   const inspect = (example: string, layer: LayerKey) => inspectExample({ examplesDir: root, example, targets: targetsOf[layer] });
@@ -138,7 +139,7 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
   const rows = await Promise.all((await listExamples()).map(async (item) => ({
     ...item,
     user: await inspect(item.name, "user"),
-    project: projectTrusted ? await inspect(item.name, "project") : null,
+    project: projectDenied ? null : await inspect(item.name, "project"),
   })));
   const chosen = await chooseWindow(ctx, {
     title: "要用哪套设计规范样例？",
@@ -150,7 +151,7 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
   if (!row) return cancelled();
 
   const userDone = row.user.overall === "已复制", projectDone = row.project?.overall === "已复制";
-  if (userDone && (projectDone || !projectTrusted)) {
+  if (userDone && (projectDone || projectDenied)) {
     ctx.ui.notify(projectDone ? `${row.label}样例在用户层和项目层都已全部复制，和样例一致。`
       : `${row.label}样例在用户层已全部复制，和样例一致；项目未受信任，不能复制到项目层。`);
     return;
@@ -160,8 +161,8 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
     lines: [],
     choices: [
       { label: LAYER_NAME.user, description: `${tilde(agentDir)}${sep} · 对你的所有项目生效`, ...(userDone ? { disabled: "已全部复制，和样例一致" } : {}) },
-      { label: LAYER_NAME.project, description: `${tilde(repoRoot)}${sep} · 只对这个项目生效`,
-        ...(!projectTrusted ? { disabled: "项目未受信任，暂不能复制到这里" } : projectDone ? { disabled: "已全部复制，和样例一致" } : {}) },
+      { label: LAYER_NAME.project, description: `${tilde(repoRoot)}${sep} · 只对这个项目生效${trust === "unset" ? " · 选它会把本项目设为受信任" : ""}`,
+        ...(projectDenied ? { disabled: "你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust" } : projectDone ? { disabled: "已全部复制，和样例一致" } : {}) },
     ],
     cancelNote: SKIP_COPY,
   });
@@ -174,22 +175,40 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
   const exampleText = await readFile(join(root, row.name, "AGENTS.md"), "utf8");
   const before = await readTextOrNull(targets.conventionsFile);
   const merged = mergeConventions(before, exampleText);
-  const disabled = readDisabledAgents({ agentDir, repositoryRoot: repoRoot, projectTrusted });
+  const disabled = readDisabledAgents({ agentDir, repositoryRoot: repoRoot, projectTrusted: trust === "trusted" || layer === "project" });
   const decision = await chooseWindow(ctx, {
     title: `把 ${row.label}样例复制到${LAYER_NAME[layer]}？`,
-    lines: confirmLines({ inspection, targets, layer, userAgentsDir: targetsOf.user.agentsDir, projectAgentsDir: projectTrusted ? targetsOf.project.agentsDir : null, disabled,
+    lines: confirmLines({ inspection, targets, layer, userAgentsDir: targetsOf.user.agentsDir, projectAgentsDir: trust === "trusted" || layer === "project" ? targetsOf.project.agentsDir : null, disabled,
       conventions: { before, over: merged.over, bytes: merged.bytes, excess: merged.excess } }),
     choices: [{ label: COPY }, { label: SKIP_COPY }],
     cancelNote: SKIP_COPY,
   });
   if (decision !== COPY) return cancelled();
 
+  let trustWritten = false;
+  if (layer === "project") {
+    const current = readProjectTrust(agentDir, repoRoot);
+    if (current === "denied") {
+      ctx.ui.notify("✗ 复制没有完成：你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust", "error");
+      return;
+    }
+    if (current === "unset") {
+      try {
+        trustProject(agentDir, repoRoot);
+      } catch (error) {
+        ctx.ui.notify(`✗ 复制没有完成：${(error as Error).message.split("\n")[0]}`, "error");
+        return;
+      }
+      trustWritten = true;
+    }
+  }
+
   let written: string[];
   try {
     written = await copyExampleFiles({ examplesDir: root, example: row.name, targets, inspection });
   } catch (error) {
     if (!(error instanceof ExampleCopyError)) throw error;
-    ctx.ui.notify(copyFailureText(error), "error");
+    ctx.ui.notify(copyFailureText(error) + (trustWritten ? "\n  · 已把本项目设为受信任" : ""), "error");
     return;
   }
 
@@ -215,5 +234,5 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
     }
   }
   const skipped = [...inspection.skills.flatMap((skill) => skill.files), ...inspection.agents].filter((file) => file.state === "changed").map((file) => file.path);
-  ctx.ui.notify(resultText({ label: row.label, layer, written: written.length, skipped, inspection, conventionsFile: targets.conventionsFile, outcome, writeError, writeDir }));
+  ctx.ui.notify(resultText({ label: row.label, layer, written: written.length, skipped, inspection, conventionsFile: targets.conventionsFile, outcome, writeError, writeDir }) + (trustWritten ? " · 已把本项目设为受信任" : ""));
 }
