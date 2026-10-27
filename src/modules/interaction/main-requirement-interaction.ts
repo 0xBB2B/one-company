@@ -673,9 +673,10 @@ export class MainRequirementInteraction {
     const order = { new: 0, kept: 1, removed: 2 } as const;
     const tone = { new: "added", kept: "normal", removed: "removed" } as const;
     const label = { new: "本次新确认", kept: `沿用第 ${revision} 版需求`, removed: "本次移除" } as const;
-    const rows = [...items].sort((a, b) => order[a.label] - order[b.label]).map((item): WindowLine => ({
+    const rows = [...items].sort((a, b) => order[a.label] - order[b.label]).flatMap((item): WindowLine[] => [{
       text: `  ${item.name}${" ".repeat(Math.max(2, 14 - visibleWidth(item.name)))}第 ${item.version} 版  ${label[item.label]}`,
-      ...(item.label === "kept" ? {} : { tone: tone[item.label] }) }));
+      ...(item.label === "kept" ? {} : { tone: tone[item.label] }) },
+      ...(item.userNote && item.label !== "removed" ? [{ text: `    你的说明：「${item.userNote}」`, tone: "muted" as const }] : [])]);
     return [{ text: `这一版一起批准的原型（${items.filter((item) => item.label !== "removed").length} 份）：` }, ...rows,
       ...mutedLines(["原型的样子以你在浏览器里通过的那一版为准。"])];
   }

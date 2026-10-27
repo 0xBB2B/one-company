@@ -1244,6 +1244,31 @@ describe("批准时连同草稿里的原型一起批准", () => {
     expect(diff).toContain("原型变化：设置页 新确认第 3 版；旧外观弹窗 移除");
   });
 
+  test("批准窗口里带说明的新确认和沿用原型下面各紧跟一行灰色说明，移除的和没有说明的下面没有", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    markTones(w);
+    await designed(w, id, "命令行输出", 0, "沿用的说明"); await designed(w, id, "旧外观弹窗", 0, "移除的说明");
+    await approvedSaved(w, id, fresh(created));
+    await designed(w, id, "设置页", 0, "用 B 方案（顶部分栏），A 和 C 不要"); await designed(w, id, "另一份");
+    await removeFromDraft(boardRef(w), { requirementId: id, name: "旧外观弹窗", version: 1 });
+    await approvedSaved(w, id, await updatedBody(w, id, BODY + "第二版补充。\n"));
+    const shown = w.windows.at(-1)!.text;
+    expect(shown).toContain([
+      " <toolDiffAdded>  设置页        第 1 版  本次新确认</toolDiffAdded>",
+      " <muted>    你的说明：「用 B 方案（顶部分栏），A 和 C 不要」</muted>",
+    ].join("\n"));
+    expect(shown).toContain([
+      "   命令行输出    第 1 版  沿用第 1 版需求",
+      " <muted>    你的说明：「沿用的说明」</muted>",
+    ].join("\n"));
+    const lines = shown.split("\n");
+    const nextOf = (name: string) => lines[lines.findIndex((line) => line.includes(name) && line.includes("第 1 版")) + 1];
+    expect(nextOf("另一份")).not.toContain("你的说明");
+    expect(nextOf("旧外观弹窗")).not.toContain("你的说明");
+    expect(shown).not.toContain("移除的说明");
+    expect(shown).toContain(" <muted>原型的样子以你在浏览器里通过的那一版为准。</muted>");
+  });
+
   test("没有任何原型的需求，带 @ 批准不弹窗，不带 @ 弹的窗口没有原型清单", async () => {
     const w = await world(), created = await w.create(), { input } = await w.request(created);
     w.capture("同意", "interactive", false); w.answerWindows(false);

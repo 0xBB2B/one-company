@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { approvedPrototypeListLines, requirementPrototypeLines } from "../src/modules/prototype/prototype-dispatch.ts";
 import { RunManager, registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import { validateParams } from "../src/app/daemon/method-params.ts";
@@ -490,4 +491,21 @@ test("派出已被接受、会话还没建好时需求进入等恢复核对：�
   expect(stopped?.lastEnded?.reason).toContain("需求正在等用户恢复核对");
   expect((await w.entry("设置页"))?.inFlight).toMatchObject({ version: 1 });
   expect((await w.entry("设置页"))?.lastEnded ?? null).toBeNull();
+});
+
+const NOTE = "用 B 方案（顶部分栏），A 和 C 不要";
+const noted = [{ name: "设置页", version: 1, hash: "a".repeat(64), bytes: 10, userNote: NOTE },
+  { name: "命令行输出", version: 2, hash: "b".repeat(64), bytes: 10, userNote: null }];
+
+test("任务说明的原型清单里，带说明的原型下面紧跟一行用户通过时的说明，没有说明的不加", () => {
+  const lines = requirementPrototypeLines(3, noted, (item) => `/p/${item.name}`).split("\n");
+  const first = lines.findIndex((line) => line.includes("设置页"));
+  expect(lines[first + 1]).toBe(`  用户通过时的说明：${NOTE}`);
+  expect(lines[lines.findIndex((line) => line.includes("命令行输出")) + 1]).toBeUndefined();
+  expect(lines.filter((line) => line.includes("用户通过时的说明"))).toHaveLength(1);
+});
+
+test("PM 看的原型清单里，带说明的写成用户说明括号，没有说明的和原来一样，空列表仍写这一版没有原型", () => {
+  expect(approvedPrototypeListLines(noted)).toEqual(["当前批准版本附带的原型：", `- 设置页 第 1 版（用户说明：${NOTE}）`, "- 命令行输出 第 2 版"]);
+  expect(approvedPrototypeListLines([])).toEqual(["这一版没有原型"]);
 });
