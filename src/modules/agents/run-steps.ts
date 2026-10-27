@@ -33,7 +33,8 @@ function describe(toolName: string, args: unknown): string {
   const action = field(args, "action");
   switch (toolName.slice(CORE_TOOL_PREFIX.length)) {
     case "knowledge_query": {
-      const value = action === "exact" ? str(field(args, "value")) : action === "search" || action === "facts" ? str(field(args, "text")) : undefined;
+      const query = field(args, "query"), kind = field(query, "action");
+      const value = kind === "exact" ? str(field(query, "value")) : kind === "search" || kind === "facts" ? str(field(query, "text")) : undefined;
       return withTarget("查项目知识", value === undefined ? undefined : `"${value}"`);
     }
     case "change_apply":
