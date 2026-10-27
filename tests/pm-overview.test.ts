@@ -402,9 +402,9 @@ async function rowsWorld(keys: string[] = ["T1", "T2", "T3", "T4"]) {
 
 test("任务行：只有 T3 由 go-worker 第 1 次执行时只有一条 execute 行，轮数上限取运行记录上保存的值", async () => {
   const { w, executing } = await rowsWorld();
-  await executing("T3", { agent: "go-worker", turns: 8, maxTurns: 20 });
+  const runId = await executing("T3", { agent: "go-worker", turns: 8, maxTurns: 20 });
   expect((await w.overview()).taskRows).toEqual([
-    { kind: "execute", taskKey: "T3", agent: "go-worker", attempt: 1, turns: 8, maxTurns: 20, elapsedMs: expect.any(Number) }]);
+    { kind: "execute", taskKey: "T3", agent: "go-worker", attempt: 1, runId, turns: 8, maxTurns: 20, elapsedMs: expect.any(Number) }]);
 });
 
 test("任务行：任务已有一次未完成的尝试后再派出，execute 行的 attempt 为 2", async () => {
@@ -429,10 +429,23 @@ test("任务行：第 1 轮 reviewer、go-reviewer 在跑、vue-reviewer 已通�
     { agent: "reviewer", round: 1, outcome: "running", turns: 3, maxTurns: 15 },
     { agent: "go-reviewer", round: 1, outcome: "running", turns: 5, maxTurns: 16 },
     { agent: "vue-reviewer", round: 1, outcome: "clear", turns: 6, maxTurns: 14 }]);
+  const runIds = Object.fromEntries(w.db((db) => db.list<TaskRecord>(TASKS)).flatMap((row) => row.data.reviews.map((entry) => [entry.agent, entry.runId])));
   expect((await w.overview()).taskRows).toEqual([{ kind: "review", taskKey: "T1", round: 1, reviewers: [
-    { agent: "reviewer", state: "running", turns: 3, maxTurns: 15, elapsedMs: expect.any(Number) },
-    { agent: "go-reviewer", state: "running", turns: 5, maxTurns: 16, elapsedMs: expect.any(Number) },
+    { agent: "reviewer", state: "running", runId: runIds.reviewer, turns: 3, maxTurns: 15, elapsedMs: expect.any(Number) },
+    { agent: "go-reviewer", state: "running", runId: runIds["go-reviewer"], turns: 5, maxTurns: 16, elapsedMs: expect.any(Number) },
     { agent: "vue-reviewer", state: "clear", turns: 6, maxTurns: 14, elapsedMs: expect.any(Number) }] }]);
+});
+
+test("任务行：只有运行中的审查代理带 runId，通过、打回、等重派的审查代理都不带", async () => {
+  const { w, reviewing, reviewersOf } = await rowsWorld();
+  await reviewing("T1", [
+    { agent: "reviewer", round: 1, outcome: "running", turns: 1, maxTurns: 15 },
+    { agent: "go-reviewer", round: 1, outcome: "blocked" },
+    { agent: "vue-reviewer", round: 1, outcome: "clear" },
+    { agent: "sec-reviewer", round: 1, outcome: "failed" }]);
+  const reviewers = (await reviewersOf("T1"))!.reviewers;
+  expect(reviewers.map((reviewer) => [reviewer.agent, reviewer.state, "runId" in reviewer])).toEqual([
+    ["reviewer", "running", true], ["go-reviewer", "blocked", false], ["vue-reviewer", "clear", false], ["sec-reviewer", "awaiting_retry", false]]);
 });
 
 test("任务行：本轮被打回（blocked 或 unverified）的审查代理状态为 blocked", async () => {
@@ -521,12 +534,12 @@ test("待处理事项：未决问题阻塞任务时 question 事项的 taskText 
 
 test("任务行：PM 派出的检索占一行，排在所有任务行之后，带轮数与轮数上限", async () => {
   const { w, executing } = await rowsWorld();
-  await seedRun(w, { role: "explore", agent: "explore", task: "explore", turns: 2, maxTurns: 12 });
+  const exploreRunId = await seedRun(w, { role: "explore", agent: "explore", task: "explore", turns: 2, maxTurns: 12 });
   await executing("T2", { agent: "go-worker", maxTurns: 20 });
   const rows = (await w.overview()).taskRows ?? [];
   expect(rows).toHaveLength(2);
   expect(rows[0]).toMatchObject({ kind: "execute", taskKey: "T2" });
-  expect(rows[1]).toEqual({ kind: "explore", turns: 2, maxTurns: 12, elapsedMs: expect.any(Number) });
+  expect(rows[1]).toEqual({ kind: "explore", runId: exploreRunId, turns: 2, maxTurns: 12, elapsedMs: expect.any(Number) });
 });
 
 test("任务行：规划中没有子代理时 taskRows 为空数组，doing 照旧", async () => {
@@ -710,7 +723,7 @@ test("审查代理行：本轮没交结论（轮次用满）且次数没满时�
     { agent: "reviewer", round: 1, outcome: "running", turns: 3, maxTurns: 15 },
     { agent: "go-reviewer", round: 1, outcome: "turn_limit_reached", turns: 12, maxTurns: 12 }]);
   expect((await reviewersOf("T1"))?.reviewers).toEqual([
-    { agent: "reviewer", state: "running", turns: 3, maxTurns: 15, elapsedMs: expect.any(Number) },
+    { agent: "reviewer", state: "running", runId: expect.any(String), turns: 3, maxTurns: 15, elapsedMs: expect.any(Number) },
     { agent: "go-reviewer", state: "awaiting_retry", reason: "turn_limit_reached", turns: 12, maxTurns: 12, elapsedMs: expect.any(Number) }]);
 });
 
@@ -735,7 +748,7 @@ test("审查代理行：同一轮第 2 次、第 3 次在跑时 attempt 为 2、
     { agent: "vue-reviewer", round: 1, outcome: "stopped", turns: 2, maxTurns: 12 },
     { agent: "vue-reviewer", round: 1, outcome: "running", turns: 1, maxTurns: 12 }]);
   const reviewers = (await reviewersOf("T1"))?.reviewers;
-  expect(reviewers?.find((entry) => entry.agent === "reviewer")).toEqual({ agent: "reviewer", state: "running", turns: 1, maxTurns: 15, elapsedMs: expect.any(Number) });
+  expect(reviewers?.find((entry) => entry.agent === "reviewer")).toEqual({ agent: "reviewer", state: "running", runId: expect.any(String), turns: 1, maxTurns: 15, elapsedMs: expect.any(Number) });
   expect(reviewers?.find((entry) => entry.agent === "go-reviewer")).toMatchObject({ state: "running", attempt: 2, turns: 1, maxTurns: 12 });
   expect(reviewers?.find((entry) => entry.agent === "vue-reviewer")).toMatchObject({ state: "running", attempt: 3 });
 });

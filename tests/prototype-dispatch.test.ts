@@ -238,6 +238,16 @@ test("面板只列本连接运行中的设计：名称、版本、定义名、�
   await expect(w.call("prototypes.list", {})).resolves.toEqual({ items: [] });
 });
 
+test("runs.steps 只认派出连接：派出连接查到运行中、轮数上限为派出时的值；停止后仍查到 stopped 和已记下的步骤", async () => {
+  const w = await world();
+  w.provider.queue.push(w.slow);
+  const { runId } = await w.dispatch();
+  await expect(w.call("runs.steps", { runId })).resolves.toMatchObject({ state: "running", maxTurns: 12, steps: [] });
+  await expect(w.call("runs.steps", { runId }, "connection-b")).rejects.toMatchObject({ code: "not_found", message: "守护进程里没有这个子代理的步骤" });
+  await w.call("runs.stop", { runId });
+  await expect(w.call("runs.steps", { runId })).resolves.toMatchObject({ state: "stopped", maxTurns: 12, steps: [] });
+});
+
 test("runs.get 与 runs.stop 只认派出连接，暂停与续接被拒；停止后看板在途清空并收到 finished 事件", async () => {
   const w = await world();
   w.provider.queue.push(w.slow);
