@@ -33,7 +33,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | exec | 外部命令的报错格式、读 git、目标分支、origin 主机与本机 gh / glab 登录记录、git 快照、分支保护、安装前检查 git | `src/core/exec` | `tool-failure.ts`、`git-read.ts`、`target-branch.ts`、`git-host.ts`、`git-prerequisite.mjs` |
 | storage | 本机 SQLite 数据库、数据根目录、仓库身份、操作日志 | `src/core/storage` | `database.ts`、`data-root.ts`、`identity.ts` |
 | host | 主窗口生命周期、守护进程客户端和通信格式、程序窗口、底部面板、后台 shell 登记表、断网暂停 | `src/core/host` | `extension-lifecycle.ts`、`daemon-client.ts`（`connectDaemon`）、`protocol.ts` |
-| agents | 角色定义的查找与复制、模型引用、职责规矩、MCP、检索排除、子代理会话、会话和运行记录 | `src/modules/agents` | `agent-session.ts`（`createAgentRoleSession`）、`roles.ts`、`run-store.ts` |
+| agents | 角色定义的查找与复制、模型引用、职责规矩、MCP、检索排除、子代理会话、会话和运行记录、步骤簿（守护进程内存里按运行记下子代理的每次工具调用） | `src/modules/agents` | `agent-session.ts`（`createAgentRoleSession`）、`roles.ts`、`run-store.ts`、`run-steps.ts`（`RunStepBook`） |
 | requirement | 需求草稿与正文存储、批准清单（记下这一版正文的每一段、每个允许的动作分别由哪些决定确认）、需求状态、事件、备份恢复、短决定（对话里做出的决定，用户说的或模型提议的，归纳成一句结论加适用范围记下来）、主窗口授权、原型记录 | `src/modules/requirement` | `RequirementService`、`RequirementStateStore`、`prd-storage.ts`、`approval-manifest.ts` |
 | prototype | 派原型设计师、"确认原型"窗口 | `src/modules/prototype` | `prototype-extension.ts`、`prototype-windows.ts` |
 | verification | 检查轮（所有 worker 任务审查通过后，PM 开的最后一轮全量测试和 QA 验收）、worker 改动的应用、写入保护、命令边界、项目规范（AGENTS.md）写入 | `src/modules/verification` | `CheckRoundService`、`change-apply.ts`、`write-guard.ts` |
@@ -41,7 +41,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | settings | `/one:setting` 设置页、模型设定、PM 和内部代理用哪个模型、角色定义的开关、Git 交付档位和合并方式；`/one:examples` 把设计规范样例复制到用户层或项目层 | `src/modules/settings` | `settings-page-ui.ts`、`agent-settings.ts`、`internal-model.ts`、`examples-extension.ts`（`openExamplesPage`）、`spec-examples.ts` |
 | pm | 计划、派工、PM 提交与同步目标分支、PM 接手复核、需求读取工具、验证命令、子代理交结果 | `src/modules/pm` | `plan-manage.ts`、`task-dispatch.ts`、`PmIntakeService`、`pm-commit.ts`、`result-submit.ts` |
 | delivery | 关闭需求与归档提交、需求流程管理、Git 交付（远程：推送、建 PR/MR、合并；仅本地：合进主仓库当前分支）、需求工作区（worktree）管理 | `src/modules/delivery` | `RequirementCloseService`、`archive-commit.ts`、`workflow-manage.ts`、`git-delivery.ts`（`deliverRequirement`）、`local-delivery.ts`（`deliverLocally`）、`WorkspaceManageService` |
-| panel | 状态面板、PM 概览、⚑ 事项（面板上等用户处理的事）的决策包（打开事项时插进对话、供主代理查原因的材料）、裁决（用户对上报事项做的决定，比如任务两次没完成时怎么办） | `src/modules/panel` | `pm-panel.ts`、`pm-overview.ts`、`adjudication.ts` |
+| panel | 状态面板、步骤窗口（在面板选中子代理按 Enter 弹出，列出它做过的每一步）、PM 概览、⚑ 事项（面板上等用户处理的事）的决策包（打开事项时插进对话、供主代理查原因的材料）、裁决（用户对上报事项做的决定，比如任务两次没完成时怎么办） | `src/modules/panel` | `pm-panel.ts`、`step-window.ts`、`pm-overview.ts`、`adjudication.ts` |
 | interaction | 主代理提问窗口、解读用户原话、主窗口的需求交互、@需求补全、`one_company_requirement_manage` 工具 | `src/modules/interaction` | `MainRequirementInteraction`、`user-interaction-model.ts`、`requirement-manage-tool.ts` |
 | project-index | 项目索引、语法解析、知识查询、`one_company_project_manage` 和 `one_company_knowledge_query` 工具 | `src/modules/project-index` | `project-index-service.ts`、`knowledge-query.ts`、`syntax-parser.ts`、`project-manage-tool.ts` |
 | shell | `/one:ps` 页面、后台 shell 工具、shell 摘要 | `src/modules/shell` | `shell-page.ts`、`shell-bash.ts` |
@@ -87,7 +87,7 @@ pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExte
 | 方法前缀 | 所属模块 | 用途 |
 |---|---|---|
 | `hello`、`ping`、`shutdown` | app/daemon | 握手、探活、请求退出 |
-| `agents.*`、`runs.*` | app/daemon（`RunManager`） | 派 PM 和检索，查看、暂停、恢复、停止运行 |
+| `agents.*`、`runs.*` | app/daemon（`RunManager`） | 派 PM 和检索，查看、暂停、恢复、停止运行，查子代理的步骤 |
 | `pm.*` | app/daemon → panel、pm | 面板概览、⚑ 事项的决策包、转话给 PM |
 | `explore.*` | app/daemon → explore | 主窗口派出的检索列表和结果 |
 | `prototypes.*` | app/daemon → prototype、requirement | 派原型设计师、列出和确认原型 |
