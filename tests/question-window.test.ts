@@ -273,3 +273,63 @@ test("窗口行的警告色调：主题 fg 收到 warning", () => {
   const { text } = view({ tone: "standard", questions: [{ question: "问题", choices: [{ label: "好" }], lines: [{ text: "黄色提示", tone: "warning" }] }] });
   expect(text()).toContain("<warning>黄色提示</>");
 });
+
+const WINDOW_E = { title: "把 Go 后端样例复制到哪一层？", lines: [], cancelNote: "不复制样例", choices: [
+  { label: "用户层", description: "~/.pi/agent/ · 对你的所有项目生效" },
+  { label: "项目层", description: "~/Projects/one-company/ · 只对这个项目生效 · 选它会把本项目设为受信任" }] };
+const WINDOW_C = { title: "复制 worker 到哪一层？", lines: [{ text: "新名称：go-worker", tone: "muted" as const }], choices: [
+  { label: "用户层", description: "~/.pi/agent/agents/go-worker.md" },
+  { label: "项目层", description: "~/Projects/one-company/.pi/agents/go-worker.md · 选它会把本项目设为受信任" }] };
+
+async function choiceLines(request: Parameters<typeof chooseWindow>[1], width: number) {
+  let rendered: string[] = [];
+  await chooseWindow(fakeUi((c) => { rendered = (c as unknown as { render(width: number): string[] }).render(width); c.handleInput(ENTER); }), request);
+  const lines = rendered.map((line) => line.replace(/<\/?[a-zA-Z]*>/gu, ""));
+  const start = lines.findIndex((line) => line.startsWith(" → 用户层"));
+  return { lines, options: lines.slice(start, lines.findIndex((line, n) => n > start && !line.trim())) };
+}
+
+test.each([
+  ["E", 80, [
+    " → 用户层   ~/.pi/agent/ · 对你的所有项目生效",
+    "   项目层   ~/Projects/one-company/ · 只对这个项目生效",
+    "            · 选它会把本项目设为受信任"]],
+  ["C", 80, [
+    " → 用户层   ~/.pi/agent/agents/go-worker.md",
+    "   项目层   ~/Projects/one-company/.pi/agents/go-worker.md",
+    "            · 选它会把本项目设为受信任"]],
+  ["E", 44, [
+    " → 用户层   ~/.pi/agent/",
+    "            · 对你的所有项目生效",
+    "   项目层   ~/Projects/one-company/",
+    "            · 只对这个项目生效",
+    "            · 选它会把本项目设为受信任"]],
+  ["C", 44, [
+    " → 用户层   ~/.pi/agent/agents/go-worker.md",
+    "   项目层   ~/Projects/one-company/.pi/",
+    "            agents/go-worker.md",
+    "            · 选它会把本项目设为受信任"]],
+])("选项说明太长时按 · 分段折行，说明列起点固定：窗口 %s %d 列", async (which, width, expected) => {
+  expect((await choiceLines(which === "E" ? WINDOW_E : WINDOW_C, width)).options).toEqual(expected);
+});
+
+test("选项说明太长时窗口每一行都不超过终端宽度", async () => {
+  for (const request of [WINDOW_E, WINDOW_C]) {
+    for (const width of [36, 44, 60, 80]) {
+      for (const line of (await choiceLines(request, width)).lines) expect(visibleWidth(line), `${width} 列：${line}`).toBeLessThanOrEqual(width);
+    }
+  }
+});
+
+test("选项说明放得下一行时，选项名按最长选项名补齐再隔 3 个空格，仍是单行", async () => {
+  const { options } = await choiceLines({ title: "复制到", lines: [], choices: [{ label: "用户层", description: "~/a" }, { label: "项目层级别", description: "~/b" }] }, 80);
+  expect(options).toEqual([" → 用户层       ~/a", "   项目层级别   ~/b"]);
+});
+
+test("选项说明折成多行时，每一行说明都是灰色", async () => {
+  let rendered: string[] = [];
+  await chooseWindow(fakeUi((c) => { rendered = (c as unknown as { render(width: number): string[] }).render(80); c.handleInput(ENTER); }), WINDOW_E);
+  const first = rendered.find((line) => line.includes("项目层"));
+  expect(first).toContain("<muted>~/Projects/one-company/ · 只对这个项目生效</>");
+  expect(rendered.some((line) => line.includes("<muted>· 选它会把本项目设为受信任</"))).toBe(true);
+});
