@@ -5,9 +5,11 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import type { DaemonClient } from "../../core/host/daemon-client.ts";
-import { decisionEntryText, confirmWindowContent, removeWindowContent, ABANDON_LABEL, ACCEPT_LABEL, ACCEPT_NOTE_LABEL, REMOVE_LABEL } from "./prototype-windows.ts";
+import { decisionEntryText, confirmWindowContent, removeWindowContent, ABANDON_LABEL, ACCEPT_LABEL, REMOVE_LABEL, optionLabel } from "./prototype-windows.ts";
 import type { PendingPrototype, PrototypeRecord, PrototypeRemoval } from "./prototype-windows.ts";
 import { chooseOrWriteWindow, chooseWindow } from "../../core/host/question-window.ts";
+import { optionLetter } from "../requirement/requirement-prototypes.ts";
+import type { PickedOption } from "../requirement/requirement-prototypes.ts";
 import { id, object } from "../requirement/requirement-contracts.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import { AdvisedError, adviceOf, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
@@ -80,13 +82,14 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     const opened = await openFile(pending.path);
     const answer = await chooseOrWriteWindow(ctx, { ...confirmWindowContent(pending, opened), otherMaxLength: OPINION_MAX_LENGTH }, signal);
     if (!answer) return "undecided";
-    const picked = answer.choices[0];
-    const choice = picked === ACCEPT_LABEL || picked === ACCEPT_NOTE_LABEL ? "accept" : picked === ABANDON_LABEL ? "abandon" : answer.other ? "opinion" : undefined;
+    const label = answer.choices[0];
+    const index = pending.options.findIndex((optionName, i) => optionLabel(optionLetter(i), optionName) === label);
+    const chosen: PickedOption | null = index >= 0 ? { letter: optionLetter(index), name: pending.options[index]! } : null;
+    const choice = chosen || label === ACCEPT_LABEL ? "accept" : label === ABANDON_LABEL ? "abandon" : answer.other ? "opinion" : undefined;
     if (!choice) return "undecided";
-    const note = picked === ACCEPT_NOTE_LABEL ? answer.other ?? null : null;
     const opinion = choice === "opinion" ? answer.other ?? null : null;
     try {
-      await client.call("prototypes.decide", { ...input, version: pending.version, hash: pending.hash, choice, opinion, note });
+      await client.call("prototypes.decide", { ...input, version: pending.version, hash: pending.hash, choice, opinion, option: chosen?.letter ?? null });
     } catch (error) {
       const advice = adviceOf(error);
       const voided = (error as { code?: unknown }).code === "file_changed";
@@ -94,11 +97,11 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
       if (voided) tell("one-company.prototype-voided", `原型「${pending.name}」第 ${pending.version} 版的文件在交稿后被改过，这一版已作废，用户的决定没有登记。可以用 one_company_prototype dispatch 重派设计师。`);
       return "failed";
     }
-    if (choice === "accept") record({ kind: "accept", name: pending.name, version: pending.version, ...(note ? { note } : {}) });
+    if (choice === "accept") record({ kind: "accept", name: pending.name, version: pending.version, ...(chosen ? { picked: chosen } : {}) });
     else record({ kind: choice, name: pending.name, version: pending.version });
-    if (note) {
-      pi.sendMessage({ customType: "one-company.prototype-note", display: false,
-        content: `用户通过了原型「${pending.name}」第 ${pending.version} 版，并补充说明：${note}\n这句说明已和这一版原型一起存下，批准需求后会原话交给 PM 和子代理。需求正文和这句说明对不上时，按它改正文。` }, { deliverAs: "nextTurn" });
+    if (chosen) {
+      pi.sendMessage({ customType: "one-company.prototype-choice", display: false,
+        content: `用户通过了原型「${pending.name}」第 ${pending.version} 版，选了方案 ${chosen.letter}：${chosen.name}，其余方案不做。\n这个选择已和这一版原型一起存下，批准需求后会交给 PM 和子代理。需求正文和它对不上时，按它改正文。` }, { deliverAs: "nextTurn" });
     }
     if (choice === "opinion") {
       tell("one-company.prototype-opinion", [
@@ -106,7 +109,7 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
         `文件：${pending.path}`,
         "用户原话：",
         answer.other,
-        "如果是提问，先回答，再用 one_company_prototype confirm 重开这份原型的确认窗口；如果要修改，用 one_company_prototype dispatch 重派设计师，设计师会拿到这一版文件和这段原话，重派后这一版作废。",
+        "先弄清用户想要什么：可能是提问、要改原型，也可能是要改需求正文；拿不准就先用 one_company_user_interact ask 问用户。是提问就回答；要改需求正文就用 updateDraft 改草稿；处理完都用 one_company_prototype confirm 重开这份原型的确认窗口。要改原型时，先把你理解的修改要点告诉用户，问要不要按这些重出一版；用户明确同意后，才用 one_company_prototype dispatch 重派设计师，把确认过的修改要点写进要画什么。设计师会拿到这一版文件和用户原话，重派后这一版作废。",
       ].join("\n"));
     }
     return choice === "abandon" ? "abandoned" : "decided";

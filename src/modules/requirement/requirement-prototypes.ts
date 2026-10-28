@@ -148,13 +148,13 @@ export async function beginDesign(ref: Ref, input: { requirementId: string; name
   });
 }
 
-export const optionLetter = (index: number): string => OPTION_LETTERS[index]!;
+export const optionLetter = (index: number): PickedOption["letter"] => OPTION_LETTERS[index]!;
 export const pickedOptionText = (picked: PickedOption): string => `${picked.letter}「${picked.name}」，其余方案不做`;
 
 function checkOptionList(raw: readonly string[] | undefined): string[] {
   if (!raw?.length) return [];
   const next = "改好方案清单后重交";
-  const options = raw.map((name) => sanitizeText(name).trim());
+  const options = raw.map((name) => sanitizeText(name).replace(/\s+/g, " ").trim());
   if (options.length < 2) deny("invalid_options", `方案清单只有 ${options.length} 个方案，至少 2 个；只画了一种方案时不附清单`, next);
   if (options.length > OPTION_LETTERS.length) deny("invalid_options", `方案清单有 ${options.length} 个方案，最多 ${OPTION_LETTERS.length} 个`, next);
   const empty = options.findIndex((name) => name === "");

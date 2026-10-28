@@ -293,6 +293,11 @@ test("方案名里的零宽字符、双向控制符和终端控制序列被去�
   expect((await pendingConfirmation(ref, { requirementId, name: "登录页" })).options).toEqual(["顶部分栏", "左侧导航", "第三种"]);
 });
 
+test("方案名中间的换行和连续空白合并成一个空格后存下", async () => {
+  await designed("登录页", HTML, "n", ["顶部\n分栏", "左侧  导航"]);
+  expect((await pendingConfirmation(ref, { requirementId, name: "登录页" })).options).toEqual(["顶部 分栏", "左侧 导航"]);
+});
+
 const BAD_OPTIONS: Array<[string, string[], string]> = [
   ["只有 1 个方案", ["顶部分栏"], "方案清单只有 1 个方案，至少 2 个；只画了一种方案时不附清单"],
   ["超过 6 个方案", ["一", "二", "三", "四", "五", "六", "七"], "方案清单有 7 个方案，最多 6 个"],

@@ -4,7 +4,7 @@ import { Editor, matchesKey, sliceByColumn, visibleWidth, wrapTextWithAnsi } fro
 
 export type LineTone = "normal" | "muted" | "added" | "removed" | "warning";
 export interface WindowLine { text: string; tone?: LineTone }
-export interface WindowChoice { label: string; description?: string; recommended?: boolean; recommendedReason?: string; /** 不可选时写原因：整行变暗，光标跳过。 */ disabled?: string; /** 这一项本身是输入行：选中后可直接输入文字，回车提交该项名称和文字。 */ writable?: boolean }
+export interface WindowChoice { label: string; description?: string; recommended?: boolean; recommendedReason?: string; /** 不可选时写原因：整行变暗，光标跳过。 */ disabled?: string }
 export interface WindowQuestion {
   header?: string;
   /** 问题上方的灰色一行，例如"提问 · 需求名（第 2 版）"。 */
@@ -120,7 +120,7 @@ export class QuestionWindowView {
       picked: new Set<number>(), editors: new Map<number, Editor>(), answered: false }));
     this.states.forEach((state, index) => {
       for (let cursor = 0; cursor < this.choiceCount(index); cursor++) {
-        if (this.isInput(index, cursor)) state.editors.set(cursor, new Editor(options.tui as TUI, EDITOR_THEME, { paddingX: 0 }));
+        if (this.isOther(index, cursor)) state.editors.set(cursor, new Editor(options.tui as TUI, EDITOR_THEME, { paddingX: 0 }));
       }
     });
   }
@@ -132,7 +132,6 @@ export class QuestionWindowView {
     return question.choices.length + (question.allowOther ? 1 : 0);
   }
   private isOther(index: number, cursor: number): boolean { return cursor === this.options.questions[index]!.choices.length; }
-  private isInput(index: number, cursor: number): boolean { return this.isOther(index, cursor) || !!this.options.questions[index]!.choices[cursor]?.writable; }
   private editorAt(index: number, cursor: number): Editor | undefined { return this.states[index]!.editors.get(cursor); }
   private textAt(index: number, cursor: number): string { return this.editorAt(index, cursor)?.getExpandedText().trim() ?? ""; }
   private otherText(index: number): string { return this.textAt(index, this.options.questions[index]!.choices.length); }
@@ -152,8 +151,7 @@ export class QuestionWindowView {
   private answer(index: number): WindowAnswer {
     const question = this.options.questions[index]!, state = this.states[index]!;
     const choices = question.choices.filter((_, i) => state.picked.has(i)).map((choice) => choice.label);
-    const writable = [...state.picked].map((i) => this.textAt(index, i)).find(Boolean);
-    const other = writable ?? this.otherText(index);
+    const other = this.otherText(index);
     return other ? { choices, other } : { choices };
   }
 
@@ -185,7 +183,7 @@ export class QuestionWindowView {
     this.complete(index);
   }
 
-  /** 光标在输入行（"其他"或可输入选项）时，按键直接进该行的编辑器；有字时回车才提交。 */
+  /** 光标在"其他"行时，按键直接进该行的编辑器；有字时回车才提交。 */
   private handleInputRow(data: string, index: number, editor: Editor): void {
     const state = this.states[index]!, question = this.options.questions[index]!;
     // Ctrl+J（"\n"）在 matchesKey 里也算 enter，但在输入栏里是换行
@@ -193,7 +191,6 @@ export class QuestionWindowView {
       const text = this.textAt(index, state.cursor);
       if (!text || (question.otherMaxLength !== undefined && text.length > question.otherMaxLength)) return;
       if (!question.multiSelect) state.picked.clear();
-      if (!this.isOther(index, state.cursor)) state.picked.add(state.cursor);
       this.complete(index);
       return;
     }
@@ -310,7 +307,7 @@ export class QuestionWindowView {
 
     const enter = question.multiSelect && this.multi ? "回车下一题" : "回车确认";
     const hint = [
-      ...(this.isInput(index, state.cursor) ? ["直接输入", enter, "Shift+Enter 换行", "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
+      ...(this.isOther(index, state.cursor) ? ["直接输入", enter, "Shift+Enter 换行", "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
       ...(this.multi ? ["←→ 切换问题"] : []),
       question.escapeHint ?? `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
     ].join(" · ");

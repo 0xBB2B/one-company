@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, expect, test, vi } from "vitest";
 import prototypeExtension from "../src/modules/prototype/prototype-extension.ts";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { askWindow } from "../src/core/host/question-window.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 
@@ -16,9 +17,11 @@ const HASH_V2 = "4be1c09d7a2f" + "0".repeat(52);
 const HASH_V1 = "a01f77c3e9b2" + "0".repeat(52);
 
 const pendingV2 = { requirementTitle: "设置页支持深色模式", draftVersion: 2, name: "设置页", version: 2, path: PATH, bytes: 18_841, hash: HASH_V2,
-  note: "新增外观一栏", previousOpinion: "开关放到标题右边" };
+  note: "新增外观一栏", previousOpinion: "开关放到标题右边", options: [] as string[] };
 const pendingV1 = { requirementTitle: "设置页支持深色模式", draftVersion: 2, name: "设置页", version: 1, path: PATH_V1, bytes: 16_384, hash: HASH_V1,
-  note: "新增外观一栏", previousOpinion: null };
+  note: "新增外观一栏", previousOpinion: null, options: [] as string[] };
+const THREE_OPTIONS = ["顶部分栏", "左侧导航", "卡片网格"];
+const withOptions = (options: string[]) => ({ ...pendingV2, options });
 
 type Handler = (data: unknown) => unknown;
 type Views = Array<{ render(width: number): string[]; handleInput(data: string): void }>;
@@ -84,7 +87,7 @@ async function harness(options: Options = {}) {
 const submitted = (name: string, version: number) => ({ parentSessionId: SESSION, requirementId: REQ, name, version });
 const decideOk = (params: Record<string, unknown>) => ({ version: params.version, choice: params.choice });
 
-const CONFIRM_FRAME = (open: boolean, version: 1 | 2): string[] => [
+const CONFIRM_FRAME = (open: boolean, version: 1 | 2, options: string[] = [], cursor = 0): string[] => [
   "─".repeat(80),
   " 确认原型",
   "",
@@ -97,11 +100,12 @@ const CONFIRM_FRAME = (open: boolean, version: 1 | 2): string[] => [
   ...(version === 2 ? [" {上一版你的意见：「开关放到标题右边」}"] : []),
   " {设计师的说明（模型写的，仅供参考）：「新增外观一栏」}",
   "",
-  " → 通过（写进需求草稿）",
-  "   通过并补充说明（自己输入）",
-  "   其他（自己输入）",
+  ...[...(options.length > 0 ? options.map((name, index) => `方案 ${"ABCDEF"[index]}：${name}`) : ["通过（写进需求草稿）"]), "其他（自己输入）"]
+    .map((label, index) => `${index === cursor ? " →" : "  "} ${label}`),
   "",
-  " {↑↓ 选择 · 回车确认 · Esc 放弃这一版}",
+  cursor > (options.length || 1) - 1
+    ? " {直接输入 · 回车确认 · Shift+Enter 换行 · ↑↓ 选择 · Esc 放弃这一版}"
+    : " {↑↓ 选择 · 回车确认 · Esc 放弃这一版}",
   "─".repeat(80),
 ];
 
@@ -129,7 +133,7 @@ test("选通过：decide 收到 accept 和指纹，记一条绿色程序记录�
   const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
   await h.emit("prototype.submitted", submitted("设置页", 2));
   (await h.nextView()).handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, note: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: null }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「设置页」第 2 版通过，已写进需求草稿。" }));
   expect(h.sendMessage).not.toHaveBeenCalled();
 });
@@ -138,7 +142,7 @@ test("按 Esc 放弃：decide 收到 abandon，记一条程序记录，不触发
   const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
   await h.emit("prototype.submitted", submitted("设置页", 2));
   (await h.nextView()).handleInput("\x1b");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, note: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, option: null }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：放弃原型「设置页」第 2 版，它不再挡住批准。" }));
   expect(h.sendMessage).not.toHaveBeenCalled();
 });
@@ -146,7 +150,9 @@ test("按 Esc 放弃：decide 收到 abandon，记一条程序记录，不触发
 const stripCursor = (line: string) => line.replace(/\x1b_pi:(?:c|fc|\/fc)\x07/g, "");
 const inputLine = (view: Views[number]) => view.render(80).map(stripCursor).find((line) => line.startsWith("      › "));
 const OPINION_MESSAGE = (opinion: string) => ["用户对原型「设置页」第 2 版提了意见，这一版仍在等用户确认。", `文件：${PATH}`, "用户原话：", opinion,
-  "如果是提问，先回答，再用 one_company_prototype confirm 重开这份原型的确认窗口；如果要修改，用 one_company_prototype dispatch 重派设计师，设计师会拿到这一版文件和这段原话，重派后这一版作废。"].join("\n");
+  "先弄清用户想要什么：可能是提问、要改原型，也可能是要改需求正文；拿不准就先用 one_company_user_interact ask 问用户。是提问就回答；要改需求正文就用 updateDraft 改草稿；处理完都用 one_company_prototype confirm 重开这份原型的确认窗口。要改原型时，先把你理解的修改要点告诉用户，问要不要按这些重出一版；用户明确同意后，才用 one_company_prototype dispatch 重派设计师，把确认过的修改要点写进要画什么。设计师会拿到这一版文件和用户原话，重派后这一版作废。"].join("\n");
+const CHOSEN_MESSAGE = ["用户通过了原型「设置页」第 2 版，选了方案 B：左侧导航，其余方案不做。",
+  "这个选择已和这一版原型一起存下，批准需求后会交给 PM 和子代理。需求正文和它对不上时，按它改正文。"].join("\n");
 
 test("在其他一行写字回车：decide 收到 opinion 和去首尾空白的原话，绿字写明仍在等确认，主代理收到带文件位置和原话的消息并接着回复", async () => {
   const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
@@ -159,7 +165,7 @@ test("在其他一行写字回车：decide 收到 opinion 和去首尾空白的�
   expect(inputLine(view)).toContain("› ");
   expect(inputLine(view)).toContain("深色下按钮边框太亮");
   view.handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "opinion", opinion: "深色下按钮边框太亮", note: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "opinion", opinion: "深色下按钮边框太亮", option: null }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：你对原型「设置页」第 2 版的意见已原话交给主代理，这一版仍在等你确认。" }));
   expect(h.sendMessage).toHaveBeenCalledTimes(1);
   const [message, options] = h.sendMessage.mock.calls[0]!;
@@ -178,7 +184,7 @@ test("在其他一行用 Shift+Enter 换行输入：换行原样保留在 decide
   for (const char of "第二行") view.handleInput(char);
   view.handleInput("\r");
   await vi.waitFor(() => expect(h.called("prototypes.decide")).toHaveLength(1));
-  expect(h.called("prototypes.decide")[0]).toMatchObject({ choice: "opinion", opinion: "第一行\n第二行", note: null });
+  expect(h.called("prototypes.decide")[0]).toMatchObject({ choice: "opinion", opinion: "第一行\n第二行", option: null });
   await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
   expect(h.sendMessage.mock.calls[0]![0].content).toBe(OPINION_MESSAGE("第一行\n第二行"));
 });
@@ -204,44 +210,10 @@ test("confirm 动作打开的窗口在其他一行写字回车：同样登记 op
   for (const char of "再亮一点") view.handleInput(char);
   view.handleInput("\r");
   await done;
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "opinion", opinion: "再亮一点", note: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "opinion", opinion: "再亮一点", option: null }]));
   await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
   expect(h.sendMessage.mock.calls[0]![0].content).toBe(OPINION_MESSAGE("再亮一点"));
   expect(h.sendMessage.mock.calls[0]![1]).toEqual({ triggerTurn: true });
-});
-
-test("通过并补充说明：说明为空不能确认；输入后 decide 收到 accept 和 note，绿字带原话，主代理收到不触发回复的静默消息", async () => {
-  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
-  await h.emit("prototype.submitted", submitted("设置页", 2));
-  const view = await h.nextView();
-  view.handleInput("\x1b[B");
-  expect(view.render(80)).toContain(" {直接输入 · 回车确认 · Shift+Enter 换行 · ↑↓ 选择 · Esc 放弃这一版}");
-  view.handleInput("\r");
-  expect(h.called("prototypes.decide")).toEqual([]);
-  for (const char of "用 B 方案") view.handleInput(char);
-  view.handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, note: "用 B 方案" }]));
-  await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「设置页」第 2 版通过，已写进需求草稿。你的说明：「用 B 方案」" }));
-  expect(h.sendMessage).toHaveBeenCalledTimes(1);
-  const [message, options] = h.sendMessage.mock.calls[0]!;
-  expect(message).toEqual({ customType: "one-company.prototype-note", display: false,
-    content: "用户通过了原型「设置页」第 2 版，并补充说明：用 B 方案\n这句说明已和这一版原型一起存下，批准需求后会原话交给 PM 和子代理。需求正文和这句说明对不上时，按它改正文。" });
-  expect(options).toEqual({ deliverAs: "nextTurn" });
-});
-
-test("补充说明超过 4000 字时窗口不能确认、不调用 decide；删到 4000 字后可以提交", async () => {
-  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
-  await h.emit("prototype.submitted", submitted("设置页", 2));
-  const view = await h.nextView();
-  view.handleInput("\x1b[B");
-  view.handleInput("字".repeat(4001));
-  view.handleInput("\r");
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  expect(h.called("prototypes.decide")).toEqual([]);
-  view.handleInput("\x7f");
-  view.handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toHaveLength(1));
-  expect(h.called("prototypes.decide")[0]!.note).toBe("字".repeat(4000));
 });
 
 test("confirm 动作的窗口按 Esc 同样登记放弃，工具结果写明放弃", async () => {
@@ -249,7 +221,7 @@ test("confirm 动作的窗口按 Esc 同样登记放弃，工具结果写明放�
   const done = h.run({ action: "confirm", repoId: REPO, requirementId: REQ, name: "设置页" });
   (await h.nextView()).handleInput("\x1b");
   const result = await done;
-  expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, note: null }]);
+  expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, option: null }]);
   expect(result.content.map((part) => part.text).join("\n")).toContain("放弃");
   expect(h.sendMessage).not.toHaveBeenCalled();
 });
@@ -428,7 +400,7 @@ test("主代理的原型工具没有直接登记通过、意见、放弃的入�
   const h = await harness({ responses: { "prototypes.decide": decideOk, "prototypes.pending": () => pendingV2 } });
   const schema = JSON.stringify(h.tool().parameters);
   for (const action of ["designers", "dispatch", "status", "confirm", "remove"]) expect(schema).toContain(`"${action}"`);
-  for (const forbidden of ["decide", "accept", "opinion", "abandon", "note"]) expect(schema).not.toContain(forbidden);
+  for (const forbidden of ["decide", "accept", "opinion", "abandon", "note", "option", "picked"]) expect(schema).not.toContain(forbidden);
   const text = await h.outcome({ action: "decide", repoId: REPO, requirementId: REQ, name: "设置页", version: 2, choice: "accept" });
   expect(text.length).toBeGreaterThan(0);
   expect(h.called("prototypes.decide")).toEqual([]);
@@ -519,18 +491,17 @@ test("用户选通过但文件在交稿后被改过：提示用户这一版已�
   expect(options).toEqual({ triggerTurn: true });
 });
 
-test("通过并补充说明但文件在交稿后被改过：不记带说明的绿字，主代理只收到作废通知，没有补充说明的消息", async () => {
-  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": () => { throw fileChanged(); } } });
+test("选方案但文件在交稿后被改过：不记绿字，主代理只收到作废通知，没有选方案的消息", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withOptions(THREE_OPTIONS), "prototypes.decide": () => { throw fileChanged(); } } });
   await h.emit("prototype.submitted", submitted("设置页", 2));
   const view = await h.nextView();
   view.handleInput("\x1b[B");
-  for (const char of "用 B 方案") view.handleInput(char);
   view.handleInput("\r");
   await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
   expect(h.appendEntry).not.toHaveBeenCalled();
   const [message, options] = h.sendMessage.mock.calls[0]!;
   expect(message.content).toContain("作废");
-  expect(message.content).not.toContain("补充说明");
+  expect(message.content).not.toContain("选了方案");
   expect(options).toEqual({ triggerTurn: true });
 });
 
@@ -568,4 +539,122 @@ test("没有界面时 remove 返回的文字写明用户没看到窗口，不写
   expect(text).toContain("当前没有界面，用户没看到窗口");
   expect(text).not.toContain("用户选择保留");
   expect(h.called("prototypes.remove")).toEqual([]);
+});
+
+const plain = (view: Views[number]) => view.render(80).map(stripCursor);
+
+test("有方案清单时选项依次是方案加字母和名称、其他，光标在方案 A，没有通过并补充说明", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withOptions(THREE_OPTIONS), "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  const view = await h.nextView();
+  expect(view.render(80)).toEqual(CONFIRM_FRAME(true, 2, THREE_OPTIONS));
+  expect(plain(view).join("\n")).not.toContain("通过并补充说明");
+});
+
+test("没有方案清单时选项依次是通过和其他，没有通过并补充说明", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  const view = await h.nextView();
+  const text = view.render(80).join("\n");
+  expect(text).toContain(" → 通过（写进需求草稿）");
+  expect(text).toContain("   其他（自己输入）");
+  expect(text).not.toContain("通过并补充说明");
+  expect(text).not.toContain("方案 A");
+});
+
+test("有方案清单时光标在方案行和其他行的底部提示不同", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withOptions(THREE_OPTIONS), "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  const view = await h.nextView();
+  expect(view.render(80)).toContain(" {↑↓ 选择 · 回车确认 · Esc 放弃这一版}");
+  for (let i = 0; i < 3; i++) view.handleInput("\x1b[B");
+  const lines = view.render(80);
+  expect(lines).toContain(" → 其他（自己输入）");
+  expect(lines).toContain(" {直接输入 · 回车确认 · Shift+Enter 换行 · ↑↓ 选择 · Esc 放弃这一版}");
+});
+
+test("6 个方案、名称各 20 个汉字时，80 列下每行可见宽度不超过 80，每个方案只占一行", async () => {
+  const names = ["甲", "乙", "丙", "丁", "戊", "己"].map((c) => c.repeat(20));
+  const h = await harness({ responses: { "prototypes.pending": () => withOptions(names), "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  const lines = plain(await h.nextView());
+  for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(80);
+  names.forEach((name, index) => {
+    const own = lines.filter((line) => line.includes(name));
+    expect(own).toHaveLength(1);
+    expect(own[0]).toContain(`方案 ${"ABCDEF"[index]}：${name}`);
+  });
+});
+
+test("选方案 B 回车：decide 收到 accept 和 B，绿字写明选了方案，主代理收到不显示、下一轮送达、不触发回复的消息", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withOptions(THREE_OPTIONS), "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  const view = await h.nextView();
+  view.handleInput("\x1b[B");
+  view.handleInput("\r");
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: "B" }]));
+  await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「设置页」第 2 版通过，已写进需求草稿。你选了方案 B：左侧导航。" }));
+  expect(h.sendMessage).toHaveBeenCalledTimes(1);
+  const [message, options] = h.sendMessage.mock.calls[0]!;
+  expect(message).toMatchObject({ display: false, content: CHOSEN_MESSAGE });
+  expect(options).toEqual({ deliverAs: "nextTurn" });
+});
+
+test("有方案清单时直接回车选方案 A", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withOptions(THREE_OPTIONS), "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  (await h.nextView()).handleInput("\r");
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toHaveLength(1));
+  expect(h.called("prototypes.decide")[0]).toMatchObject({ choice: "accept", option: "A", opinion: null });
+  await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「设置页」第 2 版通过，已写进需求草稿。你选了方案 A：顶部分栏。" }));
+});
+
+test("没有方案清单时选通过：option 为 null，绿字没有你选了方案，不发消息", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  (await h.nextView()).handleInput("\r");
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: null }]));
+  await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「设置页」第 2 版通过，已写进需求草稿。" }));
+  expect(h.appendEntry.mock.calls.map((call) => JSON.stringify(call[1])).join("")).not.toContain("你选了方案");
+  expect(h.sendMessage).not.toHaveBeenCalled();
+});
+
+test("有方案清单时在其他一行写意见：option 为 null，消息逐行一致，触发主代理回复", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withOptions(THREE_OPTIONS), "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  const view = await h.nextView();
+  for (let i = 0; i < 3; i++) view.handleInput("\x1b[B");
+  for (const char of "  侧栏窄一点 ") view.handleInput(char);
+  view.handleInput("\r");
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "opinion", opinion: "侧栏窄一点", option: null }]));
+  await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
+  const [message, options] = h.sendMessage.mock.calls[0]!;
+  expect(message.content).toBe(OPINION_MESSAGE("侧栏窄一点"));
+  expect(options).toEqual({ triggerTurn: true });
+});
+
+test("有方案清单时按 Esc：decide 收到 abandon 和 option null", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withOptions(THREE_OPTIONS), "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  (await h.nextView()).handleInput("\x1b");
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, option: null }]));
+  expect(h.sendMessage).not.toHaveBeenCalled();
+});
+
+test("confirm 重开的窗口和自动弹出的窗口选项一样，选方案 B 同样登记", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withOptions(THREE_OPTIONS), "prototypes.decide": decideOk } });
+  const done = h.run({ action: "confirm", repoId: REPO, requirementId: REQ, name: "设置页" });
+  const view = await h.nextView();
+  expect(view.render(80)).toEqual(CONFIRM_FRAME(true, 2, THREE_OPTIONS));
+  view.handleInput("\x1b[B");
+  view.handleInput("\r");
+  await done;
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: "B" }]));
+  await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
+  expect(h.sendMessage.mock.calls[0]![0].content).toBe(CHOSEN_MESSAGE);
+});
+
+test("原型设计师职责规矩要求画了多个方案时交稿附方案清单", () => {
+  const rules = readFileSync(new URL("../role-rules/prototype.md", import.meta.url), "utf8");
+  expect(rules).toContain("- 一份原型里画了多个方案时，交稿必须附方案清单（options），最少 2 个、最多 6 个，每个名称最多 20 字；页面里每个方案标上\"方案 A\"\"方案 B\"……，字母和清单顺序一致。只画了一种方案时不附清单。");
 });
