@@ -63,9 +63,10 @@ function roleHost(role: string, runId = randomUUID()): Host {
   return { kind: "role", id: `req-${role}`, role, runId };
 }
 
-function fakeRepo(repoId: string, respond: (method: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>>): ShellSummaryRepo & { callCount: number } {
+function fakeRepo(repoId: string, respond: (method: string, params?: Record<string, unknown>) => Promise<Record<string, unknown>>, name = repoId): ShellSummaryRepo & { callCount: number } {
   const repo = {
     repoId,
+    name,
     callCount: 0,
     client: {
       call: async (method: string, params?: Record<string, unknown>) => {
@@ -77,14 +78,14 @@ function fakeRepo(repoId: string, respond: (method: string, params?: Record<stri
   return repo;
 }
 
-function resolvedRepo(repoId: string, tasks: Record<string, unknown>[]): ShellSummaryRepo & { callCount: number } {
-  return fakeRepo(repoId, async () => ({ tasks }));
+function resolvedRepo(repoId: string, tasks: Record<string, unknown>[], name = repoId): ShellSummaryRepo & { callCount: number } {
+  return fakeRepo(repoId, async () => ({ tasks }), name);
 }
 
-function rejectingRepo(repoId: string, message: string): ShellSummaryRepo & { callCount: number } {
+function rejectingRepo(repoId: string, message: string, name = repoId): ShellSummaryRepo & { callCount: number } {
   return fakeRepo(repoId, async () => {
     throw new Error(message);
-  });
+  }, name);
 }
 
 function fakeStatusBar(): ShellStatusBar & { calls: (string | undefined)[] } {
@@ -224,7 +225,7 @@ describe("summarizeShells / formatShellSummary：边界与错误场景", () => {
     expect(formatShellSummary(summary)).toBeUndefined();
   });
 
-  test("仓库读取失败：显示具体错误（含 repoId 归属）而非把总数呈现为零", async () => {
+  test("仓库读取失败：显示具体错误（含项目目录名归属）而非把总数呈现为零", async () => {
     const registry = new ShellRegistry({ clock: createClock() });
     const repo = rejectingRepo("repo-broken", "守护进程连接超时（测试注入）");
 
@@ -242,12 +243,25 @@ describe("summarizeShells / formatShellSummary：边界与错误场景", () => {
 });
 
 describe("summarizeShells：多仓库场景下错误带仓库归属", () => {
-  test("两个仓库，其一读取失败：错误文本可按 repoId 区分是哪个仓库失败，另一仓库计数正常汇总", async () => {
+  test("仓库读取失败：错误行以项目目录名开头，不含 64 位仓库编号", async () => {
     const registry = new ShellRegistry({ clock: createClock() });
-    const okRepo = resolvedRepo("repo-healthy", [
+    const repoId = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    const repo = rejectingRepo(repoId, "守护进程连接超时（测试注入）", "企微BOT");
+
+    const summary = await summarizeShells({ registry, repos: [repo] });
+    expect(summary.errors.length).toBe(1);
+    expect(summary.errors[0].startsWith("企微BOT：")).toBe(true);
+    expect(summary.errors[0]).toContain("守护进程连接超时（测试注入）");
+    expect(summary.errors[0]).not.toContain(repoId);
+    expect(formatShellSummary(summary)).not.toContain(repoId);
+  });
+
+  test("两个仓库，其一读取失败：错误文本可按 name 区分是哪个仓库失败，另一仓库计数正常汇总", async () => {
+    const registry = new ShellRegistry({ clock: createClock() });
+    const okRepo = resolvedRepo("id-healthy", [
       { taskId: randomUUID(), host: roleHost("worker"), activity: "active", inWorkspace: true },
-    ]);
-    const brokenRepo = rejectingRepo("repo-unreachable", "连接被拒绝（测试注入）");
+    ], "repo-healthy");
+    const brokenRepo = rejectingRepo("id-unreachable", "连接被拒绝（测试注入）", "repo-unreachable");
 
     const summary = await summarizeShells({ registry, repos: [okRepo, brokenRepo] });
     expect(summary.total).toBe(1);

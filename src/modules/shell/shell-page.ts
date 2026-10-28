@@ -12,6 +12,7 @@ export interface ShellPageClient {
 
 export interface ShellPageRepo {
   repoId: string;
+  name: string;
   resolveClient: () => ShellPageClient | undefined;
 }
 
@@ -318,7 +319,7 @@ export class ShellPage {
         const rows = (result.tasks as DaemonTaskPayload[]).filter((task) => task?.inWorkspace !== false).map((task) => rowFromDaemonPayload(repo, client, stamp, task));
         remotes.push({ repo, client, stamp, rows });
       } catch (error) {
-        errors.push(`${repo.repoId} ${safeError(error)}`);
+        errors.push(`${repo.name} ${safeError(error)}`);
       }
     }
     if (refreshToken !== this.refreshSequence) return;
@@ -326,7 +327,7 @@ export class ShellPage {
       try {
         if (remote.repo.resolveClient() !== remote.client || connectionStamp(remote.client) !== remote.stamp) throw new Error("查询连接已变化");
         rawRows.push(...remote.rows);
-      } catch (error) { errors.push(`${remote.repo.repoId} ${safeError(error)}`); }
+      } catch (error) { errors.push(`${remote.repo.name} ${safeError(error)}`); }
     }
     // 本地证明在全部异步查询之后取得，迟到的远端结果不能还原旧PID或旧结束证明。
     const locals: ShellRow[] = [];

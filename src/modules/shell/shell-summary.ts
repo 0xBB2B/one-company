@@ -8,6 +8,7 @@ export interface ShellSummaryClient {
 
 export interface ShellSummaryRepo {
   repoId: string;
+  name: string;
   client: ShellSummaryClient;
 }
 
@@ -93,7 +94,7 @@ export async function summarizeShells(input: ShellSummaryInput): Promise<ShellSu
       const tasks = (result.tasks ?? []) as DaemonShellEntry[];
       for (const task of tasks) addEntry(acc, task);
     } catch (error) {
-      errors.push(`${repo.repoId}：${(error as Error).message}`);
+      errors.push(`${repo.name}：${(error as Error).message}`);
     }
   }
   return finalize(acc, errors);

@@ -9,6 +9,7 @@ import { createClock } from "../src/core/policy/clock.ts";
 import type { Clock } from "../src/core/policy/clock.ts";
 import { discoverWorkspace } from "../src/core/storage/identity.ts";
 import type { Workspace } from "../src/core/storage/identity.ts";
+import type { UpgradeNotice } from "../src/core/host/upgrade-notice.ts";
 import { ShellRegistry } from "../src/core/host/shell-registry.ts";
 import type { Host } from "../src/core/host/shell-registry.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
@@ -229,7 +230,7 @@ interface BuildHarnessOptions {
   cwd: string;
   sessionId?: string;
   kill?: (pid: number, signal: NodeJS.Signals | 0) => void;
-  connectImpl?: (input: { windowId: string; sessionId: string; cwd: string }) => Promise<FakeWorkspaceClientsHandle>;
+  connectImpl?: (input: { windowId: string; sessionId: string; cwd: string; onUpgradeNotice?: (notice: UpgradeNotice) => void }) => Promise<FakeWorkspaceClientsHandle>;
   wrapShellRegistry?: (registry: ShellRegistry) => ShellRegistry;
   // 走真实时钟而非可推进的假时钟：用于验证"需要真实等待才能收敛"的场景，
   // 不能用 withClockPump 加速，否则测不出预算是否被错误地套用到了不该套用的路径上
@@ -288,7 +289,7 @@ async function buildHarness(options: BuildHarnessOptions): Promise<Harness> {
   lifecycleExtension(fakePi.pi, {
     createClock: createClockDep,
     createShellRegistry: createShellRegistryDep,
-    connectWorkspaceClients: async (input: { windowId: string; sessionId: string; cwd: string }) => {
+    connectWorkspaceClients: async (input: { windowId: string; sessionId: string; cwd: string; onUpgradeNotice?: (notice: UpgradeNotice) => void }) => {
       connectCalls.push(input);
       return connectImpl(input);
     },
@@ -939,5 +940,80 @@ describe("windowReady 不依赖扩展加载顺序", () => {
     const second = await readyPromiseTwo;
 
     expect(second.windowId).not.toBe(first.windowId);
+  });
+});
+
+describe("守护进程换新提示显示到窗口", () => {
+  let repo: RepoFixture;
+  beforeAll(async () => {
+    repo = await createRepoFixture();
+  });
+  afterAll(async () => {
+    await removeRepoFixture(repo);
+  });
+  afterEach(async () => {
+    await shutdownWindow();
+  });
+
+  function notice(kind: UpgradeNotice["kind"], extra: Partial<UpgradeNotice> = {}): UpgradeNotice {
+    return { kind, repoName: "企微BOT", requirements: [], otherWindows: 0, ownSessions: 0, ...extra };
+  }
+
+  async function startWithNotices(initial: UpgradeNotice[]) {
+    let saved: ((n: UpgradeNotice) => void) | undefined;
+    const harness = await buildHarness({
+      cwd: repo.root,
+      connectImpl: async (input) => {
+        saved = input.onUpgradeNotice;
+        for (const n of initial) input.onUpgradeNotice?.(n);
+        return createFakeWorkspaceClients(await discoverWorkspace(repo.root)).handle;
+      },
+    });
+    await triggerSessionStart(harness);
+    return { harness, emit: (n: UpgradeNotice) => saved?.(n) };
+  }
+
+  test("打开窗口时发生的 replaced 在启动时以 info 显示", async () => {
+    const { harness } = await startWithNotices([notice("replaced")]);
+    expect(harness.notifications).toContainEqual({
+      message: "企微BOT 的后台进程跑的是旧代码，已停掉并换成当前安装的版本。",
+      level: "info",
+    });
+  });
+
+  test("waiting_blocked 以 warning 显示并带等待项", async () => {
+    const { harness } = await startWithNotices([notice("waiting_blocked", { requirements: ["订单导出"], otherWindows: 1 })]);
+    expect(harness.notifications).toContainEqual({
+      message: "企微BOT 的后台进程是旧版本，和这个窗口不兼容，需求和代理功能暂时用不了，普通对话不受影响。正在等：需求「订单导出」运行结束，另外 1 个窗口关闭。空下来后 30 秒内会自动换成新版本。",
+      level: "warning",
+    });
+  });
+
+  test("window_stale 以 error 显示", async () => {
+    const { harness } = await startWithNotices([notice("window_stale")]);
+    expect(harness.notifications).toContainEqual({
+      message: "这个窗口是旧版本，和企微BOT 已更新的后台进程不兼容，需求和代理功能用不了。请关掉这个窗口，运行 pi -c 重新打开，接着原来的对话。",
+      level: "error",
+    });
+  });
+
+  test("启动完成后发生的 replaced_after_wait 在发生时以 info 显示", async () => {
+    const { harness, emit } = await startWithNotices([]);
+    expect(harness.notifications).toEqual([]);
+    emit(notice("replaced_after_wait"));
+    expect(harness.notifications).toContainEqual({
+      message: "企微BOT 的后台进程已换成新版本，需求和代理功能可以用了。",
+      level: "info",
+    });
+  });
+
+  test("session_shutdown 之后旧客户端回调的提示不再显示", async () => {
+    const { harness, emit } = await startWithNotices([]);
+    emit(notice("replaced_after_wait"));
+    expect(harness.notifications.length).toBe(1);
+    await harness.fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, harness.ctx);
+    const before = harness.notifications.length;
+    emit(notice("replaced"));
+    expect(harness.notifications.length).toBe(before);
   });
 });

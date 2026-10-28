@@ -160,6 +160,10 @@ describe("项目目录名", () => {
     expect(repoDisplayName("/a/b/main-repo/.git")).toBe("main-repo");
   });
 
+  test("目录名里的终端控制字符和零宽字符被去掉", () => {
+    expect(repoDisplayName("/x/a\u001b[31mb\u200b/.git")).toBe("ab");
+  });
+
   test("裸仓库取末段并去掉结尾的 .git", () => {
     expect(repoDisplayName("/x/repo.git")).toBe("repo");
   });

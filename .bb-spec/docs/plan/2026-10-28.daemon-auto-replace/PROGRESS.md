@@ -4,11 +4,12 @@
 | 01 | code-fingerprint | done | 2026-10-28 |
 | 02 | daemon-upgrade-methods | done | 2026-10-28 |
 | 03 | client-upgrade-flow | done | 2026-10-28 |
-| 04 | window-notices | pending | — |
+| 04 | window-notices | done | 2026-10-28 |
 ## 当前
-准备执行 `04-window-notices.md`。
+4 份计划全部完成，进入收尾：全量测试、界面对比、文档同步。
 计划 01 审查时发现 PRD 把 README.md 写成不算指纹，与按 files 收集冲突；用户 2026-10-28 改为只看 `src/`、`resources/` 加 `package.json`，PRD、术语表、计划 01 已同步，测试与实现按新规则重做并通过审查。遗留低风险测试缺口：遍历顺序无关、只改 agents/LICENSE/shared、缺 src/ 目录，未单独测。
 计划 02 审查后自修 1 次：让位被拒时返回编出来的空状态改为返回当前状态、失败时报错；shuttingDown/runManager 声明提前，避免守护进程刚能连上时报未初始化。遗留低风险：关闭中再收到让位请求若算指纹失败会报错（窗口退回普通握手）；需求名字路径、ownSessions>0、关闭中让位、未就绪拒绝没有测试。
 计划 03：删掉为迁就测试假守护进程而加的 2 秒查询超时，改让假守护进程回 unknown_method；修正老守护进程协议不同被误判为窗口旧；审查后自修：连接已关时请求立即失败（避免首连卡死）、让位后 10 秒未断开按连接失败处理、等待②掉线交给退避重连不并发、换新期间原因文字、关闭后不再拉起守护进程、等待③中查询偶发失败保持等待。遗留：让位超时、②掉线、换新期间原因文字没有专门测试。
+计划 04：测试里 ShellPageRepo 字面量补 name；审查后安全修复：repoDisplayName 用 sanitizeText 去掉终端控制字符（目录名可能由代理命令建出）。范围外待用户决定：WorkspaceClients.create 某仓库失败时已建客户端不关闭；Shell 页面「所属」列仍显示截短的仓库编号。
 ## 阻塞
 （无）
