@@ -10,7 +10,7 @@ import { createClock } from "../src/core/policy/clock.ts";
 import { daemonSocketPath, repositoryIdentity } from "../src/core/storage/identity.ts";
 import { PROTOCOL_VERSION, createErrorResponse, createResponse, decodeFrames, encodeFrame } from "../src/core/host/protocol.ts";
 import type { Frame } from "../src/core/host/protocol.ts";
-import { WorkspaceClients, connectDaemon } from "../src/core/host/daemon-client.ts";
+import { DAEMON_CLIENT_LIFECYCLE_EVENTS, WorkspaceClients, connectDaemon } from "../src/core/host/daemon-client.ts";
 import type { DaemonClient } from "../src/core/host/daemon-client.ts";
 import type { UpgradeNotice } from "../src/core/host/upgrade-notice.ts";
 import { failureText } from "../src/core/exec/tool-failure.ts";
@@ -29,8 +29,9 @@ interface Answer {
 
 interface Generation {
   check: Answer | "unknown_method" | "internal_error" | "close";
-  yield: "accept" | { refuse: Answer };
+  yield: "accept" | "internal_error" | { refuse: Answer };
   helloError?: string;
+  helloMessage?: string;
 }
 
 interface RequestRecord {
@@ -45,6 +46,7 @@ interface FakeUpgradeDaemon {
   requests: RequestRecord[];
   methods(): string[];
   connectionCount(): number;
+  dropConnections(): void;
   close(): void;
 }
 
@@ -84,6 +86,7 @@ async function startFakeDaemon(initial: Generation, replacement?: Generation): P
     requests: [],
     methods: () => state.requests.map((request) => request.method),
     connectionCount: () => connections,
+    dropConnections: () => { for (const socket of sockets) socket.destroy(); },
     close: () => {
       for (const server of servers) server.close();
       for (const socket of sockets) socket.destroy();
@@ -133,6 +136,10 @@ async function startFakeDaemon(initial: Generation, replacement?: Generation): P
       return;
     }
     if (frame.method === "upgrade.yield") {
+      if (generation.yield === "internal_error") {
+        socket.write(encodeFrame(createErrorResponse(frame.id, "internal", "守护进程内部错误（测试注入）")));
+        return;
+      }
       if (generation.yield !== "accept") {
         socket.write(encodeFrame(createResponse(frame.id, { ...generation.yield.refuse, accepted: false })));
         return;
@@ -153,7 +160,7 @@ async function startFakeDaemon(initial: Generation, replacement?: Generation): P
     }
     if (frame.method === "hello") {
       if (generation.helloError) {
-        socket.write(encodeFrame(createErrorResponse(frame.id, generation.helloError, "协议版本不一致（测试注入）")));
+        socket.write(encodeFrame(createErrorResponse(frame.id, generation.helloError, generation.helloMessage ?? "协议版本不一致（测试注入）")));
         return;
       }
       socket.write(encodeFrame(createResponse(frame.id, {
@@ -413,6 +420,83 @@ describe("守护进程过旧且在忙、协议版本号不同：暂时用不了"
     expect(kinds()).toEqual(["waiting_blocked", "replaced_after_wait"]);
   });
 
+  test("换上新守护进程时，连上事件监听器里同步发起的 call 成功", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario(accepting(BLOCKED), accepting(CURRENT));
+    const client = await openWithWorkspaceClients(time);
+    await waitUntil(() => notices.length >= 1);
+
+    const outcomes: unknown[] = [];
+    client.subscribe(DAEMON_CLIENT_LIFECYCLE_EVENTS.connected, () => {
+      client.call("ping").then(() => outcomes.push("ok"), (error: { code?: unknown }) => outcomes.push(error.code));
+    });
+    fake.current = accepting({ ...BLOCKED, requirements: [], otherWindows: 0 });
+    await time.advanceAsync(30_500);
+    await waitUntil(() => notices.length >= 2);
+    await waitUntil(() => outcomes.length >= 1);
+    expect(outcomes).toEqual(["ok"]);
+  });
+
+  test("等待中重查遇到不认识 upgrade.check 的老守护进程且 hello 报 protocol_version：call 报后台进程是旧版本，不再报等换新", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario(accepting(BLOCKED), accepting(CURRENT));
+    const client = await openWithWorkspaceClients(time);
+    await waitUntil(() => notices.length >= 1);
+
+    fake.current = accepting("unknown_method", { helloError: "protocol_version" });
+    await time.advanceAsync(30_500);
+    await waitUntil(() => fake.methods().includes("hello"));
+    await settle();
+    const error = await callError(client);
+    expect((error as { code?: unknown }).code).not.toBe("daemon_upgrade_pending");
+    expect(String((error as Error).message)).toContain("后台进程是旧版本");
+  });
+
+  test("等待中重查得到过旧且不忙并让位，新守护进程 hello 报非协议版本错误：call 报该错误原因，不再报等换新", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario(accepting(BLOCKED), accepting(CURRENT, { helloError: "internal", helloMessage: "新守护进程启动失败（测试注入）" }));
+    const client = await openWithWorkspaceClients(time);
+    await waitUntil(() => notices.length >= 1);
+
+    fake.current = accepting(STALE_IDLE);
+    await time.advanceAsync(30_500);
+    await waitUntil(() => fake.methods().includes("hello"));
+    await settle();
+    const error = await callError(client);
+    expect((error as { code?: unknown }).code).not.toBe("daemon_upgrade_pending");
+    expect(String((error as Error).message)).toContain("新守护进程启动失败（测试注入）");
+  });
+
+  test("重查得到过旧且不忙但 upgrade.yield 失败：仍保持等待，29 秒内没有新的连接尝试，到 30 秒才再查", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario(accepting(BLOCKED), accepting(CURRENT));
+    const client = await openWithWorkspaceClients(time);
+    await waitUntil(() => notices.length >= 1);
+
+    fake.current = { check: STALE_IDLE, yield: "internal_error", helloError: "protocol_version" };
+    await time.advanceAsync(30_500);
+    await waitUntil(() => fake.methods().includes("upgrade.yield"));
+    await settle();
+    expect((await callError(client) as { code?: unknown }).code).toBe("daemon_upgrade_pending");
+    expect(fake.methods()).not.toContain("hello");
+
+    const connectionsAfterRecheck = fake.connectionCount();
+    const checkCount = () => fake.methods().filter((method) => method === "upgrade.check").length;
+    const checksAfterRecheck = checkCount();
+    await time.advanceAsync(29_000);
+    await settle();
+    expect(fake.connectionCount()).toBe(connectionsAfterRecheck);
+    expect(checkCount()).toBe(checksAfterRecheck);
+
+    await time.advanceAsync(1_500);
+    await waitUntil(() => checkCount() > checksAfterRecheck);
+    expect((await callError(client) as { code?: unknown }).code).toBe("daemon_upgrade_pending");
+  });
+
   test("不走 200 毫秒到 5 秒的退避重连：29 秒内没有新的连接尝试，到 30 秒才重新连接查一次", async () => {
     await prepare();
     const time = createFakeTimeSource();
@@ -494,6 +578,27 @@ describe("兼容老守护进程与只连现有进程的客户端", () => {
     expect((error as { code?: unknown }).code).not.toBe("window_stale");
     expect(String((error as Error).message)).toContain("后台进程是旧版本");
     expect(notices).toEqual([]);
+
+    const connectionsBefore = fake.connectionCount();
+    await time.advanceAsync(120_000);
+    await settle();
+    expect(fake.connectionCount()).toBe(connectionsBefore);
+  });
+
+  test("upgrade.check 报内部错误且 hello 报 protocol_version：按退避重连，重新检查后守护进程过旧且不忙则换新，call 成功", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario(accepting("internal_error", { helloError: "protocol_version" }), accepting(CURRENT));
+    const client = await openWithWorkspaceClients(time);
+    await waitUntil(() => fake.methods().includes("hello"));
+
+    fake.current = accepting(STALE_IDLE);
+    await time.advanceAsync(6_000);
+    await waitUntil(() => kinds().includes("replaced"));
+    await waitUntil(async () => {
+      try { await client.call("ping"); return true; } catch { return false; }
+    });
+    expect(fake.methods().filter((method) => method === "upgrade.check").length).toBeGreaterThanOrEqual(2);
   });
 
   test("upgrade.check 在途时守护进程断开连接：首连不会卡住，call 报不可达", async () => {
@@ -529,5 +634,163 @@ describe("兼容老守护进程与只连现有进程的客户端", () => {
     expect(fake.methods().filter((method) => method.startsWith("upgrade."))).toEqual([]);
     expect(fake.methods()).toContain("hello");
     expect(notices).toEqual([]);
+  });
+});
+
+describe("检查不可靠时的处理", () => {
+  test("检查不可靠且 hello 报 protocol_version 退避重连期间，call 的原因写明协议版本不同、正在重新检查，不让用户关闭所有 pi 窗口", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario(accepting("internal_error", { helloError: "protocol_version" }));
+    const client = await openWithWorkspaceClients(time);
+    await waitUntil(() => fake.methods().includes("hello"));
+    await settle();
+
+    const text = failureText("需求查询", await callError(client));
+    const reasonLine = text.split("\n").find((line) => line.startsWith("原因：")) ?? "";
+    expect(reasonLine).toContain("协议版本不同");
+    expect(reasonLine).toContain("重新");
+    expect(text).not.toContain("关闭所有 pi 窗口");
+  });
+
+  test("过旧且不忙但 upgrade.yield 失败、协议版本号相同：先照常可用不发提示，30 秒后在当前连接重查并换新，只发 1 条 replaced", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario({ check: STALE_IDLE, yield: "internal_error" }, accepting(CURRENT));
+    const client = await openWithWorkspaceClients(time);
+
+    expect(await client.call("ping")).toEqual({});
+    await settle();
+    expect(notices).toEqual([]);
+    expect(fake.methods()).toContain("hello");
+
+    fake.current = accepting(STALE_IDLE);
+    await time.advanceAsync(30_500);
+    await waitUntil(() => notices.length >= 1);
+    await settle();
+    expect(kinds()).toEqual(["replaced"]);
+    const checks = fake.requests.filter((request) => request.method === "upgrade.check");
+    expect(checks[1]?.connection).toBe(1);
+    await waitUntil(async () => {
+      try { await client.call("ping"); return true; } catch { return false; }
+    });
+  });
+
+  test("等待中连接掉线、重连时 upgrade.check 报内部错误：不发 replaced_after_wait，等待保持，30 秒后在当前连接重查，空闲让位后才发", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario(accepting(STALE_BUSY), accepting(CURRENT));
+    const client = await openWithWorkspaceClients(time);
+    await waitUntil(() => kinds().includes("waiting_usable"));
+
+    fake.current = accepting("internal_error");
+    fake.dropConnections();
+    await time.advanceAsync(6_000);
+    await waitUntil(() => fake.connectionCount() >= 2 && fake.methods().filter((method) => method === "hello").length >= 2);
+    await settle();
+    expect(kinds()).toEqual(["waiting_usable"]);
+    expect(await client.call("ping")).toEqual({});
+
+    const checksBefore = fake.requests.filter((request) => request.method === "upgrade.check").length;
+    fake.current = accepting(STALE_IDLE);
+    await time.advanceAsync(30_500);
+    await waitUntil(() => kinds().includes("replaced_after_wait"));
+    expect(kinds()).toEqual(["waiting_usable", "replaced_after_wait"]);
+    const recheck = fake.requests.filter((request) => request.method === "upgrade.check")[checksBefore];
+    expect(recheck?.connection).toBe(2);
+  });
+
+  test("检查不可靠且 hello 成功后，30 秒重查得到不过旧就停止重查，不发提示", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario(accepting("internal_error"));
+    const client = await openWithWorkspaceClients(time);
+    expect(await client.call("ping")).toEqual({});
+
+    fake.current = accepting(CURRENT);
+    await time.advanceAsync(30_500);
+    await settle();
+    const checkCount = () => fake.methods().filter((method) => method === "upgrade.check").length;
+    expect(checkCount()).toBe(2);
+
+    await time.advanceAsync(120_000);
+    await settle();
+    expect(checkCount()).toBe(2);
+    expect(notices).toEqual([]);
+  });
+
+  test("首次检查不可靠、hello 成功，30 秒后重查得到过旧且在忙：进入等待，只发 1 条 waiting_usable，call 可用，再 30 秒仍忙不重复提示", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario(accepting("internal_error"), accepting(CURRENT));
+    const client = await openWithWorkspaceClients(time);
+    expect(await client.call("ping")).toEqual({});
+    expect(notices).toEqual([]);
+
+    fake.current = accepting(STALE_BUSY);
+    await time.advanceAsync(30_500);
+    await waitUntil(() => notices.length >= 1);
+    await settle();
+    expect(kinds()).toEqual(["waiting_usable"]);
+    expect(notices[0]).toMatchObject({ requirements: [], otherWindows: 1, ownSessions: 0 });
+    expect(await client.call("ping")).toEqual({});
+
+    const checkCount = () => fake.methods().filter((method) => method === "upgrade.check").length;
+    const checksBefore = checkCount();
+    await time.advanceAsync(30_500);
+    await waitUntil(() => checkCount() > checksBefore);
+    await settle();
+    expect(kinds()).toEqual(["waiting_usable"]);
+  });
+
+  test("等待中旧守护进程退出、新一代首次检查不可靠：重连 hello 成功后 30 秒重查得到不过旧，发 1 条 replaced_after_wait 并停止重查", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario(accepting(STALE_BUSY), accepting(CURRENT));
+    const client = await openWithWorkspaceClients(time);
+    await waitUntil(() => kinds().includes("waiting_usable"));
+
+    fake.current = accepting("internal_error");
+    fake.dropConnections();
+    await time.advanceAsync(6_000);
+    await waitUntil(() => fake.methods().filter((method) => method === "hello").length >= 2);
+    await settle();
+    expect(kinds()).toEqual(["waiting_usable"]);
+    expect(await client.call("ping")).toEqual({});
+
+    const checkCount = () => fake.methods().filter((method) => method === "upgrade.check").length;
+    const checksBefore = checkCount();
+    fake.current = accepting(CURRENT);
+    await time.advanceAsync(30_500);
+    await waitUntil(() => kinds().includes("replaced_after_wait"));
+    await settle();
+    expect(kinds()).toEqual(["waiting_usable", "replaced_after_wait"]);
+
+    const checksAfterNotice = checkCount();
+    expect(checksAfterNotice).toBeGreaterThan(checksBefore);
+    await time.advanceAsync(120_000);
+    await settle();
+    expect(checkCount()).toBe(checksAfterNotice);
+    expect(kinds()).toEqual(["waiting_usable", "replaced_after_wait"]);
+  });
+
+  test("过旧且不忙、upgrade.yield 失败、hello 报 protocol_version：不停止重连，退避期间 call 的原因写明协议版本不同、正在重新检查", async () => {
+    await prepare();
+    const time = createFakeTimeSource();
+    await startScenario({ check: STALE_IDLE, yield: "internal_error", helloError: "protocol_version" });
+    const client = await openWithWorkspaceClients(time);
+    await waitUntil(() => fake.methods().includes("hello"));
+    await settle();
+
+    const text = failureText("需求查询", await callError(client));
+    const reasonLine = text.split("\n").find((line) => line.startsWith("原因：")) ?? "";
+    expect(reasonLine).toContain("协议版本不同");
+    expect(reasonLine).toContain("重新");
+    expect(text).not.toContain("关闭所有 pi 窗口");
+
+    const connectionsBefore = fake.connectionCount();
+    await time.advanceAsync(6_000);
+    await waitUntil(() => fake.connectionCount() > connectionsBefore);
+    expect(kinds()).not.toContain("window_stale");
   });
 });

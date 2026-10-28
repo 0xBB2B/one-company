@@ -22,6 +22,7 @@ const moduleDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(moduleDir, "../../..");
 const daemonBootstrapEntry = join(packageRoot, "src/app/daemon/bootstrap.mjs");
 
+const UPGRADE_BLOCKED_REASON = "后台进程是旧版本，等待换新";
 const RECONNECT_BASE_MS = 200;
 const RECONNECT_MAX_MS = 5_000;
 const RECONNECT_JITTER_RATIO = 0.25;
@@ -447,6 +448,10 @@ interface UpgradeAnswer {
   accepted?: boolean;
 }
 
+type UpgradeVerdict =
+  | { kind: "unsupported" | "unknown" | "current" | "yielded" }
+  | { kind: "busy"; answer: UpgradeAnswer };
+
 function isBusy(answer: UpgradeAnswer): boolean {
   return answer.requirements.length > 0 || answer.otherWindows > 0 || answer.ownSessions > 0;
 }
@@ -500,37 +505,12 @@ class DaemonClientImpl implements DaemonClient {
         socket.destroy();
         throw new Error("客户端已关闭");
       }
-      let link = this.createLink(socket);
-      let replaced = false;
-      let busyAnswer: UpgradeAnswer | undefined;
-      let answer: UpgradeAnswer | undefined;
-      if (!this.ctx.connectOnly) {
-        answer = await this.checkOn(link);
-        // 已在等待③时协议版本号必然不同，查询偶发失败去握手只会被拒并停止重查
-        if (!answer && this.upgradeWait?.kind === "blocked") {
-          link.destroy();
-          this.enterUpgradeWait("blocked", this.upgradeWait.answer);
-          return;
-        }
-        if (answer?.stale && !isBusy(answer)) {
-          const yielded = await this.yieldOn(link);
-          if (yielded?.accepted) {
-            link = await this.reconnectAfterYield(link);
-            replaced = true;
-            answer = undefined;
-          } else if (yielded) answer = yielded;
-        }
-        if (answer?.stale && isBusy(answer)) {
-          if (answer.protocolVersion !== PROTOCOL_VERSION) {
-            link.destroy();
-            this.enterUpgradeWait("blocked", answer);
-            return;
-          }
-          busyAnswer = answer;
-        }
+      const link = this.createLink(socket);
+      if (this.ctx.connectOnly) {
+        await this.helloOrStale(link, "other");
+        return;
       }
-      await this.helloOrStale(link, replaced || answer?.stale === false);
-      this.finishUpgrade(replaced, busyAnswer);
+      await this.applyVerdict(await this.inspectOn(link), link, false);
     })());
   }
 
@@ -554,12 +534,18 @@ class DaemonClientImpl implements DaemonClient {
     return { authToken: controlToken(this.ctx.dataRoot), windowId: this.ctx.helloParams.windowId };
   }
 
-  private async checkOn(link: SocketLink): Promise<UpgradeAnswer | undefined> {
+  private async inspectOn(link: SocketLink): Promise<UpgradeVerdict> {
+    let answer: UpgradeAnswer;
     try {
-      return await link.call("upgrade.check", this.upgradeParams()) as unknown as UpgradeAnswer;
-    } catch {
-      return undefined;
+      answer = await link.call("upgrade.check", this.upgradeParams()) as unknown as UpgradeAnswer;
+    } catch (error) {
+      return { kind: error instanceof DaemonCallError && error.code === "unknown_method" ? "unsupported" : "unknown" };
     }
+    if (!answer.stale) return { kind: "current" };
+    if (isBusy(answer)) return { kind: "busy", answer };
+    const yielded = await this.yieldOn(link);
+    if (!yielded) return { kind: "unknown" };
+    return yielded.accepted ? { kind: "yielded" } : { kind: "busy", answer: yielded };
   }
 
   private async yieldOn(link: SocketLink): Promise<UpgradeAnswer | undefined> {
@@ -586,11 +572,15 @@ class DaemonClientImpl implements DaemonClient {
     return this.createLink(socket);
   }
 
-  private async helloOrStale(link: SocketLink, daemonCurrent: boolean): Promise<void> {
+  private async helloOrStale(link: SocketLink, basis: "current" | "unknown" | "other"): Promise<void> {
     try {
       await this.helloOn(link);
     } catch (error) {
-      if (daemonCurrent && (error as { code?: unknown } | null)?.code === "protocol_version") this.enterWindowStale();
+      if ((error as { code?: unknown } | null)?.code === "protocol_version") {
+        if (basis === "current") this.enterWindowStale();
+        // 检查没查清守护进程是不是旧的，不能直接判终止；交给退避重连下次重查
+        else if (basis === "unknown") throw new Error("后台进程和这个窗口协议版本不同，这次没能确认它是否过旧，正在重新连接检查");
+      }
       throw error;
     }
   }
@@ -626,17 +616,54 @@ class DaemonClientImpl implements DaemonClient {
     this.upgradeWait = { kind, answer };
     if (kind === "blocked") {
       this.status = "unreachable";
-      this.reason = "后台进程是旧版本，等待换新";
+      this.reason = UPGRADE_BLOCKED_REASON;
     }
     if (first) this.ctx.onUpgradeNotice?.(this.notice(kind === "usable" ? "waiting_usable" : "waiting_blocked", answer));
     this.scheduleUpgradePoll();
   }
 
-  private finishUpgrade(replaced: boolean, busyAnswer: UpgradeAnswer | undefined): void {
-    if (busyAnswer) {
-      this.enterUpgradeWait("usable", busyAnswer);
-      return;
+  private async applyVerdict(verdict: UpgradeVerdict, link: SocketLink, handshaken: boolean): Promise<void> {
+    switch (verdict.kind) {
+      case "unsupported":
+        if (!handshaken) await this.helloOrStale(link, "other");
+        return;
+      case "current":
+        if (!handshaken) await this.helloOrStale(link, "current");
+        if (this.upgradeWait !== null) this.finishReplacement(false);
+        return;
+      case "yielded":
+        if (handshaken) await this.replaceAfterYield(link);
+        else await this.connectReplacement(link);
+        return;
+      case "busy":
+        if (verdict.answer.protocolVersion === PROTOCOL_VERSION) {
+          if (!handshaken) await this.helloOrStale(link, "other");
+          this.enterUpgradeWait("usable", verdict.answer);
+        } else {
+          link.destroy();
+          this.enterUpgradeWait("blocked", verdict.answer);
+        }
+        return;
+      case "unknown":
+        // 协议版本号不同的等待（blocked）里检查失败，去握手只会被拒；保持 30 秒重查，别掉进退避重连，并继续给模型返回"正在等换新"
+        if (this.upgradeWait?.kind === "blocked") {
+          if (!handshaken) link.destroy();
+          this.enterUpgradeWait("blocked", this.upgradeWait.answer);
+          return;
+        }
+        if (!handshaken) await this.helloOrStale(link, "unknown");
+        this.scheduleUpgradePoll();
+        return;
     }
+  }
+
+  private async connectReplacement(old: SocketLink): Promise<void> {
+    const link = await this.reconnectAfterYield(old);
+    await this.helloOrStale(link, "current");
+    this.finishReplacement(true);
+  }
+
+  private finishReplacement(replaced: boolean): void {
     const waited = this.upgradeWait !== null;
     this.clearUpgradeWait();
     if (waited) this.ctx.onUpgradeNotice?.(this.notice("replaced_after_wait"));
@@ -660,17 +687,9 @@ class DaemonClientImpl implements DaemonClient {
       else this.scheduleUpgradePoll();
       return;
     }
-    let answer = await this.checkOn(link);
+    const verdict = await this.inspectOn(link);
     if (this.closed || this.link !== link) return;
-    if (answer?.stale && !isBusy(answer)) {
-      answer = await this.yieldOn(link);
-      if (this.closed || this.link !== link) return;
-      if (answer?.accepted) {
-        await this.replaceAfterYield(link);
-        return;
-      }
-    }
-    this.scheduleUpgradePoll();
+    await this.applyVerdict(verdict, link, true);
   }
 
   private async replaceAfterYield(old: SocketLink): Promise<void> {
@@ -684,11 +703,7 @@ class DaemonClientImpl implements DaemonClient {
       this.disconnectedEventData(this.reason, true, "transport"),
     );
     try {
-      await this.track((async () => {
-        const link = await this.reconnectAfterYield(old);
-        await this.helloOrStale(link, true);
-        this.finishUpgrade(true, undefined);
-      })());
+      await this.track(this.connectReplacement(old));
     } catch (error) {
       this.handleConnectFailure(error);
     }
@@ -908,7 +923,7 @@ class DaemonClientImpl implements DaemonClient {
 
   async call(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     if (this.windowStale) throw new AdvisedError("window_stale", upgradeAdvice(this.notice("window_stale")));
-    if (this.upgradeWait?.kind === "blocked") {
+    if (this.upgradeWait?.kind === "blocked" && this.status !== "connected" && this.reason === UPGRADE_BLOCKED_REASON) {
       throw new AdvisedError("daemon_upgrade_pending", upgradeAdvice(this.notice("waiting_blocked", this.upgradeWait.answer)));
     }
     if (this.status !== "connected" || !this.link || this.link.handshakeFailure()) {
