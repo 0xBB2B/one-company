@@ -20,7 +20,6 @@ import type { TempHome } from "./temp-home.ts";
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 /** 设了 ONE_COMPANY_TEST_PRODUCT_ROOT 时 daemon 从该安装产物启动，用于在安装产物上重跑集成场景。 */
 const daemonRoot = process.env.ONE_COMPANY_TEST_PRODUCT_ROOT ?? packageRoot;
-const daemonMainEntry = join(daemonRoot, "src/app/daemon/bootstrap.mjs");
 const DEFAULT_CONNECT_TIMEOUT_MS = 2_000;
 const DEFAULT_RPC_TIMEOUT_MS = 15_000;
 const DEFAULT_START_TIMEOUT_MS = 10_000;
@@ -352,6 +351,8 @@ export interface SpawnDaemonOptions extends DaemonEnvOverrides {
   outputByteLimit?: number;
   /** 只供本测试环境专测拦截 spawn；实参仍固定为当前 Node、daemon 入口、绝对 cwd。 */
   spawnImpl?: typeof spawn;
+  /** 指定后从该产品目录的 src/app/daemon/bootstrap.mjs 启动，否则用默认产品目录。 */
+  productRoot?: string;
 }
 
 export interface DaemonExitResult {
@@ -398,6 +399,7 @@ interface CapturedSpawnOptions {
   readonly captureOutput: boolean;
   readonly outputByteLimit: number;
   readonly spawnImpl: typeof spawn;
+  readonly productRoot?: string;
 }
 
 function captureStringRecord(value: Record<string, string> | undefined, label: string): Readonly<Record<string, string>> {
@@ -426,6 +428,7 @@ function captureSpawnOptions(options: SpawnDaemonOptions): CapturedSpawnOptions 
   const captureOutput = options.captureOutput ?? false;
   const outputByteLimit = options.outputByteLimit ?? OUTPUT_BYTE_LIMIT;
   const spawnImpl = options.spawnImpl ?? spawn;
+  const productRoot = options.productRoot;
   for (const [name, value] of [["home", fixedHome.home], ["agentDir", fixedHome.agentDir], ["repoDir", repoDir], ["dataRoot", dataRoot], ["sdkDir", sdkDir]] as const) {
     if (typeof value !== "string" || !isAbsolute(value)) throw new Error(`${name} 必须是绝对路径: ${String(value)}`);
   }
@@ -436,7 +439,7 @@ function captureSpawnOptions(options: SpawnDaemonOptions): CapturedSpawnOptions 
     throw new Error(`outputByteLimit 必须是 1 到 ${OUTPUT_BYTE_LIMIT} 的安全整数`);
   }
   validateExtraEnv(extraEnv);
-  return Object.freeze({ home, fixedHome, repoDir, dataRoot, sdkDir, idleTimeoutMs, clockSkewFile, extraEnv, captureOutput, outputByteLimit, spawnImpl });
+  return Object.freeze({ home, fixedHome, repoDir, dataRoot, sdkDir, idleTimeoutMs, clockSkewFile, extraEnv, captureOutput, outputByteLimit, spawnImpl, productRoot });
 }
 
 function buildDaemonEnv(captured: CapturedSpawnOptions): NodeJS.ProcessEnv {
@@ -472,8 +475,8 @@ export function spawnDaemonProcess(options: SpawnDaemonOptions): SpawnedDaemon {
   const env = buildDaemonEnv(captured);
   assertOwnerActive(owner);
   assertOwnerRoots(owner);
-  const proc = captured.spawnImpl(resolveNodeExecutable(), [daemonMainEntry], {
-    cwd: daemonRoot,
+  const proc = captured.spawnImpl(resolveNodeExecutable(), [join(captured.productRoot ?? daemonRoot, "src/app/daemon/bootstrap.mjs")], {
+    cwd: captured.productRoot ?? daemonRoot,
     stdio: captured.captureOutput ? ["ignore", "pipe", "pipe"] : "ignore",
     detached: true,
     env,
@@ -790,6 +793,7 @@ export interface StartDaemonOptions extends DaemonEnvOverrides {
   captureOutput?: boolean;
   outputByteLimit?: number;
   spawnImpl?: typeof spawn;
+  productRoot?: string;
 }
 
 export interface DaemonHandle {
@@ -822,6 +826,7 @@ export async function startDaemonForTest(
     captureOutput: options.captureOutput ?? true,
     outputByteLimit: options.outputByteLimit,
     spawnImpl: options.spawnImpl,
+    productRoot: options.productRoot,
   });
   if (!Number.isFinite(fixedOptions.waitTimeoutMs) || fixedOptions.waitTimeoutMs <= 0) throw new Error("waitTimeoutMs 必须是有限正数");
   if (!Number.isFinite(fixedOptions.rpcTimeoutMs) || fixedOptions.rpcTimeoutMs <= 0) throw new Error("rpcTimeoutMs 必须是有限正数");
@@ -865,6 +870,7 @@ export async function startDaemonForTest(
         captureOutput: fixedOptions.captureOutput,
         outputByteLimit: fixedOptions.outputByteLimit,
         spawnImpl: fixedOptions.spawnImpl,
+        productRoot: fixedOptions.productRoot,
       });
     } catch (error) {
       linked.dispose();

@@ -16,10 +16,12 @@ import { disabledAgentNames, readAgentSettings, readDisabledAgents } from "../..
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../../modules/agents/roles.ts";
 import { retireRunChangeSetsIn } from "../../modules/verification/change-apply.ts";
 import { RunStore } from "../../modules/agents/run-store.ts";
-import type { RunState } from "../../modules/agents/run-store.ts";
 import { ShellRegistry } from "../../core/host/shell-registry.ts";
-import { registerProtocolHandlers, RunManager } from "./run-manager.ts";
+import { ACTIVE_REQUIREMENT_STATES, registerProtocolHandlers, RunManager } from "./run-manager.ts";
 import { DaemonServer } from "./server.ts";
+import type { UpgradeCaller, UpgradeStatus } from "./server.ts";
+import { codeFingerprint, installedPackageRoot } from "../../core/host/code-fingerprint.ts";
+import { PROTOCOL_VERSION } from "../../core/host/protocol.ts";
 
 function loadDaemonRoleCatalog(agentDir: string, repoRoot: string) {
   return loadRoleCatalog({
@@ -47,12 +49,6 @@ const SIGNAL_WATCHDOG_MS = 15_000;
 const STALE_TEMP_FILE_MAX_AGE_MS = 10 * 60 * 1000;
 const RUN_CHECK_BASE_BACKOFF_MS = 200;
 const RUN_CHECK_MAX_BACKOFF_MS = 5_000;
-const ACTIVE_REQUIREMENT_STATES: RunState[] = [
-  "queued",
-  "running",
-  "pausing",
-  "paused",
-];
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -366,8 +362,11 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     onRunEnded: (db, run) => retireRunChangeSetsIn(db, run.id) });
   const runActivity = new RunActivityChecker({ clock, runStore });
 
+  const startupFingerprint = await codeFingerprint(installedPackageRoot());
   let idleExit: IdleExit | undefined;
   let ready = false;
+  let shuttingDown = false;
+  let runManager: RunManager | undefined;
   const server = new DaemonServer({
     authToken: controlToken(capturedOptions.dataRoot),
     repoId,
@@ -384,12 +383,36 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       }
     },
     isReady: () => ready,
-    onShutdownRequested: () => {
-      shutdown().catch((error: unknown) => {
-        process.stderr.write(`关闭失败: ${error instanceof Error ? error.message : String(error)}\n`);
-      });
-    },
+    onShutdownRequested: requestShutdown,
+    upgrade: { inspect: inspectUpgrade, yield: yieldUpgrade },
   });
+
+  function requestShutdown(): void {
+    shutdown().catch((error: unknown) => {
+      process.stderr.write(`关闭失败: ${error instanceof Error ? error.message : String(error)}\n`);
+    });
+  }
+
+  async function inspectUpgrade(caller: UpgradeCaller): Promise<UpgradeStatus> {
+    const stale = await codeFingerprint(installedPackageRoot()).then((now) => now !== startupFingerprint,
+      (error: Error) => { throw new Error(`计算代码指纹失败: ${error.message}`); });
+    const requirements = runManager
+      ? await runManager.activeRequirementTitles()
+      : await runStore.list({ kind: "requirement", states: ACTIVE_REQUIREMENT_STATES, limit: Number.MAX_SAFE_INTEGER })
+        .then((page) => [...new Set(page.items.map((run) => run.requirement))].sort(),
+          (error: Error) => { throw new Error(`读取运行记录失败: ${error.message}`); });
+    const otherWindows = new Set(server.clients().map((client) => client.windowId).filter((id) => id !== caller.windowId)).size;
+    const ownSessions = caller.connectionId && runManager ? runManager.mainSessionCount(caller.connectionId) : 0;
+    return { stale, protocolVersion: PROTOCOL_VERSION, requirements, otherWindows, ownSessions };
+  }
+
+  async function yieldUpgrade(caller: UpgradeCaller): Promise<UpgradeStatus & { accepted: boolean }> {
+    const status = await inspectUpgrade(caller);
+    if (shuttingDown) return { ...status, accepted: true };
+    const accepted = ready && status.stale && status.requirements.length === 0 && status.otherWindows === 0 && status.ownSessions === 0;
+    if (accepted) requestShutdown();
+    return { ...status, accepted };
+  }
 
   // acquireListener 必须在任何耗时的异步装配之前调用：并发拉起时输家要能尽快从 socket
   // 竞争中出局退出，不能被 ModelRuntime/角色目录等重活拖住，否则单实例收敛会变慢变得不可靠
@@ -403,11 +426,9 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
   const initializedPromise = new Promise<void>((resolve) => {
     resolveInitialized = resolve;
   });
-  let shuttingDown = false;
   let startupFailed = false;
   let indexHost: ProjectIndexHost | undefined;
   let indexRequirements: ProjectIndexRequirements | undefined;
-  let runManager: RunManager | undefined;
   let idleTimer: TimerHandle | undefined;
   let ownershipTimer: TimerHandle | undefined;
   async function shutdown(exitCode = 0): Promise<void> {

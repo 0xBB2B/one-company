@@ -21,6 +21,8 @@ const EXPECTED_METHODS = [
   "hello",
   "ping",
   "shutdown",
+  "upgrade.check",
+  "upgrade.yield",
   "runs.get",
   "runs.steps",
   "runs.pause",
@@ -66,6 +68,8 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   },
   ping: {},
   shutdown: {},
+  "upgrade.check": { authToken: "t", windowId: "w" },
+  "upgrade.yield": { authToken: "t", windowId: "w" },
   "runs.get": { runId: "run-1" },
   "runs.steps": { runId: "run-1" },
   "runs.pause": { runId: "run-1" },
@@ -116,8 +120,8 @@ test("知识RPC严格拒绝模型身份/SQL/超限及非授权路径，仅接受
 });
 
 describe("协议常量", () => {
-  test("PROTOCOL_VERSION 为 6", () => {
-    expect(PROTOCOL_VERSION).toBe(6);
+  test("PROTOCOL_VERSION 为 7", () => {
+    expect(PROTOCOL_VERSION).toBe(7);
   });
 
   test("prototypes 方法的需求编号不是 UUIDv7 时以 bad_params 拒绝", () => {
