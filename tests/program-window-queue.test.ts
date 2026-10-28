@@ -5,7 +5,6 @@ import { afterEach, expect, test, vi } from "vitest";
 import { openSettingsPage } from "../src/modules/settings/settings-extension.ts";
 import type { SettingsExtensionContext } from "../src/modules/settings/settings-extension.ts";
 import { createClock } from "../src/core/policy/clock.ts";
-import { BottomDock } from "../src/core/host/dock.ts";
 import { chooseOrWriteWindow, chooseWindow, openProgramWindow } from "../src/core/host/question-window.ts";
 import { openShellPage } from "../src/modules/shell/shell-page.ts";
 import { ShellRegistry } from "../src/core/host/shell-registry.ts";
@@ -109,8 +108,7 @@ test("同一个窗口开着时，状态页的窗口也排队，等前一个关�
   const r = recorder();
   const asking = chooseWindow(r.host as never, { title: "先开的窗口", lines: [], choices: [{ label: "甲" }] });
   const registry = new ShellRegistry({ clock: createClock() });
-  const dock = new BottomDock({ getEditorText: () => "", isCompletionOpen: () => false, isOverlayOpen: () => false });
-  const page = openShellPage({ ctx: r.host as never, registry, repos: [], clock: createClock(), dock });
+  const page = openShellPage({ ctx: r.host as never, registry, repos: [], clock: createClock() });
   await settle();
   expect(r.custom).toHaveBeenCalledTimes(1);
   r.opened[0]!.component.handleInput(ENTER);

@@ -1,6 +1,13 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, test } from "vitest";
+import { createFakeTimeSource } from "./helpers/fake-clock.ts";
+import { createClock } from "../src/core/policy/clock.ts";
 import { RunStepBook, stepText } from "../src/modules/agents/run-steps.ts";
+
+function newBook() {
+  const timeSource = createFakeTimeSource();
+  return { book: new RunStepBook({ clock: createClock({ timeSource }) }), timeSource };
+}
 
 function fakeHandle(initial = "running") {
   const h = { events: new EventEmitter(), current: initial, turns: 0, state: () => h.current, turnsUsed: () => h.turns };
@@ -65,7 +72,7 @@ describe("步骤文字", () => {
 
 describe("步骤簿", () => {
   test("三次调用后按开始先后记录，成功与报错各自落状态，父调用编号被记下", () => {
-    const book = new RunStepBook();
+    const book = newBook().book;
     const h = fakeHandle();
     book.track("r1", h);
     h.events.emit("tool_start", { toolCallId: "t1", toolName: "read", args: { path: "a.ts" } });
@@ -83,17 +90,17 @@ describe("步骤簿", () => {
   });
 
   test("刚 track 还没有调用时返回空数组", () => {
-    const book = new RunStepBook();
+    const book = newBook().book;
     book.track("r1", fakeHandle());
     expect(book.steps("r1")).toEqual([]);
   });
 
   test("没 track 过的运行编号返回 undefined", () => {
-    expect(new RunStepBook().steps("nope")).toBeUndefined();
+    expect(newBook().book.steps("nope")).toBeUndefined();
   });
 
   test("steps 返回副本，改返回值不影响下次结果", () => {
-    const book = new RunStepBook();
+    const book = newBook().book;
     const h = fakeHandle();
     book.track("r1", h);
     h.events.emit("tool_start", { toolCallId: "t1", toolName: "ls", args: {} });
@@ -108,7 +115,7 @@ describe("步骤簿", () => {
 
 describe("主窗口可见的运行状态", () => {
   test("同一连接读到句柄当前状态与已用轮数，maxTurns 取 track 时的值", () => {
-    const book = new RunStepBook();
+    const book = newBook().book;
     const h = fakeHandle();
     h.turns = 3;
     const before = Date.now();
@@ -124,29 +131,29 @@ describe("主窗口可见的运行状态", () => {
   });
 
   test("没给 maxTurns 时为 null", () => {
-    const book = new RunStepBook();
+    const book = newBook().book;
     book.track("r1", fakeHandle(), { owner: "c1" });
     expect(book.mainStatus("r1", "c1")!.maxTurns).toBeNull();
   });
 
   test("换连接读到 undefined", () => {
-    const book = new RunStepBook();
+    const book = newBook().book;
     book.track("r1", fakeHandle(), { owner: "c1" });
     expect(book.mainStatus("r1", "c2")).toBeUndefined();
   });
 
   test("没带 owner 的运行 mainStatus 为 undefined", () => {
-    const book = new RunStepBook();
+    const book = newBook().book;
     book.track("r1", fakeHandle());
     expect(book.mainStatus("r1", "c1")).toBeUndefined();
   });
 
   test("没 track 过的运行 mainStatus 为 undefined", () => {
-    expect(new RunStepBook().mainStatus("nope", "c1")).toBeUndefined();
+    expect(newBook().book.mainStatus("nope", "c1")).toBeUndefined();
   });
 
   test("failed 后记下结束快照，之后句柄状态再变也不影响", () => {
-    const book = new RunStepBook();
+    const book = newBook().book;
     const h = fakeHandle();
     book.track("r1", h, { owner: "c1" });
     h.turns = 5; h.current = "failed";
@@ -164,7 +171,7 @@ describe("主窗口可见的运行状态", () => {
     ["ended_without_result", "ended_without_result"],
     ["stopped", "stopped"],
   ])("%s 事件使状态变为 %s 并有结束时间", (event, state) => {
-    const book = new RunStepBook();
+    const book = newBook().book;
     const h = fakeHandle();
     book.track("r1", h, { owner: "c1" });
     h.current = state;
@@ -173,5 +180,90 @@ describe("主窗口可见的运行状态", () => {
     const status = book.mainStatus("r1", "c1")!;
     expect(status.state).toBe(state);
     expect(typeof status.endedAt).toBe("number");
+  });
+});
+
+describe("先 settle 再停会话", () => {
+  const reason = "断网，检索已中止，网络恢复后请重派";
+
+  test("settle 为 failed 后句柄再发 stopped，mainStatus 仍是 failed 且原因不变", () => {
+    const book = newBook().book;
+    const h = fakeHandle();
+    book.track("r1", h, { owner: "c1" });
+    book.settle("r1", { state: "failed", reason });
+    h.current = "stopped";
+    h.events.emit("stopped", {});
+    expect(book.mainStatus("r1", "c1")).toMatchObject({ state: "failed", reason });
+  });
+
+  test("stopped 事件不推后删除计时，从 settle 起满 60 秒即删除", () => {
+    const { book, timeSource } = newBook();
+    const h = fakeHandle();
+    book.track("r1", h, { owner: "c1" });
+    book.settle("r1", { state: "failed", reason });
+    timeSource.advance(30_000);
+    h.events.emit("stopped", {});
+    timeSource.advance(30_000);
+    expect(book.steps("r1")).toBeUndefined();
+  });
+
+  test("没 settle 过、只发 stopped 的运行是 stopped 且没有原因", () => {
+    const book = newBook().book;
+    const h = fakeHandle();
+    book.track("r1", h, { owner: "c1" });
+    h.current = "stopped";
+    h.events.emit("stopped", {});
+    const status = book.mainStatus("r1", "c1")!;
+    expect(status.state).toBe("stopped");
+    expect(status.reason).toBeUndefined();
+  });
+});
+
+describe("结束 60 秒后删除步骤", () => {
+  test.each(["completed", "failed", "turn_limit_reached", "ended_without_result", "stopped"])("%s 后 59 秒还能查到，满 60 秒查不到", (event) => {
+    const { book, timeSource } = newBook();
+    const h = fakeHandle();
+    book.track("r1", h);
+    h.events.emit("tool_start", { toolCallId: "t1", toolName: "ls", args: {} });
+    h.events.emit(event, {});
+    timeSource.advance(59_000);
+    expect(book.steps("r1")).toHaveLength(1);
+    timeSource.advance(1_000);
+    expect(book.steps("r1")).toBeUndefined();
+  });
+
+  test("没结束的运行推进很久仍能查到", () => {
+    const { book, timeSource } = newBook();
+    book.track("r1", fakeHandle(), { owner: "c1" });
+    timeSource.advance(10 * 60 * 60 * 1000);
+    expect(book.steps("r1")).toEqual([]);
+    expect(book.mainStatus("r1", "c1")).toMatchObject({ state: "running" });
+  });
+
+  test("带 owner 的主窗口运行结束 59 秒 mainStatus 还在，满 60 秒变 undefined", () => {
+    const { book, timeSource } = newBook();
+    const h = fakeHandle();
+    book.track("r1", h, { owner: "c1" });
+    h.current = "completed";
+    h.events.emit("completed", {});
+    timeSource.advance(59_000);
+    expect(book.mainStatus("r1", "c1")).toMatchObject({ state: "completed" });
+    timeSource.advance(1_000);
+    expect(book.mainStatus("r1", "c1")).toBeUndefined();
+  });
+
+  test("计时从各自结束时刻起算，先结束的先删", () => {
+    const { book, timeSource } = newBook();
+    const a = fakeHandle(), b = fakeHandle();
+    book.track("a", a);
+    book.track("b", b);
+    a.events.emit("completed", {});
+    timeSource.advance(30_000);
+    b.events.emit("completed", {});
+    timeSource.advance(30_000);
+    expect(book.steps("a")).toBeUndefined();
+    expect(book.steps("b")).toEqual([]);
+    timeSource.advance(30_000);
+    expect(book.steps("b")).toBeUndefined();
   });
 });

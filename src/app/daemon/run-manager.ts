@@ -271,7 +271,7 @@ export class RunManager {
   private readonly emit: EmitFn;
   private readonly options: RunManagerOptions;
   private readonly sessions = new Map<string, SessionEntry>();
-  private readonly stepBook = new RunStepBook();
+  private readonly stepBook: RunStepBook;
   private started = false;
   private resolveStarted!: () => void;
   private readonly startedPromise: Promise<void>;
@@ -279,6 +279,7 @@ export class RunManager {
   constructor(options: RunManagerOptions) {
     this.startedPromise = new Promise((resolve) => { this.resolveStarted = resolve; });
     this.options = options;
+    this.stepBook = new RunStepBook({ clock: options.clock });
     this.repoId = options.repoId;
     this.database = repositoryDatabase(options.dataRoot, options.repoId);
     this.runStore = options.runStore;
@@ -877,7 +878,9 @@ export class RunManager {
     handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishExplore(runId, "failed", reason); });
     // 主窗口的检索没有续接入口，断网暂停后只会一直挂着；按失败交回，由主代理重派
     if (!requirementId) handle.events.on("network_paused", () => {
-      void handle.stop().catch(() => {}).then(() => this.finishExplore(runId, "failed", "断网，检索已中止，网络恢复后请重派"));
+      const reason = "断网，检索已中止，网络恢复后请重派";
+      this.settleSteps(runId, "failed", reason); // 先写结果再停会话：stop() 会同步发出 stopped 事件，窗口取数看到它就不再取了
+      void handle.stop().catch(() => {}).then(() => this.finishExplore(runId, "failed", reason));
     });
     handle.prompt("开始检索。");
     return { runId, maxTurns: input.maxTurns };
@@ -952,7 +955,9 @@ export class RunManager {
     handle.events.on("ended_without_result", () => { void this.finishPrototype(runId, "ended_without_result"); });
     handle.events.on("failed", ({ reason }: { reason: string }) => { void this.finishPrototype(runId, "failed", reason); });
     handle.events.on("network_paused", () => {
-      void handle.stop().catch(() => {}).then(() => this.finishPrototype(runId, "failed", "断网，设计已中止，网络恢复后请重派"));
+      const reason = "断网，设计已中止，网络恢复后请重派";
+      this.settleSteps(runId, "failed", reason);
+      void handle.stop().catch(() => {}).then(() => this.finishPrototype(runId, "failed", reason));
     });
     handle.prompt("开始设计。");
     return { runId, version };
@@ -971,6 +976,7 @@ export class RunManager {
     if (!main) return;
     this.mainPrototypes.delete(runId);
     main.dispose();
+    this.settleSteps(runId, outcome, failure);
     if (!main.submitted) {
       const reason = outcome === "turn_limit_reached" ? `轮数用满（${main.maxTurns} 轮），没有交稿`
         : outcome === "ended_without_result" || outcome === "completed" ? "设计师停止回复，没有交稿" : outcomeReason(outcome, failure);
@@ -1152,6 +1158,7 @@ export class RunManager {
       if (main.report) return;
       main.dispose();
       main.report = exploreReport(runId, outcome, main.result(), main.handle.turnsUsed(), this.runLog(runId), failure);
+      this.settleSteps(runId, outcome, failure);
       this.emit("explore.changed", {});
       if (outcome === "stopped") { this.mainExplores.delete(runId); return; }
       this.emit("explore.finished", { runId, parentSessionId: main.sessionId });
@@ -1170,6 +1177,11 @@ export class RunManager {
     if (outcome !== "stopped" && parent?.pm && ["running", "paused"].includes(parent.handle.state())) {
       parent.handle.prompt(JSON.stringify(exploreReport(runId, outcome, result, entry.handle.turnsUsed(), this.runLog(runId), failure)));
     }
+  }
+
+  private settleSteps(runId: string, outcome: Exclude<SessionOutcome, "superseded">, failure?: string): void {
+    if (outcome === "completed" || outcome === "stopped") this.stepBook.settle(runId, { state: outcome });
+    else this.stepBook.settle(runId, { state: "failed", reason: outcome === "failed" ? failure : outcomeReason(outcome) });
   }
 
   /** 主窗口取回自己派出的 explore 结果；只交给派出它的那条连接，取走即删除。 */
@@ -1201,9 +1213,7 @@ export class RunManager {
     }
     const main = this.stepBook.mainStatus(runId, connectionId);
     if (!main) throw notFound();
-    const limited = main.state === "turn_limit_reached" || main.state === "ended_without_result";
-    const reason = limited ? outcomeReason(main.state as SessionOutcome) : main.state === "failed" ? main.reason : undefined;
-    return { state: (limited ? "failed" : main.state) as RunStepsView["state"], ...(reason === undefined ? {} : { reason }), turns: main.turns, maxTurns: main.maxTurns,
+    return { state: main.state as RunStepsView["state"], ...(main.reason === undefined ? {} : { reason: main.reason }), turns: main.turns, maxTurns: main.maxTurns,
       elapsedMs: (main.endedAt ?? Date.now()) - main.startedAt, steps };
   }
 

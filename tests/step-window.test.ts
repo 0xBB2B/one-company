@@ -368,19 +368,17 @@ describe("openStepWindow：取数、定时器与关闭", () => {
     const timeSource = createFakeTimeSource();
     const clock = createClock({ timeSource });
     const fc = fakeCtx();
-    const dock = { markPageOpen: vi.fn(), markPageClosed: vi.fn() };
     const client = { call: vi.fn(call) };
-    const promise = openStepWindow({ ctx: fc.ctx, dock, clock, client, runId: "run-1", title: "标题" });
-    return { timeSource, clock, fc, dock, client, promise };
+    const promise = openStepWindow({ ctx: fc.ctx, clock, client, runId: "run-1", title: "标题" });
+    return { timeSource, clock, fc, client, promise };
   }
 
   const runningView = () => view({ steps: steps(1) }) as unknown as Record<string, unknown>;
 
-  test("打开后标记 markPageOpen、非浮层挂载、立即取一次数（参数 runId）", async () => {
+  test("打开后非浮层挂载、立即取一次数（参数 runId）", async () => {
     const t = setup(async () => runningView());
     await flush();
     expect(t.fc.options()?.overlay).toBeFalsy();
-    expect(t.dock.markPageOpen).toHaveBeenCalledTimes(1);
     expect(t.client.call).toHaveBeenCalledTimes(1);
     expect(t.client.call).toHaveBeenCalledWith("runs.steps", { runId: "run-1" });
     expect(t.fc.component()!.render(80).join("\n")).toContain("共 1 步");
@@ -445,7 +443,7 @@ describe("openStepWindow：取数、定时器与关闭", () => {
     t.clock.stopGapWatcher();
   });
 
-  test("按 Esc 后 Promise resolve、markPageOpen/markPageClosed 各一次、之后不再取数", async () => {
+  test("按 Esc 后 Promise resolve、之后不再取数", async () => {
     const t = setup(async () => runningView());
     await flush();
     t.fc.component()!.handleInput(ESC);
@@ -454,8 +452,6 @@ describe("openStepWindow：取数、定时器与关闭", () => {
     t.timeSource.advance(5000);
     await flush();
     expect(t.client.call).toHaveBeenCalledTimes(callsAtClose);
-    expect(t.dock.markPageOpen).toHaveBeenCalledTimes(1);
-    expect(t.dock.markPageClosed).toHaveBeenCalledTimes(1);
     t.clock.stopGapWatcher();
   });
 });
@@ -505,7 +501,7 @@ describe("openStepWindow：结束后停掉定时器", () => {
     let component: { handleInput(d: string): void } | undefined;
     const ctx = { ui: { custom: (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (r: unknown) => void) => unknown) =>
       new Promise((resolve) => { component = factory({ requestRender }, {}, {}, resolve) as typeof component; }) } };
-    const promise = openStepWindow({ ctx, dock: { markPageOpen: () => {}, markPageClosed: () => {} }, clock,
+    const promise = openStepWindow({ ctx, clock,
       client: { call: async () => view({ state: "completed", steps: steps(2) }) as unknown as Record<string, unknown> }, runId: "run-1", title: "标题" });
     await flush();
     const after = requestRender.mock.calls.length;

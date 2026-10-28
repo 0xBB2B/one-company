@@ -145,7 +145,6 @@ export class StepWindow {
 
 export interface OpenStepWindowOptions {
   ctx: ProgramWindowHost;
-  dock: { markPageOpen(): void; markPageClosed(): void };
   clock: Clock;
   client: { call(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> };
   runId: string;
@@ -156,7 +155,7 @@ const FETCH_INTERVAL_MS = 500;
 const ANIMATION_INTERVAL_MS = 200;
 
 export async function openStepWindow(options: OpenStepWindowOptions): Promise<void> {
-  const { ctx, dock, clock, client, runId, title } = options;
+  const { ctx, clock, client, runId, title } = options;
   const timers: Array<ReturnType<Clock["setIntervalExcludingSleep"]>> = [];
   const stopTimers = () => { for (const handle of timers.splice(0)) clock.clearTimer(handle); };
   try {
@@ -165,7 +164,6 @@ export async function openStepWindow(options: OpenStepWindowOptions): Promise<vo
       (tui, theme, _keybindings, done) => {
         const hostTui = tui as { requestRender?: () => void; terminal?: { rows: number; columns: number } };
         const win = new StepWindow({ title, now: () => clock.now(), onClose: () => done(undefined), theme: theme as StepWindowTheme });
-        dock.markPageOpen();
         if (hostTui.terminal) win.resize(hostTui.terminal.columns, hostTui.terminal.rows);
         let fetching = false;
         const fetchSteps = async (): Promise<void> => {
@@ -191,6 +189,5 @@ export async function openStepWindow(options: OpenStepWindowOptions): Promise<vo
     );
   } finally {
     stopTimers();
-    dock.markPageClosed();
   }
 }
