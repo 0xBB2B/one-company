@@ -1097,7 +1097,7 @@ export const WorkspaceClients = {
     }
 
     const clients = new Map<string, DaemonClient>();
-    await Promise.all(
+    const results = await Promise.allSettled(
       Array.from(uniqueRepos.entries()).map(async ([repoId, repoPath]) => {
         const ctx = await resolveContext({
           repoDir: repoPath,
@@ -1114,6 +1114,11 @@ export const WorkspaceClients = {
         clients.set(repoId, client);
       }),
     );
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure) {
+      for (const client of clients.values()) client.close();
+      throw failure.reason;
+    }
 
     return {
       forRepo: (repoId: string) => clients.get(repoId),
