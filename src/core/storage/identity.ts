@@ -5,6 +5,7 @@ import { isAbsolute, join } from "node:path";
 
 import { repositoryDatabase, withDatabase } from "./database.ts";
 import { assertDataRootOutsideWorktrees } from "./database-paths.ts";
+import { sanitizeText } from "../policy/text-sanitize.ts";
 
 export interface RepositoryIdentity {
   repoId: string;
@@ -177,4 +178,11 @@ export async function repoDataDir(dataRootPath: string, repoId: string, commonDi
 
 export function daemonSocketPath(dataRootPath: string, repoId: string): string {
   return join(dataRootPath, "sock", `${repoId.slice(0, 16)}.sock`);
+}
+
+export function repoDisplayName(commonDir: string): string {
+  const segments = commonDir.split("/").filter(Boolean);
+  const last = segments.at(-1) ?? "";
+  // 目录名可能是代理执行命令建出来的，会显示在终端里
+  return sanitizeText(last === ".git" ? segments.at(-2) ?? "" : last.replace(/\.git$/, ""));
 }

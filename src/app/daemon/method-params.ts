@@ -19,6 +19,8 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   ),
   ping: Type.Object({}, { additionalProperties: false }),
   shutdown: Type.Object({}, { additionalProperties: false }),
+  "upgrade.check": Type.Object({ authToken: Type.String({ minLength: 1 }), windowId: Type.String() }, { additionalProperties: false }),
+  "upgrade.yield": Type.Object({ authToken: Type.String({ minLength: 1 }), windowId: Type.String() }, { additionalProperties: false }),
   "runs.get": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "runs.steps": Type.Object({ runId: Type.String() }, { additionalProperties: false }),
   "runs.pause": Type.Object({ runId: Type.String() }, { additionalProperties: false }),

@@ -5,6 +5,8 @@ import type { Clock } from "../policy/clock.ts";
 import { WorkspaceClients, resolveSdkDir } from "./daemon-client.ts";
 import type { WorkspaceClientsHandle } from "./daemon-client.ts";
 import { dataRoot } from "../storage/identity.ts";
+import { upgradeNoticeText } from "./upgrade-notice.ts";
+import type { UpgradeNotice } from "./upgrade-notice.ts";
 import type { Workspace } from "../storage/identity.ts";
 import { ShellRegistry } from "./shell-registry.ts";
 import type { Host, StopResult } from "./shell-registry.ts";
@@ -20,6 +22,7 @@ export interface LifecycleDeps {
     windowId: string;
     sessionId: string;
     cwd: string;
+    onUpgradeNotice: (notice: UpgradeNotice) => void;
   }) => Promise<WorkspaceClientsHandle>;
   process?: NodeJS.Process;
 }
@@ -136,12 +139,14 @@ async function defaultConnectWorkspaceClients(input: {
   windowId: string;
   sessionId: string;
   cwd: string;
+  onUpgradeNotice: (notice: UpgradeNotice) => void;
 }): Promise<WorkspaceClientsHandle> {
   return WorkspaceClients.create({
     workspaceRoot: input.cwd,
     dataRoot: dataRoot(process.env),
     sdkDir: resolveSdkDir(),
     hello: { windowId: input.windowId, sessionId: input.sessionId },
+    onUpgradeNotice: input.onUpgradeNotice,
   });
 }
 
@@ -176,6 +181,7 @@ interface StartWindowInput {
     windowId: string;
     sessionId: string;
     cwd: string;
+    onUpgradeNotice: (notice: UpgradeNotice) => void;
   }) => Promise<WorkspaceClientsHandle>;
 }
 
@@ -184,8 +190,14 @@ async function startWindow(input: StartWindowInput): Promise<void> {
   ensureFreshReadyController();
   const windowId = uuidv7();
   let clients: WorkspaceClientsHandle | undefined;
+  let activated = false;
+  const onUpgradeNotice = (notice: UpgradeNotice) => {
+    if (activated && activeWindow?.windowId !== windowId) return;
+    const { text, level } = upgradeNoticeText(notice);
+    input.notify(text, level);
+  };
   try {
-    clients = await input.connectWorkspaceClients({ windowId, sessionId: input.sessionId, cwd: input.cwd });
+    clients = await input.connectWorkspaceClients({ windowId, sessionId: input.sessionId, cwd: input.cwd, onUpgradeNotice });
     const workspace = clients.workspace();
     if (workspace.repos.length === 0) {
       input.notify(`当前目录（${input.cwd}）和它的子目录里都没有 Git 仓库，需求和后台代理功能用不了。`
@@ -197,6 +209,7 @@ async function startWindow(input: StartWindowInput): Promise<void> {
     const shellRegistry = input.resolveShellRegistry(clock);
     startupError = undefined;
     activeWindow = { windowId, sessionId: input.sessionId, workspace, clients, shellRegistry };
+    activated = true;
     readyController.resolve(windowContext());
   } catch (error) {
     clients?.closeAll();

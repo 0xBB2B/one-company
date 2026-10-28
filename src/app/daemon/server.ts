@@ -42,7 +42,24 @@ export interface DaemonServerOptions {
   hasActiveRuns?: () => Promise<{ active: boolean; reason?: string }>;
   isReady?: () => boolean;
   onShutdownRequested?: () => void;
+  upgrade?: {
+    inspect: (caller: UpgradeCaller) => Promise<UpgradeStatus>;
+    yield: (caller: UpgradeCaller) => Promise<UpgradeStatus & { accepted: boolean }>;
+  };
 }
+
+export interface UpgradeCaller {
+  windowId: string;
+  connectionId?: string;
+}
+
+export type UpgradeStatus = {
+  stale: boolean;
+  protocolVersion: number;
+  requirements: string[];
+  otherWindows: number;
+  ownSessions: number;
+};
 
 const HANDLERS_READY_TIMEOUT_MS = 10_000;
 
@@ -196,9 +213,16 @@ export class DaemonServer {
     else requestInfo = client.info;
     try {
       if (isHello) this.assertAuthToken(frame.params);
+      const upgrade = frame.method === "upgrade.check" || frame.method === "upgrade.yield" ? this.options.upgrade : undefined;
+      if (upgrade) this.assertAuthToken(frame.params);
       validateParams(frame.method, frame.params);
       let result: Record<string, unknown>;
-      if (isHello) {
+      if (upgrade) {
+        // 新旧守护进程协议版本不同时也要能查询和让位，所以不要求先 hello，也不改变连接的握手身份
+        const caller = { windowId: frame.params.windowId as string, ...(requestInfo?.connectionId ? { connectionId: requestInfo.connectionId } : {}) };
+        result = await (frame.method === "upgrade.check" ? upgrade.inspect(caller) : upgrade.yield(caller));
+        responseInfo = requestInfo;
+      } else if (isHello) {
         const hello = await this.handleHello(client, frame.params);
         responseInfo = hello.info;
         result = hello.result;

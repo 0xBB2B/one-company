@@ -11,7 +11,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 程序分两个进程跑：
 
 - **主窗口扩展**：pi 启动时加载 `src/app/extension/index.ts`，在主窗口里注册工具、命令、状态面板和程序窗口。
-- **守护进程**：在后台持续运行代理的 Node 进程，每个仓库一个，同一仓库的多个 worktree 共用。打开主窗口时自动启动，空闲 10 分钟后自己退出。PM、worker、reviewer、qa、explore（只读查资料的检索代理）、原型设计师这些代理会话都跑在守护进程里，主窗口关掉也不影响它们。
+- **守护进程**：在后台持续运行代理的 Node 进程，每个仓库一个，同一仓库的多个 worktree 共用。打开主窗口时自动启动，空闲 10 分钟后自己退出；它跑的代码和安装目录里的不一样时，由新打开的窗口在它空闲时换成新的。PM、worker、reviewer、qa、explore（只读查资料的检索代理）、原型设计师这些代理会话都跑在守护进程里，主窗口关掉也不影响它们。
 
 两边通过数据根目录下 `sock/` 里的 Unix 套接字通信，消息格式在 `src/core/host/protocol.ts`。为什么这样分：代理一跑就是几十分钟，不能跟着某个窗口的生死走；多个窗口还要看到同一份需求状态。
 
@@ -32,7 +32,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | policy | 内容和权限规则、时钟、文字清洗 | `src/core/policy` | `core-permissions.ts`、`clock.ts` |
 | exec | 外部命令的报错格式、读 git、目标分支、origin 主机与本机 gh / glab 登录记录、git 快照、分支保护、安装前检查 git | `src/core/exec` | `tool-failure.ts`、`git-read.ts`、`target-branch.ts`、`git-host.ts`、`git-prerequisite.mjs` |
 | storage | 本机 SQLite 数据库、数据根目录、仓库身份、操作日志 | `src/core/storage` | `database.ts`、`data-root.ts`、`identity.ts` |
-| host | 主窗口生命周期、守护进程客户端和通信格式、程序窗口、底部面板、后台 shell 登记表、断网暂停 | `src/core/host` | `extension-lifecycle.ts`、`daemon-client.ts`（`connectDaemon`）、`protocol.ts` |
+| host | 主窗口生命周期、守护进程客户端和通信格式、守护进程过旧时换新、程序窗口、底部面板、后台 shell 登记表、断网暂停 | `src/core/host` | `extension-lifecycle.ts`、`daemon-client.ts`（`connectDaemon`）、`protocol.ts`、`code-fingerprint.ts`、`upgrade-notice.ts` |
 | agents | 角色定义的查找与复制、模型引用、职责规矩、MCP、检索排除、子代理会话、会话和运行记录、步骤簿（守护进程内存里按运行记下子代理的每次工具调用） | `src/modules/agents` | `agent-session.ts`（`createAgentRoleSession`）、`roles.ts`、`run-store.ts`、`run-steps.ts`（`RunStepBook`） |
 | requirement | 需求草稿与正文存储、批准清单（记下这一版正文的每一段、每个允许的动作分别由哪些决定确认）、需求状态、事件、备份恢复、短决定（对话里做出的决定，用户说的或模型提议的，归纳成一句结论加适用范围记下来）、主窗口授权、原型记录 | `src/modules/requirement` | `RequirementService`、`RequirementStateStore`、`prd-storage.ts`、`approval-manifest.ts` |
 | prototype | 派原型设计师、"确认原型"窗口 | `src/modules/prototype` | `prototype-extension.ts`、`prototype-windows.ts` |
@@ -52,7 +52,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 
 ### 主窗口连上守护进程
 
-pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExtension` 用 `WorkspaceClients` 连接工作区里每个仓库的守护进程，连不上就用 `src/app/daemon/bootstrap.mjs` 拉起新进程 → app/daemon：`main.ts` 校验 SDK 版本后调 `startDaemon` → `startDaemon` 依次建 `DaemonServer`、`ProjectIndexHost`、`RunManager`，登记各请求方法，启动空闲退出计时 `IdleExit` → 主窗口发 `hello` 握手后开始调用。
+pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExtension` 用 `WorkspaceClients` 连接工作区里每个仓库的守护进程，连不上就用 `src/app/daemon/bootstrap.mjs` 拉起新进程 → app/daemon：`main.ts` 校验 SDK 版本后调 `startDaemon` → `startDaemon` 依次建 `DaemonServer`、`ProjectIndexHost`、`RunManager`，登记各请求方法，启动空闲退出计时 `IdleExit` → 主窗口先发 `upgrade.check` 问守护进程代码是否过旧（与启动时记下的 `codeFingerprint` 比较）：过旧且空闲就发 `upgrade.yield` 让它退出、再拉起新的；过旧但在忙就每 30 秒再查 → 主窗口发 `hello` 握手后开始调用。
 
 ### 一个需求从提出到交付
 
@@ -87,6 +87,7 @@ pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExte
 | 方法前缀 | 所属模块 | 用途 |
 |---|---|---|
 | `hello`、`ping`、`shutdown` | app/daemon | 握手、探活、请求退出 |
+| `upgrade.*` | app/daemon | 握手前也能调用：查守护进程代码是否过旧、在忙什么，过旧且空闲时让它退出 |
 | `agents.*`、`runs.*` | app/daemon（`RunManager`） | 派 PM 和检索，查看、暂停、恢复、停止运行，查子代理的步骤 |
 | `pm.*` | app/daemon → panel、pm | 面板概览、⚑ 事项的决策包、转话给 PM |
 | `explore.*` | app/daemon → explore | 主窗口派出的检索列表和结果 |

@@ -12,14 +12,17 @@ import { probeExistingInstance, socketPathByteLimit } from "./daemon-probe.ts";
 import { createClock } from "../policy/clock.ts";
 import { uuidv7 } from "../storage/database.ts";
 import type { Clock, TimerHandle } from "../policy/clock.ts";
-import { daemonSocketPath, discoverWorkspace, repoDataDir, repositoryIdentity } from "../storage/identity.ts";
+import { daemonSocketPath, discoverWorkspace, repoDataDir, repoDisplayName, repositoryIdentity } from "../storage/identity.ts";
 import type { RepositoryIdentity, Workspace, WorkspaceSkipped } from "../storage/identity.ts";
+import { upgradeAdvice } from "./upgrade-notice.ts";
+import type { UpgradeNotice } from "./upgrade-notice.ts";
 import { createRequest, decodeFrames, encodeFrame, PROTOCOL_VERSION } from "./protocol.ts";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(moduleDir, "../../..");
 const daemonBootstrapEntry = join(packageRoot, "src/app/daemon/bootstrap.mjs");
 
+const UPGRADE_BLOCKED_REASON = "后台进程是旧版本，等待换新";
 const RECONNECT_BASE_MS = 200;
 const RECONNECT_MAX_MS = 5_000;
 const RECONNECT_JITTER_RATIO = 0.25;
@@ -27,6 +30,8 @@ const SPAWN_READY_TIMEOUT_MS = 10_000;
 const SPAWN_POLL_INTERVAL_MS = 100;
 const PRE_HANDSHAKE_EVENT_MAX_COUNT = 256;
 const PRE_HANDSHAKE_EVENT_MAX_BYTES = 1024 * 1024;
+const UPGRADE_POLL_MS = 30_000;
+const UPGRADE_YIELD_CLOSE_TIMEOUT_MS = 10_000;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -227,6 +232,7 @@ interface ResolvedContext {
   ownsClock: boolean;
   helloParams: Record<string, unknown>;
   connectOnly: boolean;
+  onUpgradeNotice: ((notice: UpgradeNotice) => void) | undefined;
 }
 
 interface PendingCall {
@@ -365,6 +371,7 @@ class SocketLink {
   }
 
   call(method: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (this.closeHandled || this.socket.destroyed) return Promise.reject(unreachable(this.lastErrorMessage ?? "连接已关闭"));
     const request = createRequest(method, params);
     return new Promise((resolve, reject) => {
       this.pending.set(request.id, { resolve, reject });
@@ -432,6 +439,23 @@ export interface DaemonClient {
   waitClosed(): Promise<void>;
 }
 
+interface UpgradeAnswer {
+  stale: boolean;
+  protocolVersion: number;
+  requirements: string[];
+  otherWindows: number;
+  ownSessions: number;
+  accepted?: boolean;
+}
+
+type UpgradeVerdict =
+  | { kind: "unsupported" | "unknown" | "current" | "yielded" }
+  | { kind: "busy"; answer: UpgradeAnswer };
+
+function isBusy(answer: UpgradeAnswer): boolean {
+  return answer.requirements.length > 0 || answer.otherWindows > 0 || answer.ownSessions > 0;
+}
+
 class DaemonClientImpl implements DaemonClient {
   private readonly ctx: ResolvedContext;
   private link: SocketLink | null;
@@ -442,6 +466,9 @@ class DaemonClientImpl implements DaemonClient {
   private reconnectDelayMs: number;
   private connectionSequence: number;
   private handshakeTerminal: boolean;
+  private upgradeWait: { kind: "usable" | "blocked"; answer: UpgradeAnswer } | null = null;
+  private upgradeTimer: TimerHandle | null = null;
+  private windowStale = false;
   private identity: Readonly<DaemonConnectionIdentity> | null = null;
   private helloResult: Readonly<Record<string, unknown>> | null = null;
   private readonly listeners: Map<string, Set<(data: Record<string, unknown>) => void>>;
@@ -472,18 +499,214 @@ class DaemonClientImpl implements DaemonClient {
   }
 
   private startConnectionOperation(): Promise<void> {
-    const operation = (async () => {
+    return this.track((async () => {
       const socket = await this.attemptConnect();
       if (this.closed) {
         socket.destroy();
         throw new Error("客户端已关闭");
       }
-      await this.helloOn(socket);
-    })();
+      const link = this.createLink(socket);
+      if (this.ctx.connectOnly) {
+        await this.helloOrStale(link, "other");
+        return;
+      }
+      await this.applyVerdict(await this.inspectOn(link), link, false);
+    })());
+  }
+
+  private track(operation: Promise<void>): Promise<void> {
     this.connectionOperations.add(operation);
     const settled = () => { this.connectionOperations.delete(operation); };
     void operation.then(settled, settled);
     return operation;
+  }
+
+  private createLink(socket: Socket): SocketLink {
+    const link: SocketLink = new SocketLink(
+      socket,
+      (event, data) => this.dispatchEvent(event, data),
+      (reason) => this.handleDisconnect(link, reason),
+    );
+    return link;
+  }
+
+  private upgradeParams(): Record<string, unknown> {
+    return { authToken: controlToken(this.ctx.dataRoot), windowId: this.ctx.helloParams.windowId };
+  }
+
+  private async inspectOn(link: SocketLink): Promise<UpgradeVerdict> {
+    let answer: UpgradeAnswer;
+    try {
+      answer = await link.call("upgrade.check", this.upgradeParams()) as unknown as UpgradeAnswer;
+    } catch (error) {
+      return { kind: error instanceof DaemonCallError && error.code === "unknown_method" ? "unsupported" : "unknown" };
+    }
+    if (!answer.stale) return { kind: "current" };
+    if (isBusy(answer)) return { kind: "busy", answer };
+    const yielded = await this.yieldOn(link);
+    if (!yielded) return { kind: "unknown" };
+    return yielded.accepted ? { kind: "yielded" } : { kind: "busy", answer: yielded };
+  }
+
+  private async yieldOn(link: SocketLink): Promise<UpgradeAnswer | undefined> {
+    try {
+      return await link.call("upgrade.yield", this.upgradeParams()) as unknown as UpgradeAnswer;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async reconnectAfterYield(old: SocketLink): Promise<SocketLink> {
+    const closed = old.socket.destroyed || await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), UPGRADE_YIELD_CLOSE_TIMEOUT_MS);
+      old.socket.once("close", () => { clearTimeout(timer); resolve(true); });
+    });
+    old.destroy();
+    if (!closed) throw new Error(`旧的后台进程同意让位后 ${UPGRADE_YIELD_CLOSE_TIMEOUT_MS / 1000} 秒内没有断开连接`);
+    if (this.closed) throw new Error("客户端已关闭");
+    const socket = await this.attemptConnect();
+    if (this.closed) {
+      socket.destroy();
+      throw new Error("客户端已关闭");
+    }
+    return this.createLink(socket);
+  }
+
+  private async helloOrStale(link: SocketLink, basis: "current" | "unknown" | "other"): Promise<void> {
+    try {
+      await this.helloOn(link);
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code === "protocol_version") {
+        if (basis === "current") this.enterWindowStale();
+        // 检查没查清守护进程是不是旧的，不能直接判终止；交给退避重连下次重查
+        else if (basis === "unknown") throw new Error("后台进程和这个窗口协议版本不同，这次没能确认它是否过旧，正在重新连接检查");
+      }
+      throw error;
+    }
+  }
+
+  private notice(kind: UpgradeNotice["kind"], answer?: UpgradeAnswer): UpgradeNotice {
+    return {
+      kind,
+      repoName: repoDisplayName(this.ctx.commonDir),
+      requirements: answer?.requirements ?? [],
+      otherWindows: answer?.otherWindows ?? 0,
+      ownSessions: answer?.ownSessions ?? 0,
+    };
+  }
+
+  private clearUpgradeWait(): void {
+    this.upgradeWait = null;
+    if (this.upgradeTimer) {
+      this.ctx.clock.clearTimer(this.upgradeTimer);
+      this.upgradeTimer = null;
+    }
+  }
+
+  private enterWindowStale(): void {
+    if (this.windowStale) return;
+    this.windowStale = true;
+    this.clearUpgradeWait();
+    this.ctx.onUpgradeNotice?.(this.notice("window_stale"));
+  }
+
+  private enterUpgradeWait(kind: "usable" | "blocked", answer: UpgradeAnswer): void {
+    if (this.closed) return;
+    const first = this.upgradeWait === null;
+    this.upgradeWait = { kind, answer };
+    if (kind === "blocked") {
+      this.status = "unreachable";
+      this.reason = UPGRADE_BLOCKED_REASON;
+    }
+    if (first) this.ctx.onUpgradeNotice?.(this.notice(kind === "usable" ? "waiting_usable" : "waiting_blocked", answer));
+    this.scheduleUpgradePoll();
+  }
+
+  private async applyVerdict(verdict: UpgradeVerdict, link: SocketLink, handshaken: boolean): Promise<void> {
+    switch (verdict.kind) {
+      case "unsupported":
+        if (!handshaken) await this.helloOrStale(link, "other");
+        return;
+      case "current":
+        if (!handshaken) await this.helloOrStale(link, "current");
+        if (this.upgradeWait !== null) this.finishReplacement(false);
+        return;
+      case "yielded":
+        if (handshaken) await this.replaceAfterYield(link);
+        else await this.connectReplacement(link);
+        return;
+      case "busy":
+        if (verdict.answer.protocolVersion === PROTOCOL_VERSION) {
+          if (!handshaken) await this.helloOrStale(link, "other");
+          this.enterUpgradeWait("usable", verdict.answer);
+        } else {
+          link.destroy();
+          this.enterUpgradeWait("blocked", verdict.answer);
+        }
+        return;
+      case "unknown":
+        // 协议版本号不同的等待（blocked）里检查失败，去握手只会被拒；保持 30 秒重查，别掉进退避重连，并继续给模型返回"正在等换新"
+        if (this.upgradeWait?.kind === "blocked") {
+          if (!handshaken) link.destroy();
+          this.enterUpgradeWait("blocked", this.upgradeWait.answer);
+          return;
+        }
+        if (!handshaken) await this.helloOrStale(link, "unknown");
+        this.scheduleUpgradePoll();
+        return;
+    }
+  }
+
+  private async connectReplacement(old: SocketLink): Promise<void> {
+    const link = await this.reconnectAfterYield(old);
+    await this.helloOrStale(link, "current");
+    this.finishReplacement(true);
+  }
+
+  private finishReplacement(replaced: boolean): void {
+    const waited = this.upgradeWait !== null;
+    this.clearUpgradeWait();
+    if (waited) this.ctx.onUpgradeNotice?.(this.notice("replaced_after_wait"));
+    else if (replaced) this.ctx.onUpgradeNotice?.(this.notice("replaced"));
+  }
+
+  private scheduleUpgradePoll(): void {
+    if (this.closed || this.upgradeTimer) return;
+    this.upgradeTimer = this.ctx.clock.setTimeoutExcludingSleep(() => {
+      this.upgradeTimer = null;
+      void this.pollUpgrade();
+    }, UPGRADE_POLL_MS);
+  }
+
+  private async pollUpgrade(): Promise<void> {
+    if (this.closed || this.handshakeTerminal || this.windowStale) return;
+    const link = this.link;
+    if (!link || this.status !== "connected") {
+      // 已连上过的窗口掉线后由退避重连接手，这里再连会和它并发
+      if (this.upgradeWait?.kind === "blocked" && this.connectionOperations.size === 0 && !this.reconnectTimer) await this.tryReconnect();
+      else this.scheduleUpgradePoll();
+      return;
+    }
+    const verdict = await this.inspectOn(link);
+    if (this.closed || this.link !== link) return;
+    await this.applyVerdict(verdict, link, true);
+  }
+
+  private async replaceAfterYield(old: SocketLink): Promise<void> {
+    this.link = null;
+    this.identity = null;
+    this.helloResult = null;
+    this.status = "starting";
+    this.reason = "后台进程正在换成新版本";
+    this.dispatchEvent(
+      DAEMON_CLIENT_LIFECYCLE_EVENTS.disconnected,
+      this.disconnectedEventData(this.reason, true, "transport"),
+    );
+    try {
+      await this.track(this.connectReplacement(old));
+    } catch (error) {
+      this.handleConnectFailure(error);
+    }
   }
 
   private registerSocket(socket: Socket): void {
@@ -539,14 +762,8 @@ class DaemonClientImpl implements DaemonClient {
     }
   }
 
-  private async helloOn(socket: Socket): Promise<void> {
-    let link: SocketLink | null = null;
+  private async helloOn(link: SocketLink): Promise<void> {
     try {
-      link = new SocketLink(
-        socket,
-        (event, data) => this.dispatchEvent(event, data),
-        (reason) => this.handleDisconnect(link!, reason),
-      );
       this.link = link;
       const authToken = controlToken(this.ctx.dataRoot);
       const result = await link.call("hello", { ...this.ctx.helloParams, authToken }).catch((error: unknown) => {
@@ -577,14 +794,11 @@ class DaemonClientImpl implements DaemonClient {
       if (!link.releaseBufferedEvents()) throw new Error("hello 完成后无法放行暂存事件");
       return;
     } catch (error) {
-      // raw socket创建成功后始终由本次握手负责；任何pre-link或握手失败都只关闭自己的连接。
-      if (link) {
-        link.destroy();
-        if (this.link === link) this.link = null;
-      } else socket.destroy();
+      link.destroy();
+      if (this.link === link) this.link = null;
       throw error;
     } finally {
-      if (this.closed && link) {
+      if (this.closed) {
         link.destroy();
         if (this.link === link) this.link = null;
       }
@@ -692,18 +906,26 @@ class DaemonClientImpl implements DaemonClient {
     try {
       await this.startConnectionOperation();
     } catch (error) {
-      if (this.closed || this.handshakeTerminal) return;
-      if (this.isTerminalHandshakeFailure(error)) {
-        this.terminateHandshake(error as Error);
-      } else {
-        this.status = "unreachable";
-        this.reason = (error as Error).message;
-        this.scheduleReconnect();
-      }
+      this.handleConnectFailure(error);
+    }
+  }
+
+  private handleConnectFailure(error: unknown): void {
+    if (this.closed || this.handshakeTerminal) return;
+    if (this.isTerminalHandshakeFailure(error)) {
+      this.terminateHandshake(error as Error);
+    } else {
+      this.status = "unreachable";
+      this.reason = (error as Error).message;
+      this.scheduleReconnect();
     }
   }
 
   async call(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    if (this.windowStale) throw new AdvisedError("window_stale", upgradeAdvice(this.notice("window_stale")));
+    if (this.upgradeWait?.kind === "blocked" && this.status !== "connected" && this.reason === UPGRADE_BLOCKED_REASON) {
+      throw new AdvisedError("daemon_upgrade_pending", upgradeAdvice(this.notice("waiting_blocked", this.upgradeWait.answer)));
+    }
     if (this.status !== "connected" || !this.link || this.link.handshakeFailure()) {
       throw unreachable(this.reason ?? "尚未连接");
     }
@@ -761,6 +983,7 @@ class DaemonClientImpl implements DaemonClient {
       this.ctx.clock.clearTimer(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.clearUpgradeWait();
     this.link?.destroy();
     this.link = null;
     for (const socket of this.socketClosures.keys()) socket.destroy();
@@ -804,6 +1027,7 @@ export interface ConnectDaemonOptions {
   hello: HelloInput;
   /** 只连接现有 daemon；首连和重连均不会隐式创建进程。 */
   connectOnly?: boolean;
+  onUpgradeNotice?: (notice: UpgradeNotice) => void;
 }
 
 async function resolveContext(options: ConnectDaemonOptions): Promise<ResolvedContext> {
@@ -816,6 +1040,7 @@ async function resolveContext(options: ConnectDaemonOptions): Promise<ResolvedCo
     clock: options.clock,
     hello: { ...options.hello },
     connectOnly: options.connectOnly === true,
+    onUpgradeNotice: options.onUpgradeNotice,
   };
   const identity = await repositoryIdentity(captured.repoDir);
   return {
@@ -834,6 +1059,7 @@ async function resolveContext(options: ConnectDaemonOptions): Promise<ResolvedCo
       protocolVersion: PROTOCOL_VERSION,
     },
     connectOnly: captured.connectOnly,
+    onUpgradeNotice: captured.onUpgradeNotice,
   };
 }
 
@@ -851,6 +1077,7 @@ export interface WorkspaceClientsOptions {
   env?: Record<string, string>;
   clock?: Clock;
   hello: HelloInput;
+  onUpgradeNotice?: (notice: UpgradeNotice) => void;
 }
 
 export interface WorkspaceClientsHandle {
@@ -880,6 +1107,7 @@ export const WorkspaceClients = {
           env: options.env,
           clock: options.clock,
           hello: options.hello,
+          onUpgradeNotice: options.onUpgradeNotice,
         });
         const client = new DaemonClientImpl(ctx);
         await client.connectInitialOrDegrade();

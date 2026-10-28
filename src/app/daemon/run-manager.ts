@@ -7,7 +7,7 @@ import type { Clock } from "../../core/policy/clock.ts";
 import type { NetworkPauseGate } from "../../core/host/network-pause.ts";
 import { loadRoleRules } from "../../modules/agents/package-rules.ts";
 import type { RoleCatalogEntry } from "../../modules/agents/roles.ts";
-import type { RunKind, RunRecord, StopCause, StopReason } from "../../modules/agents/run-store.ts";
+import type { RunKind, RunRecord, RunState, StopCause, StopReason } from "../../modules/agents/run-store.ts";
 import { isTerminalState, RunStore } from "../../modules/agents/run-store.ts";
 import type { Host, ShellRegistry, TaskRecord } from "../../core/host/shell-registry.ts";
 import { repositoryDatabase, UUID_V7_PATTERN, uuidv7 } from "../../core/storage/database.ts";
@@ -261,6 +261,8 @@ const PROTOCOL_NEXT: Record<string, string> = {
 function protocolError(code: string, message: string, next?: string): Error & { code: string } {
   return Object.assign(new Error(message), { code, advice: { why: message, next: next ?? PROTOCOL_NEXT[code] ?? "按原因处理后重试；仍然失败就把原因告诉用户" } });
 }
+
+export const ACTIVE_REQUIREMENT_STATES: RunState[] = ["queued", "running", "pausing", "paused"];
 
 /** 派出与管理 PM、子代理和检索的会话，维护运行记录，暂停、续接与安全停止运行及其 Shell。 */
 export class RunManager {
@@ -992,6 +994,16 @@ export class RunManager {
     return [...this.mainPrototypes].filter(([, main]) => main.connectionId === connectionId && !main.submitted)
       .map(([runId, main]) => ({ runId, requirementId: main.requirementId, name: main.name, version: main.version, agent: main.agent,
         turns: main.handle.turnsUsed(), maxTurns: main.maxTurns, elapsedMs: Date.now() - main.startedAt }));
+  }
+
+  async activeRequirementTitles(): Promise<string[]> {
+    const { items } = await this.runStore.list({ kind: "requirement", states: ACTIVE_REQUIREMENT_STATES, limit: Number.MAX_SAFE_INTEGER });
+    const ids = [...new Set(items.map((run) => run.requirement))].sort();
+    return Promise.all(ids.map((id) => this.requirementTitle(id).catch(() => id)));
+  }
+
+  mainSessionCount(connectionId: string): number {
+    return this.mainPrototypeList(connectionId).length + this.mainExploreList(connectionId).length;
   }
 
   mainPrototypeStatus(runId: string, connectionId: string | undefined): Record<string, unknown> | null {

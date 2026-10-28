@@ -24,6 +24,10 @@ const server = createServer((socket) => {
     buffer = rest;
     for (const frame of frames) {
       if (frame.t !== "req") continue;
+      if (frame.method === "upgrade.check") {
+        socket.write(encodeFrame(createErrorResponse(frame.id, "unknown_method", "未知方法: upgrade.check")));
+        continue;
+      }
       if (frame.method === "ping") {
         socket.write(encodeFrame(createResponse(frame.id, { now: Date.now() })));
         continue;

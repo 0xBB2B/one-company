@@ -122,6 +122,7 @@ function fakeRepo(
     list?: () => Record<string, unknown>[];
     stop?: (params: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>;
   },
+  name = repoId,
 ): ShellPageRepo & { calls: RepoCallLog[]; client: ShellPageClient } {
   const calls: RepoCallLog[] = [];
   const client: ShellPageClient = {
@@ -133,7 +134,7 @@ function fakeRepo(
       throw new Error(`非白名单 RPC：${method}`);
     },
   };
-  return { repoId, calls, client, resolveClient: () => client };
+  return { repoId, name, calls, client, resolveClient: () => client };
 }
 
 function fakeTheme() {
@@ -893,28 +894,30 @@ describe("ShellPage：空列表、读取失败与含 reason 行的滚动上限",
     ]);
   });
 
-  test("仓库读取失败时展示具体错误（含 repoId 归属），且不显示无活动 Shell 措辞", async () => {
-    const repo = fakeRepo("repo-broken", {});
+  test("仓库读取失败时展示具体错误（含项目目录名归属，不含仓库编号），且不显示无活动 Shell 措辞", async () => {
+    const repoId = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+    const repo = fakeRepo(repoId, {}, "企微BOT");
     repo.client.call = async () => {
       throw new Error("守护进程不可达（测试注入）");
     };
     const page = new ShellPage(basePageOptions({ repos: [repo] }));
     await page.refresh();
     const lines = page.render(80);
-    expect(lines[3]).toBe(" ✗ 刷新失败：repo-broken 守护进程不可达（测试注入），列表可能不是最新的");
+    expect(lines[3]).toBe(" ✗ 刷新失败：企微BOT 守护进程不可达（测试注入），列表可能不是最新的");
+    expect(lines.join("\n")).not.toContain(repoId);
     expect(lines.join("\n")).not.toContain("没有正在运行");
   });
 
-  test("多仓库时仅一个失败：错误文本可按 repoId 区分是哪个仓库读取失败，另一仓库任务正常展示", async () => {
-    const brokenRepo = fakeRepo("repo-a-broken", {});
+  test("多仓库时仅一个失败：错误文本可按 name 区分是哪个仓库读取失败，另一仓库任务正常展示", async () => {
+    const brokenRepo = fakeRepo("id-a-broken", {}, "repo-a-broken");
     brokenRepo.client.call = async () => {
       throw new Error("连接超时（测试注入）");
     };
-    const healthyRepo = fakeRepo("repo-b-healthy", {
+    const healthyRepo = fakeRepo("id-b-healthy", {
       list: () => [
         { taskId: "healthy-task", host: roleHost("worker"), command: "健康仓库命令", cwd: "/repo", pid: 101, startedAt: new Date(0).toISOString(), status: "running", activity: "active", inWorkspace: true },
       ],
-    });
+    }, "repo-b-healthy");
     const page = new ShellPage(basePageOptions({ repos: [brokenRepo, healthyRepo] }));
     await page.refresh();
     const text = page.render(80).join("\n");
@@ -1329,7 +1332,7 @@ test("远端查询在途时本地证明或PID变化，最终刷新不能还原�
     const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "current", connectionSequence: 1 }),
       call: async () => hold ? new Promise<Record<string, unknown>>((resolve) => { finish = resolve; }) : { tasks: [] } };
     const registry = { list: () => [task], get: () => task } as unknown as ShellRegistry;
-    const page = new ShellPage(basePageOptions({ registry, clock, repos: [{ repoId: "remote", resolveClient: () => client }] }));
+    const page = new ShellPage(basePageOptions({ registry, clock, repos: [{ repoId: "remote", name: "remote", resolveClient: () => client }] }));
     await page.refresh(); time.advance(60_001); hold = true;
     const pending = page.refresh();
     if (mutation === "proof") task.descendantsScanned = false;
@@ -1348,7 +1351,7 @@ test("同对象连接epoch变化后旧list不报空、旧stop回执不进入新�
   const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "same-object", connectionSequence: sequence }),
     call: async (method: string) => method === "shells.stop" ? new Promise<Record<string, unknown>>((resolve) => { resolveStop = resolve; })
       : holdList ? new Promise<Record<string, unknown>>((resolve) => { resolveList = resolve; }) : { tasks: [task] } };
-  const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", resolveClient: () => client }] }));
+  const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", name: "remote", resolveClient: () => client }] }));
   await page.refresh(); page.handleInput("K"); page.handleInput(KEY.right); page.handleInput(KEY.enter);
   sequence++; await page.refresh();
   expect(page.render(160).join("\n")).not.toContain("停止中");
@@ -1361,7 +1364,7 @@ test("同对象连接epoch变化后旧list不报空、旧stop回执不进入新�
 
 test.each([null, undefined, "错误\x1b[2J\n伪造", { message: "对象错误\x1b[2J\n伪造" }])("未知异常%j只产生有界未知，不崩溃或报空", async (error) => {
   const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "c", connectionSequence: 1 }), call: async () => { throw error; } };
-  const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", resolveClient: () => client }] }));
+  const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", name: "remote", resolveClient: () => client }] }));
   await expect(page.refresh()).resolves.toBeUndefined();
   const lines = page.render(160); expect(lines.join("\n")).toContain("刷新失败"); expect(lines.join("\n")).not.toContain("没有正在运行或待确认的 Shell 任务");
   expect(lines.some((line) => /[\x00-\x1f\x7f-\x9f]/.test(line))).toBe(false);
@@ -1370,7 +1373,7 @@ test.each([null, undefined, "错误\x1b[2J\n伪造", { message: "对象错误\x1
 test("缺失列表和host非字符串身份属于未知数据，不转换成空或渲染崩溃", async () => {
   for (const response of [{}, { tasks: null }, { tasks: [{ ...localTask(), host: { kind: "role", id: 123, role: "worker" } }] }]) {
     const client = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "c", connectionSequence: 1 }), call: async () => response };
-    const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", resolveClient: () => client }] }));
+    const page = new ShellPage(basePageOptions({ repos: [{ repoId: "remote", name: "remote", resolveClient: () => client }] }));
     await page.refresh(); expect(() => page.render(160)).not.toThrow();
     expect(page.render(160).join("\n")).toContain("刷新失败"); expect(page.render(160).join("\n")).not.toContain("没有正在运行或待确认的 Shell 任务");
   }
@@ -1382,8 +1385,8 @@ describe("ShellPage：缺连接属于未知覆盖，不当作空结果", () => {
     const connectedClient = { connectionIdentity: () => ({ daemonInstanceId: "fixture", connectionId: "connection", connectionSequence: 1 }),
       call: async (method: string) => { calls.push(method); return { tasks: [] }; } };
     let restoredClient: ShellPageClient | undefined;
-    const missingA: ShellPageRepo = { repoId: "repo-missing-a", resolveClient: () => restoredClient };
-    const missingB: ShellPageRepo = { repoId: "repo-missing-b", resolveClient: () => undefined };
+    const missingA: ShellPageRepo = { repoId: "repo-missing-a", name: "repo-missing-a", resolveClient: () => restoredClient };
+    const missingB: ShellPageRepo = { repoId: "repo-missing-b", name: "repo-missing-b", resolveClient: () => undefined };
     const allMissing = new ShellPage(basePageOptions({ repos: [missingA, missingB] }));
     allMissing.resize(80, 6);
     await allMissing.refresh();
@@ -1393,7 +1396,7 @@ describe("ShellPage：缺连接属于未知覆盖，不当作空结果", () => {
     expect(allMissing.render(80)[4]).toBe(" ✗ 刷新失败：repo-missing-b 连接不可用，列表可能不是最新的");
     expect(allMissing.render(12).join("\n")).not.toContain("没有正在运行或待确认的 Shell 任务");
 
-    const partial = new ShellPage(basePageOptions({ repos: [{ repoId: "repo-ok", resolveClient: () => connectedClient }, missingA] }));
+    const partial = new ShellPage(basePageOptions({ repos: [{ repoId: "repo-ok", name: "repo-ok", resolveClient: () => connectedClient }, missingA] }));
     await partial.refresh();
     expect(calls).toEqual(["shells.list"]);
     expect(partial.render(80).join("\n")).toContain("✗ 刷新失败：repo-missing-a 连接不可用");
@@ -1535,7 +1538,7 @@ describe("ShellPage：刷新失败与停止失败的提示行", () => {
         return { status: "stopping" };
       },
     };
-    const page = new ShellPage(basePageOptions({ repos: [{ repoId: "repo", resolveClient: () => client }], theme: { fg: (kind: string, text: string) => `<${kind}>${text}</${kind}>` } }));
+    const page = new ShellPage(basePageOptions({ repos: [{ repoId: "repo", name: "repo", resolveClient: () => client }], theme: { fg: (kind: string, text: string) => `<${kind}>${text}</${kind}>` } }));
     await page.refresh();
     page.handleInput(KEY.k);
     page.handleInput(KEY.right);
