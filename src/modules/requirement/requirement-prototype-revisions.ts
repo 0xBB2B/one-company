@@ -3,12 +3,13 @@ import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
+import { PickedOption } from "./requirement-prototypes.ts";
 import { hash as sha256Hex, id, object, positive } from "./requirement-contracts.ts";
 
 const REVISIONS = "requirement_prototype_revisions";
 
 const PrototypeRevision = object({ requirementId: id, revision: positive,
-  prototypes: Type.Array(object({ name: Type.String({ minLength: 1, maxLength: 40 }), version: positive, hash: sha256Hex, bytes: positive, userNote: Type.Union([Type.String({ minLength: 1, maxLength: 4000 }), Type.Null()]) }), { maxItems: 50 }) });
+  prototypes: Type.Array(object({ name: Type.String({ minLength: 1, maxLength: 40 }), version: positive, hash: sha256Hex, bytes: positive, picked: Type.Union([PickedOption, Type.Null()]) }), { maxItems: 50 }) });
 type PrototypeRevision = Static<typeof PrototypeRevision>;
 export type RevisionPrototype = PrototypeRevision["prototypes"][number];
 

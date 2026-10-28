@@ -5,6 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
+import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
 import { hash as sha256Hex, id, object, positive } from "./requirement-contracts.ts";
@@ -20,7 +21,12 @@ const OPINION_MAX_LENGTH = 4000;
 const REASON_MAX_LENGTH = 500;
 const MAX_ENTRIES = 50;
 
-const PrototypeFile = object({ version: positive, hash: sha256Hex, bytes: Type.Integer({ minimum: 1, maximum: 1_048_576 }), note: Type.String({ maxLength: 2000 }), userNote: Type.Union([Type.String({ minLength: 1, maxLength: 4000 }), Type.Null()]) });
+const OPTION_LETTERS = ["A", "B", "C", "D", "E", "F"] as const;
+const OPTION_NAME_MAX_LENGTH = 20;
+export const PickedOption = object({ letter: Type.Enum(OPTION_LETTERS), name: Type.String({ minLength: 1, maxLength: 20 }) });
+const PrototypeFile = object({ version: positive, hash: sha256Hex, bytes: Type.Integer({ minimum: 1, maximum: 1_048_576 }), note: Type.String({ maxLength: 2000 }),
+  options: Type.Array(Type.String({ minLength: 1, maxLength: 20 }), { maxItems: 6 }), picked: Type.Union([PickedOption, Type.Null()]) });
+export type PickedOption = Static<typeof PickedOption>;
 const PrototypeEntry = object({
   name: Type.String({ minLength: 1, maxLength: 40 }),
   lastVersion: positive,
@@ -142,13 +148,32 @@ export async function beginDesign(ref: Ref, input: { requirementId: string; name
   });
 }
 
+export const optionLetter = (index: number): PickedOption["letter"] => OPTION_LETTERS[index]!;
+export const pickedOptionText = (picked: PickedOption): string => `${picked.letter}「${picked.name}」，其余方案不做`;
+
+function checkOptionList(raw: readonly string[] | undefined): string[] {
+  if (!raw?.length) return [];
+  const next = "改好方案清单后重交";
+  const options = raw.map((name) => sanitizeText(name).replace(/\s+/g, " ").trim());
+  if (options.length < 2) deny("invalid_options", `方案清单只有 ${options.length} 个方案，至少 2 个；只画了一种方案时不附清单`, next);
+  if (options.length > OPTION_LETTERS.length) deny("invalid_options", `方案清单有 ${options.length} 个方案，最多 ${OPTION_LETTERS.length} 个`, next);
+  const empty = options.findIndex((name) => name === "");
+  if (empty >= 0) deny("invalid_options", `第 ${empty + 1} 个方案名是空的`, next);
+  const long = options.findIndex((name) => Array.from(name).length > OPTION_NAME_MAX_LENGTH);
+  if (long >= 0) deny("invalid_options", `第 ${long + 1} 个方案名超过 ${OPTION_NAME_MAX_LENGTH} 字`, next);
+  const second = options.findIndex((name, index) => options.indexOf(name) !== index);
+  if (second >= 0) deny("invalid_options", `第 ${options.indexOf(options[second]!) + 1} 个和第 ${second + 1} 个方案重名`, next);
+  return options;
+}
+
 const HTML_START = /^\s*<(?:!doctype\s+html|html)[\s>]/i;
 
-export async function submitDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; html: string; note: string }): Promise<void> {
+export async function submitDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; html: string; note: string; options?: string[] }): Promise<void> {
   const bytes = Buffer.byteLength(input.html, "utf8");
   if (bytes > PROTOTYPE_MAX_BYTES) deny("too_large", `原型 ${bytes} 字节，超过 ${PROTOTYPE_MAX_BYTES} 字节上限`, "精简原型后重交");
   if (!HTML_START.test(input.html)) deny("not_html", "交稿内容不是 HTML 页面", "交一份以 <!doctype html> 或 <html> 开头的完整页面");
   if (input.note.length > NOTE_MAX_LENGTH) deny("note_too_long", `交稿说明超过 ${NOTE_MAX_LENGTH} 字`, "缩短说明后重交");
+  const options = checkOptionList(input.options);
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (board) => {
     assertRequirementEditable(db, input.requirementId);
     const { inFlight } = requireInFlight(board, input.name, "designing");
@@ -156,7 +181,7 @@ export async function submitDesign(ref: Ref, input: { requirementId: string; nam
     const path = prototypeFilePath(ref, { requirementId: input.requirementId, name: input.name, version: inFlight.version });
     writeFileAtomicSync(path, input.html);
     inFlight.status = "awaiting";
-    inFlight.file = { version: inFlight.version, hash: sha256(input.html), bytes, note: input.note, userNote: null };
+    inFlight.file = { version: inFlight.version, hash: sha256(input.html), bytes, note: input.note, options, picked: null };
   }));
 }
 
@@ -221,26 +246,21 @@ async function verifiedFile(ref: Ref, requirementId: string, name: string, file:
 }
 
 export async function pendingConfirmation(ref: Ref, input: { requirementId: string; name: string }):
-  Promise<{ name: string; version: number; hash: string; bytes: number; note: string; path: string; previousOpinion: string | null }> {
+  Promise<{ name: string; version: number; hash: string; bytes: number; note: string; options: string[]; path: string; previousOpinion: string | null }> {
   withDatabase(databaseOf(ref), (db) => assertRequirementEditable(db, input.requirementId));
   const board = await readPrototypeBoard(ref, input.requirementId);
   const { entry, inFlight } = requireInFlight(board, input.name, "awaiting");
   const file = inFlight.file!;
   const path = await verifiedFile(ref, input.requirementId, input.name, file);
-  return { name: input.name, version: file.version, hash: file.hash, bytes: file.bytes, note: file.note, path, previousOpinion: entry.lastOpinion && entry.lastOpinion.version < file.version ? entry.lastOpinion.opinion : null };
+  return { name: input.name, version: file.version, hash: file.hash, bytes: file.bytes, note: file.note, options: file.options, path, previousOpinion: entry.lastOpinion && entry.lastOpinion.version < file.version ? entry.lastOpinion.opinion : null };
 }
 
-export async function decidePrototype(ref: Ref, input: { requirementId: string; name: string; version: number; hash: string; choice: "accept" | "opinion" | "abandon"; opinion: string | null; note: string | null }): Promise<void> {
+export async function decidePrototype(ref: Ref, input: { requirementId: string; name: string; version: number; hash: string; choice: "accept" | "opinion" | "abandon"; opinion: string | null; option: string | null }): Promise<void> {
   withDatabase(databaseOf(ref), (db) => { assertRequirementEditable(db, input.requirementId); });
   const opinion = input.opinion?.trim() ?? "";
   if (input.choice === "opinion") {
     if (!opinion) deny("opinion_required", "意见不能为空", "写上意见后再提交");
     if (opinion.length > OPINION_MAX_LENGTH) deny("opinion_too_long", `意见超过 ${OPINION_MAX_LENGTH} 字`, "精简意见后再提交");
-  }
-  const userNote = input.choice === "accept" ? input.note?.trim() ?? null : null;
-  if (userNote !== null) {
-    if (!userNote) deny("note_required", "补充说明不能为空", "写上补充说明，或改选\"通过\"");
-    if (userNote.length > OPINION_MAX_LENGTH) deny("note_too_long", `补充说明超过 ${OPINION_MAX_LENGTH} 字`, "精简补充说明后再提交");
   }
   const board = await readPrototypeBoard(ref, input.requirementId);
   const matched = (current: PrototypeBoard) => {
@@ -254,7 +274,16 @@ export async function decidePrototype(ref: Ref, input: { requirementId: string; 
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (current) => {
     assertRequirementEditable(db, input.requirementId);
     const { entry, inFlight } = matched(current);
-    if (input.choice === "accept") { entry.draft = { ...inFlight.file!, userNote }; entry.removed = false; }
+    if (input.choice === "accept") {
+      const { options } = inFlight.file!;
+      let picked: PickedOption | null = null;
+      if (options.length) {
+        const index = OPTION_LETTERS.findIndex((letter) => letter === input.option);
+        if (index < 0 || index >= options.length) deny("invalid_option", `这份原型有 ${options.length} 个方案（${OPTION_LETTERS.slice(0, options.length).join("、")}），通过时必须选其中一个`, "选定一个方案后再通过");
+        picked = { letter: OPTION_LETTERS[index]!, name: options[index]! };
+      } else if (input.option != null) deny("invalid_option", "这份原型没有方案清单，不能选方案", "不选方案直接通过");
+      entry.draft = { ...inFlight.file!, picked }; entry.removed = false;
+    }
     if (input.choice === "opinion") { entry.lastOpinion = { version: inFlight.version, opinion }; return; }
     entry.lastOpinion = null;
     entry.inFlight = null;
@@ -285,7 +314,7 @@ export function inFlightBlock(items: Array<{ name: string; version: number; stat
   return new PrototypeBoardError("in_flight", why, `先把${items.length === 1 ? "它" : `这 ${items.length} 份`}处理完（通过，或在确认窗口按 Esc 放弃），再说批准`);
 }
 
-export interface DraftItem { name: string; version: number; hash: string; bytes: number; note: string; userNote: string | null; label: "new" | "kept" | "removed" }
+export interface DraftItem { name: string; version: number; hash: string; bytes: number; note: string; picked: PickedOption | null; label: "new" | "kept" | "removed" }
 
 function draftSet(board: PrototypeBoard): { items: DraftItem[]; digest: string } {
   const items = board.entries.flatMap((entry): DraftItem[] => {

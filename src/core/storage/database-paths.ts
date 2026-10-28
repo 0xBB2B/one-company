@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { releaseStaleMaintenanceMarker, staleMarkerMessage } from "./maintenance-marker.ts";
 
 export type DatabaseKind = "data" | "global" | "index";
-export const DATABASE_SCHEMA_VERSIONS: Readonly<Record<DatabaseKind, number>> = Object.freeze({ data: 8, global: 1, index: 2 });
+export const DATABASE_SCHEMA_VERSIONS: Readonly<Record<DatabaseKind, number>> = Object.freeze({ data: 9, global: 1, index: 2 });
 export const DATABASE_APPLICATION_IDS: Readonly<Record<DatabaseKind, number>> = Object.freeze({
   data: 0x50494441,
   global: 0x5049474c,

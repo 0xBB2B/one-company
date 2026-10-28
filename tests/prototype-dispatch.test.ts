@@ -187,7 +187,7 @@ test("提意见后重派时设计师能读上一版文件，任务说明带用�
   await beginDesign(w.ref, { ...params, runId: first, agent: "prototype" });
   await submitDesign(w.ref, { ...params, runId: first, html: HTML, note: "第一版" });
   const pending = await pendingConfirmation(w.ref, params);
-  await decidePrototype(w.ref, { ...params, version: pending.version, hash: pending.hash, choice: "opinion", note: null, opinion });
+  await decidePrototype(w.ref, { ...params, version: pending.version, hash: pending.hash, choice: "opinion", option: null, opinion });
   const previousPath = prototypeFilePath(w.ref, { ...params, version: 1 });
 
   w.provider.queue.push({ type: "toolcall", name: "read", input: { path: previousPath } }, w.slow);
@@ -218,6 +218,27 @@ test("设计师交不合格稿时收到原因，看板仍是 designing", async (
   w.provider.queue.push(w.submit("这不是 HTML 页面"), w.slow);
   const { runId } = await w.dispatch();
   await until(() => w.requestsText().includes("交稿内容不是 HTML 页面"));
+  expect((await w.entry())?.inFlight).toMatchObject({ status: "designing", file: null });
+  expect(w.events("prototype.submitted")).toEqual([]);
+  await w.call("runs.stop", { runId });
+});
+
+const submitWithOptions = (options: string[]) => ({ type: "toolcall" as const, name: "one_company_result_submit",
+  input: { action: "prototype", html: HTML, note: "手机号输入框加验证码按钮", options } });
+
+test("设计师通过交稿工具附方案清单交稿后，待确认信息里读到这份清单", async () => {
+  const w = await world();
+  w.provider.queue.push(submitWithOptions(["顶部分栏", "左侧导航"]), { type: "text", text: "已交稿" });
+  await w.dispatch();
+  await until(() => w.events("prototype.submitted").length === 1);
+  expect((await pendingConfirmation(w.ref, { requirementId: w.fixture.requirementId, name: "登录页" })).options).toEqual(["顶部分栏", "左侧导航"]);
+});
+
+test("设计师通过交稿工具只附 1 个方案时交稿被退回并看到原因，看板仍是 designing", async () => {
+  const w = await world();
+  w.provider.queue.push(submitWithOptions(["顶部分栏"]), w.slow);
+  const { runId } = await w.dispatch();
+  await until(() => w.requestsText().includes("方案清单只有 1 个方案，至少 2 个"));
   expect((await w.entry())?.inFlight).toMatchObject({ status: "designing", file: null });
   expect(w.events("prototype.submitted")).toEqual([]);
   await w.call("runs.stop", { runId });
@@ -364,7 +385,7 @@ async function awaitingPrototype(w: Awaited<ReturnType<typeof world>>, html = HT
 const pendingInput = (w: Awaited<ReturnType<typeof world>>) => ({ requirementId: w.fixture.requirementId, name: "登录页" });
 const decideInput = async (w: Awaited<ReturnType<typeof world>>, choice: "accept" | "abandon") => {
   const pending = await w.call("prototypes.pending", pendingInput(w));
-  return w.call("prototypes.decide", { ...pendingInput(w), version: pending.version, hash: pending.hash, choice, opinion: null });
+  return w.call("prototypes.decide", { ...pendingInput(w), version: pending.version, hash: pending.hash, choice, opinion: null, option: null });
 };
 
 test("prototypes.pending 有待确认版本时带需求标题、草稿版本号（当前版本加一）和文件信息", async () => {
@@ -501,20 +522,21 @@ test("派出已被接受、会话还没建好时需求进入等恢复核对：�
   expect((await w.entry("设置页"))?.lastEnded ?? null).toBeNull();
 });
 
-const NOTE = "用 B 方案（顶部分栏），A 和 C 不要";
-const noted = [{ name: "设置页", version: 1, hash: "a".repeat(64), bytes: 10, userNote: NOTE },
-  { name: "命令行输出", version: 2, hash: "b".repeat(64), bytes: 10, userNote: null }];
+const PICKED_B = { letter: "B", name: "左侧导航" };
+const picked = [{ name: "设置页", version: 1, hash: "a".repeat(64), bytes: 10, picked: PICKED_B },
+  { name: "命令行输出", version: 2, hash: "b".repeat(64), bytes: 10, picked: null }];
 
-test("任务说明的原型清单里，带说明的原型下面紧跟一行用户通过时的说明，没有说明的不加", () => {
-  const lines = requirementPrototypeLines(3, noted, (item) => `/p/${item.name}`).split("\n");
+test("任务说明的原型清单里，带选定方案的原型下面紧跟一行用户选的方案，没有的不加", () => {
+  const lines = requirementPrototypeLines(3, picked, (item) => `/p/${item.name}`).split("\n");
   const first = lines.findIndex((line) => line.includes("设置页"));
-  expect(lines[first + 1]).toBe(`  用户通过时的说明：${NOTE}`);
+  expect(lines[first + 1]).toBe("  用户选的方案：B「左侧导航」，其余方案不做");
   expect(lines[lines.findIndex((line) => line.includes("命令行输出")) + 1]).toBeUndefined();
-  expect(lines.filter((line) => line.includes("用户通过时的说明"))).toHaveLength(1);
+  expect(lines.filter((line) => line.includes("用户选的方案"))).toHaveLength(1);
+  expect(lines.join("\n")).not.toMatch(/你的说明|用户说明|用户通过时的说明/);
 });
 
-test("PM 看的原型清单里，带说明的写成用户说明括号，没有说明的和原来一样，空列表仍写这一版没有原型", () => {
-  expect(approvedPrototypeListLines(noted)).toEqual(["当前批准版本附带的原型：", `- 设置页 第 1 版（用户说明：${NOTE}）`, "- 命令行输出 第 2 版"]);
+test("PM 看的原型清单里，带选定方案的写成括号，没有的和原来一样，空列表仍写这一版没有原型", () => {
+  expect(approvedPrototypeListLines(picked)).toEqual(["当前批准版本附带的原型：", "- 设置页 第 1 版（用户选的方案：B「左侧导航」，其余方案不做）", "- 命令行输出 第 2 版"]);
   expect(approvedPrototypeListLines([])).toEqual(["这一版没有原型"]);
 });
 

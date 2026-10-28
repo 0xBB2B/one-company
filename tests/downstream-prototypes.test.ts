@@ -25,8 +25,8 @@ const verdict = (summary: string): ScriptedReply => ({ type: "toolcall", name: "
   input: { action: "verdict", result: { checkRoundId: null, verificationIds: [], summary, findings: [] } } });
 const TITLE = (revision: number) => `需求第 ${revision} 版附带的原型（界面以它们为准）：`;
 
-const settings = (version: number): RevisionPrototype => ({ name: "设置页", version, hash: `5e77195${version}`.padEnd(64, "a"), bytes: 100, userNote: null });
-const terminal: RevisionPrototype = { name: "命令行输出", version: 1, hash: "c11001ab9f".padEnd(64, "b"), bytes: 80, userNote: null };
+const settings = (version: number): RevisionPrototype => ({ name: "设置页", version, hash: `5e77195${version}`.padEnd(64, "a"), bytes: 100, picked: null });
+const terminal: RevisionPrototype = { name: "命令行输出", version: 1, hash: "c11001ab9f".padEnd(64, "b"), bytes: 80, picked: null };
 
 async function world() {
   const w = await createPmRunWorld(cleanups);
@@ -127,34 +127,62 @@ describe("派出的任务说明带上当时批准版本的原型", () => {
   });
 });
 
-describe("任务说明带上用户通过原型时的补充说明", () => {
-  const withNote = (item: RevisionPrototype, userNote: string | null): RevisionPrototype => ({ ...item, userNote });
-  const noteLine = (prompt: string, name: string) => {
+describe("任务说明带上用户选定的方案", () => {
+  const withPick = (item: RevisionPrototype, picked: { letter: string; name: string } | null): RevisionPrototype => ({ ...item, picked });
+  const pickLine = (prompt: string, name: string) => {
     const lines = prompt.split("\n");
     return lines[lines.findIndex((line) => line.includes(name) && line.includes("第 ")) + 1];
   };
 
-  test("worker 的原型清单里带说明的原型下面紧跟说明行，没有说明的下面没有", async () => {
+  const PICKED = [withPick(settings(1), { letter: "B", name: "左侧导航" }), terminal];
+  const expectPick = (prompt: string) => {
+    expect(pickLine(prompt, "设置页")).toBe("  用户选的方案：B「左侧导航」，其余方案不做");
+    expect(pickLine(prompt, "命令行输出")).not.toContain("用户选的方案");
+    expect(prompt.split("\n").filter((line) => line.includes("用户选的方案"))).toHaveLength(1);
+    expect(prompt).not.toMatch(/你的说明|用户说明|用户通过时的说明/);
+  };
+
+  test("worker 的原型清单里带选定方案的原型下面紧跟方案行，没有的下面没有", async () => {
     const w = await world();
-    await w.seed(1, [withNote(settings(1), "用 B 方案（顶部分栏），A 和 C 不要"), terminal]);
+    await w.seed(1, PICKED);
     await w.setPlan(THREE);
     await w.runWorker("ui");
-    const prompt = w.promptOf("任务：ui（", "审查任务：ui（");
-    expect(noteLine(prompt, "设置页")).toBe("  用户通过时的说明：用 B 方案（顶部分栏），A 和 C 不要");
-    expect(prompt.split("\n").filter((line) => line.includes("用户通过时的说明"))).toHaveLength(1);
+    expectPick(w.promptOf("任务：ui（", "审查任务：ui（"));
   });
 
-  test("第 1 版里设置页第 1 版带用 B、第 2 版换成设置页第 2 版带用 C 时，按各自版本派出的 worker 分别拿到各自的说明", async () => {
+  test("reviewer 的原型清单里带选定方案的原型下面紧跟方案行，没有的下面没有", async () => {
     const w = await world();
-    await w.seed(1, [withNote(settings(1), "用 B"), terminal]);
+    await w.seed(1, PICKED);
+    await w.setPlan(THREE);
+    await w.runWorker("ui");
+    await w.runReviewer("ui");
+    expectPick(w.promptOf("审查任务：ui（"));
+  });
+
+  test("qa 的原型清单里带选定方案的原型下面紧跟方案行，没有的下面没有", async () => {
+    const w = await world();
+    await w.seed(1, PICKED);
+    await w.setPlan(THREE);
+    await w.runWorker("ui");
+    await w.runReviewer("ui");
+    w.openRound(1);
+    w.provider.queue.push({ type: "text", text: "验收完" }, pmAck);
+    await w.dispatch("qa");
+    await until(() => w.promptOf("任务：qa（") !== "");
+    expectPick(w.promptOf("任务：qa（"));
+  });
+
+  test("第 1 版里设置页第 1 版选 B、第 2 版换成设置页第 2 版选 A 时，按各自版本派出的 worker 分别拿到各自的方案", async () => {
+    const w = await world();
+    await w.seed(1, [withPick(settings(1), { letter: "B", name: "左侧导航" }), terminal]);
     await w.setPlan([spec("a", { writePaths: ["src/a/"] }), spec("b", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })]);
     await w.runWorker("a");
     const first = w.promptOf("任务：a（", "审查任务：a（");
-    expect(first).toContain("用户通过时的说明：用 B");
+    expect(first).toContain("用户选的方案：B「左侧导航」，其余方案不做");
 
     w.provider.queue.push({ type: "text", text: "PM 收到新版本差异" }, { type: "text", text: "PM 空闲" });
     await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 重发验证码 {#goal.resend}\n可重发。\n" });
-    await w.seed(2, [withNote(settings(2), "用 C"), terminal]);
+    await w.seed(2, [withPick(settings(2), { letter: "A", name: "双栏布局" }), terminal]);
     await until(() => w.owner().context.baseline?.revision === 2);
     await w.readDiffs(["revision 1 → 2"]);
     const version = () => withDatabase(repositoryDatabase(w.ref.dataRoot, w.ref.repoId), (db) => db.read<{ planVersion: number }>("plans", w.requirementId)!.data.planVersion);
@@ -168,9 +196,9 @@ describe("任务说明带上用户通过原型时的补充说明", () => {
     await w.dispatch("resend");
     await until(() => w.task("resend").status === "awaiting_review");
     const second = w.promptOf("任务：resend（", "审查任务：resend（");
-    expect(second).toContain("用户通过时的说明：用 C");
-    expect(second).not.toContain("用 B");
-    expect(first).not.toContain("用 C");
+    expect(second).toContain("用户选的方案：A「双栏布局」，其余方案不做");
+    expect(second).not.toContain("左侧导航");
+    expect(first).not.toContain("双栏布局");
   });
 });
 

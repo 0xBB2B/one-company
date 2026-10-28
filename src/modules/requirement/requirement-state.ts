@@ -407,7 +407,7 @@ export class RequirementStateStore {
       if (readBoardIn(db, record.id)?.data.entries.length) {
         if (!request.prototypes) throw new RequirementStateError("prototype_digest_required");
         const prototypes = promoteOnApprovalIn(db, { requirementId: record.id, digest: request.prototypes }).items
-          .filter((item) => item.label !== "removed").map(({ name, version, hash, bytes, userNote }) => ({ name, version, hash, bytes, userNote }));
+          .filter((item) => item.label !== "removed").map(({ name, version, hash, bytes, picked }) => ({ name, version, hash, bytes, picked }));
         if (prototypes.length) writePrototypeRevision(db, { requirementId: record.id, revision, prototypes });
       }
       const result = this.write(db, record, { ...record.data, approvalManifest,

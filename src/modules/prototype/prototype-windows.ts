@@ -1,15 +1,18 @@
 import { mutedLines } from "../../core/host/question-window.ts";
 import type { WindowLine } from "../../core/host/question-window.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
+import { optionLetter } from "../requirement/requirement-prototypes.ts";
+import type { PickedOption } from "../requirement/requirement-prototypes.ts";
 
 export const ACCEPT_LABEL = "通过（写进需求草稿）";
-export const ACCEPT_NOTE_LABEL = "通过并补充说明（自己输入）";
 export const ABANDON_LABEL = "放弃这一版";
 export const REMOVE_LABEL = "移除";
 export const KEEP_LABEL = "保留";
 
+export const optionLabel = (letter: string, name: string): string => `方案 ${letter}：${name}`;
+
 export interface PendingPrototype {
-  requirementTitle: string; draftVersion: number; name: string; version: number; path: string; bytes: number; hash: string; note: string; previousOpinion: string | null;
+  requirementTitle: string; draftVersion: number; name: string; version: number; path: string; bytes: number; hash: string; note: string; previousOpinion: string | null; options: string[];
 }
 export interface PrototypeRemoval { requirementTitle: string; draftVersion: number; name: string; version: number; approvedRevision: number | null }
 
@@ -38,7 +41,7 @@ export function confirmWindowContent(pending: PendingPrototype, opened: boolean)
     ...(pending.previousOpinion ? [{ text: `上一版你的意见：「${pending.previousOpinion}」`, tone: "muted" as const }] : []),
     { text: `设计师的说明（模型写的，仅供参考）：「${sanitizeText(pending.note, 2000).replace(/\s+/g, " ").trim()}」`, tone: "muted" },
   ];
-  return { title: "确认原型", lines, choices: [{ label: ACCEPT_LABEL }, { label: ACCEPT_NOTE_LABEL, writable: true }], escapeChoice: ABANDON_LABEL, escapeHint: "Esc 放弃这一版" };
+  return { title: "确认原型", lines, choices: pending.options.length > 0 ? pending.options.map((name, index) => ({ label: optionLabel(optionLetter(index), name) })) : [{ label: ACCEPT_LABEL }], escapeChoice: ABANDON_LABEL, escapeHint: "Esc 放弃这一版" };
 }
 
 export function removeWindowContent(removal: PrototypeRemoval) {
@@ -52,13 +55,13 @@ export function removeWindowContent(removal: PrototypeRemoval) {
 }
 
 export type PrototypeRecord =
-  | { kind: "accept"; name: string; version: number; note?: string }
+  | { kind: "accept"; name: string; version: number; picked?: PickedOption }
   | { kind: "abandon" | "opinion"; name: string; version: number }
   | { kind: "remove"; name: string; draftVersion: number };
 
 export function decisionEntryText(record: PrototypeRecord): string {
   switch (record.kind) {
-    case "accept": return `已登记：原型「${record.name}」第 ${record.version} 版通过，已写进需求草稿。${record.note ? `你的说明：「${record.note}」` : ""}`;
+    case "accept": return `已登记：原型「${record.name}」第 ${record.version} 版通过，已写进需求草稿。${record.picked ? `你选了方案 ${record.picked.letter}：${record.picked.name}。` : ""}`;
     case "abandon": return `已登记：放弃原型「${record.name}」第 ${record.version} 版，它不再挡住批准。`;
     case "opinion": return `已登记：你对原型「${record.name}」第 ${record.version} 版的意见已原话交给主代理，这一版仍在等你确认。`;
     case "remove": return `已登记：原型「${record.name}」从草稿移除，批准第 ${record.draftVersion} 版后生效。`;
