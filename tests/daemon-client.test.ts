@@ -178,6 +178,7 @@ function createFakeDaemonServer(
       for (const frame of frames) {
         if (frame.t !== "req") continue;
         if (frame.method === "hello") onHello(frame, socket);
+        else if (frame.method === "upgrade.check") socket.write(encodeFrame(createErrorResponse(frame.id, "unknown_method", "未知方法: upgrade.check")));
         else onOtherRequest?.(frame, socket);
       }
     });
@@ -545,6 +546,10 @@ describe("hello 帧", () => {
           const { frames, rest } = decodeFrames(buffer);
           buffer = rest;
           for (const frame of frames) {
+            if (frame.t === "req" && frame.method === "upgrade.check") {
+              socket.write(encodeFrame(createErrorResponse(frame.id, "unknown_method", "未知方法: upgrade.check")));
+              continue;
+            }
             if (frame.t === "req" && frame.method === "hello") {
               socket.write(
                 encodeFrame(
