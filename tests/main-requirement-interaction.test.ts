@@ -1107,14 +1107,14 @@ const PROTOTYPE_HTML = "<!doctype html><html><body><h1>设置页</h1></body></ht
 type World = Awaited<ReturnType<typeof world>>;
 const boardRef = (w: World) => ({ dataRoot: w.dataRoot, repoId: w.repoId });
 
-async function designed(w: World, requirementId: string, name: string, reworks = 0, note: string | null = null) {
+async function designed(w: World, requirementId: string, name: string, reworks = 0, pick: { options: string[]; option: string } | null = null) {
   for (let round = 0; round <= reworks; round++) {
     const runId = uuidv7(), accept = round === reworks;
     await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer" });
-    await submitDesign(boardRef(w), { requirementId, name, runId, html: PROTOTYPE_HTML, note: "三项状态横排" });
+    await submitDesign(boardRef(w), { requirementId, name, runId, html: PROTOTYPE_HTML, note: "三项状态横排", options: pick?.options });
     const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
     await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash,
-      choice: accept ? "accept" : "opinion", opinion: accept ? null : "再改一版", note: accept ? note : null });
+      choice: accept ? "accept" : "opinion", opinion: accept ? null : "再改一版", option: accept ? pick?.option ?? null : null });
   }
 }
 
@@ -1244,29 +1244,41 @@ describe("批准时连同草稿里的原型一起批准", () => {
     expect(diff).toContain("原型变化：设置页 新确认第 3 版；旧外观弹窗 移除");
   });
 
-  test("批准窗口里带说明的新确认和沿用原型下面各紧跟一行灰色说明，移除的和没有说明的下面没有", async () => {
+  test("批准窗口里带选定方案的新确认和沿用原型下面各紧跟一行灰色选定方案，移除的和没有选定方案的下面没有", async () => {
     const w = await world(), created = await w.create(), id = String(created.requirementId);
     markTones(w);
-    await designed(w, id, "命令行输出", 0, "沿用的说明"); await designed(w, id, "旧外观弹窗", 0, "移除的说明");
+    await designed(w, id, "首页", 0, { options: ["顶部分栏", "侧边栏"], option: "A" }); await designed(w, id, "命令行输出");
+    await designed(w, id, "旧外观弹窗", 0, { options: ["居中", "底部"], option: "B" });
     await approvedSaved(w, id, fresh(created));
-    await designed(w, id, "设置页", 0, "用 B 方案（顶部分栏），A 和 C 不要"); await designed(w, id, "另一份");
+    await designed(w, id, "设置页", 0, { options: ["顶部分栏", "左侧导航"], option: "B" });
     await removeFromDraft(boardRef(w), { requirementId: id, name: "旧外观弹窗", version: 1 });
     await approvedSaved(w, id, await updatedBody(w, id, BODY + "第二版补充。\n"));
     const shown = w.windows.at(-1)!.text;
     expect(shown).toContain([
       " <toolDiffAdded>  设置页        第 1 版  本次新确认</toolDiffAdded>",
-      " <muted>    你的说明：「用 B 方案（顶部分栏），A 和 C 不要」</muted>",
+      " <muted>    你选的方案：B「左侧导航」，其余方案不做</muted>",
     ].join("\n"));
     expect(shown).toContain([
-      "   命令行输出    第 1 版  沿用第 1 版需求",
-      " <muted>    你的说明：「沿用的说明」</muted>",
+      "   首页          第 1 版  沿用第 1 版需求",
+      " <muted>    你选的方案：A「顶部分栏」，其余方案不做</muted>",
     ].join("\n"));
     const lines = shown.split("\n");
     const nextOf = (name: string) => lines[lines.findIndex((line) => line.includes(name) && line.includes("第 1 版")) + 1];
-    expect(nextOf("另一份")).not.toContain("你的说明");
-    expect(nextOf("旧外观弹窗")).not.toContain("你的说明");
-    expect(shown).not.toContain("移除的说明");
+    expect(nextOf("命令行输出")).not.toContain("你选的方案");
+    expect(nextOf("旧外观弹窗")).not.toContain("你选的方案");
+    expect(lines.filter((line) => line.includes("你选的方案"))).toHaveLength(2);
+    expect(shown).not.toMatch(/你的说明|用户说明|用户通过时的说明|补充说明/);
     expect(shown).toContain(" <muted>原型的样子以你在浏览器里通过的那一版为准。</muted>");
+  });
+
+  test("交稿的方案名含零宽字符和双向控制符时，批准窗口里的选定方案行不含它们", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    markTones(w);
+    await designed(w, id, "设置页", 0, { options: ["顶部分栏", "左\u200b\u202e侧\u2066导航"], option: "B" });
+    await approvedSaved(w, id, fresh(created));
+    const shown = w.windows.at(-1)!.text;
+    expect(shown).toContain(" <muted>    你选的方案：B「左侧导航」，其余方案不做</muted>");
+    expect(shown).not.toMatch(/[\u200b\u202e\u2066]/);
   });
 
   test("没有任何原型的需求，带 @ 批准不弹窗，不带 @ 弹的窗口没有原型清单", async () => {
@@ -1325,13 +1337,13 @@ describe("批准时连同草稿里的原型一起批准", () => {
     expect(diff).not.toContain("原型变化");
   });
 
-  test("通过时带补充说明，批准后这一版的原型快照带着它，只改正文再批准时新快照沿用这句说明", async () => {
+  test("通过时选了方案，批准后这一版的原型快照带着选定方案，只改正文再批准时新快照沿用它", async () => {
     const w = await world(), created = await w.create(), id = String(created.requirementId);
-    await designed(w, id, "设置页", 0, "用 B");
+    await designed(w, id, "设置页", 0, { options: ["顶部分栏", "左侧导航"], option: "B" });
     await approvedSaved(w, id, fresh(created));
     await approvedSaved(w, id, await updatedBody(w, id, BODY + "第二版补充。\n"));
     for (const revision of [1, 2]) {
-      expect((await prototypesAtRevision(boardRef(w), id, revision)).map((item) => [item.name, item.version, item.userNote])).toEqual([["设置页", 1, "用 B"]]);
+      expect((await prototypesAtRevision(boardRef(w), id, revision)).map((item) => [item.name, item.version, item.picked])).toEqual([["设置页", 1, { letter: "B", name: "左侧导航" }]]);
     }
   });
 });

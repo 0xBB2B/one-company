@@ -47,6 +47,7 @@ import { endExploreSession, registerExploreSession } from "../../modules/explore
 import { approvedPrototypeListLines, prototypeContext, requirementPrototypeLines } from "../../modules/prototype/prototype-dispatch.ts";
 import type { MainPrototypeOverview, PrototypeDispatchInput } from "../../modules/prototype/prototype-dispatch.ts";
 import { prototypesAtRevision } from "../../modules/requirement/requirement-prototype-revisions.ts";
+import type { PickedOption } from "../../modules/requirement/requirement-prototypes.ts";
 import { PrototypeBoardError, assertRequirementOpenForPrototypes, prototypeFilePath, beginDesign, clearStaleDesigns, decidePrototype, endDesign, pendingConfirmation, readPrototypeBoard, removeFromDraft } from "../../modules/requirement/requirement-prototypes.ts";
 import { createResultSubmitTool, PROTOTYPE_SUBMIT_PARAMETERS, RESULT_SUBMIT_PARAMETERS } from "../../modules/pm/result-submit.ts";
 import { toPiTool } from "../../modules/agents/role-tools.ts";
@@ -159,7 +160,7 @@ async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: s
   ].join("\n");
 }
 
-function pmContext(record: RequirementRecord, lease: PmLease, sources: IntakeSourceDirectory | null, decisions: PmDecisionNote[], prototypes: readonly { name: string; version: number; userNote: string | null }[]): string {
+function pmContext(record: RequirementRecord, lease: PmLease, sources: IntakeSourceDirectory | null, decisions: PmDecisionNote[], prototypes: readonly { name: string; version: number; picked: PickedOption | null }[]): string {
   const workspace = record.workspace!;
   const list = (ids: readonly string[]) => ids.length ? ids.join("、") : "无";
   return [

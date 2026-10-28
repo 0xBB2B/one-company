@@ -39,7 +39,7 @@ import { requirementSummary, saveRequirementSummary } from "../requirement/requi
 import { askWindow, confirmWindow, mutedLines } from "../../core/host/question-window.ts";
 import type { WindowLine } from "../../core/host/question-window.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { draftPrototypes, inFlightBlock, inFlightSummary, PrototypeBoardError, verifyDraftFiles } from "../requirement/requirement-prototypes.ts";
+import { draftPrototypes, inFlightBlock, inFlightSummary, pickedOptionText, PrototypeBoardError, verifyDraftFiles } from "../requirement/requirement-prototypes.ts";
 import type { DraftItem } from "../requirement/requirement-prototypes.ts";
 import { prototypeChangeLines, prototypeChanges, prototypesAtRevision } from "../requirement/requirement-prototype-revisions.ts";
 import { FIXED_CHOICES, fixedChoiceIssue, PanelItemAskError, panelItemTarget } from "../panel/panel-item-ask.ts";
@@ -676,7 +676,7 @@ export class MainRequirementInteraction {
     const rows = [...items].sort((a, b) => order[a.label] - order[b.label]).flatMap((item): WindowLine[] => [{
       text: `  ${item.name}${" ".repeat(Math.max(2, 14 - visibleWidth(item.name)))}第 ${item.version} 版  ${label[item.label]}`,
       ...(item.label === "kept" ? {} : { tone: tone[item.label] }) },
-      ...(item.userNote && item.label !== "removed" ? [{ text: `    你的说明：「${item.userNote}」`, tone: "muted" as const }] : [])]);
+      ...(item.picked && item.label !== "removed" ? [{ text: `    你选的方案：${pickedOptionText(item.picked)}`, tone: "muted" as const }] : [])]);
     return [{ text: `这一版一起批准的原型（${items.filter((item) => item.label !== "removed").length} 份）：` }, ...rows,
       ...mutedLines(["原型的样子以你在浏览器里通过的那一版为准。"])];
   }

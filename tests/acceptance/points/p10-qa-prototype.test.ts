@@ -55,11 +55,11 @@ test.skipIf(!config || process.platform !== "darwin")("P10：需求第 1 版带�
   await beginDesign(ref, { requirementId, name: PROTOTYPE_NAME, runId: designRun, agent: "prototype" });
   await submitDesign(ref, { requirementId, name: PROTOTYPE_NAME, runId: designRun, html: PROTOTYPE, note: "表单居中，失败提示红色" });
   const pending = await pendingConfirmation(ref, { requirementId, name: PROTOTYPE_NAME });
-  await decidePrototype(ref, { requirementId, name: PROTOTYPE_NAME, version: pending.version, hash: pending.hash, choice: "accept", opinion: null });
+  await decidePrototype(ref, { requirementId, name: PROTOTYPE_NAME, version: pending.version, hash: pending.hash, choice: "accept", opinion: null, option: null });
   const draft = await draftPrototypes(ref, requirementId);
   const promoted = promote(ref, { requirementId, digest: draft.digest });
   w.db((db) => writePrototypeRevision(db, { requirementId, revision: 1,
-    prototypes: promoted.items.filter((item) => item.label !== "removed").map(({ name, version, hash, bytes, userNote }) => ({ name, version, hash, bytes, userNote })) }));
+    prototypes: promoted.items.filter((item) => item.label !== "removed").map(({ name, version, hash, bytes, picked }) => ({ name, version, hash, bytes, picked })) }));
   const prototype = pending.path;
 
   // 实现与审查由脚本完成；PM 按状态推进到派出 QA；QA 由真实模型完成

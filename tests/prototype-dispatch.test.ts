@@ -187,7 +187,7 @@ test("提意见后重派时设计师能读上一版文件，任务说明带用�
   await beginDesign(w.ref, { ...params, runId: first, agent: "prototype" });
   await submitDesign(w.ref, { ...params, runId: first, html: HTML, note: "第一版" });
   const pending = await pendingConfirmation(w.ref, params);
-  await decidePrototype(w.ref, { ...params, version: pending.version, hash: pending.hash, choice: "opinion", note: null, opinion });
+  await decidePrototype(w.ref, { ...params, version: pending.version, hash: pending.hash, choice: "opinion", option: null, opinion });
   const previousPath = prototypeFilePath(w.ref, { ...params, version: 1 });
 
   w.provider.queue.push({ type: "toolcall", name: "read", input: { path: previousPath } }, w.slow);
@@ -522,20 +522,21 @@ test("派出已被接受、会话还没建好时需求进入等恢复核对：�
   expect((await w.entry("设置页"))?.lastEnded ?? null).toBeNull();
 });
 
-const NOTE = "用 B 方案（顶部分栏），A 和 C 不要";
-const noted = [{ name: "设置页", version: 1, hash: "a".repeat(64), bytes: 10, userNote: NOTE },
-  { name: "命令行输出", version: 2, hash: "b".repeat(64), bytes: 10, userNote: null }];
+const PICKED_B = { letter: "B", name: "左侧导航" };
+const picked = [{ name: "设置页", version: 1, hash: "a".repeat(64), bytes: 10, picked: PICKED_B },
+  { name: "命令行输出", version: 2, hash: "b".repeat(64), bytes: 10, picked: null }];
 
-test("任务说明的原型清单里，带说明的原型下面紧跟一行用户通过时的说明，没有说明的不加", () => {
-  const lines = requirementPrototypeLines(3, noted, (item) => `/p/${item.name}`).split("\n");
+test("任务说明的原型清单里，带选定方案的原型下面紧跟一行用户选的方案，没有的不加", () => {
+  const lines = requirementPrototypeLines(3, picked, (item) => `/p/${item.name}`).split("\n");
   const first = lines.findIndex((line) => line.includes("设置页"));
-  expect(lines[first + 1]).toBe(`  用户通过时的说明：${NOTE}`);
+  expect(lines[first + 1]).toBe("  用户选的方案：B「左侧导航」，其余方案不做");
   expect(lines[lines.findIndex((line) => line.includes("命令行输出")) + 1]).toBeUndefined();
-  expect(lines.filter((line) => line.includes("用户通过时的说明"))).toHaveLength(1);
+  expect(lines.filter((line) => line.includes("用户选的方案"))).toHaveLength(1);
+  expect(lines.join("\n")).not.toMatch(/你的说明|用户说明|用户通过时的说明/);
 });
 
-test("PM 看的原型清单里，带说明的写成用户说明括号，没有说明的和原来一样，空列表仍写这一版没有原型", () => {
-  expect(approvedPrototypeListLines(noted)).toEqual(["当前批准版本附带的原型：", `- 设置页 第 1 版（用户说明：${NOTE}）`, "- 命令行输出 第 2 版"]);
+test("PM 看的原型清单里，带选定方案的写成括号，没有的和原来一样，空列表仍写这一版没有原型", () => {
+  expect(approvedPrototypeListLines(picked)).toEqual(["当前批准版本附带的原型：", "- 设置页 第 1 版（用户选的方案：B「左侧导航」，其余方案不做）", "- 命令行输出 第 2 版"]);
   expect(approvedPrototypeListLines([])).toEqual(["这一版没有原型"]);
 });
 
