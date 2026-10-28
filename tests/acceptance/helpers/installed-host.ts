@@ -195,7 +195,7 @@ export async function startInstalledHost(options: { installed: string; repo: str
     getEditorText: () => "",
     setWidget: ((key: string, content: unknown) => {
       if (key !== "pm-panel") return;
-      panel = typeof content === "function" ? (content as (tui: unknown, theme: unknown) => { render(width: number): string[] })({ requestRender() {} }, {}) : undefined;
+      panel = typeof content === "function" ? (content as (tui: unknown, theme: unknown) => { render(width: number): string[] })({ requestRender() {}, getFocusedComponent: () => ({ isShowingAutocomplete: () => false }) }, {}) : undefined;
     }) as ExtensionUIContext["setWidget"],
   };
   await session.bindExtensions({ uiContext: ui, mode: "tui" });
