@@ -223,6 +223,27 @@ test("设计师交不合格稿时收到原因，看板仍是 designing", async (
   await w.call("runs.stop", { runId });
 });
 
+const submitWithOptions = (options: string[]) => ({ type: "toolcall" as const, name: "one_company_result_submit",
+  input: { action: "prototype", html: HTML, note: "手机号输入框加验证码按钮", options } });
+
+test("设计师通过交稿工具附方案清单交稿后，待确认信息里读到这份清单", async () => {
+  const w = await world();
+  w.provider.queue.push(submitWithOptions(["顶部分栏", "左侧导航"]), { type: "text", text: "已交稿" });
+  await w.dispatch();
+  await until(() => w.events("prototype.submitted").length === 1);
+  expect((await pendingConfirmation(w.ref, { requirementId: w.fixture.requirementId, name: "登录页" })).options).toEqual(["顶部分栏", "左侧导航"]);
+});
+
+test("设计师通过交稿工具只附 1 个方案时交稿被退回并看到原因，看板仍是 designing", async () => {
+  const w = await world();
+  w.provider.queue.push(submitWithOptions(["顶部分栏"]), w.slow);
+  const { runId } = await w.dispatch();
+  await until(() => w.requestsText().includes("方案清单只有 1 个方案，至少 2 个"));
+  expect((await w.entry())?.inFlight).toMatchObject({ status: "designing", file: null });
+  expect(w.events("prototype.submitted")).toEqual([]);
+  await w.call("runs.stop", { runId });
+});
+
 test("面板只列本连接运行中的设计：名称、版本、定义名、轮数、上限、已用时间；派出与结束都发变化信号", async () => {
   const w = await world();
   await expect(w.call("prototypes.list", {})).resolves.toEqual({ items: [] });
@@ -364,7 +385,7 @@ async function awaitingPrototype(w: Awaited<ReturnType<typeof world>>, html = HT
 const pendingInput = (w: Awaited<ReturnType<typeof world>>) => ({ requirementId: w.fixture.requirementId, name: "登录页" });
 const decideInput = async (w: Awaited<ReturnType<typeof world>>, choice: "accept" | "abandon") => {
   const pending = await w.call("prototypes.pending", pendingInput(w));
-  return w.call("prototypes.decide", { ...pendingInput(w), version: pending.version, hash: pending.hash, choice, opinion: null });
+  return w.call("prototypes.decide", { ...pendingInput(w), version: pending.version, hash: pending.hash, choice, opinion: null, option: null });
 };
 
 test("prototypes.pending 有待确认版本时带需求标题、草稿版本号（当前版本加一）和文件信息", async () => {

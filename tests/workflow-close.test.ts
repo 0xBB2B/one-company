@@ -481,7 +481,7 @@ async function approvePrototypes(w: Awaited<ReturnType<typeof world>>, items = P
   }
   const revision = w.state.read(requirementId).data.revision;
   withDatabase(w.database, (db) => writePrototypeRevision(db, { requirementId, revision,
-    prototypes: items.map((item) => ({ name: item.name, version: item.version, hash: sha(item.html), bytes: Buffer.byteLength(item.html), userNote: null })) }));
+    prototypes: items.map((item) => ({ name: item.name, version: item.version, hash: sha(item.html), bytes: Buffer.byteLength(item.html), picked: null })) }));
   return { revision, file: (item: (typeof PROTOTYPES)[number]) => prototypeFilePath(w, { requirementId, name: item.name, version: item.version }) };
 }
 

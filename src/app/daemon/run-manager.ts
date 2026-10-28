@@ -915,7 +915,7 @@ export class RunManager {
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: this.options.repositoryRoot, definition: resolved.definition,
         roleRules: loadRoleRules("prototype"),
         context: withSkills(await this.withConventions(prototypeContext({ title, name: request.name, version, brief: request.brief, maxTurns: request.maxTurns, previous })), resolved.skillsContext),
-        coreTools: [toPiTool("result_submit", "提交原型（action=prototype）：html 是完整的单个 HTML 文件，note 用一句话说明画了什么。", PROTOTYPE_SUBMIT_PARAMETERS, result),
+        coreTools: [toPiTool("result_submit", "提交原型（action=prototype）：html 是完整的单个 HTML 文件，note 用一句话说明画了什么；一份原型里画了多个方案时，options 按页面里方案 A、B、C……的顺序列出方案名称（2 到 6 个，每个最多 20 字），只画一种时不填。", PROTOTYPE_SUBMIT_PARAMETERS, result),
           ...this.knowledgeTool(runId)],
         readRoots: [this.options.repositoryRoot, ...(previous ? [previous.path] : [])],
         runtime: this.options.runtime, modelRef: resolved.model, thinking: resolved.thinking, maxTurns: request.maxTurns,

@@ -335,7 +335,7 @@ async function worldWithPrototypes() {
     const path = prototypeFilePath(ref, { requirementId: w.activeId, name: file.name, version: file.version });
     await mkdir(join(path, ".."), { recursive: true, mode: 0o700 });
     await writeFile(path, file.html, { mode: 0o600 });
-    prototypes.push({ name: file.name, version: file.version, hash: createHash("sha256").update(file.html).digest("hex"), bytes: Buffer.byteLength(file.html), userNote: null });
+    prototypes.push({ name: file.name, version: file.version, hash: createHash("sha256").update(file.html).digest("hex"), bytes: Buffer.byteLength(file.html), picked: null });
   }
   withDatabase(repositoryDatabase(w.dataRoot, w.identity.repoId), (db) => {
     writePrototypeRevision(db, { requirementId: w.activeId, revision: 1, prototypes: [prototypes[0]!] });
@@ -398,7 +398,7 @@ test("批准版本引用的原型文件不存在时备份被拒，原因写明�
 test("批准版本引用的原型名称不能用作文件名时备份被拒，错误码为稳定短码，原因写明原型名称和版本", async () => {
   const w = await worldWithPrototypes();
   withDatabase(repositoryDatabase(w.dataRoot, w.identity.repoId), (db) => {
-    writePrototypeRevision(db, { requirementId: w.activeId, revision: 3, prototypes: [{ name: "../越界", version: 1, hash: "0".repeat(64), bytes: 1, userNote: null }] });
+    writePrototypeRevision(db, { requirementId: w.activeId, revision: 3, prototypes: [{ name: "../越界", version: 1, hash: "0".repeat(64), bytes: 1, picked: null }] });
   });
   const failure = await createRequirementBackup(backupOptions(w)).then(() => null, (error: unknown) => error as RequirementBackupError);
   expect(failure).toMatchObject({ name: "RequirementBackupError", code: "prototype_invalid" });

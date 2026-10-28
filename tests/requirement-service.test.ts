@@ -601,12 +601,12 @@ test("SQLite 原始 records/events 不含正文、patch 或正文副本字段", 
 const PROTOTYPE_HTML = "<!doctype html><html><body><h1>设置页</h1></body></html>";
 const boardRef = (w: Awaited<ReturnType<typeof world>>) => ({ dataRoot: w.options.dataRoot, repoId: w.options.repoId });
 
-async function acceptedPrototype(w: Awaited<ReturnType<typeof world>>, requirementId: string, name: string) {
+async function acceptedPrototype(w: Awaited<ReturnType<typeof world>>, requirementId: string, name: string, options?: string[]) {
   const runId = uuidv7();
   await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer" });
-  await submitDesign(boardRef(w), { requirementId, name, runId, html: PROTOTYPE_HTML, note: "说明" });
+  await submitDesign(boardRef(w), { requirementId, name, runId, html: PROTOTYPE_HTML, note: "说明", ...(options ? { options } : {}) });
   const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
-  await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash, choice: "accept", opinion: null });
+  await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash, choice: "accept", option: options ? "B" : null, opinion: null });
 }
 
 async function prototypeApproval(w: Awaited<ReturnType<typeof world>>) {
@@ -616,6 +616,23 @@ async function prototypeApproval(w: Awaited<ReturnType<typeof world>>) {
   const input = { ...(await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId })), prototypes: digest };
   return { created, input, digest };
 }
+
+test("带方案清单选定 B 的原型批准后，该版和只改正文的下一版的原型记录都带选定方案", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  await acceptedPrototype(w, created.requirementId, "设置页", ["顶部分栏", "左侧导航"]);
+  const picked = { letter: "B", name: "左侧导航" };
+  const { digest } = await draftPrototypes(boardRef(w), created.requirementId);
+  const first = { ...(await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId })), prototypes: digest };
+  expect((await w.service.confirmUpdate(first)).revision).toBe(1);
+  expect((await prototypesAtRevision(boardRef(w), created.requirementId, 1)).map((item) => item.picked)).toEqual([picked]);
+  const updated = await w.service.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(), version: (await w.service.metadata(created.requirementId)).version,
+    title: "需求标题", body: "只改正文" });
+  const next = await draftPrototypes(boardRef(w), created.requirementId);
+  const second = { ...(await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: updated.operationId })), prototypes: next.digest };
+  expect((await w.service.confirmUpdate(second)).revision).toBe(2);
+  expect((await prototypesAtRevision(boardRef(w), created.requirementId, 2)).map((item) => item.picked)).toEqual([picked]);
+});
 
 test("看板里有原型时，批准不带原型指纹被拒并写明要带指纹", async () => {
   const w = await world();
