@@ -178,3 +178,10 @@ export async function repoDataDir(dataRootPath: string, repoId: string, commonDi
 export function daemonSocketPath(dataRootPath: string, repoId: string): string {
   return join(dataRootPath, "sock", `${repoId.slice(0, 16)}.sock`);
 }
+
+export function repoDisplayName(commonDir: string): string {
+  const segments = commonDir.split("/").filter(Boolean);
+  const last = segments.at(-1) ?? "";
+  if (last === ".git") return segments.at(-2) ?? "";
+  return last.replace(/\.git$/, "");
+}
