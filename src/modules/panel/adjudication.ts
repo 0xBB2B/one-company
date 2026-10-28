@@ -60,7 +60,7 @@ export function adjudicationSubject(ref: Ref, requirementId: string, itemId: str
       const report = checked(CompletionReport, db.read<unknown>(COMPLETION_REPORTS, itemId.slice("report:".length))!.data);
       return { itemId, version: item.version, summary: [`需求 ${requirementId} · 当前批准版本 r${record.revision}`, "PM 提交了完成报告，等待用户验收",
         `检查轮 ${report.basis.checkRoundId ?? "无"} · 正式验证 ${report.basis.verificationIds.length} 项 · 裁决 ${report.basis.verdictIds.length} 项 · 分支提交 ${report.commits.length} 个`,
-        "可选：accept 验收通过（随后以完成关闭需求）；rework 返工（意见交回 PM）"].join("\n") };
+        "可选：accept 验收通过（随后以完成关闭需求）；rework 返工（仅当用户明确要求修改；只是提问时不输出决定）"].join("\n") };
     }
     if (!plan) deny("plan_missing");
     const item = pendingItemsIn({ ...ref, db, record, lease }, plan!.tasks).find((candidate) => candidate.itemId === itemId && candidate.kind === "adjudicate")

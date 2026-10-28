@@ -113,7 +113,7 @@ test("M7-AC1/AC5：PM 停止后不再向它投递；新 PM 须重新核对才建
   expect(w.diffPrompts()).toHaveLength(1);
 });
 
-const proto = (name: string, version: number) => ({ name, version, hash: String(version).repeat(64).slice(0, 64), bytes: 200 });
+const proto = (name: string, version: number, userNote: string | null = null) => ({ name, version, hash: String(version).repeat(64).slice(0, 64), bytes: 200, userNote });
 async function snapshots(w: Awaited<ReturnType<typeof world>>, byRevision: Record<number, ReturnType<typeof proto>[]>) {
   for (const [revision, prototypes] of Object.entries(byRevision)) {
     withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) =>
@@ -271,3 +271,15 @@ test("墙上时钟前跳 1 小时（模拟合盖睡眠）后批准的新版本�
   expect((await w.readDiffs([text(w.diffPrompts()[0]!)]))[0]).toContain("animation 的行为");
   expect(w.owner().context).toMatchObject({ diffRevision: revision });
 }, 120_000);
+
+test("已批准更新通知列出新版本原型时，带说明的写成用户说明括号，没有说明的不带", async () => {
+  const w = await world();
+  await snapshots(w, { 1: [proto("设置页", 1, "用 B 方案（顶部分栏），A 和 C 不要")], 2: [proto("设置页", 1, "用 B 方案（顶部分栏），A 和 C 不要"), proto("日志页", 4)] });
+  w.provider.queue.push({ type: "text", text: "收到 r2" });
+  await w.approve("sprint");
+  await until(() => w.diffPrompts().length === 1);
+  const notice = text(w.diffPrompts()[0]!);
+  expect(notice).toContain("\\n- 设置页 第 1 版（用户说明：用 B 方案（顶部分栏），A 和 C 不要）\\n");
+  expect(notice).toContain("\\n- 日志页 第 4 版");
+  expect(notice).not.toContain("- 日志页 第 4 版（");
+});

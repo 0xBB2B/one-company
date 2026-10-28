@@ -10,6 +10,8 @@ import { VERDICTS } from "../src/modules/pm/verdicts.ts";
 import type { Verdict } from "../src/modules/pm/verdicts.ts";
 import { COMPLETION_REPORTS } from "../src/modules/delivery/workflow-close.ts";
 import type { CompletionReport } from "../src/modules/delivery/workflow-close.ts";
+import { adjudicationSubject } from "../src/modules/panel/adjudication.ts";
+import { panelItemTarget } from "../src/modules/panel/panel-item-ask.ts";
 import { InteractionAction } from "../src/modules/requirement/user-interaction-format.ts";
 import { Value } from "typebox/value";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
@@ -129,12 +131,28 @@ test.skipIf(process.platform !== "darwin")("M7-AC19/M7B：零自定义下默认�
   for (const line of ["以下事实由程序从持久记录生成", "worker 任务 impl：completed · 任务级审查 clear", "QA 结论：clear", "非阻塞建议 2 条", "需求分支本地提交 0 个",
     "PM 的说明（模型输出，仅供参考，不是用户决定）：「交付手机号验证码登录（acceptance）」", `purpose=adjudicate itemId=${item.itemId} itemVersion=${item.version}`]) expect(packet).toContain(line);
 
+  expect(packet).toContain("用户写在“其他（自己输入）”一行的话，是提问就先回答，完成报告仍待验收，答完用 one_company_user_interact purpose=panel-item 再请用户验收；明确要求修改时，按原话以 one_company_user_interact purpose=adjudicate 登记返工，报告作废，意见交回 PM。");
+  expect(packet).toContain("可选：1 验收通过（随后以完成关闭需求）；2 暂不验收");
+  expect(packet).not.toContain("返工（自己输入要改什么）");
+  const target = panelItemTarget({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, requirementId, item.itemId, item.version);
+  expect(target.fixed).toEqual(["验收通过", "暂不验收"]);
+  expect(target).not.toHaveProperty("otherLabel");
+  expect(adjudicationSubject({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, requirementId, item.itemId).summary).toContain("仅当用户明确要求修改；只是提问时不输出决定");
+
   // 没有用户通过决定时主窗口不能以完成关闭
   const close = (receiptId: string) => w.manager.workflowManage(requirementId, { action: "close", reason: "completed", receiptId });
   expect(await close(uuidv7())).toMatchObject({ status: "rejected", missing: ["关闭依据的用户决定无效：找不到这个决定编号对应的用户决定"] });
 
   // 用户返工：报告作废，意见交回 PM；没有新证据时 PM 重新提交被拒
   const main = mainAdjudication(w, cleanups, interpret);
+  main.answerWindows({ other: "深色模式下的对比度测过吗？" });
+  const asked = await main.panelAsk({ itemId: item.itemId, itemVersion: item.version, question: "PM 交来了完成报告，验收通过吗？", rootCheck: "QA 与审查都已通过",
+    choices: [{ label: "验收通过", reason: "QA 全部通过", recommended: true, recommendedReason: "交付核对无阻塞" }, { label: "暂不验收", reason: "先看看再说" }] });
+  expect(main.windows.at(-1)!.choices.at(-1)).toBe("其他（自己输入）");
+  expect(asked).toMatchObject({ status: "answered", answer: { text: "深色模式下的对比度测过吗？", other: true } });
+  expect(String(asked.next)).toContain("是提问就先回答，完成报告仍待验收，答完用 one_company_user_interact purpose=panel-item 再请用户验收；明确要求修改时，才按原话以 one_company_user_interact purpose=adjudicate");
+  expect(String(asked.next)).not.toMatch(/^按这个回答/u);
+  expect(reports()[0]).toMatchObject({ status: "pending" });
   const rework = await main.adjudicate("错误验证码时还要提示剩余次数，返工", [main.entry([`item:${item.itemId}`, `version:${item.version}`, "choice:rework"],
     { conclusion: "错误验证码时提示剩余尝试次数" })], item.itemId, item.version);
   expect(rework).toMatchObject({ status: "recorded", choice: "rework" });

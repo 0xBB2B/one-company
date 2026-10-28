@@ -21,7 +21,7 @@ interface Opened { component: { render(width: number): string[]; handleInput(dat
 function recorder() {
   const opened: Opened[] = [];
   const custom = vi.fn((factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: unknown) => void) => Opened["component"]) =>
-    new Promise((resolve) => { opened.push({ component: factory({ requestRender: () => {} }, theme, {}, resolve), done: resolve }); }));
+    new Promise((resolve) => { opened.push({ component: factory({ requestRender: () => {}, terminal: { rows: 40, columns: 80 } }, theme, {}, resolve), done: resolve }); }));
   return { host: { hasUI: true, ui: { custom } }, custom, opened };
 }
 

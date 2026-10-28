@@ -5,7 +5,7 @@ import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import type { DaemonClient } from "../../core/host/daemon-client.ts";
-import { decisionEntryText, confirmWindowContent, removeWindowContent, ABANDON_LABEL, ACCEPT_LABEL, REMOVE_LABEL } from "./prototype-windows.ts";
+import { decisionEntryText, confirmWindowContent, removeWindowContent, ABANDON_LABEL, ACCEPT_LABEL, ACCEPT_NOTE_LABEL, REMOVE_LABEL } from "./prototype-windows.ts";
 import type { PendingPrototype, PrototypeRecord, PrototypeRemoval } from "./prototype-windows.ts";
 import { chooseOrWriteWindow, chooseWindow } from "../../core/host/question-window.ts";
 import { id, object } from "../requirement/requirement-contracts.ts";
@@ -48,7 +48,7 @@ function reasonOf(error: unknown): string {
   return sanitizeText(raw, 200).replace(/\s+/g, " ").trim() || "未知错误";
 }
 
-type FlowResult = "decided" | "undecided" | "no_ui" | "failed";
+type FlowResult = "decided" | "abandoned" | "undecided" | "no_ui" | "failed";
 const OPINION_MAX_LENGTH = 4000;
 
 const textResult = (value: unknown) => ({ content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value) }], details: {} });
@@ -80,10 +80,13 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     const opened = await openFile(pending.path);
     const answer = await chooseOrWriteWindow(ctx, { ...confirmWindowContent(pending, opened), otherMaxLength: OPINION_MAX_LENGTH }, signal);
     if (!answer) return "undecided";
-    const choice = answer.other ? "rework" : answer.choices[0] === ACCEPT_LABEL ? "accept" : answer.choices[0] === ABANDON_LABEL ? "abandon" : undefined;
+    const picked = answer.choices[0];
+    const choice = picked === ACCEPT_LABEL || picked === ACCEPT_NOTE_LABEL ? "accept" : picked === ABANDON_LABEL ? "abandon" : answer.other ? "opinion" : undefined;
     if (!choice) return "undecided";
+    const note = picked === ACCEPT_NOTE_LABEL ? answer.other ?? null : null;
+    const opinion = choice === "opinion" ? answer.other ?? null : null;
     try {
-      await client.call("prototypes.decide", { ...input, version: pending.version, hash: pending.hash, choice, opinion: answer.other ?? null });
+      await client.call("prototypes.decide", { ...input, version: pending.version, hash: pending.hash, choice, opinion, note });
     } catch (error) {
       const advice = adviceOf(error);
       const voided = (error as { code?: unknown }).code === "file_changed";
@@ -91,11 +94,22 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
       if (voided) tell("one-company.prototype-voided", `原型「${pending.name}」第 ${pending.version} 版的文件在交稿后被改过，这一版已作废，用户的决定没有登记。可以用 one_company_prototype dispatch 重派设计师。`);
       return "failed";
     }
-    record({ kind: choice, name: pending.name, version: pending.version });
-    if (choice === "rework") {
-      tell("one-company.prototype-rework", `用户对原型「${pending.name}」第 ${pending.version} 版选了返工。\n上一版文件：${pending.path}\n用户原话：${answer.other}\n请按这句原话用 one_company_prototype dispatch 重派设计师。`);
+    if (choice === "accept") record({ kind: "accept", name: pending.name, version: pending.version, ...(note ? { note } : {}) });
+    else record({ kind: choice, name: pending.name, version: pending.version });
+    if (note) {
+      pi.sendMessage({ customType: "one-company.prototype-note", display: false,
+        content: `用户通过了原型「${pending.name}」第 ${pending.version} 版，并补充说明：${note}\n这句说明已和这一版原型一起存下，批准需求后会原话交给 PM 和子代理。需求正文和这句说明对不上时，按它改正文。` }, { deliverAs: "nextTurn" });
     }
-    return "decided";
+    if (choice === "opinion") {
+      tell("one-company.prototype-opinion", [
+        `用户对原型「${pending.name}」第 ${pending.version} 版提了意见，这一版仍在等用户确认。`,
+        `文件：${pending.path}`,
+        "用户原话：",
+        answer.other,
+        "如果是提问，先回答，再用 one_company_prototype confirm 重开这份原型的确认窗口；如果要修改，用 one_company_prototype dispatch 重派设计师，设计师会拿到这一版文件和这段原话，重派后这一版作废。",
+      ].join("\n"));
+    }
+    return choice === "abandon" ? "abandoned" : "decided";
   }
 
   async function removePrototypeFlow(client: DaemonClient, ctx: ExtensionContext, input: { requirementId: string; name: string }, signal?: AbortSignal): Promise<FlowResult> {
@@ -133,7 +147,7 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
           case "confirm": {
             const outcome = await enqueue(() => confirmPrototypeFlow(client!, ctx, { requirementId: request.requirementId, name: request.name }, signal));
             return textResult({ decided: "用户已在窗口里作出决定，结果以程序记录为准", undecided: "用户暂未决定，原型仍等待确认",
-              no_ui: "当前没有界面，用户没看到窗口，没有登记决定", failed: "用户在窗口里作了决定，但没能登记，提示已显示给用户" }[outcome]);
+              abandoned: "用户按 Esc 放弃了这一版，它不再挡住批准", no_ui: "当前没有界面，用户没看到窗口，没有登记决定", failed: "用户在窗口里作了决定，但没能登记，提示已显示给用户" }[outcome]);
           }
           case "remove": {
             const outcome = await enqueue(() => removePrototypeFlow(client!, ctx, { requirementId: request.requirementId, name: request.name }, signal));

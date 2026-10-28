@@ -19,7 +19,6 @@ export const FIXED_CHOICES = {
   acceptance: ["验收通过", "暂不验收"],
   requirement: ["调整需求", "取消需求", "拒绝需求"],
 } as const;
-export const ACCEPTANCE_OTHER = "返工（自己输入要改什么）";
 
 export interface PanelItemTarget {
   /** 窗口标题里的事项名称。 */
@@ -27,7 +26,6 @@ export interface PanelItemTarget {
   /** 用户在窗口里的回答可以登记为哪个决定；为 null 时回答只作为给主代理的指示。 */
   decision: { itemId: string; itemVersion: string } | null;
   fixed: readonly string[] | null;
-  otherLabel?: string;
 }
 
 const deny = (code: string, detail = ""): never => { throw new PanelItemAskError(code, detail); };
@@ -51,7 +49,7 @@ export function panelItemTarget(ref: { dataRoot: string; repoId: string }, requi
   const item = found.item ?? deny("item_not_pending");
   if (item.version !== itemVersion) deny("item_changed");
   if (item.kind === "adjudicate") return { label: item.label, decision: { itemId, itemVersion }, fixed: found.split ? FIXED_CHOICES.split : found.resize ? FIXED_CHOICES.resize : FIXED_CHOICES.retry };
-  if (item.kind === "acceptance") return { label: item.label, decision: { itemId, itemVersion }, fixed: FIXED_CHOICES.acceptance, otherLabel: ACCEPTANCE_OTHER };
+  if (item.kind === "acceptance") return { label: item.label, decision: { itemId, itemVersion }, fixed: FIXED_CHOICES.acceptance };
   if (item.kind === "adjust-requirement") {
     const requirement = `requirement:${requirementId}`;
     return { label: item.label, decision: { itemId: requirement, itemVersion: adjudicationSubject(ref, requirementId, requirement).version }, fixed: FIXED_CHOICES.requirement };

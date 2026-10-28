@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import type { RequirementRecord } from "../src/modules/requirement/requirement-contracts.ts";
 import {
-  PrototypeBoardError, beginDesign, checkPrototypeName, clearStaleDesigns, decidePrototype, draftPrototypes, endDesign,
+  PrototypeBoardError, beginDesign, checkPrototypeName, clearStaleDesigns, decidePrototype, draftPrototypes, endDesign, inFlightBlock,
   inFlightSummary, pendingConfirmation, prototypeFilePath, promoteOnApprovalIn, readPrototypeBoard, removeFromDraft, submitDesign,
 } from "../src/modules/requirement/requirement-prototypes.ts";
 
@@ -71,7 +71,7 @@ async function designed(name: string, html = HTML, note = "三项状态横排") 
 async function accepted(name: string, html = HTML) {
   const { version } = await designed(name, html);
   const pending = await pendingConfirmation(ref, { requirementId, name });
-  await decidePrototype(ref, { requirementId, name, version, hash: pending.hash, choice: "accept", opinion: null });
+  await decidePrototype(ref, { requirementId, name, version, hash: pending.hash, choice: "accept", note: null, opinion: null });
   return pending;
 }
 const board = () => readPrototypeBoard(ref, requirementId);
@@ -130,10 +130,10 @@ test("同名原型设计中再次派出被拒并写明还在做", async () => {
   expect(error.advice.why).toContain("还在做");
 });
 
-test("同名原型已交稿等确认时再次派出被拒并写明还在等确认", async () => {
+test("同名原型已交稿等确认时再次派出被拒并写明还在等用户确认", async () => {
   await designed("登录页");
   const error = await failure(() => begin("登录页"));
-  expect(error.advice.why).toContain("还在等确认");
+  expect(error.advice.why).toContain("还在等用户确认");
 });
 
 test("不同名称的原型可以同时在途", async () => {
@@ -239,14 +239,14 @@ test("文件在交稿后被改一个字节，登记决定报文件被改过且�
   await designed("登录页");
   const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
   writeFileSync(prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }), `${HTML} `);
-  const error = await failure(() => decidePrototype(ref, { requirementId, name: "登录页", version: 1, hash, choice: "accept", opinion: null }));
+  const error = await failure(() => decidePrototype(ref, { requirementId, name: "登录页", version: 1, hash, choice: "accept", note: null, opinion: null }));
   expect(error.advice.why).toContain("文件在交稿后被改过");
   expect((await entryOf("登录页"))?.draft ?? null).toBeNull();
 });
 
 test("没有等确认的原型时登记决定被拒", async () => {
   await begin("登录页");
-  await failure(() => decidePrototype(ref, { requirementId, name: "登录页", version: 1, hash: HASH, choice: "accept", opinion: null }));
+  await failure(() => decidePrototype(ref, { requirementId, name: "登录页", version: 1, hash: HASH, choice: "accept", note: null, opinion: null }));
 });
 
 test("通过后草稿里是这一版并清掉在途", async () => {
@@ -261,65 +261,191 @@ test("通过新版本后草稿里同名旧版本被替换", async () => {
   expect((await entryOf("登录页"))?.draft).toMatchObject({ version: 2, hash: second.hash });
 });
 
-test("返工没有意见时被拒", async () => {
-  const { version } = await designed("登录页");
-  const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
-  await failure(() => decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "rework", opinion: null }));
-  await failure(() => decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "rework", opinion: "   " }));
+async function awaitingHash(name = "登录页") {
+  const { version } = await designed(name);
+  return { version, hash: (await pendingConfirmation(ref, { requirementId, name })).hash };
+}
+const draftNote = async (name = "登录页") => (await draftPrototypes(ref, requirementId)).items.find((item) => item.name === name)?.userNote;
+
+test("通过时带补充说明，草稿里这一版带去掉首尾空白后的说明", async () => {
+  const { version, hash } = await awaitingHash();
+  await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "accept", note: "  用 B  ", opinion: null });
+  expect(await draftNote()).toBe("用 B");
+  expect((await entryOf("登录页"))?.draft).toMatchObject({ version, userNote: "用 B" });
+});
+
+test("通过时补充说明恰好 4000 字可以登记", async () => {
+  const { version, hash } = await awaitingHash();
+  await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "accept", note: "说".repeat(4000), opinion: null });
+  expect(await draftNote()).toBe("说".repeat(4000));
+});
+
+test("通过时补充说明去掉空白后为空被拒，草稿不变且仍在等确认", async () => {
+  const { version, hash } = await awaitingHash();
+  await failure(() => decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "accept", note: "   ", opinion: null }));
+  expect((await entryOf("登录页"))?.draft ?? null).toBeNull();
   expect((await inFlightSummary(ref, requirementId))[0]?.status).toBe("awaiting");
 });
 
-test("返工意见超过 4000 字时被拒", async () => {
-  const { version } = await designed("登录页");
-  const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
-  await failure(() => decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "rework", opinion: "改".repeat(4001) }));
+test("通过时补充说明超过 4000 字被拒，草稿不变", async () => {
+  const { version, hash } = await awaitingHash();
+  await failure(() => decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "accept", note: "说".repeat(4001), opinion: null }));
+  expect((await entryOf("登录页"))?.draft ?? null).toBeNull();
 });
 
-test("返工有意见时记下原话，下次派出交回上一版位置和这句话", async () => {
-  const { version } = await designed("登录页");
-  const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
-  const opinion = "按钮再大一点，颜色换成蓝色";
-  await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "rework", opinion });
-  expect((await entryOf("登录页"))?.lastRework).toMatchObject({ version: 1, opinion });
-  expect(await inFlightSummary(ref, requirementId)).toEqual([]);
-  const next = await begin("登录页");
-  expect(next.version).toBe(2);
-  expect(next.previous).toEqual({ path: prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }), opinion });
-});
-
-test("返工不改变草稿里的旧版本", async () => {
+test("通过时不带补充说明，这一版的说明是 null", async () => {
   await accepted("登录页");
-  const { version } = await designed("登录页", HTML2);
-  const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
-  await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "rework", opinion: "再改" });
-  expect((await entryOf("登录页"))?.draft?.version).toBe(1);
+  expect(await draftNote()).toBeNull();
 });
 
-test("通过后返工意见被清掉", async () => {
-  const { version } = await designed("登录页");
-  let hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
-  await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "rework", opinion: "再改" });
+test("通过新版本不带说明时，草稿里同名旧版本的说明不转到新版本", async () => {
+  const first = await awaitingHash();
+  await decidePrototype(ref, { requirementId, name: "登录页", version: first.version, hash: first.hash, choice: "accept", note: "用 B", opinion: null });
+  expect(await draftNote()).toBe("用 B");
+  await accepted("登录页", HTML2);
+  expect((await entryOf("登录页"))?.draft).toMatchObject({ version: 2 });
+  expect(await draftNote()).toBeNull();
+});
+
+test("放弃后草稿里同名已通过版本和它的说明不变", async () => {
+  const first = await awaitingHash();
+  await decidePrototype(ref, { requirementId, name: "登录页", version: first.version, hash: first.hash, choice: "accept", note: "用 B", opinion: null });
+  const second = await designed("登录页", HTML2);
+  const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
+  await decidePrototype(ref, { requirementId, name: "登录页", version: second.version, hash, choice: "abandon", note: null, opinion: null });
+  expect((await entryOf("登录页"))?.draft).toMatchObject({ version: 1, hash: first.hash, userNote: "用 B" });
+  expect(await draftNote()).toBe("用 B");
+  expect(await inFlightSummary(ref, requirementId)).toEqual([]);
+});
+
+test("有一份在途原型时批准被拦下，处理办法写明通过或在确认窗口按 Esc 放弃", () => {
+  const error = inFlightBlock([{ name: "登录页", version: 1, status: "awaiting" }]);
+  expect(error?.advice.next).toBe("先把它处理完（通过，或在确认窗口按 Esc 放弃），再说批准");
+});
+
+test("有两份在途原型时批准被拦下，处理办法写明这 2 份", () => {
+  const error = inFlightBlock([{ name: "登录页", version: 1, status: "awaiting" }, { name: "设置页", version: 2, status: "designing" }]);
+  expect(error?.advice.next).toBe("先把这 2 份处理完（通过，或在确认窗口按 Esc 放弃），再说批准");
+});
+
+const opine = async (opinion: string | null, name = "登录页") => {
+  const { version, hash } = await pendingConfirmation(ref, { requirementId, name });
+  return decidePrototype(ref, { requirementId, name, version, hash, choice: "opinion", note: null, opinion });
+};
+
+test("提意见没有内容或只有空白时被拒，看板不变", async () => {
+  await designed("登录页");
+  const before = await board();
+  await failure(() => opine(null));
+  await failure(() => opine("   "));
+  expect(await board()).toEqual(before);
+});
+
+test("提意见超过 4000 字时被拒，看板不变", async () => {
+  await designed("登录页");
+  const before = await board();
+  await failure(() => opine("改".repeat(4001)));
+  expect(await board()).toEqual(before);
+});
+
+test("提意见记下去掉首尾空白的原话，这一版仍在等确认且不进草稿", async () => {
+  await designed("登录页");
+  await opine("  B 方案窄屏怎么排？ ");
+  const entry = await entryOf("登录页");
+  expect(entry?.lastOpinion).toEqual({ version: 1, opinion: "B 方案窄屏怎么排？" });
+  expect(entry?.inFlight).toMatchObject({ version: 1, status: "awaiting" });
+  expect(entry?.draft ?? null).toBeNull();
+  expect(await inFlightSummary(ref, requirementId)).toEqual([{ name: "登录页", version: 1, status: "awaiting" }]);
+});
+
+test("同一版再提一次意见以最后一次为准", async () => {
+  await designed("登录页");
+  await opine("  B 方案窄屏怎么排？ ");
+  await opine("改成横向滚动");
+  expect((await entryOf("登录页"))?.lastOpinion).toEqual({ version: 1, opinion: "改成横向滚动" });
+});
+
+test("提过意见后重派，旧版作废、版本加一，交回上一版位置和意见原话", async () => {
+  await designed("登录页");
+  await opine("改成横向滚动");
+  const next = await begin("登录页");
+  expect(next).toEqual({ version: 2, previous: { path: prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }), opinion: "改成横向滚动" } });
+  const entry = await entryOf("登录页");
+  expect(entry?.inFlight).toMatchObject({ version: 2, status: "designing" });
+  expect(entry?.draft ?? null).toBeNull();
+  expect(entry?.lastEnded).toEqual({ version: 1, reason: "用户提了意见后重派，这一版作废" });
+  expect(existsSync(prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }))).toBe(true);
+});
+
+test("提意见后重派并交稿，新一版的待确认信息带上上一版的意见", async () => {
+  await designed("登录页");
+  await opine("改成横向滚动");
   await designed("登录页", HTML2);
-  hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
-  await decidePrototype(ref, { requirementId, name: "登录页", version: 2, hash, choice: "accept", opinion: null });
-  expect((await entryOf("登录页"))?.lastRework ?? null).toBeNull();
+  expect((await pendingConfirmation(ref, { requirementId, name: "登录页" })).previousOpinion).toBe("改成横向滚动");
+});
+
+test("对第 1 版提的意见不能拿来顶替重派后新交稿的第 2 版：再派被拒，看板不变", async () => {
+  await designed("登录页");
+  await opine("改成横向滚动");
+  await designed("登录页", HTML2);
+  const before = await entryOf("登录页");
+  const error = await failure(() => begin("登录页"));
+  expect(error.advice.why).toBe("原型「登录页」第 2 版还在等用户确认，用户没有对它提意见，不能重派");
+  expect(await entryOf("登录页")).toEqual(before);
+});
+
+test("意见恰好 4000 字可以登记", async () => {
+  await designed("登录页");
+  await opine("意".repeat(4000));
+  expect((await entryOf("登录页"))?.lastOpinion).toMatchObject({ version: 1, opinion: "意".repeat(4000) });
+});
+
+test("提意见后不重派，直接再开待确认信息，上一版意见不是这一版自己的意见", async () => {
+  await designed("登录页");
+  await opine("改成横向滚动");
+  expect((await pendingConfirmation(ref, { requirementId, name: "登录页" })).previousOpinion ?? null).toBeNull();
+});
+
+test("同名原型等确认且用户没提过意见时重派被拒，写明原因和下一步，看板不变", async () => {
+  await designed("登录页");
+  const before = await board();
+  const error = await failure(() => begin("登录页"));
+  expect(error.advice.why).toBe("原型「登录页」第 1 版还在等用户确认，用户没有对它提意见，不能重派");
+  expect(error.advice.next).toBe("先请用户在确认窗口里处理");
+  expect(await board()).toEqual(before);
+});
+
+test("提意见后通过，意见被清掉", async () => {
+  await designed("登录页");
+  await opine("再改");
+  const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
+  await decidePrototype(ref, { requirementId, name: "登录页", version: 1, hash, choice: "accept", note: null, opinion: null });
+  expect((await entryOf("登录页"))?.lastOpinion ?? null).toBeNull();
+});
+
+test("提意见后放弃，意见被清掉", async () => {
+  await designed("登录页");
+  await opine("再改");
+  const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
+  await decidePrototype(ref, { requirementId, name: "登录页", version: 1, hash, choice: "abandon", note: null, opinion: null });
+  expect((await entryOf("登录页"))?.lastOpinion ?? null).toBeNull();
   expect((await begin("登录页")).previous?.opinion ?? null).toBeNull();
 });
 
-test("放弃后草稿里同名旧版本不变并清掉返工意见", async () => {
+test("放弃后草稿里同名旧版本不变并清掉意见", async () => {
   const first = await accepted("登录页");
   const { version } = await designed("登录页", HTML2);
   const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
-  await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "abandon", opinion: null });
+  await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "abandon", note: null, opinion: null });
   expect((await entryOf("登录页"))?.draft).toMatchObject({ version: 1, hash: first.hash });
   expect(await inFlightSummary(ref, requirementId)).toEqual([]);
-  expect((await entryOf("登录页"))?.lastRework ?? null).toBeNull();
+  expect((await entryOf("登录页"))?.lastOpinion ?? null).toBeNull();
 });
 
 test("放弃后版本号仍然只增不减", async () => {
   const { version } = await designed("登录页");
   const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
-  await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "abandon", opinion: null });
+  await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "abandon", note: null, opinion: null });
   expect((await begin("登录页")).version).toBe(2);
 });
 
@@ -445,17 +571,16 @@ test("批准提升会带走移除：被移除的原型不再在批准集合里",
   expect(kept?.draft).toBeNull();
 });
 
-test("v1 通过后 v2 返工，再移除，下次派出时返工意见已清掉", async () => {
+test("v1 通过后 v2 提意见，再把 v1 从草稿移除，v2 的意见还在，照样能重派并带上原话", async () => {
   await accepted("登录页");
-  const { version } = await designed("登录页", HTML2);
-  const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
-  await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "rework", opinion: "改大" });
+  await designed("登录页", HTML2);
+  await opine("改大");
   await removeFromDraft(ref, { requirementId, name: "登录页", version: 1 });
-  expect((await entryOf("登录页"))?.lastRework ?? null).toBeNull();
-  expect((await begin("登录页")).previous?.opinion ?? null).toBeNull();
+  expect((await entryOf("登录页"))?.lastOpinion).toMatchObject({ version: 2, opinion: "改大" });
+  expect((await begin("登录页")).previous?.opinion).toBe("改大");
 });
 
-test("没有返工时再派，上一版位置指向草稿里通过的那一版，意见为空", async () => {
+test("没有意见时再派，上一版位置指向草稿里通过的那一版，意见为空", async () => {
   await accepted("登录页");
   expect((await begin("登录页")).previous).toEqual({ path: prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }), opinion: null });
 });
@@ -489,7 +614,7 @@ test("交稿后文件被改，登记决定时这一版作废并写明原因，�
   await designed("登录页");
   const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
   writeFileSync(prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }), `${HTML} `);
-  const error = await failure(() => decidePrototype(ref, { requirementId, name: "登录页", version: 1, hash, choice: "accept", opinion: null }));
+  const error = await failure(() => decidePrototype(ref, { requirementId, name: "登录页", version: 1, hash, choice: "accept", note: null, opinion: null }));
   expect(error.advice.why).toContain("文件在交稿后被改过");
   expect(error.advice.next).not.toContain("PM");
   expect(error.advice.next).toContain("重新派");
@@ -546,17 +671,9 @@ test("两份原型以不同先后通过，集合相同则指纹相同", async ()
     const { version } = await begin(name, runId, other);
     await submitDesign(ref, { requirementId: other, name, runId, html: HTML, note: "三项状态横排" });
     const { hash } = await pendingConfirmation(ref, { requirementId: other, name });
-    await decidePrototype(ref, { requirementId: other, name, version, hash, choice: "accept", opinion: null });
+    await decidePrototype(ref, { requirementId: other, name, version, hash, choice: "accept", note: null, opinion: null });
   }
   expect((await draftPrototypes(ref, other)).digest).toBe((await draftPrototypes(ref, requirementId)).digest);
-});
-
-test("返工后再派并交稿，待确认信息带上返工原话", async () => {
-  const { version } = await designed("登录页");
-  const hash = (await pendingConfirmation(ref, { requirementId, name: "登录页" })).hash;
-  await decidePrototype(ref, { requirementId, name: "登录页", version, hash, choice: "rework", opinion: "按钮再大一点" });
-  await designed("登录页", HTML2);
-  expect((await pendingConfirmation(ref, { requirementId, name: "登录页" })).previousOpinion).toBe("按钮再大一点");
 });
 
 test("看板已有 50 份原型时再派新名称被拒，已有名称仍可再派", async () => {
@@ -618,9 +735,9 @@ test("需求已关闭、正在关闭或待恢复时打开确认窗口被拒，�
   }
 });
 
-test("需求已关闭、正在关闭或待恢复时登记通过、返工、放弃都被拒，原因写明需求状态，看板不变", async () => {
+test("需求已关闭、正在关闭或待恢复时登记通过、提意见、放弃都被拒，原因写明需求状态，看板不变", async () => {
   for (const [patch, state] of UNEDITABLE) {
-    for (const choice of ["accept", "rework", "abandon"] as const) {
+    for (const choice of ["accept", "opinion", "abandon"] as const) {
       const id = uuidv7(), runId = uuidv7();
       putRequirement(id);
       await begin("登录页", runId, id);
@@ -628,7 +745,7 @@ test("需求已关闭、正在关闭或待恢复时登记通过、返工、放�
       const { hash } = await pendingConfirmation(ref, { requirementId: id, name: "登录页" });
       patchRequirement(id, patch);
       const before = await readPrototypeBoard(ref, id);
-      const error = await failure(() => decidePrototype(ref, { requirementId: id, name: "登录页", version: 1, hash, choice, opinion: choice === "rework" ? "再改" : null }));
+      const error = await failure(() => decidePrototype(ref, { requirementId: id, name: "登录页", version: 1, hash, choice, note: null, opinion: choice === "opinion" ? "再改" : null }));
       expect(error.advice.why).toContain(state);
       expect(await readPrototypeBoard(ref, id)).toEqual(before);
     }
@@ -642,7 +759,7 @@ test("需求已关闭、正在关闭或待恢复时移除被拒，原因写明�
     await begin("登录页", runId, id);
     await submitDesign(ref, { requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
     const { hash } = await pendingConfirmation(ref, { requirementId: id, name: "登录页" });
-    await decidePrototype(ref, { requirementId: id, name: "登录页", version: 1, hash, choice: "accept", opinion: null });
+    await decidePrototype(ref, { requirementId: id, name: "登录页", version: 1, hash, choice: "accept", note: null, opinion: null });
     patchRequirement(id, patch);
     const before = await readPrototypeBoard(ref, id);
     const error = await failure(() => removeFromDraft(ref, { requirementId: id, name: "登录页", version: 1 }));
@@ -659,7 +776,7 @@ test("需求已取消且文件已被改过时登记决定先因需求状态被�
   const { hash } = await pendingConfirmation(ref, { requirementId: id, name: "登录页" });
   writeFileSync(prototypeFilePath(ref, { requirementId: id, name: "登录页", version: 1 }), `${HTML} `);
   patchRequirement(id, closedState("closed", "cancelled"));
-  const error = await failure(() => decidePrototype(ref, { requirementId: id, name: "登录页", version: 1, hash, choice: "accept", opinion: null }));
+  const error = await failure(() => decidePrototype(ref, { requirementId: id, name: "登录页", version: 1, hash, choice: "accept", note: null, opinion: null }));
   expect(error.advice.why).toContain("需求已取消");
   expect(error.advice.why).not.toContain("被改过");
   expect(await inFlightSummary(ref, id)).toEqual([{ name: "登录页", version: 1, status: "awaiting" }]);
@@ -699,7 +816,7 @@ test("批准提升时有原型设计中，原因逐个写出名称和设计师�
   expect(error.advice.why).toContain("设置页");
   expect(error.advice.why).toContain("设计师还在做");
   expect(`${error.advice.why}${error.advice.next}`).not.toContain("在批准过程中变了");
-  expect(error.advice.next).toMatch(/通过|返工|放弃/);
+  expect(error.advice.next).toMatch(/通过|放弃/);
 });
 
 test("批准提升时有原型等确认，原因逐个写出名称和第几版还在等你确认", async () => {

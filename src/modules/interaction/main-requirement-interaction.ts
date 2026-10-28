@@ -42,7 +42,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { draftPrototypes, inFlightBlock, inFlightSummary, PrototypeBoardError, verifyDraftFiles } from "../requirement/requirement-prototypes.ts";
 import type { DraftItem } from "../requirement/requirement-prototypes.ts";
 import { prototypeChangeLines, prototypeChanges, prototypesAtRevision } from "../requirement/requirement-prototype-revisions.ts";
-import { fixedChoiceIssue, PanelItemAskError, panelItemTarget } from "../panel/panel-item-ask.ts";
+import { FIXED_CHOICES, fixedChoiceIssue, PanelItemAskError, panelItemTarget } from "../panel/panel-item-ask.ts";
 import type { AdjudicationSubject } from "../requirement/user-interaction-format.ts";
 import { inspectPrdStructure, pagePrdText, selectPrdSection } from "../requirement/prd-view.ts";
 
@@ -673,9 +673,10 @@ export class MainRequirementInteraction {
     const order = { new: 0, kept: 1, removed: 2 } as const;
     const tone = { new: "added", kept: "normal", removed: "removed" } as const;
     const label = { new: "本次新确认", kept: `沿用第 ${revision} 版需求`, removed: "本次移除" } as const;
-    const rows = [...items].sort((a, b) => order[a.label] - order[b.label]).map((item): WindowLine => ({
+    const rows = [...items].sort((a, b) => order[a.label] - order[b.label]).flatMap((item): WindowLine[] => [{
       text: `  ${item.name}${" ".repeat(Math.max(2, 14 - visibleWidth(item.name)))}第 ${item.version} 版  ${label[item.label]}`,
-      ...(item.label === "kept" ? {} : { tone: tone[item.label] }) }));
+      ...(item.label === "kept" ? {} : { tone: tone[item.label] }) },
+      ...(item.userNote && item.label !== "removed" ? [{ text: `    你的说明：「${item.userNote}」`, tone: "muted" as const }] : [])]);
     return [{ text: `这一版一起批准的原型（${items.filter((item) => item.label !== "removed").length} 份）：` }, ...rows,
       ...mutedLines(["原型的样子以你在浏览器里通过的那一版为准。"])];
   }
@@ -753,7 +754,7 @@ export class MainRequirementInteraction {
     const title = await this.#requirementTitle(host, request.repoId, request.requirementId);
     const caption = `事项 · ${target.label} · ${title ?? request.requirementId}`;
     const picked = await askWindow(ctx, { caption, question: request.question, rootCheck: request.rootCheck, allowOther: true,
-      ...(target.otherLabel ? { otherLabel: target.otherLabel } : {}), escapeHint: "Esc 暂不回答（事项保留）",
+      escapeHint: "Esc 暂不回答（事项保留）",
       choices: request.choices.map((choice) => ({ label: choice.label, description: choice.reason, recommended: choice.recommended === true,
         ...(choice.recommendedReason ? { recommendedReason: choice.recommendedReason } : {}) })) }, signal);
     const index = picked ? request.choices.findIndex((choice) => choice.label === picked.choices[0]) : -1;
@@ -764,7 +765,9 @@ export class MainRequirementInteraction {
     const decision = answer ? target.decision : null;
     return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: record.version, epoch: record.data.epoch, itemId: request.itemId,
       caption, question: request.question, status: answer ? "answered" : "pending", answer, decision,
-      next: !answer ? "用户暂不回答，事项保留" : decision ? `按这个回答以 one_company_user_interact purpose=adjudicate itemId=${decision.itemId} itemVersion=${decision.itemVersion} 登记；回答不是登记选项时按其内容处理`
+      next: !answer ? "用户暂不回答，事项保留" : decision && answer.other && target.fixed === FIXED_CHOICES.acceptance
+        ? `这是用户写在“其他（自己输入）”一行的话：是提问就先回答，完成报告仍待验收，答完用 one_company_user_interact purpose=panel-item 再请用户验收；明确要求修改时，才按原话以 one_company_user_interact purpose=adjudicate itemId=${decision.itemId} itemVersion=${decision.itemVersion} 登记返工`
+        : decision ? `按这个回答以 one_company_user_interact purpose=adjudicate itemId=${decision.itemId} itemVersion=${decision.itemVersion} 登记；回答不是登记选项时按其内容处理`
         : "这个回答只作为给你的指示，不能登记为批准或裁决；按回答处理，需要转给 PM 时用 agent_manage message" });
   }
   /** 窗口里的回答记成用户这一轮的原话；不走 captureInput，免得本次工具调用的代次失效、结果被当成过期。 */

@@ -5,7 +5,7 @@ import type { PmLease, RequirementRecord } from "../requirement/requirement-cont
 import { checked } from "../requirement/requirement-contracts.ts";
 import { planRejectionsIn, stallIn } from "../pm/pm-attention.ts";
 import { sessionFilePath } from "../agents/session-records.ts";
-import { ACCEPTANCE_OTHER, FIXED_CHOICES } from "./panel-item-ask.ts";
+import { FIXED_CHOICES } from "./panel-item-ask.ts";
 import { readVerdictsIn } from "../pm/verdicts.ts";
 import { COMPLETION_REPORTS, CompletionReport, DELIVERY_RECEIPTS, DeliveryReceipt } from "../delivery/workflow-close.ts";
 
@@ -84,9 +84,10 @@ export function decisionPacket(ref: { dataRoot: string; repoId: string }, requir
         `需求分支本地提交 ${report.commits.length} 个${report.commitsTruncated ? `（仅列最近 ${report.commits.length} 个）` : ""}，提交说明由 PM 撰写${MODEL_NOTE}：`,
         ...report.commits.map((commit) => `  ${commit.sha.slice(0, 12)} ${quoted(commit.subject, 200)}`),
         `PM 的说明${MODEL_NOTE}：${quoted(report.note, 4000)}`,
-        "可选：1 验收通过（随后以完成关闭需求）；2 返工（请用户说明要改什么，意见交回 PM）。",
-        `${windowLine(itemId, item.version, FIXED_CHOICES.acceptance)}；返工意见由用户写在“${ACCEPTANCE_OTHER}”一行`,
-        `用户在窗口里选中或写下返工意见后，以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 登记。`].join("\n");
+        "可选：1 验收通过（随后以完成关闭需求）；2 暂不验收。",
+        windowLine(itemId, item.version, FIXED_CHOICES.acceptance),
+        `用户选中验收通过后，以 one_company_user_interact purpose=adjudicate itemId=${itemId} itemVersion=${item.version} 登记。`,
+        "用户写在“其他（自己输入）”一行的话，是提问就先回答，完成报告仍待验收，答完用 one_company_user_interact purpose=panel-item 再请用户验收；明确要求修改时，按原话以 one_company_user_interact purpose=adjudicate 登记返工，报告作废，意见交回 PM。"].join("\n");
     }
     const advise = `请读运行记录与批准需求分析原因，再用 one_company_user_interact purpose=panel-item itemId=${itemId} itemVersion=${item.version} 向用户给出建议`;
     const log = sessionFilePath({ ...ref, runId: lease.runId });

@@ -12,7 +12,7 @@ export function answeringUi(answer: (window: ShownWindow) => WindowDecision | Pr
   return {
     custom<T>(factory: (...args: never[]) => unknown): Promise<T> {
       return new Promise<T>((resolve, reject) => {
-        const component = (factory as (...args: unknown[]) => unknown)({ requestRender() {} }, plainTheme, undefined, resolve) as
+        const component = (factory as (...args: unknown[]) => unknown)({ requestRender() {}, terminal: { rows: 40, columns: 200 } }, plainTheme, undefined, resolve) as
           { render(width: number): string[]; handleInput(data: string): void };
         const lines = component.render(200).map((line) => line.trimEnd());
         // 选项行以" → "或三个空格开头；理由、推荐理由与折行续行缩进更深，不算选项
@@ -23,7 +23,7 @@ export function answeringUi(answer: (window: ShownWindow) => WindowDecision | Pr
         void Promise.resolve(answer(shown)).then((decision) => {
           if (decision === false) { component.handleInput(ESC); return; }
           const label = decision === true ? "确认" : typeof decision === "string" ? decision : "其他";
-          // 自己写的那一行默认叫"其他（自己输入）"，有的窗口改了名字（如"返工（自己输入要改什么）"），总在最后一行
+          // 自己写的那一行默认叫"其他（自己输入）"，有的窗口改了名字（如"其他（自己输入修改意见）"），总在最后一行
           const index = typeof decision === "object" ? (choices.findIndex((choice) => choice.startsWith("其他（")) + 1 || choices.length) - 1 : choices.indexOf(label);
           if (index < 0) throw new Error(`窗口里没有选项：${label}`);
           for (let i = cursor; i < index; i++) component.handleInput(DOWN);

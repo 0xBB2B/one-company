@@ -159,7 +159,7 @@ async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: s
   ].join("\n");
 }
 
-function pmContext(record: RequirementRecord, lease: PmLease, sources: IntakeSourceDirectory | null, decisions: PmDecisionNote[], prototypes: readonly { name: string; version: number }[]): string {
+function pmContext(record: RequirementRecord, lease: PmLease, sources: IntakeSourceDirectory | null, decisions: PmDecisionNote[], prototypes: readonly { name: string; version: number; userNote: string | null }[]): string {
   const workspace = record.workspace!;
   const list = (ids: readonly string[]) => ids.length ? ids.join("、") : "无";
   return [

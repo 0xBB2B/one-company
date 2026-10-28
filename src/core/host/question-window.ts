@@ -1,10 +1,10 @@
 import type { ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
-import type { KeybindingsManager, TUI } from "@earendil-works/pi-tui";
-import { decodeKittyPrintable, matchesKey, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { EditorTheme, KeybindingsManager, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Editor, matchesKey, sliceByColumn, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 export type LineTone = "normal" | "muted" | "added" | "removed" | "warning";
 export interface WindowLine { text: string; tone?: LineTone }
-export interface WindowChoice { label: string; description?: string; recommended?: boolean; recommendedReason?: string; /** 不可选时写原因：整行变暗，光标跳过。 */ disabled?: string }
+export interface WindowChoice { label: string; description?: string; recommended?: boolean; recommendedReason?: string; /** 不可选时写原因：整行变暗，光标跳过。 */ disabled?: string; /** 这一项本身是输入行：选中后可直接输入文字，回车提交该项名称和文字。 */ writable?: boolean }
 export interface WindowQuestion {
   header?: string;
   /** 问题上方的灰色一行，例如"提问 · 需求名（第 2 版）"。 */
@@ -23,6 +23,8 @@ export interface WindowQuestion {
   cancelNote?: string;
   /** 整个替换提示行里 Esc 那一段。 */
   escapeHint?: string;
+  /** 按 Esc 时窗口按"选了这个名称"作答。 */
+  escapeChoice?: string;
 }
 export interface WindowAnswer { choices: string[]; other?: string }
 export interface WindowTheme { fg(kind: string, text: string): string; bold(text: string): string }
@@ -32,7 +34,40 @@ export type WindowTone = "warning" | "standard";
 const OTHER = "其他（自己输入）";
 const CLOSING = new Set([..."。，、；：？！）」』》,.;:!?)"]);
 const WORD = /[\w.~-]/u;
-const CARET = "\x1b[7m \x1b[27m";
+const INPUT_INDENT = 8;
+const EDITOR_THEME = { borderColor: (text: string) => text, selectList: {} } as unknown as EditorTheme;
+
+const CURSOR_MARK = "\x1b_pi:fc\x07";
+const PLAIN_BORDER = /^─+$/u;
+const FAKE_CURSOR = /^\x1b_pi:fc\x07(.*?)\x1b_pi:\/fc\x07/su;
+const UP_KEY = "\x1b[A";
+// 足够宽，pi 编辑器不会自动折行，只按用户的换行分行
+const EDITOR_WIDTH = 10000;
+
+interface BarRow { editorLine: number; start: number; dots: number }
+interface Bar { index: number; cursor: number; start: number; end: number; collapsed: boolean; textWidth: number; rows: Array<BarRow | undefined> }
+
+/** 一行放不下时截一段：带光标的行从上次的起点开始，光标出了可见范围才移动起点；被截掉的一侧放灰色省略号。 */
+function fitLine(raw: string, width: number, muted: (text: string) => string, previousStart: number): { text: string; start: number; dots: number } {
+  const total = visibleWidth(raw);
+  if (total <= width) return { text: raw, start: 0, dots: 0 };
+  const mark = raw.indexOf(CURSOR_MARK);
+  if (mark < 0) return { text: sliceByColumn(raw, 0, width - 1, true) + muted("…"), start: 0, dots: 0 };
+  const cursorStart = visibleWidth(raw.slice(0, mark));
+  const cursorEnd = cursorStart + (visibleWidth(FAKE_CURSOR.exec(raw.slice(mark))?.[1] ?? "") || 1);
+  const tail = total - (width - 1);
+  let start = Math.min(previousStart, tail);
+  if (cursorStart < start) start = cursorStart;
+  const dots = start > 0 ? 1 : 0;
+  if (total - start > width - dots && cursorEnd >= start + width - dots - 1) {
+    start = cursorEnd + 1 - (width - 2);
+    if (start >= tail) start = tail;
+  }
+  start = visibleWidth(sliceByColumn(raw, 0, start));
+  if (start <= 0) return { text: sliceByColumn(raw, 0, width - 1, true) + muted("…"), start: 0, dots: 0 };
+  if (total - start <= width - 1) return { text: muted("…") + sliceByColumn(raw, start, width), start, dots: 1 };
+  return { text: muted("…") + sliceByColumn(raw, start, width - 2, true) + muted("…"), start, dots: 1 };
+}
 
 /** 按显示宽度折行：放得下就放；行首不留句号逗号这类标点，英文单词与数字不从中间切开。 */
 function wrapPlain(text: string, width: number): string[] {
@@ -67,20 +102,27 @@ function wrapSegments(text: string, width: number): string[] {
 }
 const TONE_COLOR: Record<LineTone, string | undefined> = { normal: undefined, muted: "muted", added: "toolDiffAdded", removed: "toolDiffRemoved", warning: "warning" };
 
-interface QuestionState { cursor: number; picked: Set<number>; other: string; answered: boolean }
+interface QuestionState { cursor: number; picked: Set<number>; editors: Map<number, Editor>; answered: boolean }
 
-/** 通用问答窗口：一到多个问题，单选或多选，可带"其他（自己输入）"；Esc 取消时答案为 undefined。 */
+/** 通用问答窗口：一到多个问题，单选或多选，可带"其他（自己输入）"；Esc 取消时答案为 undefined，问题带 escapeChoice 时按它作答。 */
 export class QuestionWindowView {
   private tab = 0;
   private reviewCursor = 0;
   private readonly states: QuestionState[];
-  private readonly options: { questions: WindowQuestion[]; tone: WindowTone; theme: WindowTheme; onDone(answers: WindowAnswer[] | undefined): void };
+  private readonly options: { questions: WindowQuestion[]; tone: WindowTone; theme: WindowTheme; tui: Pick<TUI, "requestRender" | "terminal">; onDone(answers: WindowAnswer[] | undefined): void };
+  private bars: Bar[] = [];
+  private readonly scrolls = new Map<Editor, { line: number; start: number }>();
 
   constructor(options: QuestionWindowView["options"]) {
     this.options = options;
     this.states = options.questions.map((question) => ({ cursor: Math.max(0, question.choices.findIndex((choice) => choice.recommended && !choice.disabled),
       question.choices.findIndex((choice) => !choice.disabled)),
-      picked: new Set<number>(), other: "", answered: false }));
+      picked: new Set<number>(), editors: new Map<number, Editor>(), answered: false }));
+    this.states.forEach((state, index) => {
+      for (let cursor = 0; cursor < this.choiceCount(index); cursor++) {
+        if (this.isInput(index, cursor)) state.editors.set(cursor, new Editor(options.tui as TUI, EDITOR_THEME, { paddingX: 0 }));
+      }
+    });
   }
 
   private get multi(): boolean { return this.options.questions.length > 1; }
@@ -90,6 +132,16 @@ export class QuestionWindowView {
     return question.choices.length + (question.allowOther ? 1 : 0);
   }
   private isOther(index: number, cursor: number): boolean { return cursor === this.options.questions[index]!.choices.length; }
+  private isInput(index: number, cursor: number): boolean { return this.isOther(index, cursor) || !!this.options.questions[index]!.choices[cursor]?.writable; }
+  private editorAt(index: number, cursor: number): Editor | undefined { return this.states[index]!.editors.get(cursor); }
+  private textAt(index: number, cursor: number): string { return this.editorAt(index, cursor)?.getExpandedText().trim() ?? ""; }
+  private otherText(index: number): string { return this.textAt(index, this.options.questions[index]!.choices.length); }
+  // 上下边框是纯横线说明那一侧没有被滚动藏起来的行
+  private cursorEdge(editor: Editor): { first: boolean; last: boolean } {
+    const lines = editor.render(EDITOR_WIDTH);
+    const at = lines.findIndex((line, i) => i > 0 && i < lines.length - 1 && line.includes(CURSOR_MARK));
+    return { first: at === 1 && PLAIN_BORDER.test(lines[0]!), last: at === lines.length - 2 && PLAIN_BORDER.test(lines[lines.length - 1]!) };
+  }
   private move(index: number, step: 1 | -1): void {
     const state = this.states[index]!, question = this.options.questions[index]!;
     for (let next = state.cursor + step; next >= 0 && next < this.choiceCount(index); next += step) {
@@ -100,7 +152,9 @@ export class QuestionWindowView {
   private answer(index: number): WindowAnswer {
     const question = this.options.questions[index]!, state = this.states[index]!;
     const choices = question.choices.filter((_, i) => state.picked.has(i)).map((choice) => choice.label);
-    return state.other.trim() ? { choices, other: state.other.trim() } : { choices };
+    const writable = [...state.picked].map((i) => this.textAt(index, i)).find(Boolean);
+    const other = writable ?? this.otherText(index);
+    return other ? { choices, other } : { choices };
   }
 
   private complete(index: number): void {
@@ -112,35 +166,58 @@ export class QuestionWindowView {
   handleInput(data: string): void {
     if (this.onReview) { this.handleReview(data); return; }
     const index = this.tab, state = this.states[index]!, question = this.options.questions[index]!;
-    if (matchesKey(data, "escape")) { this.options.onDone(undefined); return; }
+    if (matchesKey(data, "escape")) { this.options.onDone(question.escapeChoice !== undefined ? [{ choices: [question.escapeChoice] }] : undefined); return; }
+    const editor = this.editorAt(index, state.cursor);
+    if (editor) { this.handleInputRow(data, index, editor); return; }
     if (this.multi && matchesKey(data, "right")) { this.tab = Math.min(this.tab + 1, this.options.questions.length); return; }
     if (this.multi && matchesKey(data, "left")) { this.tab = Math.max(this.tab - 1, 0); return; }
     if (matchesKey(data, "down")) { this.move(index, 1); return; }
     if (matchesKey(data, "up")) { this.move(index, -1); return; }
-    if (this.isOther(index, state.cursor)) { this.handleOther(data, index); return; }
     if (question.multiSelect && matchesKey(data, "space")) {
       if (state.picked.has(state.cursor)) state.picked.delete(state.cursor);
       else state.picked.add(state.cursor);
       return;
     }
     if (!matchesKey(data, "enter") || question.choices[state.cursor]?.disabled) return;
-    if (question.multiSelect) { if (state.picked.size > 0 || state.other.trim()) this.complete(index); return; }
-    state.picked = new Set([state.cursor]); state.other = "";
+    if (question.multiSelect) { if (state.picked.size > 0 || this.otherText(index)) this.complete(index); return; }
+    state.picked = new Set([state.cursor]);
+    this.editorAt(index, question.choices.length)?.setText("");
     this.complete(index);
   }
 
-  /** 光标在"其他"一行时，按键直接进输入栏；有字时回车才提交。 */
-  private handleOther(data: string, index: number): void {
+  /** 光标在输入行（"其他"或可输入选项）时，按键直接进该行的编辑器；有字时回车才提交。 */
+  private handleInputRow(data: string, index: number, editor: Editor): void {
     const state = this.states[index]!, question = this.options.questions[index]!;
-    if (matchesKey(data, "enter")) {
-      if (!state.other.trim() || (question.otherMaxLength !== undefined && state.other.trim().length > question.otherMaxLength)) return;
+    // Ctrl+J（"\n"）在 matchesKey 里也算 enter，但在输入栏里是换行
+    if (matchesKey(data, "enter") && data !== "\n") {
+      const text = this.textAt(index, state.cursor);
+      if (!text || (question.otherMaxLength !== undefined && text.length > question.otherMaxLength)) return;
       if (!question.multiSelect) state.picked.clear();
+      if (!this.isOther(index, state.cursor)) state.picked.add(state.cursor);
       this.complete(index);
       return;
     }
-    if (matchesKey(data, "backspace")) { state.other = [...state.other].slice(0, -1).join(""); return; }
-    const printable = decodeKittyPrintable(data) ?? data;
-    if (!/[\u0000-\u001f\u007f]/u.test(printable)) state.other += printable;
+    if (matchesKey(data, "up") && this.cursorEdge(editor).first) { this.move(index, -1); return; }
+    if (matchesKey(data, "down") && this.cursorEdge(editor).last) { this.move(index, 1); return; }
+    editor.handleInput(data);
+  }
+
+  handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (event.type !== "click" || event.button !== "left") return undefined;
+    const bar = this.bars.find((item) => event.y >= item.start && event.y < item.end);
+    if (!bar || this.onReview) return undefined;
+    const row = bar.rows[event.y - bar.start];
+    if (!row) return undefined;
+    this.states[bar.index]!.cursor = bar.cursor;
+    const editor = this.editorAt(bar.index, bar.cursor)!;
+    if (bar.collapsed) {
+      for (let n = editor.getCursor().line; n > 0; n--) editor.handleInput(UP_KEY);
+      editor.render(EDITOR_WIDTH);
+    }
+    const column = event.x - INPUT_INDENT - row.dots;
+    const x = bar.collapsed && column >= bar.textWidth ? EDITOR_WIDTH : row.start + Math.max(0, column);
+    const result = editor.handleMouse({ ...event, x, y: row.editorLine, width: EDITOR_WIDTH });
+    return { ...result, handled: true };
   }
 
   private handleReview(data: string): void {
@@ -161,6 +238,7 @@ export class QuestionWindowView {
     const muted = (text: string) => theme.fg("muted", text);
     const wrap = (text: string, indent: number) => wrapTextWithAnsi(text, Math.max(8, width - indent)).map((line) => " ".repeat(indent) + line);
     const lines: string[] = [border];
+    this.bars = [];
     if (this.multi) lines.push(this.renderTabs(), "");
 
     if (this.onReview) {
@@ -193,7 +271,7 @@ export class QuestionWindowView {
     const labelWidth = Math.max(...labels.map((label) => visibleWidth(label)));
     labels.forEach((label, i) => {
       const selected = i === state.cursor;
-      const box = question.multiSelect ? `[${state.picked.has(i) || (this.isOther(index, i) && state.other.trim()) ? "x" : " "}] ` : "";
+      const box = question.multiSelect ? `[${state.picked.has(i) || (this.isOther(index, i) && this.otherText(index)) ? "x" : " "}] ` : "";
       const description = question.choices[i]?.description, disabled = question.choices[i]?.disabled;
       if (disabled) {
         const lead = `${label}${" ".repeat(labelWidth - visibleWidth(label) + 3)}`;
@@ -218,19 +296,58 @@ export class QuestionWindowView {
           lines.push(...wrapPlain(`推荐理由：${choice.recommendedReason}`, width - 6).map((piece) => `      ${theme.fg("success", piece)}`));
         }
       }
-      if (this.isOther(index, i) && (selected || state.other)) lines.push(`      ${highlight("›")} ${state.other}${selected ? CARET : ""}`);
-      const excess = this.isOther(index, i) && question.otherMaxLength !== undefined ? state.other.trim().length - question.otherMaxLength : 0;
+      const editor = this.editorAt(index, i);
+      if (!editor) return;
+      editor.focused = selected;
+      if (selected || editor.getText()) {
+        const bar = this.renderInput(editor, index, i, selected, width - INPUT_INDENT, lines.length, highlight, muted);
+        lines.push(...bar.lines);
+        this.bars.push(bar.bar);
+      }
+      const excess = question.otherMaxLength !== undefined ? this.textAt(index, i).length - question.otherMaxLength : 0;
       if (excess > 0) lines.push(`      ${muted(`超出 ${excess} 字，最多 ${question.otherMaxLength} 字`)}`);
     });
 
     const enter = question.multiSelect && this.multi ? "回车下一题" : "回车确认";
     const hint = [
-      ...(this.isOther(index, state.cursor) ? ["直接输入", enter, "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
+      ...(this.isInput(index, state.cursor) ? ["直接输入", enter, "Shift+Enter 换行", "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
       ...(this.multi ? ["←→ 切换问题"] : []),
       question.escapeHint ?? `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
     ].join(" · ");
     lines.push("", ...wrapPlain(hint, width - 1).map((piece) => ` ${muted(piece)}`), border);
     return lines;
+  }
+
+  private renderInput(editor: Editor, index: number, cursor: number, expanded: boolean, width: number, start: number,
+    highlight: (text: string) => string, muted: (text: string) => string): { lines: string[]; bar: Bar } {
+    const prefix = `      ${expanded ? highlight("›") : "›"} `;
+    const make = (lines: string[], rows: Array<BarRow | undefined>, textWidth = 0) =>
+      ({ lines, bar: { index, cursor, start, end: start + lines.length, collapsed: !expanded, textWidth, rows } });
+    if (!expanded) {
+      const first = editor.getLines()[0] ?? "";
+      const total = editor.getExpandedText().split("\n").length;
+      const suffix = total > 1 ? muted(`…（共 ${total} 行）`) : "";
+      const room = width - (total > 1 ? visibleWidth(`…（共 ${total} 行）`) : 0);
+      const fits = visibleWidth(first) <= room;
+      const body = fits ? first : sliceByColumn(first, 0, room - (total > 1 ? 0 : 1), true);
+      const text = body + (total > 1 ? suffix : fits ? "" : muted("…"));
+      return make([prefix + text], [{ editorLine: 1, start: 0, dots: 0 }], visibleWidth(body));
+    }
+    const rendered = editor.render(EDITOR_WIDTH);
+    const hidden = (border: string, arrow: string) => Number(new RegExp(`${arrow} (\\d+) more`, "u").exec(border)?.[1] ?? 0);
+    const above = hidden(rendered[0]!, "↑"), below = hidden(rendered[rendered.length - 1]!, "↓");
+    const lines: string[] = [], rows: Array<BarRow | undefined> = [];
+    const saved = this.scrolls.get(editor), cursorLine = editor.getCursor().line;
+    if (above) { lines.push(`      ${highlight("›")} ${muted(`↑ 上面还有 ${above} 行`)}`); rows.push(undefined); }
+    rendered.slice(1, -1).forEach((line, n) => {
+      const raw = line.trimEnd();
+      const fit = fitLine(raw, width, muted, saved?.line === cursorLine ? saved.start : 0);
+      if (raw.includes(CURSOR_MARK)) this.scrolls.set(editor, { line: cursorLine, start: fit.start });
+      lines.push((n || above ? " ".repeat(INPUT_INDENT) : prefix) + fit.text);
+      rows.push({ editorLine: n + 1, start: fit.start, dots: fit.dots });
+    });
+    if (below) { lines.push(`${" ".repeat(INPUT_INDENT)}${muted(`↓ 下面还有 ${below} 行`)}`); rows.push(undefined); }
+    return make(lines, rows);
   }
 
   private renderTabs(): string {
@@ -282,9 +399,10 @@ export async function openProgramWindow<T>(host: ProgramWindowHost, factory: Win
 
 async function showWindow(host: WindowHost, questions: WindowQuestion[], tone: WindowTone, signal?: AbortSignal): Promise<WindowAnswer[] | undefined> {
   return openProgramWindow<WindowAnswer[]>(host, (tui, theme, _keybindings, done) => {
-    const view = new QuestionWindowView({ questions, tone, theme: theme as unknown as WindowTheme, onDone: done });
+    const view = new QuestionWindowView({ questions, tone, tui, theme: theme as unknown as WindowTheme, onDone: done });
     return { render: (width: number) => view.render(width), invalidate: () => view.invalidate(),
-      handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); } };
+      handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); },
+      handleMouse: (event: TuiMouseEvent) => { const result = view.handleMouse(event); tui.requestRender(); return result; } };
   }, signal);
 }
 
@@ -306,11 +424,12 @@ export async function chooseWindow(host: WindowHost, window: ProgramWindow & { c
   return answers?.[0]?.choices[0];
 }
 
-/** 带"其他"输入行的程序选择窗口：返回选中的选项或用户输入的文字，取消时为 undefined。 */
-export async function chooseOrWriteWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; otherLabel: string; otherMaxLength?: number; cancelNote?: string; escapeHint?: string }, signal?: AbortSignal): Promise<WindowAnswer | undefined> {
-  const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices, allowOther: true, otherLabel: window.otherLabel,
+/** 带"其他"输入行的程序选择窗口：返回选中的选项或用户输入的文字；Esc 时为 escapeChoice 的答案（没有则为 undefined），中断时为 undefined。 */
+export async function chooseOrWriteWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; otherLabel?: string; otherMaxLength?: number; cancelNote?: string; escapeHint?: string; escapeChoice?: string }, signal?: AbortSignal): Promise<WindowAnswer | undefined> {
+  const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices, allowOther: true, ...(window.otherLabel ? { otherLabel: window.otherLabel } : {}),
     ...(window.otherMaxLength !== undefined ? { otherMaxLength: window.otherMaxLength } : {}),
-    ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}), ...(window.escapeHint ? { escapeHint: window.escapeHint } : {}) }], "warning", signal);
+    ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}), ...(window.escapeHint ? { escapeHint: window.escapeHint } : {}),
+    ...(window.escapeChoice !== undefined ? { escapeChoice: window.escapeChoice } : {}) }], "warning", signal);
   return answers?.[0];
 }
 

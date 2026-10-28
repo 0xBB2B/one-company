@@ -121,7 +121,7 @@ export class TransactionCleanupError extends AggregateError {
 
 export type SyncResult<T> = T extends PromiseLike<unknown> ? never : T;
 
-const OUTDATED_VERSIONS: Partial<Record<DatabaseKind, readonly number[]>> = { data: [1, 2, 3, 4, 5, 6], index: [1] };
+const OUTDATED_VERSIONS: Partial<Record<DatabaseKind, readonly number[]>> = { data: [1, 2, 3, 4, 5, 6, 7], index: [1] };
 
 function assertSupportedVersion(kind: DatabaseKind, version: number): void {
   if (version === 0 || version === DATABASE_SCHEMA_VERSIONS[kind]) return;
