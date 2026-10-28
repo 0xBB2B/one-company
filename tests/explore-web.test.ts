@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import type { Context } from "@earendil-works/pi-ai";
 import { defaultPageGetter, webFetch, webSearch } from "../src/modules/explore/web-access.ts";
 import type { FetchResponse, WebDeps } from "../src/modules/explore/web-access.ts";
+import { registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -119,6 +120,32 @@ test("main 派出的检索在模型连接断开时按失败交回并写明请重
   const report = w.manager.takeMainExploreReport(dispatched.runId, "conn-main") as { outcome: string; research: unknown; reason: string };
   expect(report).toMatchObject({ outcome: "failed", research: null });
   expect(report.reason).toContain("断网，检索已中止，网络恢复后请重派");
+});
+
+test("main 派出的检索断网中止后，runs.steps 返回 failed 和请重派的原因；主代理主动停掉的仍是 stopped 且没有原因", async () => {
+  const w = await createPmRunWorld(cleanups, { review: false, web: { deps: fakeDeps().deps, getPage: async () => { throw new TypeError("fetch failed"); } } });
+  const handlers = new Map<string, (params: Record<string, unknown>, client: unknown) => Promise<unknown>>();
+  registerProtocolHandlers({ server: { registerHandler: (method: string, handler: never) => handlers.set(method, handler), markHandlersReady: () => {} } as never,
+    manager: w.manager, shellRegistry: {} as never });
+  const client = { connectionId: "conn-main", sessionId: "session-main" };
+  const steps = (runId: string) => handlers.get("runs.steps")!({ runId }, client) as Promise<Record<string, unknown>>;
+  w.manager.connectionOpened("conn-main");
+  const parent = { role: "main" as const, sessionId: "session-main", connectionId: "conn-main", model: { provider: "team-model", id: "test" }, thinking: "off" };
+  const request = { question: "node 如何异步读文件", clues: [], source: { kind: "web" as const, query: "node 异步文件" } };
+
+  w.provider.queue.push({ type: "error", message: "fetch failed: connection reset (network)" });
+  const offline = await w.manager.dispatchExplore({ parent, request, maxTurns: 5 });
+  await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === offline.runId));
+  const failed = await steps(offline.runId);
+  expect(failed).toMatchObject({ state: "failed", reason: "断网，检索已中止，网络恢复后请重派" });
+
+  w.provider.queue.push({ type: "text", text: "慢慢查", chunkDelayMs: 20_000 });
+  const slow = await w.manager.dispatchExplore({ parent, request, maxTurns: 5 });
+  await until(async () => (await steps(slow.runId)).state === "running");
+  await handlers.get("runs.stop")!({ runId: slow.runId }, client);
+  const stopped = await steps(slow.runId);
+  expect(stopped.state).toBe("stopped");
+  expect(stopped.reason).toBeUndefined();
 });
 
 test("M9-AC10：断网时 main 派出的联网检索如实交回失败：搜索与抓取都报网络错误，结果不带任何网页来源、写明失败与未找到，不当作联网成功", async () => {

@@ -249,6 +249,14 @@ test("runs.steps 只认派出连接：派出连接查到运行中、轮数上限
   await expect(w.call("runs.steps", { runId })).resolves.toMatchObject({ state: "stopped", maxTurns: 12, steps: [] });
 });
 
+test("断网中止的原型设计：runs.steps 返回 failed 和请重派的原因，不是 stopped", async () => {
+  const w = await world();
+  w.provider.queue.push({ type: "error", message: "fetch failed: connection reset (network)" });
+  const { runId } = await w.dispatch();
+  await until(async () => ((await w.call("runs.steps", { runId })) as { state: string }).state !== "running");
+  await expect(w.call("runs.steps", { runId })).resolves.toMatchObject({ state: "failed", reason: "断网，设计已中止，网络恢复后请重派" });
+});
+
 test("runs.get 与 runs.stop 只认派出连接，暂停与续接被拒；停止后看板在途清空并收到 finished 事件", async () => {
   const w = await world();
   w.provider.queue.push(w.slow);

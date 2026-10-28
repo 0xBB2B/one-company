@@ -240,7 +240,6 @@ function rowKey(row: Row): string {
 }
 
 interface HostTuiLike {
-  hasOverlay?: () => boolean;
   getFocusedComponent?: () => { isShowingAutocomplete?: () => boolean } | null | undefined;
   requestRender?: () => void;
 }
@@ -249,7 +248,7 @@ export interface MountPmPanelCtx {
   hasUI?: boolean;
   ui?: { setWidget?: import("@earendil-works/pi-coding-agent").ExtensionUIContext["setWidget"] };
 }
-export interface MountPmPanelHost { isOverlayOpen(): boolean; isCompletionOpen(): boolean; requestRender(): void }
+export interface MountPmPanelHost { isEditorFocused(): boolean; isCompletionOpen(): boolean; requestRender(): void }
 
 const WIDGET_KEY = "pm-panel";
 
@@ -259,7 +258,7 @@ export function mountPmPanel(ctx: MountPmPanelCtx, options: PmPanelOptions): { p
   const panel = new PmPanel(options);
   let boundTui: HostTuiLike | undefined;
   const host: MountPmPanelHost = {
-    isOverlayOpen: () => boundTui?.hasOverlay?.() ?? false,
+    isEditorFocused: () => typeof boundTui?.getFocusedComponent?.()?.isShowingAutocomplete === "function",
     isCompletionOpen: () => {
       const focused = boundTui?.getFocusedComponent?.();
       return typeof focused?.isShowingAutocomplete === "function" && focused.isShowingAutocomplete();

@@ -139,7 +139,7 @@ test("M7-AC33/AC35：主窗口面板拉取概览，↓ 进入面板、选中事�
   registerRequirementInput({ revoke, noteOpenedItem, mentionNote: () => "" });
   let input: ((data: string) => unknown) | undefined;
   let widget: { render(width: number): string[] } | undefined;
-  const ctx = { mode: "tui", hasUI: true, ui: { setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => typeof widget) => { if (factory) widget = factory({}, {}); },
+  const ctx = { mode: "tui", hasUI: true, ui: { setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => typeof widget) => { if (factory) widget = factory({ getFocusedComponent: () => ({ isShowingAutocomplete: () => false }) }, {}); },
     onTerminalInput: (handler: (data: string) => unknown) => { input = handler; return () => {}; }, getEditorText: () => "", notify: vi.fn() } };
   await fake.trigger("session_start", { reason: "new" }, ctx);
   await vi.waitFor(() => expect(calls).toContain("pm.overview"));
@@ -212,7 +212,7 @@ test("原型设计变化信号到达时，主窗口面板重新拉取原型设�
     clients: { forRepo: (id: string) => (id === "r" ? client : undefined), all: () => [client], skipped: () => [], closeAll: () => {} } };
   pmPanelExtension(fake.pi as never, { windowReady: () => Promise.resolve(window) as never, createClock: () => createClock() });
   let widget: { render(width: number): string[] } | undefined;
-  const ctx = { mode: "tui", hasUI: true, ui: { setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => typeof widget) => { if (factory) widget = factory({}, {}); },
+  const ctx = { mode: "tui", hasUI: true, ui: { setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => typeof widget) => { if (factory) widget = factory({ getFocusedComponent: () => ({ isShowingAutocomplete: () => false }) }, {}); },
     onTerminalInput: () => () => {}, getEditorText: () => "", notify: vi.fn() } };
   await fake.trigger("session_start", { reason: "new" }, ctx);
   await vi.waitFor(() => expect(widget!.render(200)).toContain("● 1 个原型设计运行中"));
@@ -863,7 +863,7 @@ function extensionFixture(overviewItems: PmOverview[]) {
   const custom = vi.fn((factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown) =>
     new Promise((resolve) => { component = factory({ requestRender: () => {} }, {}, {}, resolve) as typeof component; }));
   const notify = vi.fn();
-  const ctx = { mode: "tui", hasUI: true, ui: { setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => typeof widget) => { if (factory) widget = factory({}, {}); },
+  const ctx = { mode: "tui", hasUI: true, ui: { setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => typeof widget) => { if (factory) widget = factory({ getFocusedComponent: () => ({ isShowingAutocomplete: () => false }) }, {}); },
     onTerminalInput: (handler: (data: string) => unknown) => { input = handler; return () => {}; }, getEditorText: () => "", notify, custom } };
   return { fake, ctx, calls, custom, notify, key: (data: string) => input!(data), widget: () => widget!, closeWindow: () => component?.handleInput("\x1b"), dropClient: () => { present = false; } };
 }

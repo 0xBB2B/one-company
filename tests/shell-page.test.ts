@@ -2,7 +2,6 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { createClock } from "../src/core/policy/clock.ts";
 import type { TimeSource } from "../src/core/policy/clock.ts";
-import { BottomDock } from "../src/core/host/dock.ts";
 import { ShellRegistry } from "../src/core/host/shell-registry.ts";
 import type { Host, TaskRecord } from "../src/core/host/shell-registry.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
@@ -1027,14 +1026,12 @@ describe("openShellPage：ctx.ui.custom 挂载、fakeTui 被用于 requestRender
     const registry = new ShellRegistry({ clock: createClock() });
     const targetId = await spawnLocal(registry, "生产链路标记");
     const fc = fakeCtx();
-    const dock = new BottomDock({ getEditorText: () => "", isCompletionOpen: () => false, isOverlayOpen: () => false });
 
     const openPromise = openShellPage({
       ctx: fc.ctx,
       registry,
       repos: [],
       clock: createClock(),
-      dock,
     });
 
     await waitFor(() => fc.getComponent() !== undefined, 3_000);
@@ -1059,14 +1056,12 @@ describe("openShellPage：ctx.ui.custom 挂载、fakeTui 被用于 requestRender
     const fc = fakeCtx();
     const timeSource = createFakeTimeSource();
     const pageClock = createClock({ timeSource });
-    const dock = new BottomDock({ getEditorText: () => "", isCompletionOpen: () => false, isOverlayOpen: () => false });
 
     const openPromise = openShellPage({
       ctx: fc.ctx,
       registry,
       repos: [],
       clock: pageClock,
-      dock,
     });
 
     await waitFor(() => fc.getComponent() !== undefined, 3_000);
@@ -1085,75 +1080,6 @@ describe("openShellPage：ctx.ui.custom 挂载、fakeTui 被用于 requestRender
     await openPromise;
     pageClock.stopGapWatcher();
   }, 15_000);
-
-  test("ctx.ui.custom 被拒绝时仍执行 dock.markPageClosed", async () => {
-    const registry = new ShellRegistry({ clock: createClock() });
-    let closedCount = 0;
-    const rejectingCtx = {
-      ui: {
-        custom: async () => {
-          throw new Error("宿主渲染失败（测试注入）");
-        },
-      },
-    };
-
-    await expect(
-      openShellPage({
-        ctx: rejectingCtx,
-        registry,
-        repos: [],
-        clock: createClock(),
-        dock: { markPageOpen: () => {}, markPageClosed: () => { closedCount += 1; } },
-      }),
-    ).rejects.toThrow();
-
-    expect(closedCount).toBe(1);
-  });
-});
-
-describe("openShellPage：与共享 BottomDock 的按键隔离，关闭后焦点由 dock 自行恢复", () => {
-  test("页面打开期间 ↓/Enter 不到达面板；关闭后 dock 焦点回到打开前的状态", async () => {
-    const registry = new ShellRegistry({ clock: createClock() });
-    await spawnLocal(registry, "隔离标记");
-    const panelCalls: string[] = [];
-    const panel = { hasRows: () => true, handleInput: (data: string) => { panelCalls.push(data); return true; } };
-    const dock = new BottomDock({ panel, getEditorText: () => "", isCompletionOpen: () => false, isOverlayOpen: () => false });
-
-    dock.handleKey(KEY.down);
-    expect(dock.focus()).toBe("panel");
-    const callsBeforePageOpen = panelCalls.length;
-
-    let component: ShellPage | undefined;
-    const ctx = {
-      ui: {
-        custom: (
-          factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: unknown) => void) => unknown,
-        ) =>
-          new Promise((resolve) => {
-            component = factory({ requestRender: () => {} }, {}, {}, (result: unknown) => resolve(result)) as ShellPage;
-          }),
-      },
-    };
-
-    const openPromise = openShellPage({
-      ctx,
-      registry,
-      repos: [],
-      clock: createClock(),
-      dock,
-    });
-    await waitFor(() => component !== undefined, 3_000);
-
-    const isolatedResult = dock.handleKey(KEY.down);
-    dock.handleKey(KEY.enter);
-    expect(isolatedResult).toBeUndefined();
-    expect(panelCalls.length).toBe(callsBeforePageOpen);
-
-    component!.handleInput(KEY.escape);
-    await openPromise;
-
-    expect(dock.focus()).toBe("panel");
-  }, 10_000);
 });
 
 describe("ShellPage：复合行身份隔离详情、选择和停止请求", () => {

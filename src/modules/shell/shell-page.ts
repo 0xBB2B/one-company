@@ -718,24 +718,18 @@ export interface OpenShellPageCtx {
   };
 }
 
-export interface OpenShellPageDock {
-  markPageOpen(): void;
-  markPageClosed(): void;
-}
-
 export interface OpenShellPageOptions {
   ctx: OpenShellPageCtx;
   registry: ShellRegistry;
   repos: ShellPageRepo[];
   clock: Clock;
-  dock: OpenShellPageDock;
   theme?: ShellPageTheme;
 }
 
 const PAGE_REFRESH_INTERVAL_MS = 1_000;
 
 export async function openShellPage(options: OpenShellPageOptions): Promise<void> {
-  const { ctx, dock, clock, ...pageOptions } = options;
+  const { ctx, clock, ...pageOptions } = options;
   let stopRefresh: (() => void) | undefined;
   try {
     await openProgramWindow<undefined>(
@@ -748,7 +742,6 @@ export async function openShellPage(options: OpenShellPageOptions): Promise<void
           onClose: () => done(undefined),
           onChange: () => hostTui.requestRender?.(),
         });
-        dock.markPageOpen();
 
         if (hostTui.terminal) page.resize(hostTui.terminal.columns, hostTui.terminal.rows);
 
@@ -768,6 +761,5 @@ export async function openShellPage(options: OpenShellPageOptions): Promise<void
     );
   } finally {
     stopRefresh?.();
-    dock.markPageClosed();
   }
 }

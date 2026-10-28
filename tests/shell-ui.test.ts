@@ -6,9 +6,6 @@ import { ShellRegistry } from "../src/core/host/shell-registry.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import installShellUi, { openShellUiPage } from "../src/modules/shell/shell-ui-extension.ts";
 import type { ShellUiDeps } from "../src/modules/shell/shell-ui-extension.ts";
-import pmPanelExtension from "../src/modules/panel/pm-panel-extension.ts";
-import type { PmPanelUiDeps } from "../src/modules/panel/pm-panel-extension.ts";
-import { currentDock } from "../src/core/host/extension-lifecycle.ts";
 
 function shellUiExtension(pi: Parameters<typeof installShellUi>[0], deps: ShellUiDeps = {}) {
   installShellUi(pi, deps);
@@ -426,61 +423,6 @@ describe("shellUiExtension：user_bash 未就绪时优雅降级", () => {
   });
 });
 
-describe("sharedDock 生命周期：状态面板 teardown 后 lifecycle.currentDock() 应为 undefined", () => {
-  test("session_shutdown 后 currentDock() 为 undefined；此时 openShellUiPage 报未就绪而非拿到已释放的旧 dock", async () => {
-    const fakePi = createFakePi();
-    const client = createPollableClient();
-    const windowContextValue = createWindowContextValue("window-dock", "repo-dock", client);
-    const timeSource = createFakeTimeSource();
-
-    const panelDeps: PmPanelUiDeps = {
-      windowReady: () => Promise.resolve(windowContextValue) as never,
-      createClock: () => createClock({ timeSource }),
-    };
-    pmPanelExtension(fakePi.pi, panelDeps);
-
-    const shellDeps: ShellUiDeps = {
-      windowReady: () => Promise.resolve(windowContextValue) as never,
-      createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-    };
-    shellUiExtension(fakePi.pi, shellDeps);
-
-    const ui = {
-      setWidget: (_key: string, _content: unknown, _options?: Record<string, unknown>) => {},
-      onTerminalInput: (_handler: (data: string) => unknown) => () => {},
-      notify: () => {},
-      getEditorText: () => "",
-      setStatus: () => {},
-      custom: () => Promise.reject(new Error("本测试未使用 custom")),
-    };
-    const ctx = {
-      mode: "tui",
-      hasUI: true,
-      cwd: process.cwd(),
-      sessionManager: { getSessionId: () => "session-dock" },
-      ui,
-      shutdown: () => {},
-    };
-
-    await fakePi.trigger("session_start", { type: "session_start", reason: "new" }, ctx);
-    await flushMicrotasks();
-    expect(currentDock()).toBeDefined();
-
-    await fakePi.trigger("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
-    await flushMicrotasks();
-
-    expect(currentDock()).toBeUndefined();
-
-    let thrown: Error | undefined;
-    try {
-      await openShellUiPage({ ui: { custom: () => Promise.reject(new Error("不应被调用")) } });
-    } catch (error) {
-      thrown = error as Error;
-    }
-    expect(thrown).toBeDefined();
-  }, 10_000);
-});
-
 test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实际停止", async () => {
   const fakePi = createFakePi();
   const calls: { method: string; params?: Record<string, unknown> }[] = [];
@@ -492,13 +434,11 @@ test("openShellUiPage 不提供人工 USER 裁定，不确定任务仅请求实�
       calls.push({ method, params });
       if (method === "shells.list") return { tasks: [task] };
       if (method === "shells.stop") return stopped.promise;
-      if (method === "pm.overview") return { items: [] };
       throw new Error(`非白名单 RPC：${method}`);
     },
   };
   const window = createWindowContextValue("window-no-user", "repo-no-user", client);
   const deps = { windowReady: () => Promise.resolve(window) as never, createClock: () => createClock({ timeSource: createFakeTimeSource() }) };
-  pmPanelExtension(fakePi.pi, deps);
   shellUiExtension(fakePi.pi, deps);
   const ctx = {
     mode: "tui", hasUI: true, cwd: process.cwd(),
@@ -567,7 +507,6 @@ describe("openShellUiPage：保留缺连接仓库并可在连接恢复后查询"
       },
     };
     const deps = { windowReady: () => Promise.resolve(window) as never, createClock: () => createClock({ timeSource: createFakeTimeSource() }) };
-    pmPanelExtension(fakePi.pi, deps);
     shellUiExtension(fakePi.pi, deps);
     const ctx = {
       mode: "tui", hasUI: true, cwd: process.cwd(), sessionManager: { getSessionId: () => window.sessionId },
@@ -607,13 +546,6 @@ describe("openShellUiPage：透传宿主 ctx.ui.theme 到页面主题", () => {
     const fakePi = createFakePi();
     const client = createPollableClient();
     const windowContextValue = createWindowContextValue("window-theme", "repo-theme", client);
-
-    // openShellUiPage 依赖 lifecycle 的共享 dock：本测试自行经 状态面板扩展挂载注册，不依赖其他用例的残留状态
-    const panelDeps: PmPanelUiDeps = {
-      windowReady: () => Promise.resolve(windowContextValue) as never,
-      createClock: () => createClock({ timeSource: createFakeTimeSource() }),
-    };
-    pmPanelExtension(fakePi.pi, panelDeps);
 
     const deps: ShellUiDeps = {
       windowReady: () => Promise.resolve(windowContextValue) as never,

@@ -10,7 +10,7 @@ import type { ExplorePanelEntry, PmPanelEntry, PrototypePanelEntry } from "./pm-
 import type { MainExploreOverview } from "../explore/explore-dispatch.ts";
 import type { MainPrototypeOverview } from "../prototype/prototype-dispatch.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
-import { noteOpenedPanelItem, registerDock, revokeCapturedInput, windowReady as defaultWindowReady } from "../../core/host/extension-lifecycle.ts";
+import { noteOpenedPanelItem, revokeCapturedInput, windowReady as defaultWindowReady } from "../../core/host/extension-lifecycle.ts";
 import type { WindowContextValue } from "../../core/host/extension-lifecycle.ts";
 
 const TICK_MS = 200;
@@ -67,7 +67,7 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
         openSteps: ({ repoId, runId, title }) => {
           const target = client(repoId);
           if (!target) { ctx.ui.notify("找不到该仓库的守护进程连接", "error"); return; }
-          openStepWindow({ ctx, dock, clock, client: target, runId, title }).catch((error: unknown) => ctx.ui.notify(`步骤窗口无法打开：${message(error)}`, "warning"));
+          openStepWindow({ ctx, clock, client: target, runId, title }).catch((error: unknown) => ctx.ui.notify(`步骤窗口无法打开：${message(error)}`, "warning"));
         },
       });
       if (!mounted) return;
@@ -123,17 +123,16 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
         panel,
         getEditorText: () => ctx.ui.getEditorText(),
         isCompletionOpen: () => host.isCompletionOpen(),
-        isOverlayOpen: () => host.isOverlayOpen(),
+        isEditorFocused: () => host.isEditorFocused(),
         onFocusChange: (focus) => { if (focus === "panel") panel.focus(); else panel.blur(); host.requestRender(); },
       });
       dock.attach();
-      registerDock(dock);
       const ticker = clock.setIntervalExcludingSleep(() => { panel.tick(); host.requestRender(); }, TICK_MS);
       const resync = clock.setIntervalExcludingSleep(() => { for (const repo of window.workspace.repos) refreshAll(repo.repoId); }, RESYNC_MS);
       teardown = () => {
         clock.clearTimer(ticker); clock.clearTimer(resync);
         for (const unsubscribe of unsubscribes) unsubscribe();
-        dock.release(); registerDock(undefined);
+        dock.release();
         mounted.unmount();
         clock.stopGapWatcher();
       };

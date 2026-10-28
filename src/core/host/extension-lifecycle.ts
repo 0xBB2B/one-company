@@ -3,7 +3,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createClock } from "../policy/clock.ts";
 import type { Clock } from "../policy/clock.ts";
 import { WorkspaceClients, resolveSdkDir } from "./daemon-client.ts";
-import type { BottomDock } from "./dock.ts";
 import type { WorkspaceClientsHandle } from "./daemon-client.ts";
 import { dataRoot } from "../storage/identity.ts";
 import type { Workspace } from "../storage/identity.ts";
@@ -120,7 +119,6 @@ let limitShutdownWait: ((ms: number) => void) | undefined;
 let startupError: Error | undefined;
 let readyController = createReadyController();
 let capturedShutdown: (() => void) | undefined;
-let sharedDock: BottomDock | undefined;
 
 function ensureFreshReadyController(): void {
   if (readyController.settled) readyController = createReadyController();
@@ -335,14 +333,6 @@ export function registerRequirementInput(bridge: RequirementInputBridge | undefi
 export function revokeCapturedInput(): void { requirementInput?.revoke(); }
 export function noteOpenedPanelItem(item: { repoId: string; requirementId: string; itemId: string }): void { requirementInput?.noteOpenedItem(item); }
 export function currentMentionNote(): string { return requirementInput?.mentionNote() ?? ""; }
-
-export function registerDock(dock: BottomDock | undefined): void {
-  sharedDock = dock;
-}
-
-export function currentDock(): BottomDock | undefined {
-  return sharedDock;
-}
 
 export default function lifecycleExtension(pi: ExtensionAPI, deps: LifecycleDeps = {}): void {
   const proc = deps.process ?? process;

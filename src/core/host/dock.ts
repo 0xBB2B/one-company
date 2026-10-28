@@ -21,22 +21,18 @@ export interface BottomDockOptions {
   panel?: DockPanel;
   getEditorText(): string;
   isCompletionOpen(): boolean;
-  isOverlayOpen(): boolean;
+  isEditorFocused(): boolean;
   onFocusChange?(focus: DockFocus): void;
 }
 
 export class BottomDock {
   private readonly options: BottomDockOptions;
   private focusState: DockFocus;
-  private pageOpen: boolean;
-  private pageOriginFocus: DockFocus;
   private unsubscribe: (() => void) | undefined;
 
   constructor(options: BottomDockOptions) {
     this.options = options;
     this.focusState = "editor";
-    this.pageOpen = false;
-    this.pageOriginFocus = "editor";
   }
 
   focus(): DockFocus {
@@ -54,21 +50,9 @@ export class BottomDock {
     this.setFocus("editor");
   }
 
-  markPageOpen(): void {
-    if (this.pageOpen) return;
-    this.pageOpen = true;
-    this.pageOriginFocus = this.focusState;
-  }
-
-  markPageClosed(): void {
-    if (!this.pageOpen) return;
-    this.pageOpen = false;
-    this.setFocus(this.pageOriginFocus);
-  }
-
   handleKey(data: string): TerminalInputResult | undefined {
     if (isKeyRelease(data)) return undefined;
-    if (this.options.isOverlayOpen() || this.pageOpen) return undefined;
+    if (!this.options.isEditorFocused()) return undefined;
 
     if (matchesKey(data, "escape")) {
       if (this.focusState !== "panel") return undefined;

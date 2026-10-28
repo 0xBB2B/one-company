@@ -17,7 +17,7 @@ import { AdvisedError, adviceOf, toolFailure } from "../../core/exec/tool-failur
 import type { Host } from "../../core/host/shell-registry.ts";
 import { startShellStatusRefresh } from "./shell-summary.ts";
 import type { ShellSummaryRepo } from "./shell-summary.ts";
-import { currentDock, windowReady as defaultWindowReady } from "../../core/host/extension-lifecycle.ts";
+import { windowReady as defaultWindowReady } from "../../core/host/extension-lifecycle.ts";
 import type { WindowContextValue } from "../../core/host/extension-lifecycle.ts";
 
 const STATUS_KEY = "shell-summary";
@@ -51,15 +51,12 @@ function buildTheme(ctx: OpenShellPageCtx): ShellPageTheme | undefined {
 
 export async function openShellUiPage(ctx: OpenShellPageCtx): Promise<void> {
   if (!current) throw new Error("Shell 会话尚未就绪");
-  const dock = currentDock();
-  if (!dock) throw new Error("底部区块尚未就绪");
   const session = current;
   await openShellPage({
     ctx,
     registry: session.registry,
     repos: session.repos,
     clock: session.clock,
-    dock,
     theme: buildTheme(ctx),
   });
 }

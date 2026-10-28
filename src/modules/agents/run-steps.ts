@@ -1,3 +1,4 @@
+import type { Clock } from "../../core/policy/clock.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import type { AgentSessionHandle } from "./agent-session.ts";
 import { CORE_TOOL_PREFIX } from "./role-tools.ts";
@@ -8,6 +9,8 @@ export type RunStepsState = "queued" | "running" | "pausing" | "paused" | "compl
 export interface RunStepsView { state: RunStepsState; reason?: string; turns: number; maxTurns: number | null; elapsedMs: number; steps: RunStep[] }
 
 const MAX_STEP_TEXT = 1000;
+// 已结束的子代理不能回看；打开着的窗口拿到结束状态后 0.5 秒内就停止取数，所以留 60 秒足够
+const ENDED_KEEP_MS = 60_000;
 const ENDING_EVENTS = ["completed", "failed", "turn_limit_reached", "ended_without_result", "stopped"] as const;
 
 const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
@@ -67,10 +70,16 @@ interface Entry {
   maxTurns: number | null;
   startedAt: number;
   ended?: { state: string; reason?: string; turns: number; endedAt: number };
+  settled?: boolean;
 }
 
 export class RunStepBook {
   private readonly entries = new Map<string, Entry>();
+  private readonly clock: Clock;
+
+  constructor(options: { clock: Clock }) {
+    this.clock = options.clock;
+  }
 
   track(runId: string, handle: TrackedHandle, options: { maxTurns?: number; owner?: string } = {}): void {
     const entry: Entry = { steps: [], handle, owner: options.owner, maxTurns: options.maxTurns ?? null, startedAt: Date.now() };
@@ -84,10 +93,25 @@ export class RunStepBook {
     });
     for (const name of ENDING_EVENTS) {
       handle.events.on(name, (event?: { reason?: string }) => {
-        entry.ended = { state: handle.state(), reason: name === "failed" ? event?.reason : undefined, turns: handle.turnsUsed(), endedAt: Date.now() };
-        entry.handle = undefined;
+        if (entry.settled) return;
+        this.end(runId, entry, { state: handle.state(), reason: name === "failed" ? event?.reason : undefined, turns: handle.turnsUsed(), endedAt: Date.now() });
       });
     }
+  }
+
+  settle(runId: string, result: { state: "completed" | "failed" | "stopped"; reason?: string }): void {
+    const entry = this.entries.get(runId);
+    if (!entry) return;
+    const { turns, endedAt } = entry.ended ?? { turns: entry.handle!.turnsUsed(), endedAt: Date.now() };
+    entry.settled = true;
+    this.end(runId, entry, { state: result.state, reason: result.reason, turns, endedAt });
+  }
+
+  private end(runId: string, entry: Entry, ended: NonNullable<Entry["ended"]>): void {
+    const first = entry.ended === undefined;
+    entry.ended = ended;
+    entry.handle = undefined;
+    if (first) this.clock.setTimeoutExcludingSleep(() => { if (this.entries.get(runId) === entry) this.entries.delete(runId); }, ENDED_KEEP_MS);
   }
 
   steps(runId: string): RunStep[] | undefined {
