@@ -186,3 +186,25 @@ export function repoDisplayName(commonDir: string): string {
   // 目录名可能是代理执行命令建出来的，会显示在终端里
   return sanitizeText(last === ".git" ? segments.at(-2) ?? "" : last.replace(/\.git$/, ""));
 }
+
+const stripNewlines = (text: string): string => text.replace(/\n/g, "");
+
+export function repoDisplayLabels(commonDirs: string[]): Map<string, string> {
+  const groups = new Map<string, { commonDir: string; ancestors: string[] }[]>();
+  for (const commonDir of new Set(commonDirs)) {
+    const segments = commonDir.split("/").filter(Boolean);
+    const ancestors = segments.slice(0, segments.at(-1) === ".git" ? -2 : -1).reverse();
+    const name = stripNewlines(repoDisplayName(commonDir));
+    groups.set(name, [...(groups.get(name) ?? []), { commonDir, ancestors }]);
+  }
+  const labels = new Map<string, string>();
+  for (const [name, repos] of groups) {
+    const labelAt = (depth: number, ancestors: string[]) =>
+      [...ancestors.slice(0, depth).reverse().map((segment) => stripNewlines(sanitizeText(segment))), name].join("/");
+    let depth = 0;
+    while (repos.length > 1 && depth < Math.max(...repos.map((repo) => repo.ancestors.length))
+      && new Set(repos.map((repo) => labelAt(depth, repo.ancestors))).size < repos.length) depth++;
+    for (const repo of repos) labels.set(repo.commonDir, labelAt(depth, repo.ancestors));
+  }
+  return labels;
+}
