@@ -415,9 +415,9 @@ export async function confirmWindow(host: WindowHost, window: ProgramWindow, sig
 }
 
 /** 程序选择窗口：返回用户选中的选项名，取消时为 undefined。 */
-export async function chooseWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; cancelNote?: string; caption?: string }, signal?: AbortSignal): Promise<string | undefined> {
+export async function chooseWindow(host: WindowHost, window: ProgramWindow & { choices: WindowChoice[]; cancelNote?: string; caption?: string; escapeHint?: string }, signal?: AbortSignal): Promise<string | undefined> {
   const answers = await showWindow(host, [{ question: window.title, lines: window.lines, choices: window.choices, ...(window.cancelNote ? { cancelNote: window.cancelNote } : {}),
-    ...(window.caption ? { caption: window.caption } : {}) }], "warning", signal);
+    ...(window.caption ? { caption: window.caption } : {}), ...(window.escapeHint ? { escapeHint: window.escapeHint } : {}) }], "warning", signal);
   return answers?.[0]?.choices[0];
 }
 

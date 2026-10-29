@@ -31,10 +31,10 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 |---|---|---|---|
 | policy | 内容和权限规则、时钟、文字清洗 | `src/core/policy` | `core-permissions.ts`、`clock.ts` |
 | exec | 外部命令的报错格式、读 git、目标分支、origin 主机与本机 gh / glab 登录记录、git 快照、分支保护、安装前检查 git | `src/core/exec` | `tool-failure.ts`、`git-read.ts`、`target-branch.ts`、`git-host.ts`、`git-prerequisite.mjs` |
-| storage | 本机 SQLite 数据库、数据根目录、仓库身份、操作日志 | `src/core/storage` | `database.ts`、`data-root.ts`、`identity.ts` |
-| host | 主窗口生命周期、守护进程客户端和通信格式、守护进程过旧时换新、程序窗口、底部面板、后台 shell 登记表、断网暂停 | `src/core/host` | `extension-lifecycle.ts`、`daemon-client.ts`（`connectDaemon`）、`protocol.ts`、`code-fingerprint.ts`、`upgrade-notice.ts` |
+| storage | 本机 SQLite 数据库、数据根目录、仓库身份、操作日志、旧版本库的迁移执行（备份、在一次事务里跑上层注入的转换步骤） | `src/core/storage` | `database.ts`、`data-root.ts`、`identity.ts`、`database-migration.ts` |
+| host | 主窗口生命周期、守护进程客户端和通信格式、守护进程过旧时换新、拉起守护进程前的旧库迁移框、程序窗口、底部面板、后台 shell 登记表、断网暂停 | `src/core/host` | `extension-lifecycle.ts`、`daemon-client.ts`（`connectDaemon`）、`protocol.ts`、`code-fingerprint.ts`、`upgrade-notice.ts`、`database-migration-prompt.ts`（`createBeforeSpawn`） |
 | agents | 角色定义的查找与复制、模型引用、职责规矩、MCP、检索排除、子代理会话、会话和运行记录、步骤簿（守护进程内存里按运行记下子代理的每次工具调用） | `src/modules/agents` | `agent-session.ts`（`createAgentRoleSession`）、`roles.ts`、`run-store.ts`、`run-steps.ts`（`RunStepBook`） |
-| requirement | 需求草稿与正文存储、批准清单（记下这一版正文的每一段、每个允许的动作分别由哪些决定确认）、需求状态、事件、备份恢复、短决定（对话里做出的决定，用户说的或模型提议的，归纳成一句结论加适用范围记下来）、主窗口授权、原型记录 | `src/modules/requirement` | `RequirementService`、`RequirementStateStore`、`prd-storage.ts`、`approval-manifest.ts` |
+| requirement | 需求草稿与正文存储、批准清单（记下这一版正文的每一段、每个允许的动作分别由哪些决定确认）、需求状态、事件、备份恢复、短决定（对话里做出的决定，用户说的或模型提议的，归纳成一句结论加适用范围记下来）、主窗口授权、原型记录及其旧版本格式的转换步骤 | `src/modules/requirement` | `RequirementService`、`RequirementStateStore`、`prd-storage.ts`、`approval-manifest.ts`、`prototype-record-migration.ts` |
 | prototype | 派原型设计师、"确认原型"窗口 | `src/modules/prototype` | `prototype-extension.ts`、`prototype-windows.ts` |
 | verification | 检查轮（所有 worker 任务审查通过后，PM 开的最后一轮全量测试和 QA 验收）、worker 改动的应用、写入保护、命令边界、项目规范（AGENTS.md）写入 | `src/modules/verification` | `CheckRoundService`、`change-apply.ts`、`write-guard.ts` |
 | explore | 只读检索的约定、派发、会话、联网，以及主窗口的 `one_company_agent_manage` 工具 | `src/modules/explore` | `agent-manage-extension.ts`、`explore-dispatch.ts`、`web-access.ts` |
@@ -52,7 +52,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 
 ### 主窗口连上守护进程
 
-pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExtension` 用 `WorkspaceClients` 连接工作区里每个仓库的守护进程，连不上就用 `src/app/daemon/bootstrap.mjs` 拉起新进程 → app/daemon：`main.ts` 校验 SDK 版本后调 `startDaemon` → `startDaemon` 依次建 `DaemonServer`、`ProjectIndexHost`、`RunManager`，登记各请求方法，启动空闲退出计时 `IdleExit` → 主窗口先发 `upgrade.check` 问守护进程代码是否过旧（与启动时记下的 `codeFingerprint` 比较）：过旧且空闲就发 `upgrade.yield` 让它退出、再拉起新的；过旧但在忙就每 30 秒再查 → 主窗口发 `hello` 握手后开始调用。
+pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExtension` 用 `WorkspaceClients` 连接工作区里每个仓库的守护进程，连不上时先由 `createBeforeSpawn` 读这个仓库 `data.db`、`index.db` 的版本，有可迁移的旧版本就弹迁移框，用户选迁移后经 storage 的 `migrateRepositoryDatabases` 备份并转换（转换步骤由 app/extension 从 requirement 注入），再用 `src/app/daemon/bootstrap.mjs` 拉起新进程 → app/daemon：`main.ts` 校验 SDK 版本后调 `startDaemon` → `startDaemon` 依次建 `DaemonServer`、`ProjectIndexHost`、`RunManager`，登记各请求方法，启动空闲退出计时 `IdleExit` → 主窗口先发 `upgrade.check` 问守护进程代码是否过旧（与启动时记下的 `codeFingerprint` 比较）：过旧且空闲就发 `upgrade.yield` 让它退出、再拉起新的；过旧但在忙就每 30 秒再查 → 主窗口发 `hello` 握手后开始调用。
 
 ### 一个需求从提出到交付
 

@@ -1,5 +1,7 @@
 import { controlToken } from "./daemon-auth.ts";
 import { AdvisedError } from "../exec/tool-failure.ts";
+import { MIGRATION_FAILED_NEXT } from "./database-migration-prompt.ts";
+import type { BeforeSpawn, BeforeSpawnResult } from "./database-migration-prompt.ts";
 import { closeSync, openSync } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { spawn } from "node:child_process";
@@ -233,6 +235,7 @@ interface ResolvedContext {
   helloParams: Record<string, unknown>;
   connectOnly: boolean;
   onUpgradeNotice: ((notice: UpgradeNotice) => void) | undefined;
+  beforeSpawn: BeforeSpawn | undefined;
 }
 
 interface PendingCall {
@@ -466,6 +469,7 @@ class DaemonClientImpl implements DaemonClient {
   private reconnectDelayMs: number;
   private connectionSequence: number;
   private handshakeTerminal: boolean;
+  private migrationStop: AdvisedError | undefined;
   private upgradeWait: { kind: "usable" | "blocked"; answer: UpgradeAnswer } | null = null;
   private upgradeTimer: TimerHandle | null = null;
   private windowStale = false;
@@ -747,6 +751,10 @@ class DaemonClientImpl implements DaemonClient {
       if (code !== "ENOENT" && code !== "ECONNREFUSED" && code !== "ENOTSOCK") throw error;
       if (this.ctx.connectOnly) throw error;
       const identity: RepositoryIdentity = { repoId: this.ctx.repoId, commonDir: this.ctx.commonDir };
+      // 检查本身出错也要停下：照常重连会反复检查，可能反复弹迁移框
+      const check = await this.ctx.beforeSpawn?.(identity).catch((failure: unknown): BeforeSpawnResult => ({ proceed: false, code: "database_migration_failed",
+        why: `守护进程不可达：检查本机数据库版本时失败：${failure instanceof Error ? failure.message : String(failure)}`, next: MIGRATION_FAILED_NEXT }));
+      if (check && !check.proceed) throw new AdvisedError(check.code, { why: check.why, next: check.next });
       const spawned = await beginSpawnDaemon(
         {
           repoDir: this.ctx.commonDir,
@@ -845,12 +853,14 @@ class DaemonClientImpl implements DaemonClient {
 
   private isTerminalHandshakeFailure(error: unknown): boolean {
     const code = (error as { code?: unknown } | null)?.code;
-    return error instanceof DaemonCallError || code === "daemon_identity_mismatch" || code === "protocol_version";
+    return error instanceof DaemonCallError || code === "daemon_identity_mismatch" || code === "protocol_version"
+      || code === "database_migration_declined" || code === "database_migration_failed";
   }
 
   private terminateHandshake(error: Error, expectedLink?: SocketLink): void {
     if (this.handshakeTerminal || this.closed || (expectedLink && this.link !== expectedLink)) return;
     this.handshakeTerminal = true;
+    if (error instanceof AdvisedError && error.code.startsWith("database_migration_")) this.migrationStop = error;
     const wasConnected = this.status === "connected";
     const link = this.link;
     this.link = null;
@@ -922,6 +932,7 @@ class DaemonClientImpl implements DaemonClient {
   }
 
   async call(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+    if (this.migrationStop) throw new AdvisedError(this.migrationStop.code, this.migrationStop.advice);
     if (this.windowStale) throw new AdvisedError("window_stale", upgradeAdvice(this.notice("window_stale")));
     if (this.upgradeWait?.kind === "blocked" && this.status !== "connected" && this.reason === UPGRADE_BLOCKED_REASON) {
       throw new AdvisedError("daemon_upgrade_pending", upgradeAdvice(this.notice("waiting_blocked", this.upgradeWait.answer)));
@@ -1028,6 +1039,7 @@ export interface ConnectDaemonOptions {
   /** 只连接现有 daemon；首连和重连均不会隐式创建进程。 */
   connectOnly?: boolean;
   onUpgradeNotice?: (notice: UpgradeNotice) => void;
+  beforeSpawn?: BeforeSpawn;
 }
 
 async function resolveContext(options: ConnectDaemonOptions): Promise<ResolvedContext> {
@@ -1041,6 +1053,7 @@ async function resolveContext(options: ConnectDaemonOptions): Promise<ResolvedCo
     hello: { ...options.hello },
     connectOnly: options.connectOnly === true,
     onUpgradeNotice: options.onUpgradeNotice,
+    beforeSpawn: options.beforeSpawn,
   };
   const identity = await repositoryIdentity(captured.repoDir);
   return {
@@ -1060,6 +1073,7 @@ async function resolveContext(options: ConnectDaemonOptions): Promise<ResolvedCo
     },
     connectOnly: captured.connectOnly,
     onUpgradeNotice: captured.onUpgradeNotice,
+    beforeSpawn: captured.beforeSpawn,
   };
 }
 
@@ -1078,6 +1092,7 @@ export interface WorkspaceClientsOptions {
   clock?: Clock;
   hello: HelloInput;
   onUpgradeNotice?: (notice: UpgradeNotice) => void;
+  beforeSpawn?: BeforeSpawn;
 }
 
 export interface WorkspaceClientsHandle {
@@ -1108,6 +1123,7 @@ export const WorkspaceClients = {
           clock: options.clock,
           hello: options.hello,
           onUpgradeNotice: options.onUpgradeNotice,
+          beforeSpawn: options.beforeSpawn,
         });
         const client = new DaemonClientImpl(ctx);
         await client.connectInitialOrDegrade();

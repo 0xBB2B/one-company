@@ -89,20 +89,22 @@ test("用途不符或未知旧布局的.db不被当成缓存重建", async () =>
   expect(() => new LocalDatabase(index)).toThrow(/wrong_database_kind/);
 });
 
-const OLD_VERSION_MESSAGE = (file: string) => new RegExp(`outdated_database.*${file}.*来自旧版本.*请备份后删除本机数据目录并重新初始化`);
+const EXACT_MESSAGE = (message: string) => new RegExp(`^${message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+const TOO_OLD_MESSAGE = (version: number) => EXACT_MESSAGE(`本机数据库访问被阻止：outdated_database，data.db 是版本 ${version}，太旧了没法迁移；请备份后删除本机数据目录并重新初始化`);
+const MIGRATABLE_MESSAGE = (file: string, from: number, to: number) => EXACT_MESSAGE(`本机数据库访问被阻止：outdated_database，${file} 是版本 ${from}，当前版本是 ${to}；打开 pi 窗口，在提示框里选「迁移」`);
 
 test.each([
   { kind: "data", version: 0, error: /wrong_database_kind/ },
-  { kind: "data", version: 1, error: OLD_VERSION_MESSAGE("data\\.db") },
-  { kind: "data", version: 2, error: OLD_VERSION_MESSAGE("data\\.db") },
-  { kind: "data", version: 3, error: OLD_VERSION_MESSAGE("data\\.db") },
-  { kind: "data", version: 4, error: OLD_VERSION_MESSAGE("data\\.db") },
-  { kind: "data", version: 5, error: OLD_VERSION_MESSAGE("data\\.db") },
-  { kind: "data", version: 6, error: OLD_VERSION_MESSAGE("data\\.db") },
-  { kind: "data", version: 7, error: OLD_VERSION_MESSAGE("data\\.db") },
-  { kind: "data", version: 8, error: OLD_VERSION_MESSAGE("data\\.db") },
+  { kind: "data", version: 1, error: TOO_OLD_MESSAGE(1) },
+  { kind: "data", version: 2, error: TOO_OLD_MESSAGE(2) },
+  { kind: "data", version: 3, error: TOO_OLD_MESSAGE(3) },
+  { kind: "data", version: 4, error: TOO_OLD_MESSAGE(4) },
+  { kind: "data", version: 5, error: TOO_OLD_MESSAGE(5) },
+  { kind: "data", version: 6, error: TOO_OLD_MESSAGE(6) },
+  { kind: "data", version: 7, error: TOO_OLD_MESSAGE(7) },
+  { kind: "data", version: 8, error: MIGRATABLE_MESSAGE("data.db", 8, 9) },
   { kind: "data", version: 99, error: /不支持的数据库版本/ },
-  { kind: "index", version: 1, error: OLD_VERSION_MESSAGE("index\\.db") },
+  { kind: "index", version: 1, error: MIGRATABLE_MESSAGE("index.db", 1, 2) },
   { kind: "index", version: 99, error: /不支持的数据库版本/ },
 ].map((c) => [c.kind, c.version, c.error] as const))("%s.db 版本号 %s 在切换WAL前拒绝，源库字节不变", async (kind, version, error) => {
   const w = await world();

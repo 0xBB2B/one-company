@@ -507,8 +507,8 @@ test("index.db是旧版本时init、refresh、status都报outdated_database，�
     expect(failure).toBeInstanceOf(ProjectIndexServiceError);
     const error = failure as ProjectIndexServiceError;
     expect(error.code).toBe("outdated_database");
-    expect(error.advice.why).toContain("项目索引库 index.db 来自旧版本，和当前版本不兼容（阶段：");
-    expect(error.advice.next).toBe("请用户删除本机数据目录里的 index.db 后重新初始化索引");
+    expect(error.advice.why).toContain("项目索引库 index.db 是版本 1，当前版本是 2");
+    expect(error.advice.next).toBe("请用户打开 pi 窗口，在提示框里选「迁移」");
     expect(error.metadata.retryable).toBe(false);
   }
   expect(createHash("sha256").update(await readFile(path)).digest("hex")).toBe(before);
