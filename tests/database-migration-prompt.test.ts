@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { uuidv7 } from "../src/core/storage/database.ts";
@@ -164,7 +164,7 @@ test("迁移步骤抛错：error 通知写明步骤、原因、备份路径，�
   expect(result.proceed).toBe(false);
   if (result.proceed) return;
   expect(result.code).toBe("database_migration_failed");
-  expect(result.why).toContain("守护进程不可达：仓库 企微BOT 的本机数据库迁移失败：");
+  expect(result.why).toBe("守护进程不可达：仓库 企微BOT 的本机数据库迁移失败：data.db 版本 8 → 9 时，磁盘写满了");
   expect(result.next).toBe("请用户重开 pi 窗口再试一次迁移；仍然失败就把原因告诉用户");
   const error = notices.at(-1)!;
   expect(error.level).toBe("error");
@@ -175,6 +175,22 @@ test("迁移步骤抛错：error 通知写明步骤、原因、备份路径，�
   expect(error.text).toContain("这个窗口里的需求和后台代理功能用不了，重开 pi 窗口可以再试一次。");
   expect(versionOf(w.dataPath)).toBe(8);
   expect(versionOf(w.indexPath)).toBe(1);
+});
+
+test("备份 data.db 失败：通知和 why 写明备份这一步，原因是白话不含错误码，库仍是旧版本", async () => {
+  const w = await world();
+  await chmod(w.dataPath, 0o644);
+  const { beforeSpawn, notices } = setup(w, () => "迁移");
+  const result = await beforeSpawn({ repoId: w.repoId, commonDir: w.commonDir });
+  expect(result.proceed).toBe(false);
+  if (result.proceed) return;
+  expect(result.code).toBe("database_migration_failed");
+  expect(result.why.startsWith("守护进程不可达：仓库 企微BOT 的本机数据库迁移失败：备份 data.db 时，")).toBe(true);
+  expect(result.why).not.toMatch(/\b[a-z]+_[a-z_]+\b/);
+  const error = notices.at(-1)!;
+  expect(error.level).toBe("error");
+  expect(error.text).not.toMatch(/\b[a-z]+_[a-z_]+\b/);
+  expect(versionOf(w.dataPath)).toBe(8);
 });
 
 test("迁移中出了意料之外的错：发 error 通知，结果 failed，通知不说数据库没有改动", async () => {
@@ -191,6 +207,16 @@ test("迁移中出了意料之外的错：发 error 通知，结果 failed，通
   expect(notices.map((n) => n.level)).toEqual(["info", "error"]);
   expect(notices[1]!.text).toMatch(/^仓库 企微BOT 的本机数据库迁移没有做完：.+。这个窗口里的需求和后台代理功能用不了，重开 pi 窗口可以再试一次。$/);
   expect(notices[1]!.text).not.toContain("数据库没有改动");
+});
+
+test("数据目录经过软链接：照常加锁、弹框并迁移", async () => {
+  const w = await world();
+  const linked = join(w.root, "linked-data");
+  await symlink(w.dataRoot, linked);
+  const { beforeSpawn, notices } = setup({ ...w, dataRoot: linked }, () => "迁移");
+  expect(await beforeSpawn({ repoId: w.repoId, commonDir: w.commonDir })).toEqual({ proceed: true });
+  expect(notices.map((n) => n.level)).toEqual(["info", "info"]);
+  expect(versionOf(w.dataPath)).toBe(9);
 });
 
 test("维护标记被占：不弹框，释放后弹框", async () => {

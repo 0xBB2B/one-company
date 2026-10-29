@@ -45,7 +45,9 @@ function migrateRevision(data: unknown): unknown {
     prototypes: source.prototypes.map(({ userNote: _dropped, ...rest }) => ({ ...rest, picked: null })),
   };
   if (!Value.Check(PrototypeRevision, revision)) {
-    throw new Error(`原型版本快照（需求 ${source.requirementId}，第 ${source.revision} 版）读不出来：${firstError(PrototypeRevision, revision).reason}`);
+    const { path, reason } = firstError(PrototypeRevision, revision);
+    const index = Number(/^\/prototypes\/(\d+)/.exec(path)?.[1]);
+    throw new Error(`原型版本快照（需求 ${source.requirementId}，第 ${source.revision} 版，原型「${source.prototypes[index]?.name ?? ""}」）读不出来：${reason}`);
   }
   return revision;
 }

@@ -129,15 +129,15 @@ test("看板 entry 整个缺了交稿内容键时，报错同样写明需求、�
   expect(() => prototypeRecordsV8Step.migrate(fake.records)).toThrow("draft");
 });
 
-test("版本快照转换后读不出来时抛错，写明需求和版本号", () => {
+test("版本快照转换后读不出来时抛错，写明需求、版本号和出错那一项的原型名", () => {
   const bad = revisionV8();
-  delete (bad.prototypes[0] as Partial<(typeof bad.prototypes)[number]>).hash;
+  delete (bad.prototypes[1] as Partial<(typeof bad.prototypes)[number]>).hash;
   const fake = fakeRecords({ requirement_prototype_revisions: [{ key: `${REQUIREMENT_ID}:3`, data: bad }] });
   try {
     prototypeRecordsV8Step.migrate(fake.records);
     expect.unreachable();
   } catch (error) {
-    expect((error as Error).message).toContain(`原型版本快照（需求 ${REQUIREMENT_ID}，第 3 版）读不出来`);
+    expect((error as Error).message).toContain(`原型版本快照（需求 ${REQUIREMENT_ID}，第 3 版，原型「设置页」）读不出来`);
     expect((error as Error).message).toContain("hash");
   }
 });

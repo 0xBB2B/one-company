@@ -270,6 +270,8 @@ test("备份 data.db 失败：报错写明是备份这一步，两个库都不�
   expect(failure.code).toBe("migration_failed");
   expect(failure.step).toBe("备份 data.db");
   expect(failure.message).toContain("备份 data.db");
+  expect(failure.reason).toBe("data.db 不是只允许当前用户读写的普通文件，复制不了");
+  expect(failure.message).not.toMatch(/\b[a-z]+_[a-z_]+\b/);
   expect(failure.backupPath).toBeNull();
   expect(dump(w.dataPath)).toEqual(before);
   expect(existsSync(w.indexPath)).toBe(true);

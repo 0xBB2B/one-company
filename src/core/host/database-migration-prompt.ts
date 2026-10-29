@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { join } from "node:path";
 import { chooseWindow } from "./question-window.ts";
 import type { WindowHost, WindowLine } from "./question-window.ts";
@@ -53,7 +54,8 @@ export function createBeforeSpawn(options: { host: MigrationHost; dataRoot: stri
     catch (error) { if ((error as { code?: unknown }).code !== "maintenance_required") return { proceed: true }; }
 
     const name = repoDisplayName(commonDir);
-    const scope = { directory: join(dataRoot, "repos", repoId), worktreeRoots: options.worktreeRoots ?? await listWorktrees(commonDir) };
+    // 维护模块只接受真实路径，数据根经过软链接时要先展开
+    const scope = { directory: realpathSync(join(dataRoot, "repos", repoId)), worktreeRoots: options.worktreeRoots ?? await listWorktrees(commonDir) };
     for (;;) {
       try {
         return await withMigrationLock(scope, async (permit): Promise<BeforeSpawnResult> => {
@@ -80,7 +82,7 @@ export function createBeforeSpawn(options: { host: MigrationHost; dataRoot: stri
             }
             const oldVersion = current.data.status === "migratable" ? current.data.version : 0;
             host.ui.notify(migrationNoticeText(name, { kind: "failed", error, oldVersion }), "error");
-            return { proceed: false, code: "database_migration_failed", why: `守护进程不可达：仓库 ${name} 的本机数据库迁移失败：${error.reason}`, next: MIGRATION_FAILED_NEXT };
+            return { proceed: false, code: "database_migration_failed", why: `守护进程不可达：仓库 ${name} 的本机数据库迁移失败：${error.step ?? "data.db 迁移"} 时，${error.reason}`, next: MIGRATION_FAILED_NEXT };
           }
         });
       } catch (error) {

@@ -105,6 +105,14 @@ function runSteps(path: string, from: number, steps: DataMigrationStep[], backup
   } finally { db.close(); }
 }
 
+const BACKUP_FAILURE_FALLBACK = "复制 data.db 时出错";
+const BACKUP_FAILURE_REASONS: Record<string, string> = {
+  invalid_source_file: "data.db 不是只允许当前用户读写的普通文件，复制不了",
+  source_changed: "备份时 data.db 被别的进程改了",
+  unrecognized_source_layout: "data.db 的版本或用途和预期不符",
+  snapshot_check_failed: "备份出来的副本校验没通过",
+};
+
 export async function migrateRepositoryDatabases(permit: DatabaseMaintenancePermit, steps: DataMigrationStep[]): Promise<MigrationReceipt> {
   const directory = databaseMaintenanceDirectory(permit);
   const plan = readDirectoryPlan(directory);
@@ -118,7 +126,7 @@ export async function migrateRepositoryDatabases(permit: DatabaseMaintenancePerm
     }
     try { backupPath = createDatabaseSnapshot(permit, "data", plan.data.version).snapshotPath; }
     catch (error) {
-      const reason = error instanceof DatabaseMaintenanceError ? error.code : error instanceof Error ? error.message : String(error);
+      const reason = error instanceof DatabaseMaintenanceError ? BACKUP_FAILURE_REASONS[error.code] ?? BACKUP_FAILURE_FALLBACK : BACKUP_FAILURE_FALLBACK;
       throw new DatabaseMigrationError("migration_failed", `备份 data.db 时失败：${reason}；原库未改动`, reason, "备份 data.db");
     }
     runSteps(join(directory, "data.db"), plan.data.version, steps, backupPath);
