@@ -12,7 +12,7 @@ import type {
   ShellPageTheme,
 } from "./shell-page.ts";
 import type { ShellRegistry } from "../../core/host/shell-registry.ts";
-import { repoDisplayName } from "../../core/storage/identity.ts";
+import { repoDisplayLabels, repoDisplayName } from "../../core/storage/identity.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import { AdvisedError, adviceOf, toolFailure } from "../../core/exec/tool-failure.ts";
 import type { Host } from "../../core/host/shell-registry.ts";
@@ -144,9 +144,11 @@ export default function shellUiExtension(pi: ExtensionAPI, deps: ShellUiDeps = {
           wrappedClients.set(client, wrapped);
           return wrapped;
         };
+        const labels = repoDisplayLabels(window.workspace.repos.map(({ commonDir }) => commonDir));
         const repos: ShellPageRepo[] = window.workspace.repos.map(({ repoId, commonDir }) => ({
           repoId,
           name: repoDisplayName(commonDir),
+          label: labels.get(commonDir)!,
           resolveClient: () => resolveRepoClient(repoId),
         }));
 

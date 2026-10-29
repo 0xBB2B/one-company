@@ -13,6 +13,7 @@ export interface ShellPageClient {
 export interface ShellPageRepo {
   repoId: string;
   name: string;
+  label: string;
   resolveClient: () => ShellPageClient | undefined;
 }
 
@@ -125,13 +126,6 @@ function rowIdentity(source: { kind: "local"; repoId: string } | { kind: "daemon
   startedAt: string;
 }): string {
   return JSON.stringify([source.kind, source.repoId, task.taskId, task.pid, task.startedAt, source.kind === "daemon" ? source.connectionStamp : null]);
-}
-
-function shortIdentity(value: string, max = 12): string {
-  const sanitized = sanitizeText(value);
-  const clean = /^[0-9a-f-]{32,}$/i.test(sanitized) ? sanitized.replace(/-/g, "") : sanitized;
-  if (clean.length <= max) return clean;
-  return `${clean.slice(0, Math.max(1, max - 5))}…${clean.slice(-4)}`;
 }
 
 function cut(text: string, width: number, ellipsis = "…"): string {
@@ -564,7 +558,7 @@ export class ShellPage {
   }
 
   private rowOwner(row: ShellRow): string {
-    return row.source.kind === "daemon" ? `仓库 ${shortIdentity(row.source.repo.repoId, 12)}` : "本窗口";
+    return row.source.kind === "daemon" ? `仓库 ${row.source.repo.label}` : "本窗口";
   }
 
   private paint(segs: Seg[], width: number, selected = false): string {
