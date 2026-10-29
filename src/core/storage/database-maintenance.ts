@@ -161,7 +161,7 @@ export interface DatabaseSnapshotReceipt {
 }
 
 /** SQLite一致副本包含已提交WAL数据；仅返回元数据，不激活、覆盖、重命名或恢复原库。 */
-export function createDatabaseSnapshot(permit: DatabaseMaintenancePermit, kind: DatabaseKind): DatabaseSnapshotReceipt {
+export function createDatabaseSnapshot(permit: DatabaseMaintenancePermit, kind: DatabaseKind, allowedVersion?: number): DatabaseSnapshotReceipt {
   if (!["data", "global", "index"].includes(kind)) throw new DatabaseMaintenanceError("invalid_snapshot_kind");
   const state = assertPermit(permit);
   const sourceName = `${kind}.db`;
@@ -192,7 +192,7 @@ export function createDatabaseSnapshot(permit: DatabaseMaintenancePermit, kind: 
     sourceDb.exec("PRAGMA trusted_schema = OFF; PRAGMA busy_timeout = 5000;");
     const userVersion = Number(sourceDb.prepare("PRAGMA user_version").get()?.user_version);
     const applicationId = Number(sourceDb.prepare("PRAGMA application_id").get()?.application_id);
-    if (userVersion !== DATABASE_SCHEMA_VERSIONS[kind] || applicationId !== DATABASE_APPLICATION_IDS[kind]) throw new DatabaseMaintenanceError("unrecognized_source_layout");
+    if (userVersion !== (allowedVersion ?? DATABASE_SCHEMA_VERSIONS[kind]) || applicationId !== DATABASE_APPLICATION_IDS[kind]) throw new DatabaseMaintenanceError("unrecognized_source_layout");
     const fd = openSync(snapshotPath, "wx", 0o600); closeSync(fd);
     // VACUUM INTO由SQLite取得一致读视图，不是只复制WAL主文件；所有文件步骤位于受控业务事务之外。
     sourceDb.prepare("VACUUM main INTO ?").run(snapshotPath);
