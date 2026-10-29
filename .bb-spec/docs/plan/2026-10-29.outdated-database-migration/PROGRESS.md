@@ -3,7 +3,7 @@
 |---|---|---|---|
 | 01 | migration-runner | done | 2026-10-29 |
 | 02 | prototype-v8-step | pending | — |
-| 04 | unmigratable-errors | pending | — |
+| 04 | unmigratable-errors | done | 2026-10-29 |
 | 03 | window-prompt | pending | — |
 ## 当前
 并行组 {02-prototype-v8-step, 04-unmigratable-errors}：准备 Red。之后 03。

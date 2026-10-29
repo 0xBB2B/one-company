@@ -157,7 +157,7 @@ const INDEX_NEXT: Record<ProjectIndexServiceErrorCode, string> = {
   identity_changed: "仓库在操作期间被替换或移动，请用户确认后重新初始化索引",
   invalid_data_root: "请用户检查本机数据目录的权限和链接",
   invalid_database: "请用户检查本机数据目录；数据库损坏时删除索引库后重新初始化",
-  outdated_database: "请用户删除本机数据目录里的 index.db 后重新初始化索引",
+  outdated_database: "请用户打开 pi 窗口，在提示框里选「迁移」",
   operation_in_progress: "等正在进行的索引操作结束后再试",
   unstable: "等文件改动停下来后重试",
   index_failure: "重试一次；仍然失败就把原因告诉用户",
@@ -167,14 +167,14 @@ export class ProjectIndexServiceError extends Error {
   readonly metadata: Readonly<{ stage: string; retryable: boolean }>;
   get advice(): FailureAdvice { return { why: `${this.message}（阶段：${this.metadata.stage}）`, next: INDEX_NEXT[this.code] }; }
 
-  constructor(code: ProjectIndexServiceErrorCode, stage: string, retryable = false) {
+  constructor(code: ProjectIndexServiceErrorCode, stage: string, retryable = false, versionDetail = "") {
     const messages: Record<ProjectIndexServiceErrorCode, string> = {
       authorization_denied: "项目索引操作未获授权",
       invalid_identity: "项目索引仓库身份无效",
       identity_changed: "项目索引仓库身份已变化",
       invalid_data_root: "项目索引数据目录不安全",
       invalid_database: "项目索引数据库不可用",
-      outdated_database: "项目索引库 index.db 来自旧版本，和当前版本不兼容",
+      outdated_database: `项目索引库 index.db ${versionDetail}`,
       operation_in_progress: "项目索引已有操作正在进行",
       unstable: "项目文件在索引期间发生变化",
       index_failure: "项目索引操作失败",
@@ -319,7 +319,8 @@ function serviceError(error: unknown, stage: string): ProjectIndexServiceError {
     return new ProjectIndexServiceError("invalid_database", stage);
   }
   if (error instanceof DatabaseStorageError && error.code === "outdated_database") {
-    return new ProjectIndexServiceError("outdated_database", stage);
+    const detail = /是版本 \d+，当前版本是 \d+/.exec(error.message)?.[0];
+    return new ProjectIndexServiceError("outdated_database", stage, false, detail);
   }
   return new ProjectIndexServiceError("index_failure", stage, true);
 }

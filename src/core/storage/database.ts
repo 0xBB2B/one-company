@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { isPromise } from "node:util/types";
 import { assertDatabasePathReady, assertRegularDatabaseFiles, databaseKind, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS, DatabaseStorageError } from "./database-paths.ts";
 import type { DatabaseKind } from "./database-paths.ts";
+import { MIGRATABLE_VERSIONS } from "./database-migration.ts";
 import { createTransactionOrigin, finishTransactionOrigin, hasInvalidTransactionOrigin, invalidateTransactionOrigin, observeRejectedPromise, runOutsideTransactionOrigin, runWithTransactionOrigin, transactionOriginHasAsyncWork } from "./transaction-context.ts";
 import { PRD_ARCHIVE_DIRECTORY } from "../policy/content-policy.ts";
 export { repositoryDatabase, globalDatabase, indexDatabase, databaseFile } from "./database-paths.ts";
@@ -126,7 +127,10 @@ const OUTDATED_VERSIONS: Partial<Record<DatabaseKind, readonly number[]>> = { da
 function assertSupportedVersion(kind: DatabaseKind, version: number): void {
   if (version === 0 || version === DATABASE_SCHEMA_VERSIONS[kind]) return;
   if (OUTDATED_VERSIONS[kind]?.includes(version)) {
-    throw new DatabaseStorageError("outdated_database", `${kind}.db 来自旧版本，和当前版本不兼容；请备份后删除本机数据目录并重新初始化`);
+    const target = DATABASE_SCHEMA_VERSIONS[kind];
+    throw new DatabaseStorageError("outdated_database", MIGRATABLE_VERSIONS[kind as "data" | "index"].includes(version)
+      ? `${kind}.db 是版本 ${version}，当前版本是 ${target}；打开 pi 窗口，在提示框里选「迁移」`
+      : `${kind}.db 是版本 ${version}，太旧了没法迁移；请备份后删除本机数据目录并重新初始化`);
   }
   throw new Error(`不支持的数据库版本: ${version}`);
 }
