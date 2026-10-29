@@ -38,7 +38,7 @@ const PrototypeEntry = object({
   lastOpinion: Type.Union([object({ version: positive, opinion: Type.String({ minLength: 1, maxLength: 4000 }) }), Type.Null()]),
   lastEnded: Type.Union([object({ version: positive, reason: Type.String({ maxLength: 500 }) }), Type.Null()]),
 });
-const PrototypeBoard = object({ requirementId: id, entries: Type.Array(PrototypeEntry, { maxItems: 50 }), updatedAt: positive });
+export const PrototypeBoard = object({ requirementId: id, entries: Type.Array(PrototypeEntry, { maxItems: 50 }), updatedAt: positive });
 type PrototypeFile = Static<typeof PrototypeFile>;
 type PrototypeEntry = Static<typeof PrototypeEntry>;
 export type PrototypeBoard = Static<typeof PrototypeBoard>;
