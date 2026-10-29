@@ -37,7 +37,7 @@ export function migrationNoticeText(
   switch (event.kind) {
     case "start": return event.backsUp ? `正在迁移仓库 ${name} 的本机数据库，先备份 data.db…` : `正在迁移仓库 ${name} 的本机数据库…`;
     case "done": return `仓库 ${name} 的本机数据库已迁移到当前版本。`
-      + (event.receipt.migratedData ? `旧 data.db 备份在 ${event.receipt.backupPath}。` : "") + (event.receipt.removedIndex ? "索引会在后台重新建。" : "");
+      + (event.receipt.migratedData ? `旧 data.db 备份在 ${event.receipt.backupPath}。` : "") + (event.receipt.removedIndex ? "索引会在第一次查询时重新建。" : "");
     case "failed": return `仓库 ${name} 的本机数据库迁移失败：${event.error.step ?? "data.db 迁移"} 时，${event.error.reason}。数据库没有改动，还是版本 ${event.oldVersion}`
       + (event.error.backupPath ? `；迁移前的备份在 ${event.error.backupPath}` : "") + `。${UNUSABLE}，重开 pi 窗口可以再试一次。`;
     case "interrupted": return `仓库 ${name} 的本机数据库迁移没有做完：${event.reason}。${UNUSABLE}，重开 pi 窗口可以再试一次。`;

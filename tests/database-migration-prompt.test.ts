@@ -116,7 +116,7 @@ test("选「迁移」：迁移框内容正确，通知依次为开始和成功�
   expect(shown[0]!.title).toBe("仓库 企微BOT 的本机数据库是旧版本，要迁移吗？");
   expect(notices.map((n) => n.level)).toEqual(["info", "info"]);
   expect(notices[0]!.text).toBe("正在迁移仓库 企微BOT 的本机数据库，先备份 data.db…");
-  expect(notices[1]!.text).toMatch(new RegExp(`^仓库 企微BOT 的本机数据库已迁移到当前版本。旧 data.db 备份在 ${backupPattern(w).source}。索引会在后台重新建。$`));
+  expect(notices[1]!.text).toMatch(new RegExp(`^仓库 企微BOT 的本机数据库已迁移到当前版本。旧 data.db 备份在 ${backupPattern(w).source}。索引会在第一次查询时重新建。$`));
   expect(versionOf(w.dataPath)).toBe(9);
   expect(existsSync(w.indexPath)).toBe(false);
 });
@@ -127,7 +127,7 @@ test("只迁 index.db：开始通知不提备份，成功通知不带备份路�
   expect(await beforeSpawn({ repoId: w.repoId, commonDir: w.commonDir })).toEqual({ proceed: true });
   expect(notices.map((n) => n.text)).toEqual([
     "正在迁移仓库 企微BOT 的本机数据库…",
-    "仓库 企微BOT 的本机数据库已迁移到当前版本。索引会在后台重新建。",
+    "仓库 企微BOT 的本机数据库已迁移到当前版本。索引会在第一次查询时重新建。",
   ]);
 });
 
