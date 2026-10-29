@@ -37,9 +37,10 @@ export class DatabaseMigrationError extends Error {
   readonly code: "migration_failed" | "migration_busy" | "missing_step";
   readonly step: string | null;
   readonly backupPath: string | null;
-  constructor(code: DatabaseMigrationError["code"], message: string, step: string | null = null, backupPath: string | null = null) {
+  readonly reason: string;
+  constructor(code: DatabaseMigrationError["code"], message: string, reason: string, step: string | null = null, backupPath: string | null = null) {
     super(message);
-    this.name = "DatabaseMigrationError"; this.code = code; this.step = step; this.backupPath = backupPath;
+    this.name = "DatabaseMigrationError"; this.code = code; this.reason = reason; this.step = step; this.backupPath = backupPath;
   }
 }
 
@@ -63,6 +64,10 @@ export function readMigrationPlan(dataRoot: string, repoId: string): MigrationPl
   return { data: readVersionState(repositoryDatabase(dataRoot, repoId), "data"), index: readVersionState(indexDatabase(dataRoot, repoId), "index") };
 }
 
+export function readLockedMigrationPlan(permit: DatabaseMaintenancePermit): MigrationPlan {
+  return readDirectoryPlan(databaseMaintenanceDirectory(permit));
+}
+
 export function needsMigrationPrompt(plan: MigrationPlan): boolean {
   return plan.data.status !== "too_old" && (plan.data.status === "migratable" || plan.index.status === "migratable");
 }
@@ -71,7 +76,7 @@ export async function withMigrationLock<T>(scope: DatabaseMaintenanceScope, oper
   try { return await withDatabaseMaintenance(scope, operation); }
   catch (error) {
     if (error instanceof DatabaseMaintenanceError && error.code === "maintenance_already_exists") {
-      throw new DatabaseMigrationError("migration_busy", "另一个进程正在迁移这个仓库的本机数据库，请等它结束后再试");
+      throw new DatabaseMigrationError("migration_busy", "另一个进程正在迁移这个仓库的本机数据库，请等它结束后再试", "另一个进程正在迁移");
     }
     throw error;
   }
@@ -96,7 +101,7 @@ function runSteps(path: string, from: number, steps: DataMigrationStep[], backup
   } catch (error) {
     try { db.exec("ROLLBACK"); } catch { /* 事务已不存在时无需回滚 */ }
     const reason = error instanceof Error ? error.message : String(error);
-    throw new DatabaseMigrationError("migration_failed", `${step || "data.db 迁移"} 时，${reason}；原库未改动，备份在 ${backupPath}`, step || null, backupPath);
+    throw new DatabaseMigrationError("migration_failed", `${step || "data.db 迁移"} 时，${reason}；原库未改动，备份在 ${backupPath}`, reason, step || null, backupPath);
   } finally { db.close(); }
 }
 
@@ -108,13 +113,13 @@ export async function migrateRepositoryDatabases(permit: DatabaseMaintenancePerm
   if (plan.data.status === "migratable") {
     for (let version = plan.data.version; version < plan.data.target; version++) {
       if (!steps.some((step) => step.from === version)) {
-        throw new DatabaseMigrationError("missing_step", `缺少 data.db 版本 ${version} → ${version + 1} 的迁移步骤`, `data.db 版本 ${version} → ${version + 1}`);
+        throw new DatabaseMigrationError("missing_step", `缺少 data.db 版本 ${version} → ${version + 1} 的迁移步骤`, `缺少 data.db 版本 ${version} → ${version + 1} 的迁移步骤`, `data.db 版本 ${version} → ${version + 1}`);
       }
     }
     try { backupPath = createDatabaseSnapshot(permit, "data", plan.data.version).snapshotPath; }
     catch (error) {
       const reason = error instanceof DatabaseMaintenanceError ? error.code : error instanceof Error ? error.message : String(error);
-      throw new DatabaseMigrationError("migration_failed", `备份 data.db 时失败：${reason}；原库未改动`, "备份 data.db");
+      throw new DatabaseMigrationError("migration_failed", `备份 data.db 时失败：${reason}；原库未改动`, reason, "备份 data.db");
     }
     runSteps(join(directory, "data.db"), plan.data.version, steps, backupPath);
     migratedData = true;

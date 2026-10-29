@@ -5,6 +5,9 @@ import type { Clock } from "../policy/clock.ts";
 import { WorkspaceClients, resolveSdkDir } from "./daemon-client.ts";
 import type { WorkspaceClientsHandle } from "./daemon-client.ts";
 import { dataRoot } from "../storage/identity.ts";
+import { createBeforeSpawn } from "./database-migration-prompt.ts";
+import type { BeforeSpawn } from "./database-migration-prompt.ts";
+import type { DataMigrationStep } from "../storage/database-migration.ts";
 import { upgradeNoticeText } from "./upgrade-notice.ts";
 import type { UpgradeNotice } from "./upgrade-notice.ts";
 import type { Workspace } from "../storage/identity.ts";
@@ -23,7 +26,9 @@ export interface LifecycleDeps {
     sessionId: string;
     cwd: string;
     onUpgradeNotice: (notice: UpgradeNotice) => void;
+    beforeSpawn: BeforeSpawn;
   }) => Promise<WorkspaceClientsHandle>;
+  databaseMigrationSteps?: DataMigrationStep[];
   process?: NodeJS.Process;
 }
 
@@ -140,6 +145,7 @@ async function defaultConnectWorkspaceClients(input: {
   sessionId: string;
   cwd: string;
   onUpgradeNotice: (notice: UpgradeNotice) => void;
+  beforeSpawn: BeforeSpawn;
 }): Promise<WorkspaceClientsHandle> {
   return WorkspaceClients.create({
     workspaceRoot: input.cwd,
@@ -147,6 +153,7 @@ async function defaultConnectWorkspaceClients(input: {
     sdkDir: resolveSdkDir(),
     hello: { windowId: input.windowId, sessionId: input.sessionId },
     onUpgradeNotice: input.onUpgradeNotice,
+    beforeSpawn: input.beforeSpawn,
   });
 }
 
@@ -177,11 +184,13 @@ interface StartWindowInput {
   notify: (message: string, level?: "info" | "warning" | "error") => void;
   resolveClock: () => Clock;
   resolveShellRegistry: (clock: Clock) => ShellRegistry;
+  beforeSpawn: BeforeSpawn;
   connectWorkspaceClients: (input: {
     windowId: string;
     sessionId: string;
     cwd: string;
     onUpgradeNotice: (notice: UpgradeNotice) => void;
+    beforeSpawn: BeforeSpawn;
   }) => Promise<WorkspaceClientsHandle>;
 }
 
@@ -197,7 +206,7 @@ async function startWindow(input: StartWindowInput): Promise<void> {
     input.notify(text, level);
   };
   try {
-    clients = await input.connectWorkspaceClients({ windowId, sessionId: input.sessionId, cwd: input.cwd, onUpgradeNotice });
+    clients = await input.connectWorkspaceClients({ windowId, sessionId: input.sessionId, cwd: input.cwd, onUpgradeNotice, beforeSpawn: input.beforeSpawn });
     const workspace = clients.workspace();
     if (workspace.repos.length === 0) {
       input.notify(`当前目录（${input.cwd}）和它的子目录里都没有 Git 仓库，需求和后台代理功能用不了。`
@@ -371,6 +380,7 @@ export default function lifecycleExtension(pi: ExtensionAPI, deps: LifecycleDeps
       cwd: ctx.cwd,
       sessionId: ctx.sessionManager.getSessionId(),
       notify: ctx.ui.notify,
+      beforeSpawn: createBeforeSpawn({ host: ctx, dataRoot: dataRoot(process.env), steps: deps.databaseMigrationSteps ?? [] }),
       resolveClock,
       resolveShellRegistry,
       connectWorkspaceClients,
