@@ -3,8 +3,8 @@
 |---|---|---|---|
 | 01 | suggestion-model | done | 2026-10-30 |
 | 02 | suggestion-editor | done | 2026-10-30 |
-| 03 | input-suggestion-extension | pending | — |
+| 03 | input-suggestion-extension | done | 2026-10-30 |
 ## 当前
-准备执行 `03-input-suggestion-extension.md`。02 的测试曾把"第一个字"写成第一个词、反色没用 pi 的假光标，已自修一次。
+三份 plan 都已完成，进入收尾：全量测试、界面对比、文档同步。
 ## 阻塞
 （无）

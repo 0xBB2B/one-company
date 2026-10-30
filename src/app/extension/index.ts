@@ -8,6 +8,7 @@ import agentManageExtension from "../../modules/explore/agent-manage-extension.t
 import workflowManageExtension from "../../modules/delivery/workflow-manage-extension.ts";
 import prototypeExtension from "../../modules/prototype/prototype-extension.ts";
 import pmPanelExtension from "../../modules/panel/pm-panel-extension.ts";
+import inputSuggestionExtension from "../../modules/input-suggestion/input-suggestion-extension.ts";
 import shellUiExtension from "../../modules/shell/shell-ui-extension.ts";
 import commandsExtension from "./commands.ts";
 import searchExclusionExtension from "../../modules/agents/search-exclusion-extension.ts";
@@ -27,6 +28,7 @@ export default function registerExtensions(pi: ExtensionAPI): void {
   workflowManageExtension(pi);
   prototypeExtension(pi);
   pmPanelExtension(pi);
+  inputSuggestionExtension(pi);
   shellUiExtension(pi);
   searchExclusionExtension(pi);
   conventionsGuardExtension(pi);
