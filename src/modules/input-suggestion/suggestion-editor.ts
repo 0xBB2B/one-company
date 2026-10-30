@@ -7,9 +7,11 @@ type EditorArgs = ConstructorParameters<typeof CustomEditor>;
 
 export class SuggestionEditor extends CustomEditor {
   private suggestion: string | undefined;
+  private readonly dim: (text: string) => string;
 
-  constructor(tui: EditorArgs[0], theme: EditorArgs[1], keybindings: EditorArgs[2], private readonly dim: (text: string) => string) {
+  constructor(tui: EditorArgs[0], theme: EditorArgs[1], keybindings: EditorArgs[2], dim: (text: string) => string) {
     super(tui, theme, keybindings);
+    this.dim = dim;
   }
 
   setSuggestion(suggestion: string | undefined): void {
