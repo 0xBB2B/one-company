@@ -21,7 +21,6 @@ pi 交互窗口里，主代理每轮正常结束后自动生成输入建议并�
 ## 涉及文件
 - `src/modules/input-suggestion/input-suggestion-extension.ts` 新建
 - `src/app/extension/index.ts` 修改：导入并在 `registerExtensions` 里调用 `inputSuggestionExtension(pi)`
-- `tests/module-dependencies.test.ts` 修改：`MODULE_DIRS` 里在 `"src/modules/shell"` 之后、`"src/app/extension"` 之前加 `"src/modules/input-suggestion"`
 
 ## 函数清单
 ### src/modules/input-suggestion/input-suggestion-extension.ts
