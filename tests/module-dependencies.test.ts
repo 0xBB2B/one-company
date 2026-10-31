@@ -21,6 +21,7 @@ const MODULE_DIRS = [
   "src/modules/interaction",
   "src/modules/project-index",
   "src/modules/shell",
+  "src/modules/input-suggestion",
   "src/app/extension",
   "src/app/daemon",
 ];

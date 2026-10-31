@@ -65,6 +65,14 @@ describe("src/app/extension/index.ts 唯一扩展入口", () => {
     expect(offenders.map((tool) => tool.name)).toEqual([]);
   });
 
+  test("注册后有监听 agent_settled 的处理器（输入建议扩展已接入）", () => {
+    const fakePi = createFakePi();
+
+    registerExtensions(fakePi.pi);
+
+    expect(fakePi.handlerCount("agent_settled")).toBeGreaterThan(0);
+  });
+
   test("package.json 的 pi.extensions 恰为 index.ts 单一入口", async () => {
     const raw = await readFile(join(PACKAGE_ROOT, "package.json"), "utf8");
     const pkg = JSON.parse(raw) as { pi?: { extensions?: unknown } };
