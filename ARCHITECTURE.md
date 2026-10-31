@@ -45,6 +45,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | interaction | 主代理提问窗口、解读用户原话、主窗口的需求交互、@需求补全、`one_company_requirement_manage` 工具 | `src/modules/interaction` | `MainRequirementInteraction`、`user-interaction-model.ts`、`requirement-manage-tool.ts` |
 | project-index | 项目索引、语法解析、知识查询、`one_company_project_manage` 和 `one_company_knowledge_query` 工具 | `src/modules/project-index` | `project-index-service.ts`、`knowledge-query.ts`、`syntax-parser.ts`、`project-manage-tool.ts` |
 | shell | `/one:ps` 页面、后台 shell 工具、shell 摘要 | `src/modules/shell` | `shell-page.ts`、`shell-bash.ts` |
+| input-suggestion | 输入建议：主代理一轮正常结束后，用主窗口的模型读最近 3 轮对话推测用户下一句，在空的主会话输入栏里显示成灰色，按右方向键填入；替换了 pi 的主会话输入栏 | `src/modules/input-suggestion` | `input-suggestion-extension.ts`、`suggestion-model.ts`（`requestSuggestion`）、`suggestion-editor.ts`（`SuggestionEditor`） |
 | app/extension | pi 入口、命令注册、主会话规则注入 | `src/app/extension` | `index.ts`、`commands.ts`、`rules.ts` |
 | app/daemon | 守护进程启动、加载器、生命周期、运行管理、PM 工具组装、通信服务端、请求参数校验表、项目索引在守护进程里的宿主 | `src/app/daemon` | `main.ts`、`lifecycle.ts`（`startDaemon`）、`RunManager`、`pm-tools.ts`、`method-params.ts`、`ProjectIndexHost` |
 

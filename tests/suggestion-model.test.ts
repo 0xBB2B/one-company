@@ -198,6 +198,8 @@ describe("acceptSuggestion 整理", () => {
     ["建议：跑一下测试", "跑一下测试"],
     ["Suggestion: run the tests", "run the tests"],
     ["<suggestion>跑一下测试</suggestion>", "跑一下测试"],
+    ["<reply>跑一下测试</reply>", "<reply>跑一下测试</reply>"],
+    ["建议 ：跑一下测试", "跑一下测试"],
     ["  可以  ", "可以"],
   ])("%s -> %s", (raw, expected) => {
     expect(acceptSuggestion(raw)).toBe(expected);
@@ -231,7 +233,7 @@ describe("acceptSuggestion 判定为没有", () => {
     expect(acceptSuggestion(raw)).toBeUndefined();
   });
 
-  test.each(["无", "无建议", "没有建议", "暂无建议", "沉默", "完成", "已完成", "None", "no suggestion", "Nothing to suggest", "SILENCE", "done", "无。", "「完成」", "沉默！"])("自述没有建议：%s", (raw) => {
+  test.each(["无", "无建议", "没有建议", "暂无建议", "沉默", "完成", "已完成", "None", "no suggestion", "Nothing to suggest", "SILENCE", "done", "无。", "「完成」", "「 完成 」", "沉默！"])("自述没有建议：%s", (raw) => {
     expect(acceptSuggestion(raw)).toBeUndefined();
   });
 
