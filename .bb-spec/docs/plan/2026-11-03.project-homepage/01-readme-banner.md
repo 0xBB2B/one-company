@@ -31,7 +31,7 @@ description: 用网页画出新横幅图，导出成 1600×560 的 webp，替换
 .bn{position:relative;overflow:hidden;width:1600px;height:560px;background:#080b12;color:#e9edf5;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 .arc{position:absolute;left:50%;top:752px;width:2720px;height:2720px;margin-left:-1360px;margin-top:-264px;border-radius:50%;border-top:1px solid rgba(124,176,255,.6);box-shadow:0 -64px 176px rgba(124,176,255,.2),inset 0 96px 176px rgba(124,176,255,.08)}
 .in{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;padding:61px 112px 0}
-.word{font-size:134px;line-height:1.05;font-weight:680;letter-spacing:-.03em;background:linear-gradient(90deg,#fff 45%,#9cc4ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+.word{padding-bottom:.2em;margin-bottom:-.2em;font-size:134px;line-height:1.05;font-weight:680;letter-spacing:-.03em;background:linear-gradient(90deg,#fff 45%,#9cc4ff);-webkit-background-clip:text;background-clip:text;color:transparent}
 .tag{margin-top:18px;font-size:22px;letter-spacing:.32em;color:#a9b8d0}
 .rail{display:grid;grid-template-columns:repeat(7,1fr);width:100%;margin:58px 0 0;padding:0;list-style:none;border-top:1px solid #33425f;font-size:20px;letter-spacing:.1em;color:#a9b8d0}
 .rail li{position:relative;padding-top:27px;text-align:center}
@@ -53,7 +53,7 @@ description: 用网页画出新横幅图，导出成 1600×560 的 webp，替换
 导出步骤：
 
 1. 用浏览器以 1600×560 的窗口、设备像素比 1 打开这个网页，截图存成 `.bb-spec/.cache/banner/banner.png`。
-2. 运行 `cwebp -q 88 .bb-spec/.cache/banner/banner.png -o assets/onecompany-banner.webp`。
+2. 运行 `cwebp -q 88 -sharp_yuv .bb-spec/.cache/banner/banner.png -o assets/onecompany-banner.webp`。
 3. 文件超过 200 KB 时降低质量参数重新导出。
 
 ## 函数清单
