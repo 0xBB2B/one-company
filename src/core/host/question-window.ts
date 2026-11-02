@@ -46,7 +46,7 @@ const EDITOR_WIDTH = 10000;
 
 // pi 不告诉窗口实际可用高度，下面还有状态面板和底栏，窗口太高时全屏布局会按比例切掉尾部
 const HEIGHT_RATIO = 0.6;
-const MIN_HEIGHT = 10;
+const MIN_HEIGHT = 11;
 const SCROLL_STEP = 3;
 const SCROLL_HINT = "Shift+↑↓ 滚动内容";
 

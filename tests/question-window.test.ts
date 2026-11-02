@@ -1008,7 +1008,7 @@ describe("窗口超过屏幕高度", () => {
     expect(text()).not.toMatch(/上面还有|下面还有|Shift\+↑↓/u);
   });
 
-  test.each(tones.flatMap((tone) => [[24, 14], [84, 50], [10, 10], [5, 10]].map(([rows, cap]) => [tone, rows, cap] as const)))(
+  test.each(tones.flatMap((tone) => [[24, 14], [84, 50], [10, 11], [5, 11]].map(([rows, cap]) => [tone, rows, cap] as const)))(
     "%s 语气 终端 %i 行：总行数等于上限 %i，选项、提示、上下边框都在", (tone, rows, cap) => {
       const { plain } = one(rows, {}, tone);
       const lines = plain();
@@ -1269,7 +1269,7 @@ describe("窗口超过屏幕高度", () => {
     const { terminal, window, plain } = one(24);
     const total = fullTotal();
     pressTimes(window, SHIFT_DOWN, 60);
-    for (const [rows, cap] of [[40, 24], [12, 10], [84, 50], [24, 14]]) {
+    for (const [rows, cap] of [[40, 24], [12, 11], [84, 50], [24, 14]]) {
       terminal.rows = rows!;
       const lines = plain();
       const now = frame(lines);
@@ -1348,10 +1348,10 @@ describe("窗口超过屏幕高度", () => {
     expect(raw()).toEqual(before);
   });
 
-  test("矮终端 5 行（上限 10）、20 个选项、内容 40 行：DOWN 走到底再 UP 走回顶，每一步总行数等于 10 且光标所在选项可见", () => {
+  test("矮终端 5 行（上限 11）、20 个选项、内容 40 行：DOWN 走到底再 UP 走回顶，每一步总行数等于 11 且光标所在选项可见", () => {
     const { window, raw, text } = one(5, { choices: manyChoices(), lines: marks(40) });
     const check = (n: number) => {
-      expect(raw()).toHaveLength(10);
+      expect(raw()).toHaveLength(11);
       expect(text()).toContain(`<warning>→ ${label(n)}</>`);
     };
     check(1);
@@ -1474,5 +1474,18 @@ describe("窗口超过屏幕高度", () => {
     window.handleInput(DOWN);
     expect(squeezed(plain())).toContain("末尾乙");
     expect(squeezed(plain())).not.toContain("末尾甲");
+  });
+
+  test("项目规范窗口在矮分屏（rows 18，上限 11）：总行数等于上限，内容区有下面还有，三个选项和滚动提示都在，Shift+↓ 能读完 20 行", () => {
+    const { window, raw, plain, text } = one(18, { caption: undefined, cancelNote: undefined, allowOther: true, lines: marks(20),
+      choices: [{ label: "写入" }, { label: "不写入" }] });
+    const lines = plain();
+    expect(raw()).toHaveLength(11);
+    expect(lines.slice(1, -6).some((line) => /^ ↓ 下面还有 \d+ 行$/u.test(line))).toBe(true);
+    expect(text()).toContain("<warning>→ 写入</>");
+    expect(lines).toContain("   不写入");
+    expect(lines).toContain("   其他（自己输入）");
+    expect(lines.join("\n")).toContain("Shift+↑↓ 滚动内容");
+    expect([...sweep(window, plain, SHIFT_DOWN)].sort((a, b) => a - b)).toEqual(everyRow(20));
   });
 });

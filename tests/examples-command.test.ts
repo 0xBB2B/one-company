@@ -405,6 +405,25 @@ describe("写入窗口摘要", () => {
     expect(lines[path + 1]!.trim()).toBe("");
   });
 
+  test("项目层 AGENTS.md 是软链接：写入窗口先写软链接提示，再是摘要和样例路径，选写入后写到软链接指向的真实文件", async () => {
+    await setup({ trusted: true });
+    const real = join(root, "elsewhere.md");
+    await writeFile(real, "项目规范一\n");
+    const link = join(repoDir, "AGENTS.md");
+    await symlink(real, link);
+    const { dialog } = await writeDialog([GOLANG, PROJECT_LAYER, COPY]);
+    const lines = dialog.split("\n");
+    const at = (part: string) => lines.findIndex((line) => line.includes(part));
+    const [title, note, summary, path] = [at("把这些改动写入项目规范 "), at("AGENTS.md 是软链接"), at("在现有 AGENTS.md 末尾追加"), at("这段内容在 ")];
+    expect(lines[note]).toContain(`AGENTS.md 是软链接，实际写到 ${await realpath(real)}`);
+    expect(note).toBe(title + 2);
+    expect(lines[title + 1]!.trim()).toBe("");
+    expect(summary).toBe(note + 1);
+    expect(path).toBe(summary + 1);
+    expect((await lstat(link)).isSymbolicLink()).toBe(true);
+    expect(await readFile(real, "utf8")).toBe(`项目规范一\n\n${await sample("golang", "AGENTS.md")}`);
+  });
+
   test("样例路径行：写本次读取的样例 AGENTS.md，家目录开头的写成 ~", async () => {
     await setup();
     const savedHome = process.env.HOME;
