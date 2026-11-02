@@ -2,6 +2,7 @@ import { isKeyRelease, matchesKey, truncateToWidth, visibleWidth } from "@earend
 import type { MainExploreOverview } from "../explore/explore-dispatch.ts";
 import type { MainPrototypeOverview } from "../prototype/prototype-dispatch.ts";
 import type { PanelReviewerRow, PanelReviewerState, PanelRunStats, PendingItem, PmOverview } from "./pm-overview.ts";
+import type { RunStepsView } from "../agents/run-steps.ts";
 import { REVIEW_SUPERSEDED_TEXT, REVIEW_UNFINISHED_TEXT } from "../pm/review-outcome-text.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 
@@ -19,15 +20,19 @@ export interface PmPanelOptions {
   /** 用户在 PM 行按 p：暂停或恢复该 PM（连带子代理由守护进程处理）。 */
   togglePause: (entry: PmPanelEntry) => void;
   /** 用户在子代理行按回车：打开该运行的步骤窗口。 */
-  openSteps: (target: { repoId: string; runId: string; title: string }) => void;
+  openSteps: (target: { repoId: string; runId: string; title: string; view?: RunStepsView }) => void;
+  /** 选中的子代理行从数据里消失时读它的步骤，用来显示已结束行；子代理还在收尾时会重读。 */
+  readSteps: (target: { repoId: string; runId: string }) => Promise<RunStepsView>;
 }
 
 type Row = { kind: "pm"; entry: PmPanelEntry } | { kind: "item"; entry: PmPanelEntry; item: PendingItem }
-  | { kind: "steps"; entry?: PmPanelEntry; repoId: string; runId: string; title: string };
+  | { kind: "steps"; entry?: PmPanelEntry; repoId: string; runId: string; title: string; finished?: true; view?: RunStepsView };
 type TaskRow = PmOverview["taskRows"][number];
 
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const RETRY_TEXT = { ...REVIEW_UNFINISHED_TEXT, superseded: REVIEW_SUPERSEDED_TEXT } as const;
+const ENDED_HEADER = "● 已结束（光标移开后消失）";
+const ENDED_RESULT: Record<string, string> = { completed: "✓ 已完成", failed: "✗ 失败", stopped: "✗ 已停止", interrupted: "✗ 已中断" };
 const HINT = "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · 第一行按 ↑ 返回输入框";
 
 export function formatTokens(value: number): string {
@@ -53,6 +58,7 @@ export class PmPanel {
   private cursor = 0;
   private frame = 0;
   private focused = false;
+  private ended: { row: Extract<Row, { kind: "steps" }>; previous: number; reading: boolean; waited: number } | undefined;
   private requestRender: (() => void) | undefined;
 
   constructor(options: PmPanelOptions) { this.options = options; }
@@ -61,10 +67,18 @@ export class PmPanel {
   bindHost(binding: { requestRender?: () => void }): void { this.requestRender = binding.requestRender; }
   invalidate(): void { this.requestRender?.(); }
   focus(): void { this.focused = true; }
-  blur(): void { this.focused = false; }
-  tick(): void { this.frame = (this.frame + 1) % SPINNER.length; }
+  blur(): void {
+    this.focused = false;
+    this.ended = undefined;
+    this.cursor = Math.max(0, Math.min(this.cursor, this.rows().length - 1));
+  }
+  tick(): void {
+    this.frame = (this.frame + 1) % SPINNER.length;
+    const ended = this.ended;
+    if (ended && !ended.row.view && !ended.reading && ++ended.waited >= 5) this.readEnded(ended);
+  }
 
-  /** 用最新概览替换投影；选中项按事项、PM 或运行身份保持，已消失时落到相邻行。 */
+  /** 用最新概览替换投影；选中项按事项、PM 或运行身份保持；选中的子代理行消失时变成已结束行，其他行消失时落到相邻行。 */
   update(entries: PmPanelEntry[]): void {
     this.replace(() => { this.entries = [...entries].sort((a, b) => a.overview.pmRunId.localeCompare(b.overview.pmRunId)); });
   }
@@ -81,13 +95,40 @@ export class PmPanel {
 
   private replace(apply: () => void): void {
     const selected = this.rows()[this.cursor];
-    const key = selected ? rowKey(selected) : undefined;
+    const key = selected ? rowKey(selected) : undefined, previous = this.cursor;
     apply();
+    if (this.ended && this.liveRows().some((row) => rowKey(row) === rowKey(this.ended!.row))) this.ended = undefined;
     const rows = this.rows(), index = key ? rows.findIndex((row) => rowKey(row) === key) : -1;
-    this.cursor = index >= 0 ? index : Math.max(0, Math.min(this.cursor, rows.length - 1));
+    if (index >= 0) { this.cursor = index; return; }
+    if (this.focused && selected?.kind === "steps" && !selected.finished) {
+      const row: Extract<Row, { kind: "steps" }> = { kind: "steps", repoId: selected.repoId, runId: selected.runId, title: selected.title, finished: true };
+      this.ended = { row, previous, reading: false, waited: 0 };
+      this.cursor = this.rows().length - 1;
+      this.readEnded(this.ended);
+      return;
+    }
+    this.cursor = Math.max(0, Math.min(this.cursor, rows.length - 1));
   }
 
-  private rows(): Row[] {
+  private readEnded(ended: NonNullable<PmPanel["ended"]>): void {
+    ended.reading = true;
+    ended.waited = 0;
+    const settle = (view?: RunStepsView) => {
+      if (this.ended !== ended) return;
+      ended.reading = false;
+      if (view && ENDED_RESULT[view.state]) ended.row.view = view;
+      else if (!view || (view.state !== "queued" && view.state !== "running")) {
+        this.ended = undefined;
+        this.cursor = Math.max(0, Math.min(ended.previous, this.rows().length - 1));
+      }
+      this.requestRender?.();
+    };
+    this.options.readSteps({ repoId: ended.row.repoId, runId: ended.row.runId }).then(settle, () => settle());
+  }
+
+  private rows(): Row[] { return this.ended ? [...this.liveRows(), this.ended.row] : this.liveRows(); }
+
+  private liveRows(): Row[] {
     const prototypes = this.prototypes.map(({ repoId, prototype }): Row => ({ kind: "steps", repoId, runId: prototype.runId, title: prototypeTitle(prototype) }));
     const explores = this.explores.map(({ repoId, explore }): Row => ({ kind: "steps", repoId, runId: explore.runId, title: mainExploreTitle(explore) }));
     return [...this.entries.flatMap((entry) => [{ kind: "pm" as const, entry }, ...entryRows(entry)]), ...prototypes, ...explores];
@@ -149,16 +190,18 @@ export class PmPanel {
     });
   }
 
+  private leaveEnded(rows: Row[]): void { if (this.ended && rows[this.cursor] !== this.ended.row) this.ended = undefined; }
+
   handleInput(data: string): boolean {
     if (isKeyRelease(data)) return false;
     const rows = this.rows();
-    if (matchesKey(data, "down")) { this.cursor = Math.min(this.cursor + 1, Math.max(0, rows.length - 1)); return true; }
-    if (matchesKey(data, "up")) { this.cursor = Math.max(this.cursor - 1, 0); return true; }
+    if (matchesKey(data, "down")) { this.cursor = Math.min(this.cursor + 1, Math.max(0, rows.length - 1)); this.leaveEnded(rows); return true; }
+    if (matchesKey(data, "up")) { this.cursor = Math.max(this.cursor - 1, 0); this.leaveEnded(rows); return true; }
     const row = rows[this.cursor];
     if (!row) return false;
     if (matchesKey(data, "enter")) {
       if (row.kind === "item") this.options.openItem(row.entry, row.item);
-      else if (row.kind === "steps") this.options.openSteps({ repoId: row.repoId, runId: row.runId, title: row.title });
+      else if (row.kind === "steps") this.options.openSteps({ repoId: row.repoId, runId: row.runId, title: row.title, view: row.view });
       return true;
     }
     if (data === "p" || data === "P") { if (row.entry) this.options.togglePause(row.entry); return true; }
@@ -167,8 +210,8 @@ export class PmPanel {
 
   render(width: number): string[] {
     const safeWidth = Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
-    if (safeWidth === 0 || (this.entries.length === 0 && this.explores.length === 0 && this.prototypes.length === 0)) return [];
-    const rows = this.rows(), selected = this.focused ? rows[this.cursor] : undefined;
+    if (safeWidth === 0 || (this.entries.length === 0 && this.explores.length === 0 && this.prototypes.length === 0 && !this.ended)) return [];
+    const rows = this.rows(), current = this.focused ? rows[this.cursor] : undefined, selected = current === this.ended?.row ? undefined : current;
     const lines = this.entries.length ? [this.fit(`● ${this.entries.length} 个需求运行中`, safeWidth)] : [];
     this.entries.forEach((entry, index) => {
       const last = index === this.entries.length - 1, branch = last ? "└─" : "├─", rail = last ? "  " : "│ ";
@@ -201,6 +244,11 @@ export class PmPanel {
       const elapsed = explore.elapsedMs + Math.max(0, this.options.now() - fetchedAt);
       lines.push(this.mark(this.fit(`${branch} ${SPINNER[this.frame]} ${mainExploreTitle(explore)} · ↻${explore.turns}/${explore.maxTurns} · ${formatElapsed(elapsed)}`, safeWidth), runKey(explore.runId) === selectedKey));
     });
+    if (this.ended) {
+      const { view, title } = this.ended.row;
+      const body = view ? `${ENDED_RESULT[view.state]} · ${title}${this.runSuffix(view, false, 0)}` : `读取中… · ${title}`;
+      lines.push(this.fit(ENDED_HEADER, safeWidth), this.mark(this.fit(`└─ ${body}`, safeWidth), current === this.ended.row));
+    }
     if (this.focused) lines.push(this.paint("dim", this.fit(HINT, safeWidth)));
     return lines;
   }

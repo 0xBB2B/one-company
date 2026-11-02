@@ -1,9 +1,10 @@
-import { expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { PmOverview } from "../src/modules/panel/pm-overview.ts";
 import { formatElapsed, formatTokens, PmPanel } from "../src/modules/panel/pm-panel.ts";
 import type { ExplorePanelEntry, PmPanelEntry, PrototypePanelEntry } from "../src/modules/panel/pm-panel.ts";
 import pmPanelExtension from "../src/modules/panel/pm-panel-extension.ts";
+import { BottomDock } from "../src/core/host/dock.ts";
 import { createClock } from "../src/core/policy/clock.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
 import { registerRequirementInput } from "../src/core/host/extension-lifecycle.ts";
@@ -625,16 +626,20 @@ const stepMain: ExplorePanelEntry = { repoId: "r", fetchedAt: 1_000,
   explore: { runId: "run-main", source: "local", question: "现在的导出入口在哪", turns: 2, maxTurns: 15, elapsedMs: 12_300 } };
 const stepOverview = (patch: Partial<PmOverview> = {}) => overview({ goals: ["导出"], taskRows: [stepExec, stepReview, stepExplore], ...patch });
 
-function stepPanel(options: { taskRows?: Task[]; pendingItems?: PmOverview["pendingItems"]; prototypes?: boolean; main?: boolean; entries?: boolean } = {}) {
+const stepsView = (patch: Record<string, unknown> = {}) => ({ state: "completed", turns: 12, maxTurns: 12, elapsedMs: 3_000, steps: [{ id: "a", text: "读 a.ts", status: "done" }], ...patch });
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+function stepPanel(options: { taskRows?: Task[]; pendingItems?: PmOverview["pendingItems"]; prototypes?: boolean; main?: boolean; entries?: boolean; now?: () => number; readSteps?: (target: { repoId: string; runId: string }) => Promise<unknown> } = {}) {
   const openItem = vi.fn(), togglePause = vi.fn(), openSteps = vi.fn();
-  const instance = new PmPanel({ now: () => 1_000, openItem, togglePause, openSteps } as never);
+  const readSteps = vi.fn(options.readSteps ?? (async () => stepsView()));
+  const instance = new PmPanel({ now: options.now ?? (() => 1_000), openItem, togglePause, openSteps, readSteps } as never);
   const entry: PmPanelEntry = { repoId: "r", overview: stepOverview({ ...(options.taskRows ? { taskRows: options.taskRows } : {}), ...(options.pendingItems ? { pendingItems: options.pendingItems } : {}) }), fetchedAt: 1_000 };
   if (options.entries !== false) instance.update([entry]);
   if (options.prototypes !== false) instance.updatePrototypes([stepPrototype]);
   if (options.main !== false) instance.updateExplores([stepMain]);
   instance.setTheme({ bg: (_kind, text) => `⟦${text}⟧` });
   instance.focus();
-  return { instance, openItem, togglePause, openSteps, entry };
+  return { instance, openItem, togglePause, openSteps, readSteps, entry };
 }
 const marked = (instance: PmPanel): string[] => instance.render(200).filter((line) => line.includes("⟦")).map((line) => line.replace(/[⟦⟧]/g, ""));
 const press = (instance: PmPanel, key: string, times = 1) => { for (let i = 0; i < times; i++) instance.handleInput(key); };
@@ -788,32 +793,406 @@ test("子代理行：用含同一运行编号的数据刷新，光标不动，�
   expect(marked(instance)[0]).toContain("T2 执行 · worker（第 1 次尝试）· ↻4/10");
 });
 
-test("子代理行：选中的 T2 执行行不在新数据里时，光标落到相邻行，不越界、仍在可选行上", () => {
-  const { instance, entry, openSteps } = stepPanel();
+test("子代理行：选中的 T2 执行行不在新数据里且读取报错时，光标落回原位，仍在可选行上", async () => {
+  const { instance, entry, openSteps } = stepPanel({ readSteps: async () => { throw new Error("连不上"); } });
   press(instance, DOWN);
   instance.update([{ ...entry, overview: stepOverview({ taskRows: [stepReview, stepExplore] }) }]);
+  await flush();
   const lines = marked(instance);
   expect(lines).toHaveLength(1);
-  expect(lines[0]).toMatch(/导出 · ↻5|⠋ reviewer/);
+  expect(lines[0]).toMatch(/⠋ reviewer/);
   press(instance, DOWN, 20);
   expect(marked(instance)[0]).toContain("本地 · 现在的导出入口在哪");
   press(instance, "\r");
   expect(openSteps).toHaveBeenCalledWith(expect.objectContaining({ runId: "run-main" }));
 });
 
-test("子代理行：选中的原型设计行、主窗口检索行刷新后同样按运行编号保持，消失后落到相邻行", () => {
-  const { instance } = stepPanel();
+test("子代理行：选中的原型设计行、主窗口检索行刷新后同样按运行编号保持，消失且读取报错后落回原位", async () => {
+  const { instance } = stepPanel({ readSteps: async () => { throw new Error("连不上"); } });
   press(instance, DOWN, 5);
   instance.updateExplores([{ ...stepMain, fetchedAt: 1_000, explore: { ...stepMain.explore, turns: 9 } }]);
   expect(marked(instance)[0]).toContain("本地 · 现在的导出入口在哪");
   instance.updateExplores([]);
+  await flush();
   expect(marked(instance)).toHaveLength(1);
   expect(marked(instance)[0]).toContain("导出设置页");
   instance.updatePrototypes([{ ...stepPrototype, fetchedAt: 1_000, prototype: { ...stepPrototype.prototype, turns: 9 } }]);
   expect(marked(instance)[0]).toContain("导出设置页");
   instance.updatePrototypes([]);
+  await flush();
   expect(marked(instance)).toHaveLength(1);
-  expect(marked(instance)[0]).toMatch(/explore 检索|⠋ reviewer/);
+  expect(marked(instance)[0]).toMatch(/explore 检索/);
+});
+
+const ENDED_HEADER = "● 已结束（光标移开后消失）";
+const plain = (instance: PmPanel): string[] => instance.render(200).map((line) => line.replace(/[⟦⟧]/g, ""));
+const deferred = <T,>() => { let resolve!: (value: T) => void, reject!: (error: unknown) => void; const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; }); return { promise, resolve, reject }; };
+const noReviewer = (): Task => ({ ...stepReview, reviewers: [{ agent: "reviewer", state: "clear", runId: "run-rv", turns: 2, maxTurns: 10, elapsedMs: 5_000 }, ...(stepReview as Extract<Task, { kind: "review" }>).reviewers.slice(1)] }) as Task;
+
+type Vanish = { name: string; downs: number; runId: string; title: string; remove: (t: ReturnType<typeof stepPanel>) => void };
+const VANISH: Vanish[] = [
+  { name: "执行行", downs: 1, runId: "run-t2", title: "T2 执行 · worker（第 1 次尝试）", remove: (t) => t.instance.update([{ ...t.entry, overview: stepOverview({ taskRows: [stepReview, stepExplore] }) }]) },
+  { name: "审查代理行", downs: 2, runId: "run-rv", title: "T1 第 1 轮审查 · reviewer", remove: (t) => t.instance.update([{ ...t.entry, overview: stepOverview({ taskRows: [stepExec, noReviewer(), stepExplore] }) }]) },
+  { name: "PM 派出的检索行", downs: 3, runId: "run-ex", title: "explore 检索", remove: (t) => t.instance.update([{ ...t.entry, overview: stepOverview({ taskRows: [stepExec, stepReview] }) }]) },
+  { name: "原型设计行", downs: 4, runId: "run-proto", title: "导出设置页（第 1 版）· prototype", remove: (t) => t.instance.updatePrototypes([]) },
+  { name: "主窗口检索行", downs: 5, runId: "run-main", title: "本地 · 现在的导出入口在哪", remove: (t) => t.instance.updateExplores([]) },
+];
+
+test.each(VANISH)("已结束行：选中的$name从数据里消失且读到 completed，出现已结束行并带着轮数和耗时", async (item) => {
+  const t = stepPanel();
+  press(t.instance, DOWN, item.downs);
+  item.remove(t);
+  await flush();
+  expect(t.readSteps).toHaveBeenCalledWith({ repoId: "r", runId: item.runId });
+  const lines = plain(t.instance);
+  expect(lines).toContain(ENDED_HEADER);
+  expect(lines).toContain(`└─ ✓ 已完成 · ${item.title} · ↻12/12 · 3.0s`);
+  expect(marked(t.instance)).toEqual([`└─ ✓ 已完成 · ${item.title} · ↻12/12 · 3.0s`]);
+});
+
+test("已结束行：审查代理从运行中变成通过后出现已结束行，任务下「✓ reviewer 通过」还在", async () => {
+  const t = stepPanel();
+  press(t.instance, DOWN, 2);
+  VANISH[1]!.remove(t);
+  await flush();
+  const lines = plain(t.instance);
+  expect(lines.some((line) => line.includes("✓ reviewer 通过"))).toBe(true);
+  expect(lines).toContain(`└─ ✓ 已完成 · T1 第 1 轮审查 · reviewer · ↻12/12 · 3.0s`);
+});
+
+test("已结束行：审查代理从运行中变成打回后同样出现已结束行", async () => {
+  const t = stepPanel();
+  press(t.instance, DOWN, 2);
+  const blocked = { ...stepReview, reviewers: [{ agent: "reviewer", state: "blocked", runId: "run-rv", turns: 2, maxTurns: 10, elapsedMs: 5_000 }] } as Task;
+  t.instance.update([{ ...t.entry, overview: stepOverview({ taskRows: [stepExec, blocked, stepExplore] }) }]);
+  await flush();
+  expect(plain(t.instance)).toContain(ENDED_HEADER);
+});
+
+test("已结束行：有需求、原型设计、检索三组时排在所有分组之后，标题文字一致，只有一条", async () => {
+  const t = stepPanel();
+  press(t.instance, DOWN, 4);
+  t.instance.updatePrototypes([]);
+  await flush();
+  const lines = plain(t.instance);
+  const header = lines.indexOf(ENDED_HEADER);
+  expect(header).toBeGreaterThan(lines.findIndex((line) => line.startsWith("● 1 个检索运行中")));
+  expect(header).toBeGreaterThan(lines.findIndex((line) => line.startsWith("● 1 个需求运行中")));
+  expect(lines.filter((line) => line === ENDED_HEADER)).toHaveLength(1);
+  expect(lines.filter((line) => line.startsWith("└─ ✓ 已完成"))).toHaveLength(1);
+  expect(lines.slice(header)).toEqual([ENDED_HEADER, "└─ ✓ 已完成 · 导出设置页（第 1 版）· prototype · ↻12/12 · 3.0s", "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · 第一行按 ↑ 返回输入框"]);
+});
+
+test.each([
+  ["completed", "✓ 已完成"], ["failed", "✗ 失败"], ["stopped", "✗ 已停止"], ["interrupted", "✗ 已中断"],
+])("已结束行：读到 %s 时结果写「%s」", async (state, text) => {
+  const t = stepPanel({ readSteps: async () => stepsView({ state, reason: "超过轮数上限" }) });
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  await flush();
+  expect(plain(t.instance).some((line) => line.startsWith(`└─ ${text} · 本地 · 现在的导出入口在哪 · ↻12/12`))).toBe(true);
+});
+
+test("已结束行：上限为空时只写「↻12」；时间往后走耗时不变", async () => {
+  let current = 1_000;
+  const t = stepPanel({ now: () => current, readSteps: async () => stepsView({ maxTurns: null }) });
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  await flush();
+  const before = plain(t.instance).find((line) => line.startsWith("└─ ✓ 已完成"));
+  expect(before).toBe("└─ ✓ 已完成 · 本地 · 现在的导出入口在哪 · ↻12 · 3.0s");
+  current += 2_000;
+  expect(plain(t.instance).find((line) => line.startsWith("└─ ✓ 已完成"))).toBe(before);
+});
+
+test("已结束行：只有它带选中背景，其他行都不带", async () => {
+  const t = stepPanel();
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  await flush();
+  const highlighted = t.instance.render(200).filter((line) => line.includes("⟦"));
+  expect(highlighted).toHaveLength(1);
+  expect(highlighted[0]).toContain("已完成");
+});
+
+test("已结束行：回车用存着的那一份步骤调用 openSteps", async () => {
+  const stored = stepsView();
+  const t = stepPanel({ readSteps: async () => stored });
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  await flush();
+  press(t.instance, "\r");
+  expect(t.openSteps).toHaveBeenCalledTimes(1);
+  const target = t.openSteps.mock.calls[0]![0];
+  expect(target).toMatchObject({ repoId: "r", runId: "run-main", title: "本地 · 现在的导出入口在哪" });
+  expect(target.view).toBe(stored);
+  expect(t.readSteps).toHaveBeenCalledTimes(1);
+});
+
+test("已结束行：光标在它上面按 ↑ 后这一行消失，再按 ↓ 回不到", async () => {
+  const t = stepPanel();
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  await flush();
+  press(t.instance, UP);
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  expect(marked(t.instance)[0]).toContain("导出设置页");
+  press(t.instance, DOWN, 3);
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  expect(marked(t.instance)[0]).toContain("导出设置页");
+});
+
+test("已结束行：光标在它上面按 ↓ 光标不动", async () => {
+  const t = stepPanel();
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  await flush();
+  press(t.instance, DOWN);
+  expect(plain(t.instance)).toContain(ENDED_HEADER);
+  expect(marked(t.instance)[0]).toContain("已完成");
+});
+
+test("已结束行：焦点回输入框（blur）后这一行消失，存的步骤丢掉", async () => {
+  const t = stepPanel();
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  await flush();
+  t.instance.blur();
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  t.instance.focus();
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+});
+
+test("已结束行：光标在它上面按 p 不调用 togglePause，也不再请求", async () => {
+  const t = stepPanel();
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  await flush();
+  press(t.instance, "p");
+  press(t.instance, "P");
+  expect(t.togglePause).not.toHaveBeenCalled();
+  expect(t.readSteps).toHaveBeenCalledTimes(1);
+});
+
+test("已结束行：焦点不在面板时子代理行消失，不读步骤也不出现已结束行", async () => {
+  const t = stepPanel();
+  press(t.instance, DOWN, 5);
+  t.instance.blur();
+  t.instance.updateExplores([]);
+  await flush();
+  expect(t.readSteps).not.toHaveBeenCalled();
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+});
+
+test("已结束行：光标在别的行时子代理行消失，不读步骤", async () => {
+  const t = stepPanel();
+  press(t.instance, DOWN, 2);
+  t.instance.updateExplores([]);
+  await flush();
+  expect(t.readSteps).not.toHaveBeenCalled();
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  expect(marked(t.instance)[0]).toContain("⠋ reviewer");
+});
+
+test("已结束行：光标在需求行、需求消失时不读步骤，光标落到相邻行", async () => {
+  const t = stepPanel();
+  t.instance.update([]);
+  await flush();
+  expect(t.readSteps).not.toHaveBeenCalled();
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  expect(marked(t.instance)[0]).toContain("导出设置页");
+});
+
+test("已结束行：光标在 ⚑ 事项行、事项消失时不读步骤，光标落到相邻行", async () => {
+  const taskItem = { itemId: "task:t2", kind: "adjudicate" as const, label: "待裁决：任务 T2 2 次未完成", version: "task:t2:3", taskKey: "T2", taskText: "2 次未完成" };
+  const t = stepPanel({ taskRows: [{ kind: "pending", taskKey: "T2", itemId: "task:t2", text: "2 次未完成" }, stepExec], pendingItems: [taskItem], prototypes: false, main: false });
+  press(t.instance, DOWN);
+  expect(marked(t.instance)[0]).toContain("⚑ T2 2 次未完成");
+  t.instance.update([{ ...t.entry, overview: stepOverview({ taskRows: [stepExec], pendingItems: [] }) }]);
+  await flush();
+  expect(t.readSteps).not.toHaveBeenCalled();
+  expect(marked(t.instance)[0]).toContain("T2 执行");
+});
+
+test("已结束行：读取报错时这一行消失，光标落回原位，没有已结束分组", async () => {
+  const t = stepPanel({ readSteps: async () => { throw new Error("连不上"); } });
+  press(t.instance, DOWN);
+  VANISH[0]!.remove(t);
+  await flush();
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  expect(plain(t.instance).some((line) => line.includes("读取中"))).toBe(false);
+  expect(marked(t.instance)).toHaveLength(1);
+  expect(marked(t.instance)[0]).toContain("⠋ reviewer");
+});
+
+test.each(["pausing", "paused"])("已结束行：读到 %s 时这一行消失，光标落回原位，超出时落到最后一行", async (state) => {
+  const t = stepPanel({ readSteps: async () => stepsView({ state }) });
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  await flush();
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  expect(marked(t.instance)).toHaveLength(1);
+  expect(marked(t.instance)[0]).toContain("导出设置页");
+});
+
+const tickTimes = (instance: PmPanel, times: number) => { for (let i = 0; i < times; i++) instance.tick(); };
+const READING_MAIN = "└─ 读取中… · 本地 · 现在的导出入口在哪";
+
+describe.each(["queued", "running"])("已结束行：读到 %s", (state) => {
+  const sequence = (...states: string[]) => { let index = 0; return async () => stepsView({ state: states[Math.min(index++, states.length - 1)] }); };
+  const vanishMain = async (readSteps: () => Promise<unknown>) => {
+    const t = stepPanel({ readSteps });
+    press(t.instance, DOWN, 5);
+    t.instance.updateExplores([]);
+    await flush();
+    return t;
+  };
+
+  test("这一行保持「读取中…」，光标留在上面", async () => {
+    const t = await vanishMain(sequence(state));
+    expect(plain(t.instance)).toContain(ENDED_HEADER);
+    expect(marked(t.instance)).toEqual([READING_MAIN]);
+  });
+
+  test("tick 4 次不读，第 5 次读一次，读到 completed 后变成已结束行，之后 tick 10 次读取次数不变", async () => {
+    const t = await vanishMain(sequence(state, "completed"));
+    expect(t.readSteps).toHaveBeenCalledTimes(1);
+    tickTimes(t.instance, 4);
+    await flush();
+    expect(t.readSteps).toHaveBeenCalledTimes(1);
+    t.instance.tick();
+    await flush();
+    expect(t.readSteps).toHaveBeenCalledTimes(2);
+    expect(marked(t.instance)).toEqual(["└─ ✓ 已完成 · 本地 · 现在的导出入口在哪 · ↻12/12 · 3.0s"]);
+    tickTimes(t.instance, 10);
+    await flush();
+    expect(t.readSteps).toHaveBeenCalledTimes(2);
+  });
+
+  test("光标移开后 tick 10 次读取次数不变", async () => {
+    const t = await vanishMain(sequence(state));
+    press(t.instance, UP);
+    tickTimes(t.instance, 10);
+    await flush();
+    expect(t.readSteps).toHaveBeenCalledTimes(1);
+    expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  });
+
+  test("上一次读取还没返回时 tick 10 次，不重复读", async () => {
+    const pending = deferred<unknown>();
+    const t = stepPanel({ readSteps: () => pending.promise });
+    press(t.instance, DOWN, 5);
+    t.instance.updateExplores([]);
+    tickTimes(t.instance, 10);
+    await flush();
+    expect(t.readSteps).toHaveBeenCalledTimes(1);
+  });
+});
+
+test("已结束行：读取还没返回时光标移开，之后返回也不出现这一行", async () => {
+  const pending = deferred<unknown>();
+  const t = stepPanel({ readSteps: () => pending.promise });
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  press(t.instance, UP);
+  pending.resolve(stepsView());
+  await flush();
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  expect(marked(t.instance)[0]).toContain("导出设置页");
+});
+
+test("已结束行：读取还没返回时同一运行重新出现，之后返回的结果作废，光标在运行行上", async () => {
+  const pending = deferred<unknown>();
+  const t = stepPanel({ readSteps: () => pending.promise });
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  t.instance.updateExplores([stepMain]);
+  pending.resolve(stepsView());
+  await flush();
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  expect(marked(t.instance)[0]).toContain("本地 · 现在的导出入口在哪");
+});
+
+test.each([
+  ["读取报错", () => Promise.reject(new Error("断开"))],
+  ["读到 paused", () => Promise.resolve(stepsView({ state: "paused" }))],
+])("已结束行：先读到 running，重读时%s，这一行消失，光标落回原位", async (_name, second) => {
+  let reads = 0;
+  const t = stepPanel({ readSteps: () => (reads++ === 0 ? Promise.resolve(stepsView({ state: "running" })) : second()) });
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  await flush();
+  expect(plain(t.instance)).toContain(ENDED_HEADER);
+  tickTimes(t.instance, 5);
+  await flush();
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  expect(marked(t.instance)[0]).toContain("导出设置页");
+});
+
+test("已结束行：读取期间显示「读取中…」，光标在它上面，回车走普通打开方式（没有存着的步骤）", async () => {
+  const pending = deferred<unknown>();
+  const t = stepPanel({ readSteps: () => pending.promise });
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  const lines = plain(t.instance);
+  expect(lines).toContain(ENDED_HEADER);
+  expect(lines).toContain("└─ 读取中… · 本地 · 现在的导出入口在哪");
+  expect(marked(t.instance)).toEqual(["└─ 读取中… · 本地 · 现在的导出入口在哪"]);
+  press(t.instance, "\r");
+  expect(t.openSteps).toHaveBeenCalledTimes(1);
+  expect(t.openSteps.mock.calls[0]![0]).toMatchObject({ repoId: "r", runId: "run-main" });
+  expect(t.openSteps.mock.calls[0]![0].view).toBeUndefined();
+});
+
+test("已结束行：存在时新数据里又有同一运行，分组消失，光标在运行行上", async () => {
+  const t = stepPanel();
+  press(t.instance, DOWN, 5);
+  t.instance.updateExplores([]);
+  await flush();
+  expect(plain(t.instance)).toContain(ENDED_HEADER);
+  t.instance.updateExplores([stepMain]);
+  expect(plain(t.instance)).not.toContain(ENDED_HEADER);
+  expect(marked(t.instance)).toHaveLength(1);
+  expect(marked(t.instance)[0]).toContain("⠋ 本地 · 现在的导出入口在哪");
+});
+
+describe("已结束行：真实输入栏切换", () => {
+  const dockedPanel = async () => {
+    const readSteps = vi.fn(async () => stepsView());
+    const openSteps = vi.fn(), togglePause = vi.fn();
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause, openSteps, readSteps } as never);
+    instance.updateExplores([stepMain]);
+    const dock = new BottomDock({ panel: instance, getEditorText: () => "", isCompletionOpen: () => false, isEditorFocused: () => true,
+      onFocusChange: (focus) => (focus === "panel" ? instance.focus() : instance.blur()) });
+    dock.handleKey(DOWN);
+    instance.updateExplores([]);
+    await flush();
+    return { instance, dock, openSteps, togglePause };
+  };
+
+  test("它是唯一一行时 hasRows 为真，回车和 p 之后焦点仍在面板", async () => {
+    const { instance, dock, openSteps, togglePause } = await dockedPanel();
+    expect(instance.hasRows()).toBe(true);
+    expect(dock.handleKey("\r")?.consume).toBe(true);
+    expect(dock.handleKey("p")?.consume).toBe(true);
+    expect(dock.focus()).toBe("panel");
+    expect(openSteps).toHaveBeenCalledTimes(1);
+    expect(togglePause).not.toHaveBeenCalled();
+  });
+
+  test("按 ↓ 光标不动、焦点仍在面板", async () => {
+    const { instance, dock } = await dockedPanel();
+    dock.handleKey(DOWN);
+    expect(dock.focus()).toBe("panel");
+    expect(plain(instance)).toContain(ENDED_HEADER);
+  });
+
+  test("按 ↑ 焦点回输入栏，面板不显示任何内容", async () => {
+    const { instance, dock } = await dockedPanel();
+    expect(dock.handleKey(UP)?.consume).toBe(true);
+    expect(dock.focus()).toBe("editor");
+    expect(instance.render(200)).toEqual([]);
+  });
 });
 
 const FULL_LINES = [
@@ -850,16 +1229,18 @@ function extensionFixture(overviewItems: PmOverview[]) {
   const fake = createFakePi();
   const calls: Array<[string, Record<string, unknown>]> = [];
   let present = true;
+  let items = overviewItems;
+  const handlers = new Map<string, () => void>();
   const client = {
     connectionIdentity: () => ({ daemonInstanceId: "d", connectionId: "c", connectionSequence: 1 }),
     call: async (method: string, params: Record<string, unknown>) => {
       calls.push([method, params]);
-      if (method === "pm.overview") return { items: overviewItems };
+      if (method === "pm.overview") return { items };
       if (method === "explore.list" || method === "prototypes.list") return { items: [] };
       if (method === "runs.steps") return { state: "completed", turns: 1, maxTurns: 5, elapsedMs: 1_000, steps: [] };
       throw new Error(`未预期的 RPC ${method}`);
     },
-    subscribe: () => () => {},
+    subscribe: (event: string, handler: () => void) => { handlers.set(event, handler); return () => {}; },
     state: () => ({ status: "connected" as const }),
     close: () => {},
   };
@@ -874,7 +1255,8 @@ function extensionFixture(overviewItems: PmOverview[]) {
   const notify = vi.fn();
   const ctx = { mode: "tui", hasUI: true, ui: { setWidget: (_key: string, factory?: (tui: unknown, theme: unknown) => typeof widget) => { if (factory) widget = factory({ getFocusedComponent: () => ({ isShowingAutocomplete: () => false }) }, {}); },
     onTerminalInput: (handler: (data: string) => unknown) => { input = handler; return () => {}; }, getEditorText: () => "", notify, custom } };
-  return { fake, ctx, calls, custom, notify, key: (data: string) => input!(data), widget: () => widget!, closeWindow: () => component?.handleInput("\x1b"), dropClient: () => { present = false; } };
+  return { fake, ctx, calls, custom, notify, key: (data: string) => input!(data), widget: () => widget!, closeWindow: () => component?.handleInput("\x1b"), dropClient: () => { present = false; },
+    replaceOverview: (next: PmOverview[]) => { items = next; handlers.get("pm.overview.changed")?.(); } };
 }
 
 test("子代理行：扩展层在子代理行按回车，用该仓库的客户端打开步骤窗口并请求 runs.steps", async () => {
@@ -891,6 +1273,41 @@ test("子代理行：扩展层在子代理行按回车，用该仓库的客户�
   const lines = f.widget().render(200);
   expect(lines.find((line) => line.includes("T2 执行"))!.startsWith("›")).toBe(true);
   expect(lines.at(-1)).toBe("↑↓ 选择 · Enter 查看 · p 暂停/恢复 · 第一行按 ↑ 返回输入框");
+  await f.fake.trigger("session_shutdown", {}, f.ctx);
+});
+
+test("子代理行：扩展层选中的子代理行从后台数据里消失后，读取步骤并显示已结束行，回车用存着的步骤打开窗口且不再请求", async () => {
+  const f = extensionFixture([stepOverview({ taskRows: [stepExec, stepExplore] })]);
+  await f.fake.trigger("session_start", { reason: "new" }, f.ctx);
+  await vi.waitFor(() => expect(f.widget().render(200).join("\n")).toContain("T2 执行"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  f.key(DOWN); f.key(DOWN);
+  f.replaceOverview([stepOverview({ taskRows: [stepExplore] })]);
+  await vi.waitFor(() => expect(f.calls).toContainEqual(["runs.steps", { runId: "run-t2" }]));
+  await vi.waitFor(() => expect(f.widget().render(200).join("\n")).toContain("● 已结束（光标移开后消失）"));
+  const stepCalls = () => f.calls.filter(([method]) => method === "runs.steps").length;
+  expect(stepCalls()).toBe(1);
+  f.key("\r");
+  await vi.waitFor(() => expect(f.custom).toHaveBeenCalledTimes(1));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(stepCalls()).toBe(1);
+  f.closeWindow();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await f.fake.trigger("session_shutdown", {}, f.ctx);
+});
+
+test("子代理行：断线后选中的行消失，不显示已结束行，也不发读取请求", async () => {
+  const f = extensionFixture([stepOverview({ taskRows: [stepExec] })]);
+  await f.fake.trigger("session_start", { reason: "new" }, f.ctx);
+  await vi.waitFor(() => expect(f.widget().render(200).join("\n")).toContain("T2 执行"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  f.key(DOWN); f.key(DOWN);
+  f.dropClient();
+  f.replaceOverview([]);
+  await vi.waitFor(() => expect(f.widget().render(200).join("\n")).not.toContain("T2 执行"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(f.widget().render(200).join("\n")).not.toContain("已结束");
+  expect(f.calls.filter(([method]) => method === "runs.steps")).toEqual([]);
   await f.fake.trigger("session_shutdown", {}, f.ctx);
 });
 

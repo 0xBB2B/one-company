@@ -3,6 +3,7 @@ import { createClock } from "../../core/policy/clock.ts";
 import type { Clock } from "../../core/policy/clock.ts";
 import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../../core/host/daemon-client.ts";
 import { BottomDock } from "../../core/host/dock.ts";
+import type { RunStepsView } from "../agents/run-steps.ts";
 import type { PmOverview } from "./pm-overview.ts";
 import { mountPmPanel } from "./pm-panel.ts";
 import { openStepWindow } from "./step-window.ts";
@@ -64,10 +65,15 @@ export default function pmPanelExtension(pi: ExtensionAPI, deps: PmPanelUiDeps =
           void target.call(method, { runId: entry.overview.pmRunId }).then(() => refresh(entry.repoId))
             .catch((error: unknown) => ctx.ui.notify(`${method === "runs.resume" ? "恢复" : "暂停"}未完成：${message(error)}`, "warning"));
         },
-        openSteps: ({ repoId, runId, title }) => {
+        readSteps: async ({ repoId, runId }) => {
+          const target = client(repoId);
+          if (!target) throw new Error("找不到该仓库的守护进程连接");
+          return await target.call("runs.steps", { runId }) as unknown as RunStepsView;
+        },
+        openSteps: ({ repoId, runId, title, view }) => {
           const target = client(repoId);
           if (!target) { ctx.ui.notify("找不到该仓库的守护进程连接", "error"); return; }
-          openStepWindow({ ctx, clock, client: target, runId, title }).catch((error: unknown) => ctx.ui.notify(`步骤窗口无法打开：${message(error)}`, "warning"));
+          openStepWindow({ ctx, clock, client: target, runId, title, view }).catch((error: unknown) => ctx.ui.notify(`步骤窗口无法打开：${message(error)}`, "warning"));
         },
       });
       if (!mounted) return;

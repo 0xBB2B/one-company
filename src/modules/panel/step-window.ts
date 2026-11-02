@@ -149,13 +149,14 @@ export interface OpenStepWindowOptions {
   client: { call(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> };
   runId: string;
   title: string;
+  view?: RunStepsView;
 }
 
 const FETCH_INTERVAL_MS = 500;
 const ANIMATION_INTERVAL_MS = 200;
 
 export async function openStepWindow(options: OpenStepWindowOptions): Promise<void> {
-  const { ctx, clock, client, runId, title } = options;
+  const { ctx, clock, client, runId, title, view } = options;
   const timers: Array<ReturnType<Clock["setIntervalExcludingSleep"]>> = [];
   const stopTimers = () => { for (const handle of timers.splice(0)) clock.clearTimer(handle); };
   try {
@@ -165,6 +166,7 @@ export async function openStepWindow(options: OpenStepWindowOptions): Promise<vo
         const hostTui = tui as { requestRender?: () => void; terminal?: { rows: number; columns: number } };
         const win = new StepWindow({ title, now: () => clock.now(), onClose: () => done(undefined), theme: theme as StepWindowTheme });
         if (hostTui.terminal) win.resize(hostTui.terminal.columns, hostTui.terminal.rows);
+        if (view) win.apply(view);
         let fetching = false;
         const fetchSteps = async (): Promise<void> => {
           if (fetching || win.finished()) return;
