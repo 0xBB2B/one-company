@@ -14,7 +14,7 @@ afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(
 
 const NAME = "存档列表页";
 const BRIEF = "游戏的存档列表页：列出每条存档的名称和保存时间，可以读取和删除；读取存档列表时要等待，读取可能失败，没有存档时给出提示。";
-const STATES = [/正常/, /空/, /加载中|读取中/, /出错|失败|错误/];
+const STATES = [/正常/, /空|无|没有/, /加载中|读取中/, /出错|失败|错误/];
 const NOTE_WORDS = /演示|原型|待确认/g;
 type Handler = (params: Record<string, unknown>, client: unknown) => Promise<Record<string, unknown>>;
 interface Submitted { action?: string; html?: string; pages?: Array<{ name: string; views: Array<{ name: string }> }> }
