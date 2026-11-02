@@ -20,7 +20,7 @@ const actions = {
   create: Type.Object({ action: Type.Literal("create"), repoId, summary, title: Type.String({ maxLength: 1024 }), body: Type.String({ maxLength: 65_536 }) }, { additionalProperties: false }),
   updateDraft: Type.Object({ action: Type.Literal("updateDraft"), repoId, requirementId: id, version, summary, title: Type.String({ maxLength: 1024 }), body: Type.String({ maxLength: 65_536 }) }, { additionalProperties: false }),
   confirmUpdate: Type.Object({ action: Type.Literal("confirmUpdate"), repoId, requirementId: id, savedOperationId: id, version }, { additionalProperties: false }),
-  read: Type.Object({ action: Type.Literal("read"), repoId, requirementId: id, source: Type.Optional(StringEnum(["saved", "approved"] as const)), sectionId: Type.Optional(Type.String({ pattern: PRD_SECTION_ID_PATTERN, maxLength: 96 })), ...paging }, { additionalProperties: false }),
+  read: Type.Object({ action: Type.Literal("read"), repoId, requirementId: id, source: Type.Optional(Type.Unsafe<"saved" | "approved">(StringEnum(["saved", "approved"] as const))), sectionId: Type.Optional(Type.String({ pattern: PRD_SECTION_ID_PATTERN, maxLength: 96 })), ...paging }, { additionalProperties: false }),
   diff: Type.Object({ action: Type.Literal("diff"), repoId, requirementId: id, fromRevision: version, toRevision: Type.Optional(version), ...paging }, { additionalProperties: false }),
   next: Type.Object({ action: Type.Literal("next"), repoId, requirementId: id, cursor: Type.String({ pattern: "^[0-9a-f]{64}$", maxLength: 64 }) }, { additionalProperties: false }),
   metadata: Type.Object({ action: Type.Literal("metadata"), repoId, requirementId: id }, { additionalProperties: false }),

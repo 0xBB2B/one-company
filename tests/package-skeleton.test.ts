@@ -53,9 +53,14 @@ describe("package.json 声明契约", () => {
     });
   });
 
-  test("devDependencies.typebox 与 pi 1.3.0 自带版本一致", async () => {
+  test("devDependencies.typebox 与 pi 1.5.0 自带版本一致", async () => {
     const pkg = await readPackageJson();
     expect(pkg.devDependencies?.typebox).toBe("1.3.27");
+  });
+
+  test("devDependencies 里 pi 的三个包都是 1.5.0", async () => {
+    const pkg = await readPackageJson();
+    for (const name of ["@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "@earendil-works/pi-tui"]) expect(pkg.devDependencies?.[name]).toBe("1.5.0");
   });
 
   test("engines.node 为 >=22.19.0", async () => {

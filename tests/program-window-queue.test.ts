@@ -5,7 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { openSettingsPage } from "../src/modules/settings/settings-extension.ts";
 import type { SettingsExtensionContext } from "../src/modules/settings/settings-extension.ts";
 import { createClock } from "../src/core/policy/clock.ts";
-import { chooseOrWriteWindow, chooseWindow, openProgramWindow } from "../src/core/host/question-window.ts";
+import { askWindow, chooseOrWriteWindow, chooseWindow, confirmWindow, openProgramWindow } from "../src/core/host/question-window.ts";
 import { openShellPage } from "../src/modules/shell/shell-page.ts";
 import { ShellRegistry } from "../src/core/host/shell-registry.ts";
 
@@ -156,4 +156,163 @@ test("带输入行的窗口设了最长字数：超长时回车不能确认、�
   view.handleInput(BACKSPACE);
   view.handleInput(ENTER);
   expect(await answer).toEqual({ choices: [], other: "一二三四五" });
+});
+
+function blockedRecorder(options: { idle?: () => boolean; withIdle?: boolean } = {}) {
+  const opened: Opened[] = [];
+  const custom = vi.fn((factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: unknown) => void) => Opened["component"], _options?: unknown) =>
+    new Promise((resolve) => { opened.push({ component: factory({ requestRender: () => {}, terminal: { rows: 40, columns: 80 } }, theme, {}, resolve), done: resolve }); }));
+  const host: Record<string, unknown> = { hasUI: true, ui: { custom } };
+  cleanups.push(async () => { for (let round = 0; round < 3; round++) { for (const window of opened) window.done(undefined); await settle(10); } });
+  if (options.withIdle !== false) host.isIdle = options.idle ?? (() => false);
+  return { host, custom, opened, optionsOf: (index: number) => custom.mock.calls[index]![1] as Record<string, unknown> | undefined };
+}
+
+const oneChoice = [{ label: "甲" }];
+const question = (text: string) => ({ question: text, choices: oneChoice });
+
+test("主代理运行中打开提问窗口：custom 的 options 带 blocked，message 是问题文字", async () => {
+  const r = blockedRecorder();
+  const answer = askWindow(r.host as never, question("要不要继续？"));
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  expect(r.optionsOf(0)).toMatchObject({ blocked: { kind: "question", message: "要不要继续？" } });
+  r.opened[0]!.component.handleInput(ENTER);
+  await answer;
+});
+
+test("主代理运行中打开确认窗口：options 带 blocked，message 是窗口标题", async () => {
+  const r = blockedRecorder();
+  const answer = confirmWindow(r.host as never, { title: "确认执行吗", lines: [{ text: "正文不上报" }] });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  expect(r.optionsOf(0)).toMatchObject({ blocked: { kind: "question", message: "确认执行吗" } });
+  r.opened[0]!.component.handleInput(ESC);
+  await answer;
+});
+
+test("主代理运行中打开选择窗口：options 带 blocked，message 是窗口标题", async () => {
+  const r = blockedRecorder();
+  const answer = chooseWindow(r.host as never, { title: "选一个", lines: [], choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  expect(r.optionsOf(0)).toMatchObject({ blocked: { kind: "question", message: "选一个" } });
+  r.opened[0]!.component.handleInput(ESC);
+  await answer;
+});
+
+test("主代理运行中打开选择或输入窗口：options 带 blocked，message 是窗口标题", async () => {
+  const r = blockedRecorder();
+  const answer = chooseOrWriteWindow(r.host as never, { title: "选或写", lines: [], choices: oneChoice, otherLabel: "其他" });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  expect(r.optionsOf(0)).toMatchObject({ blocked: { kind: "question", message: "选或写" } });
+  r.opened[0]!.component.handleInput(ESC);
+  await answer;
+});
+
+test("显示时主代理没在运行：四种窗口的 options 都不带 blocked", async () => {
+  const r = blockedRecorder({ idle: () => true });
+  const windows = [
+    askWindow(r.host as never, question("问题")),
+    confirmWindow(r.host as never, { title: "确认", lines: [] }),
+    chooseWindow(r.host as never, { title: "选择", lines: [], choices: oneChoice }),
+    chooseOrWriteWindow(r.host as never, { title: "选或写", lines: [], choices: oneChoice, otherLabel: "其他" }),
+  ];
+  for (let index = 0; index < windows.length; index++) {
+    await vi.waitFor(() => expect(r.opened).toHaveLength(index + 1));
+    expect(r.optionsOf(index)?.blocked).toBeUndefined();
+    r.opened[index]!.component.handleInput(ESC);
+    await windows[index];
+  }
+});
+
+test("窗口宿主没有 isIdle：options 不带 blocked", async () => {
+  const r = blockedRecorder({ withIdle: false });
+  const answer = askWindow(r.host as never, question("问题"));
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  expect(r.optionsOf(0)?.blocked).toBeUndefined();
+  r.opened[0]!.component.handleInput(ENTER);
+  await answer;
+});
+
+test("两个窗口排队：第二个的 custom 等第一个关闭后才调用，带自己的文字", async () => {
+  const r = blockedRecorder();
+  const first = askWindow(r.host as never, question("问题一"));
+  const second = askWindow(r.host as never, question("问题二"));
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  await settle();
+  expect(r.custom).toHaveBeenCalledTimes(1);
+  expect(r.optionsOf(0)).toMatchObject({ blocked: { message: "问题一" } });
+  r.opened[0]!.component.handleInput(ENTER);
+  await first;
+  await vi.waitFor(() => expect(r.custom).toHaveBeenCalledTimes(2));
+  expect(r.optionsOf(1)).toMatchObject({ blocked: { kind: "question", message: "问题二" } });
+  r.opened[1]!.component.handleInput(ENTER);
+  await second;
+});
+
+test("两个窗口排队：是否带 blocked 按各自显示那一刻的 isIdle 判断", async () => {
+  let idle = false;
+  const r = blockedRecorder({ idle: () => idle });
+  const first = askWindow(r.host as never, question("问题一"));
+  const second = askWindow(r.host as never, question("问题二"));
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  expect(r.optionsOf(0)).toMatchObject({ blocked: { message: "问题一" } });
+  idle = true;
+  r.opened[0]!.component.handleInput(ENTER);
+  await first;
+  await vi.waitFor(() => expect(r.custom).toHaveBeenCalledTimes(2));
+  expect(r.optionsOf(1)?.blocked).toBeUndefined();
+  r.opened[1]!.component.handleInput(ENTER);
+  await second;
+});
+
+test("直接调用 openProgramWindow：即使 isIdle 返回 false，options 也不带 blocked", async () => {
+  const r = blockedRecorder();
+  const a = plain("A");
+  const opening = openProgramWindow(r.host as never, a.factory as never);
+  await vi.waitFor(() => expect(r.custom).toHaveBeenCalledTimes(1));
+  expect(r.optionsOf(0)?.blocked).toBeUndefined();
+  a.finish("结果");
+  expect(await opening).toBe("结果");
+});
+
+test("openProgramWindow 的 overlay options 原样传给 custom，且不带 blocked", async () => {
+  const r = blockedRecorder();
+  const a = plain("A");
+  const opening = openProgramWindow(r.host as never, a.factory as never, undefined, { overlay: true });
+  await vi.waitFor(() => expect(r.custom).toHaveBeenCalledTimes(1));
+  expect(r.optionsOf(0)).toEqual({ overlay: true });
+  a.finish("结果");
+  await opening;
+});
+
+test("custom 完全不理 options（pi 低于 1.5.0）：窗口照常打开、回答、关闭，结果不变", async () => {
+  const r = recorder();
+  (r.host as Record<string, unknown>).isIdle = () => false;
+  const answer = askWindow(r.host as never, question("问题"));
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  r.opened[0]!.component.handleInput(ENTER);
+  expect(await answer).toEqual({ choices: ["甲"] });
+});
+
+test("程序不直接向终端写状态：四种窗口在主代理运行中回答、Esc、信号中断关闭都不抛错", async () => {
+  const r = blockedRecorder();
+  const controller = new AbortController();
+  const answered = askWindow(r.host as never, question("问题"));
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  r.opened[0]!.component.handleInput(ENTER);
+  expect(await answered).toEqual({ choices: ["甲"] });
+
+  const confirmed = confirmWindow(r.host as never, { title: "确认", lines: [] });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(2));
+  r.opened[1]!.component.handleInput(ESC);
+  expect(await confirmed).toBe(false);
+
+  const chosen = chooseWindow(r.host as never, { title: "选择", lines: [], choices: oneChoice }, controller.signal);
+  await vi.waitFor(() => expect(r.opened).toHaveLength(3));
+  controller.abort();
+  expect(await chosen).toBeUndefined();
+
+  const written = chooseOrWriteWindow(r.host as never, { title: "选或写", lines: [], choices: oneChoice, otherLabel: "其他" });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(4));
+  r.opened[3]!.component.handleInput(ESC);
+  expect(await written).toBeUndefined();
 });

@@ -358,19 +358,23 @@ export class QuestionWindowView {
   invalidate(): void {}
 }
 
-export type WindowHost = Pick<ExtensionContext, "hasUI"> & { ui: Pick<ExtensionUIContext, "custom"> };
+export type WindowHost = Pick<ExtensionContext, "hasUI"> & { ui: Pick<ExtensionUIContext, "custom"> } & {
+  isIdle?: ExtensionContext["isIdle"];
+};
 export interface ProgramWindow { title: string; lines: WindowLine[] }
 
 export interface ProgramWindowHost {
   hasUI?: boolean;
   ui?: { custom?: unknown };
+  isIdle?: () => boolean;
 }
 type WindowFactory<T> = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (value: T | undefined) => void) => unknown;
+type CustomOptions = Parameters<ExtensionUIContext["custom"]>[1];
 const QUEUE = Symbol.for("one-company.program-window-queue");
 
 /** 所有程序窗口共用一个先进先出队列，同一时间只显示一个；队列挂在 globalThis 上，模块被加载多份时也只有一份。 */
-export async function openProgramWindow<T>(host: ProgramWindowHost, factory: WindowFactory<T>, signal?: AbortSignal, options?: { overlay?: boolean }): Promise<T | undefined> {
-  const custom = host.ui?.custom as ((factory: WindowFactory<T>, options?: { overlay?: boolean }) => Promise<T | undefined>) | undefined;
+export async function openProgramWindow<T>(host: ProgramWindowHost, factory: WindowFactory<T>, signal?: AbortSignal, options?: CustomOptions, waitingText?: string): Promise<T | undefined> {
+  const custom = host.ui?.custom as ((factory: WindowFactory<T>, options?: CustomOptions) => Promise<T | undefined>) | undefined;
   if (host.hasUI === false || typeof custom !== "function" || signal?.aborted) return undefined;
   const queue = ((globalThis as Record<symbol, unknown>)[QUEUE] ??= { tail: Promise.resolve() }) as { tail: Promise<void> };
   const previous = queue.tail;
@@ -383,12 +387,13 @@ export async function openProgramWindow<T>(host: ProgramWindowHost, factory: Win
       void previous.then(() => { signal?.removeEventListener("abort", onAbort); resolve(false); });
     });
     if (aborted || signal?.aborted) return undefined;
+    const blocked = waitingText !== undefined && host.isIdle?.() === false ? { kind: "question" as const, message: waitingText } : undefined;
     return await custom.call(host.ui, (tui, theme, keybindings, done) => {
       const finish = (value: T | undefined) => { signal?.removeEventListener("abort", abort); done(value); };
       const abort = () => finish(undefined);
       signal?.addEventListener("abort", abort, { once: true });
       return factory(tui, theme, keybindings, finish);
-    }, options);
+    }, blocked ? { ...options, blocked } : options);
   } finally {
     void previous.then(release);
   }
@@ -400,7 +405,7 @@ async function showWindow(host: WindowHost, questions: WindowQuestion[], tone: W
     return { render: (width: number) => view.render(width), invalidate: () => view.invalidate(),
       handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); },
       handleMouse: (event: TuiMouseEvent) => { const result = view.handleMouse(event); tui.requestRender(); return result; } };
-  }, signal);
+  }, signal, undefined, questions[0]!.question);
 }
 
 /** 主代理提问窗口：标准颜色，一次一个问题；Esc 或没有界面时为 undefined。 */
