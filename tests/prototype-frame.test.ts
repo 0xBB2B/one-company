@@ -142,9 +142,10 @@ test("相同输入两次调用结果相同", () => {
   expect(buildPrototypeFrame(baseInput)).toBe(buildPrototypeFrame(baseInput));
 });
 
-test("隔离框是沙箱，外框是蓝图风格，说明区条目收紧", () => {
+test("隔离框是普通 iframe，外框是蓝图风格，说明区条目收紧", () => {
   const output = buildPrototypeFrame({ html: "<!doctype html><html><body></body></html>", name: "设置页", version: 1, pages: [{ name: "页", group: "状态", views: [{ name: "正常", notes: [] }] }], options: [], prototypeOnly: [], openQuestions: [] });
-  expect(output).toContain('<iframe id="page" title="被设计的页面" sandbox="allow-scripts">');
+  expect(output).toContain('<iframe id="page" title="被设计的页面"></iframe>');
+  expect(output).not.toContain("sandbox");
   expect(output).toContain("--rail:#0a2744");
   expect(output).toContain("--accent:#6fd6ff");
   expect(output).toContain("background-size:20px 20px");

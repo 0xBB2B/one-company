@@ -68,7 +68,7 @@ iframe{flex:1;min-height:0;width:100%;margin:3px 0;border:0;background:#fff;outl
 </aside>
 <main class="stage">
   <div class="stage-label"><b>▼ 被设计的页面：只有这个框里的内容要实现</b><span class="stage-now"><span class="option-pill" id="where-option" hidden></span><span id="where"></span></span></div>
-  <iframe id="page" title="被设计的页面" sandbox="allow-scripts"></iframe>
+  <iframe id="page" title="被设计的页面"></iframe>
   <section class="band" id="band" aria-label="设计说明，不属于被设计的页面" hidden>
     <div class="band-head"><span class="rail-tag">设计说明 · 不属于页面</span><small>这一块上线后不存在</small></div>
     <div class="band-cols">
