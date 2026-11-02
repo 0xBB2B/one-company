@@ -109,7 +109,7 @@ function wrapSegments(text: string, width: number): string[] {
 const TONE_COLOR: Record<LineTone, string | undefined> = { normal: undefined, muted: "muted", added: "toolDiffAdded", removed: "toolDiffRemoved", warning: "warning" };
 
 interface PendingBar { bar: Bar; group: number }
-interface OptionEntry { group: number; offset: number; visible: number }
+interface OptionEntry { group: number; offset: number }
 interface QuestionState { cursor: number; picked: Set<number>; editors: Map<number, Editor>; answered: boolean }
 
 /** 通用问答窗口：一到多个问题，单选或多选，可带"其他（自己输入）"；Esc 取消时答案为 undefined，问题带 escapeChoice 时按它作答。 */
@@ -356,13 +356,13 @@ export class QuestionWindowView {
     let bottom = bottomFor(false), contentOut = content, optionOut = groups.flat();
     let entries: OptionEntry[] = [];
     let offset = 0;
-    groups.forEach((group, i) => { entries.push({ group: i, offset, visible: group.length }); offset += group.length; });
+    groups.forEach((group, i) => { entries.push({ group: i, offset }); offset += group.length; });
     this.maxScroll = 0;
     if (cap !== undefined && head.length + content.length + 1 + optionLines + bottom.length > cap) {
       bottom = bottomFor(true);
       const avail = cap - head.length - 1 - bottom.length;
       const minContent = Math.min(content.length, 3);
-      if (optionLines > avail - minContent) ({ lines: optionOut, entries } = this.optionWindow(groups, cursor, Math.max(3, avail - minContent), pending.some((item) => item.group === cursor), muted));
+      if (optionLines > avail - minContent) ({ lines: optionOut, entries } = this.optionWindow(groups, cursor, Math.max(3, avail - minContent), muted));
       const room = Math.max(1, avail - optionOut.length);
       if (content.length <= room) bottom = bottomFor(false);
       else {
@@ -377,8 +377,8 @@ export class QuestionWindowView {
     const base = head.length + contentOut.length + 1;
     this.bars = pending.flatMap(({ bar, group }) => {
       const entry = entries.find((item) => item.group === group);
-      if (!entry || bar.start >= entry.visible) return [];
-      return [{ ...bar, start: base + entry.offset + bar.start, end: base + entry.offset + Math.min(bar.end, entry.visible) }];
+      if (!entry) return [];
+      return [{ ...bar, start: base + entry.offset + bar.start, end: base + entry.offset + bar.end }];
     });
     return [...head, ...contentOut, "", ...optionOut, ...bottom];
   }
@@ -392,8 +392,8 @@ export class QuestionWindowView {
     return [...up, ...shown, ` ${muted(`↓ 下面还有 ${total - scroll - shown.length} 行`)}`];
   }
 
-  /** 光标在输入栏上时整组都显示，不然看不到正在编辑的行。 */
-  private optionWindow(groups: string[][], cursor: number, height: number, keepWhole: boolean, muted: (text: string) => string): { lines: string[]; entries: OptionEntry[] } {
+  /** 光标所在选项整组显示，不然看不全理由或正在编辑的行。 */
+  private optionWindow(groups: string[][], cursor: number, height: number, muted: (text: string) => string): { lines: string[]; entries: OptionEntry[] } {
     const fit = (from: number) => {
       const up = from > 0 ? 1 : 0;
       const rest = groups.slice(from).reduce((sum, group) => sum + group.length, 0);
@@ -406,14 +406,10 @@ export class QuestionWindowView {
     while (from < cursor && cursor >= from + fit(from)) from++;
     const count = Math.max(1, fit(from)), hidden = groups.length - from - count;
     const lines = from > 0 ? [` ${muted(`↑ 上面还有 ${from} 项`)}`] : [];
-    const body = height - lines.length - (hidden > 0 ? 1 : 0);
     const entries: OptionEntry[] = [];
-    let used = 0;
     for (let g = from; g < from + count; g++) {
-      const visible = keepWhole && g === cursor ? groups[g]!.length : Math.min(groups[g]!.length, body - used);
-      entries.push({ group: g, offset: (from > 0 ? 1 : 0) + used, visible });
-      lines.push(...groups[g]!.slice(0, visible));
-      used += visible;
+      entries.push({ group: g, offset: lines.length });
+      lines.push(...groups[g]!);
     }
     if (hidden > 0) lines.push(` ${muted(`↓ 下面还有 ${hidden} 项`)}`);
     return { lines, entries };

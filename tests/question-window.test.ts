@@ -1197,10 +1197,9 @@ describe("窗口超过屏幕高度", () => {
   });
 
   test("选项带说明占多行：光标所在选项的第一行（含 →）每一步都显示", () => {
-    const { window, plain, text } = one(24, { choices: manyChoices({ description: "说明文字很长".repeat(30) }) });
+    const { window, text } = one(24, { choices: manyChoices({ description: "说明文字很长".repeat(30) }) });
     for (let n = 1; n <= 20; n++) {
       if (n > 1) window.handleInput(DOWN);
-      expect(plain()).toHaveLength(14);
       expect(text()).toContain(`<warning>→ ${label(n)}`);
     }
   });
@@ -1438,5 +1437,42 @@ describe("窗口超过屏幕高度", () => {
     expect(text()).toContain(`<warning>→ ${label(1)}</>`);
     pressTimes(window, DOWN, 20);
     expect(barOf(window.render(80), OTHER_LABEL).lines.map((line) => line.trimEnd())).toContain("      › abc");
+  });
+
+  const squeezed = (lines: string[]) => lines.join("").replace(/\s/gu, "");
+
+  test.each([[120], [200]])("光标所在选项的 description 和推荐理由（理由 %i 字）整组显示，总行数允许超过上限，其余选项收起", (reasonLength) => {
+    const { raw, plain } = one(24, { lines: marks(30), caption: undefined, allowOther: true, choices: [
+      { label: "选项甲", recommended: true, description: "说".repeat(116) + "末尾甲", recommendedReason: "荐".repeat(reasonLength - 4) + "末尾荐" },
+      { label: "选项乙", description: "短说明" }] }, "standard");
+    const lines = plain();
+    expect(squeezed(lines)).toContain("末尾甲");
+    expect(squeezed(lines)).toContain("末尾荐");
+    expect(lines.join("\n")).toContain("下面还有 2 项");
+    expect(raw().at(-1)).toMatch(/─{80}/u);
+    expect(lines.at(-3)).toBe("");
+  });
+
+  test("光标所在选项的 description 折成 10 行以上时每一折行都显示，总行数允许超过上限", () => {
+    const description = "首标" + "说".repeat(180) + "中标" + "说".repeat(180) + "末标";
+    const { plain } = one(24, { lines: marks(30), caption: undefined, choices: [{ label: "选项甲", description }, { label: "选项乙", description: "短" }] });
+    const lines = plain();
+    const joined = squeezed(lines);
+    expect(joined).toContain("首标");
+    expect(joined).toContain("中标");
+    expect(joined).toContain("末标");
+    expect(joined.match(/说/gu)!.length).toBe(360);
+    expect(lines.at(-1)).toMatch(/─{80}/u);
+  });
+
+  test("光标移到别的选项后，那个选项整组显示，原来的选项收起", () => {
+    const long = (mark: string) => "说".repeat(400) + mark;
+    const { window, plain } = one(24, { lines: marks(30), caption: undefined, choices: [
+      { label: "选项甲", description: long("末尾甲") }, { label: "选项乙", description: long("末尾乙") }] });
+    expect(squeezed(plain())).toContain("末尾甲");
+    expect(squeezed(plain())).not.toContain("末尾乙");
+    window.handleInput(DOWN);
+    expect(squeezed(plain())).toContain("末尾乙");
+    expect(squeezed(plain())).not.toContain("末尾甲");
   });
 });
