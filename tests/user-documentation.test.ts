@@ -276,7 +276,7 @@ describe("README 状态面板事实与 src/modules/panel/pm-panel.ts 一致", ()
     const hint = source.match(/const HINT = "([^"]+)"/)?.[1];
     expect(hint).toBeDefined();
     const section = extractSection(await readText(README), "状态面板", 3);
-    for (const key of ["↑↓", "Enter", "p", "Esc"]) {
+    for (const key of ["↑↓", "Enter", "p"]) {
       expect(hint).toContain(key);
       expect(section).toContain(key);
     }

@@ -52,7 +52,7 @@ test("M7-AC33：等待决定或已暂停显示 ⏸ 且不累加本地计时，�
 test("M7-AC33：↑↓ 在 PM 行与事项行间移动，事项行按 Enter 打开决策包，p 暂停或恢复所在 PM；聚焦时显示按键提示", () => {
   const { instance, openItem, togglePause } = panel();
   instance.focus();
-  expect(instance.render(200).at(-1)).toBe("↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框");
+  expect(instance.render(200).at(-1)).toBe("↑↓ 选择 · Enter 查看 · p 暂停/恢复 · 第一行按 ↑ 返回输入框");
   expect(instance.handleInput("\r")).toBe(true);
   expect(openItem).not.toHaveBeenCalled();
   instance.handleInput("\x1b[B");
@@ -63,6 +63,15 @@ test("M7-AC33：↑↓ 在 PM 行与事项行间移动，事项行按 Enter 打�
   instance.handleInput("\x1b[B");
   instance.handleInput("p");
   expect(togglePause).toHaveBeenLastCalledWith(expect.objectContaining({ overview: run }));
+});
+
+test("面板聚焦时最后一行是底部提示，失去焦点后没有这一行", () => {
+  const { instance } = panel();
+  const hint = "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · 第一行按 ↑ 返回输入框";
+  instance.focus();
+  expect(instance.render(200).at(-1)).toBe(hint);
+  instance.blur();
+  expect(instance.render(200)).not.toContain(hint);
 });
 
 test("M7-AC34：另一窗口处理掉事项后，更新投影时该行消失，选中项落到相邻行", () => {
@@ -98,7 +107,7 @@ test("主窗口派出的检索：和 PM 同时在跑时列在 PM 下面，按派
     "● 2 个检索运行中",
     "├─ ⠋ 联网 · 企业微信自建应用 是否需要公网回调地址 · ↻2/15 · 12.3s",
     "└─ ⠋ 本地 · 守护进程断网后怎么恢复 · ↻5/20 · 1m4s",
-    "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框",
+    "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · 第一行按 ↑ 返回输入框",
   ]);
   for (let i = 0; i < 5; i++) instance.handleInput("\x1b[B");
   for (let i = 0; i < 3; i++) instance.handleInput("\x1b[A");
@@ -186,7 +195,7 @@ test("面板同时有需求、原型设计、检索时按这个顺序显示，�
     "└─ ⠋ 命令行输出（第 1 版）· brand-designer · ↻9/30 · 2m10s",
     "● 1 个检索运行中",
     "└─ ⠋ 本地 · 守护进程断网后怎么恢复 · ↻5/20 · 1m4s",
-    "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框",
+    "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · 第一行按 ↑ 返回输入框",
   ]);
   expect(lines[0]).toBe("● 2 个需求运行中");
   expect(instance.render(20).every((line) => visibleWidth(line) <= 20)).toBe(true);
@@ -832,7 +841,7 @@ test("子代理行：含子代理行的同一份数据，未获得焦点时每�
 test("子代理行：获得焦点后光标在任一行，去掉高亮的每行文字都不变，底部提示不变", () => {
   const { instance } = stepPanel();
   for (let i = 0; i < 6; i++) {
-    expect(instance.render(200).map((line) => line.replace(/[⟦⟧]/g, ""))).toEqual([...FULL_LINES, "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框"]);
+    expect(instance.render(200).map((line) => line.replace(/[⟦⟧]/g, ""))).toEqual([...FULL_LINES, "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · 第一行按 ↑ 返回输入框"]);
     press(instance, DOWN);
   }
 });
@@ -881,7 +890,7 @@ test("子代理行：扩展层在子代理行按回车，用该仓库的客户�
   await new Promise((resolve) => setTimeout(resolve, 0));
   const lines = f.widget().render(200);
   expect(lines.find((line) => line.includes("T2 执行"))!.startsWith("›")).toBe(true);
-  expect(lines.at(-1)).toBe("↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框");
+  expect(lines.at(-1)).toBe("↑↓ 选择 · Enter 查看 · p 暂停/恢复 · 第一行按 ↑ 返回输入框");
   await f.fake.trigger("session_shutdown", {}, f.ctx);
 });
 

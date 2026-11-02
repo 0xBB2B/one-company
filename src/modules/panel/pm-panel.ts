@@ -28,7 +28,7 @@ type TaskRow = PmOverview["taskRows"][number];
 
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const RETRY_TEXT = { ...REVIEW_UNFINISHED_TEXT, superseded: REVIEW_SUPERSEDED_TEXT } as const;
-const HINT = "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · Esc 返回输入框";
+const HINT = "↑↓ 选择 · Enter 查看 · p 暂停/恢复 · 第一行按 ↑ 返回输入框";
 
 export function formatTokens(value: number): string {
   if (value < 1_000) return String(value);
@@ -76,6 +76,8 @@ export class PmPanel {
   updatePrototypes(entries: PrototypePanelEntry[]): void { this.replace(() => { this.prototypes = [...entries]; }); }
 
   hasRows(): boolean { return this.rows().length > 0; }
+
+  atFirstRow(): boolean { return this.cursor === 0; }
 
   private replace(apply: () => void): void {
     const selected = this.rows()[this.cursor];
