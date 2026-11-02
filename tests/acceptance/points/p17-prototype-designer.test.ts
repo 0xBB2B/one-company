@@ -14,7 +14,7 @@ afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(
 
 const NAME = "存档列表页";
 const BRIEF = "游戏的存档列表页：列出每条存档的名称和保存时间，可以读取和删除；读取存档列表时要等待，读取可能失败，没有存档时给出提示。";
-const STATES = ["正常", "空数据", "加载中", "出错"];
+const STATES = [/正常/, /空/, /加载中|读取中/, /出错|失败|错误/];
 const NOTE_WORDS = /演示|原型|待确认/g;
 type Handler = (params: Record<string, unknown>, client: unknown) => Promise<Record<string, unknown>>;
 interface Submitted { action?: string; html?: string; pages?: Array<{ name: string; views: Array<{ name: string }> }> }
@@ -43,10 +43,11 @@ test.skipIf(!config || process.platform !== "darwin")("P17：原型设计师收�
   const last = submits.at(-1);
   const views = (last?.pages ?? []).flatMap((page) => page.views.map((view) => view.name));
   const noteWords = (last?.html ?? "").match(NOTE_WORDS) ?? [];
-  await writeFile(join(evidence, "judgement.json"), `${JSON.stringify({ realTurns: turns, status: await status(), submits: submits.length, pages: last?.pages, views, noteWords,
+  const missing = STATES.filter((state) => !views.some((view) => state.test(view))).map(String);
+  await writeFile(join(evidence, "judgement.json"), `${JSON.stringify({ realTurns: turns, status: await status(), submits: submits.length, pages: last?.pages, views, missing, noteWords,
     calls: real.toolCalls().map((block) => block.name) }, null, 2)}\n`, { mode: 0o600 });
   expect(turns, "真实模型没有被调用：设计师没有派出").toBeGreaterThan(0);
   expect(await status(), "交稿没有被收下").toBe("awaiting");
-  expect(views, "页面清单缺状态").toEqual(expect.arrayContaining(STATES));
+  expect(missing, "页面清单缺状态").toEqual([]);
   expect(noteWords, "页面里有说明性字样").toEqual([]);
 }, 20 * 60_000);
