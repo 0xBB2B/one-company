@@ -20,9 +20,9 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
   authorization.startWindow({ kind: "main", windowId, sessionId, repoIds: [w.fixture.repoId] });
   const registry = new ModelRegistry(w.runtime), model = w.runtime.getModels("team-model")[0]!;
   const windows: ShownWindow[] = [];
-  let windowAnswer: WindowDecision = true;
+  let windowAnswer: WindowDecision = true, beforeAnswer: (() => Promise<void> | void) | undefined;
   const ctx = { cwd: w.fixture.repositoryRoot, mode: "tui", hasUI: true, modelRegistry: registry, model,
-    ui: { notify: () => {}, confirm: () => { throw new Error("UI.confirm forbidden"); }, ...answeringUi((window) => { windows.push(window); return windowAnswer; }) },
+    ui: { notify: () => {}, confirm: () => { throw new Error("UI.confirm forbidden"); }, ...answeringUi(async (window) => { windows.push(window); await beforeAnswer?.(); return windowAnswer; }) },
     sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
   const interaction = new MainRequirementInteraction({ mainThinking: () => "off", dataRoot: w.fixture.dataRoot, authorization,
     resolveHost: () => ({ windowId, sessionId, repositories: new Map([[w.fixture.repoId, { path: w.fixture.repositoryRoot }]]) }) });
@@ -58,5 +58,6 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
     interaction.assertDelivery(toolCallId, ctx);
     return result.details as Record<string, unknown>;
   }
-  return { entry, adjudicate, panelAsk, register, interaction, ctx, windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; } };
+  return { entry, adjudicate, panelAsk, register, interaction, ctx, windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; },
+    beforeAnswer: (hook: () => Promise<void> | void) => { beforeAnswer = hook; } };
 }
