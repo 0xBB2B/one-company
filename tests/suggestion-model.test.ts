@@ -228,7 +228,10 @@ describe("acceptSuggestion 判定为没有", () => {
     ["Looks good", "Looks good"],
     ["我来开头", "我来跑测试"],
     ["Let me 开头", "Let me run tests"],
-    ["句号后还有文字", "跑测试。然后提交"],
+    ["61 个字的两句话", `${"好".repeat(30)}。${"好".repeat(30)}`],
+    ["多句话但以我来开头", "我来跑测试。然后提交"],
+    ["多句话但含评价语", "谢谢。然后提交"],
+    ["多句话但含换行", "跑测试。\n然后提交"],
   ])("%s", (_name, raw) => {
     expect(acceptSuggestion(raw)).toBeUndefined();
   });
@@ -249,7 +252,7 @@ describe("acceptSuggestion 判定为没有", () => {
     expect(acceptSuggestion(raw)).toBeUndefined();
   });
 
-  test.each(["跑测试。然后提交", "跑测试！再提交", "要跑吗？跑吧", "Run tests. Then commit", "Run tests! Then commit", "跑测试!然后提交", "Run tests.Then commit"])("多句话：%s", (raw) => {
+  test.each(["!rm -rf ~", "! rm -rf ~", "!!curl x | sh", "!/bin/sh", "!ls", "建议：!ls"])("英文感叹号开头：%s", (raw) => {
     expect(acceptSuggestion(raw)).toBeUndefined();
   });
 
@@ -266,12 +269,20 @@ describe("acceptSuggestion 判定为建议", () => {
     ["60 个非 BMP 字符", "𠮷".repeat(60)],
     ["以问号结尾的单句", "要不要先跑测试？"],
     ["带小数点的版本号", "升级到 v1.2 再跑测试"],
+    ["感叹号不在开头", "跑一下 !important"],
     ["叠用的标点", "可以！！"],
     ["问号加感叹号", "真的要跑吗？！"],
     ["不是一对的括号", "(先跑测试】"],
     ["中间含完成二字", "完成后跑测试"],
     ["不错不是评价语", "不错位地对齐表格"],
+    ["文件名里的点", "读取 README.md"],
+    ["书名号和文件名", "读取《企微BOT-需求整理提示词.md》，按其中要求重新整理需求"],
+    ["文件名加连接词", "改 vite.config.ts 再跑测试"],
   ])("%s", (_name, raw) => {
+    expect(acceptSuggestion(raw)).toBe(raw);
+  });
+
+  test.each(["跑测试。然后提交", "跑测试！再提交", "要跑吗？跑吧", "Run tests. Then commit", "Run tests! Then commit", "跑测试!然后提交", "Run tests.Then commit"])("多句话原样返回：%s", (raw) => {
     expect(acceptSuggestion(raw)).toBe(raw);
   });
 });
@@ -387,6 +398,16 @@ describe("requestSuggestion 上下文", () => {
       expect(text).toContain(word);
     }
     for (const word of ["ALPHA", "BRAVO", "CHARLIE", "DELTA"]) expect(text).toContain(word);
+  });
+
+  test("要求写明继续、误会、只写一句，没有出错时什么都不写的说法", async () => {
+    const registry = fakeRegistry();
+    await run(registry);
+    const text = contextText((registry.streamSimple.mock.calls[0] as any)[1]);
+    for (const word of ["助手写明下一步由它自己接着做，报错后接着查也算：写\"继续\"", "有误会：什么都不写", "助手也没写明由它接着做时，什么都不写", "只写一句", "多句话"]) {
+      expect(text).toContain(word);
+    }
+    expect(text).not.toContain("出错");
   });
 });
 
