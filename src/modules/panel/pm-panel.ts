@@ -26,7 +26,7 @@ export interface PmPanelOptions {
 }
 
 type Row = { kind: "pm"; entry: PmPanelEntry } | { kind: "item"; entry: PmPanelEntry; item: PendingItem }
-  | { kind: "steps"; entry?: PmPanelEntry; repoId: string; runId: string; title: string; finished?: true; view?: RunStepsView };
+  | { kind: "steps"; entry?: PmPanelEntry; repoId: string; runId: string; title: string; view?: RunStepsView };
 type TaskRow = PmOverview["taskRows"][number];
 
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -48,7 +48,7 @@ export function formatElapsed(ms: number): string {
   return hours > 0 ? `${hours}h${minutes}m${rest}s` : `${minutes}m${rest}s`;
 }
 
-/** 输入栏下方的状态面板：显示运行中与暂停的 PM，以及本窗口派出、还在运行的检索和原型设计；数据来自守护进程，窗口只做投影，不保存事项。 */
+/** 输入栏下方的状态面板：显示运行中与暂停的 PM，本窗口派出、还在运行的检索和原型设计，以及光标选中的子代理跑完后留下的已结束行；数据来自守护进程，窗口只做投影，不保存事项。 */
 export class PmPanel {
   private readonly options: PmPanelOptions;
   private entries: PmPanelEntry[] = [];
@@ -100,8 +100,8 @@ export class PmPanel {
     if (this.ended && this.liveRows().some((row) => rowKey(row) === rowKey(this.ended!.row))) this.ended = undefined;
     const rows = this.rows(), index = key ? rows.findIndex((row) => rowKey(row) === key) : -1;
     if (index >= 0) { this.cursor = index; return; }
-    if (this.focused && selected?.kind === "steps" && !selected.finished) {
-      const row: Extract<Row, { kind: "steps" }> = { kind: "steps", repoId: selected.repoId, runId: selected.runId, title: selected.title, finished: true };
+    if (this.focused && selected?.kind === "steps") {
+      const row: Extract<Row, { kind: "steps" }> = { kind: "steps", repoId: selected.repoId, runId: selected.runId, title: selected.title };
       this.ended = { row, previous, reading: false, waited: 0 };
       this.cursor = this.rows().length - 1;
       this.readEnded(this.ended);
