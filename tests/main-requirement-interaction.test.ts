@@ -23,6 +23,7 @@ import { createUserInteractTool } from "../src/modules/interaction/user-interact
 import { RequirementService, requirementIntentHash } from "../src/modules/requirement/requirement-service.ts";
 import { adviceOf } from "../src/core/exec/tool-failure.ts";
 import { RequirementServiceError } from "../src/modules/requirement/requirement-manage-contracts.ts";
+import { ApprovalManifestStore } from "../src/modules/requirement/approval-manifest-store.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { resolveRepositoryRequirementDoc } from "../src/modules/requirement/requirement-doc.ts";
 import type { ConfirmationContext } from "../src/modules/requirement/requirement-manage-contracts.ts";
@@ -1659,4 +1660,164 @@ test("填了不属于本窗口的仓库编号：先按仓库鉴权拒绝，不�
   const foreign = "f".repeat(64);
   await expect(w.call({ repoId: foreign, action: "updateDraft", requirementId: uuidv7(), version: 1, summary: "手机号登录", title: "登录", body: BODY })).rejects.toThrow();
   await expect(stat(repositoryDatabase(w.dataRoot, foreign))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+describe("后台消息到达（原话作废）时正在进行的工具调用", () => {
+  const draftOf = (created: Record<string, unknown>, version: number, extra = "补一句。\n") => ({ action: "updateDraft", requirementId: String(created.requirementId), version,
+    summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + extra });
+  const versionOf = async (w: World, created: Record<string, unknown>) => Number((await w.call({ action: "metadata", requirementId: String(created.requirementId) })).version);
+  const waitForRequests = async (w: World, count: number) => { while (w.provider.requests.length <= count) await new Promise((r) => setTimeout(r, 2)); };
+
+  test("提问窗口开着时发生撤销，用户选了选项：ask 返回 answered 并能送达，回答成为新原话，草稿核验器拿到它", async () => {
+    const { w, input, ask } = await askedWorld();
+    w.beforeAnswer(async () => { w.interaction.revokeInput(); });
+    const result = await ask("5 分钟");
+    expect(result).toMatchObject({ status: "answered", answer: { text: "5 分钟\n更安全", choice: 1 } });
+    scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "短信验证码 5 分钟有效。\n" });
+    expect(verifierText(w)).toBe("5 分钟\n更安全");
+  });
+
+  test("提问窗口开着时发生撤销，用户按 Esc：ask 返回 pending 不报错，撤销前的旧原话作废，updateDraft 被拒 current_input_required", async () => {
+    const { w, input, ask } = await askedWorld();
+    w.beforeAnswer(async () => { w.interaction.revokeInput(); });
+    expect(await ask(false)).toMatchObject({ status: "pending", answer: null });
+    await expect(w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补一句。\n" }))
+      .rejects.toMatchObject({ code: "current_input_required" });
+  });
+
+  test("真正的窗口或连接变化（授权撤销）发生在提问窗口开着时：仍报 stale_host", async () => {
+    const { w, ask } = await askedWorld();
+    w.beforeAnswer(async () => { w.authorization.revoke(); });
+    await expect(ask("5 分钟")).rejects.toMatchObject({ code: "stale_host" });
+  });
+
+  test("保存草稿时核验模型还没返回就发生撤销：这次保存完成并送达，版本前进，核验没被中止；之后旧原话作废，再保存被拒 current_input_required", async () => {
+    const w = await world(), created = await w.create(), start = Number(created.version);
+    w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}', chunkDelayMs: 100 }]);
+    const count = w.provider.requests.length;
+    const pending = w.call(draftOf(created, start));
+    const settled = expect(pending).resolves.toMatchObject({ action: "updateDraft", requirementId: created.requirementId });
+    await waitForRequests(w, count);
+    w.interaction.revokeInput();
+    await settled;
+    const saved = await versionOf(w, created);
+    expect(saved).toBeGreaterThan(start);
+    await expect(w.call(draftOf(created, saved, "再补一句。\n"))).rejects.toMatchObject({ code: "current_input_required" });
+  });
+
+  test("保存草稿时发生撤销后、保存结束前用户又说了新话：这次保存仍失败，新话没被清掉，之后基于新话的保存成功", async () => {
+    const w = await world(), created = await w.create(), start = Number(created.version);
+    w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}', chunkDelayMs: 100 }]);
+    const count = w.provider.requests.length;
+    const pending = w.call(draftOf(created, start));
+    const rejected = expect(pending).rejects.toThrow();
+    await waitForRequests(w, count);
+    w.interaction.revokeInput();
+    w.capture("改成短信验证码 5 分钟");
+    await rejected;
+    scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call(draftOf(created, start));
+    expect(verifierText(w)).toContain("改成短信验证码 5 分钟");
+  });
+
+  test("批准的解读模型进行中发生撤销：调用失败，没有短记录和 manifest，需求没有激活", async () => {
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    scriptReview(w.provider, phoneReview, { chunkDelayMs: 30 });
+    const rejected = expect(w.call({ action: "confirmUpdate", ...input })).rejects.toThrow();
+    await waitForRequests(w, 1);
+    w.interaction.revokeInput();
+    await rejected;
+    await new Promise((r) => setTimeout(r, 40));
+    expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"))).toEqual([]);
+    expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("approval_manifests_v1"))).toEqual([]);
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
+  });
+
+  test("批准窗口开着时发生撤销，用户点确认：调用失败，错误是 current_input_required 而不是 stale_host，需求没激活，没保存决定", async () => {
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    w.capture("同意", "interactive", false); scriptReview(w.provider, phoneReview);
+    w.beforeAnswer(async () => { w.interaction.revokeInput(); }); w.answerWindows(true);
+    const error = await w.call({ action: "confirmUpdate", ...input }).then(() => undefined, (caught: unknown) => caught as { code?: string });
+    expect(w.windows).toHaveLength(1);
+    expect(error).toMatchObject({ code: "current_input_required" });
+    expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"))).toEqual([]);
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
+  });
+
+  test("工具结果已生成、尚未送达时发生撤销：送达核对通过，读取结果能送达", async () => {
+    const w = await world(), created = await w.create();
+    const toolCallId = uuidv7();
+    await w.manage.execute(toolCallId, { request: { repoId: w.repoId, action: "read", requirementId: String(created.requirementId), source: "saved" } } as never, undefined, undefined, w.ctx);
+    w.interaction.revokeInput();
+    expect(() => w.interaction.assertDelivery(toolCallId, w.ctx)).not.toThrow();
+  });
+
+  test("没有工具在跑时发生撤销：旧原话不能用于批准和更新草稿，都报 current_input_required", async () => {
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    w.capture("同意"); w.interaction.revokeInput();
+    scriptReview(w.provider, phoneReview);
+    await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toMatchObject({ code: "current_input_required" });
+    await expect(w.call(draftOf(created, input.version))).rejects.toMatchObject({ code: "current_input_required" });
+  });
+
+  test("提问窗口弹出前、程序还在做提问准备时发生撤销：ask 不报错，窗口照常弹出，用户回答后返回 answered 并能送达", async () => {
+    const { w, ask } = await askedWorld();
+    const open = UserInteractionCore.open.bind(UserInteractionCore);
+    const spy = vi.spyOn(UserInteractionCore, "open").mockImplementation(async (options) => { w.interaction.revokeInput(); return open(options); });
+    try {
+      const result = await ask("5 分钟");
+      expect(spy).toHaveBeenCalled();
+      expect(w.windows).toHaveLength(1);
+      expect(result).toMatchObject({ status: "answered", answer: { text: "5 分钟\n更安全", choice: 1 } });
+    } finally { spy.mockRestore(); }
+  });
+
+  test("批准时程序还在做准备就发生撤销：调用失败，错误是 current_input_required，没有短记录和 manifest，需求没激活", async () => {
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
+    const open = UserInteractionCore.open.bind(UserInteractionCore);
+    const spy = vi.spyOn(UserInteractionCore, "open").mockImplementation(async (options) => { w.interaction.revokeInput(); return open(options); });
+    try {
+      await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toMatchObject({ code: "current_input_required" });
+      expect(spy).toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+    expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"))).toEqual([]);
+    expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("approval_manifests_v1"))).toEqual([]);
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
+  });
+
+  test("新建草稿时核验模型还没返回就发生撤销：这次新建完成并送达；之后旧原话作废，updateDraft 被拒 current_input_required", async () => {
+    const w = await world();
+    w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}', chunkDelayMs: 100 }]);
+    const count = w.provider.requests.length;
+    const pending = w.call({ action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY });
+    const settled = expect(pending).resolves.toMatchObject({ action: "create" });
+    await waitForRequests(w, count);
+    w.interaction.revokeInput();
+    await settled;
+    const created = await pending;
+    await expect(w.call(draftOf(created, Number(created.version)))).rejects.toMatchObject({ code: "current_input_required" });
+  });
+
+  test.each([
+    ["ApprovalManifestStore.register", ApprovalManifestStore.prototype, "register"],
+    ["RequirementService.confirmUpdate", RequirementService.prototype, "confirmUpdate"],
+    ["RequirementStateStore.recordApprovedVersion", RequirementStateStore.prototype, "recordApprovedVersion"],
+  ] as const)("批准后段（%s 入口）发生撤销：调用失败，需求没有激活，没有 prd.approved 事件", async (_name, prototype, method) => {
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
+    const target = prototype as unknown as Record<string, (...args: unknown[]) => unknown>, original = target[method]!;
+    const spy = vi.spyOn(target, method).mockImplementation(function (this: unknown, ...args: unknown[]) { w.interaction.revokeInput(); return original.apply(this, args); });
+    try {
+      await expect(w.call({ action: "confirmUpdate", ...input })).rejects.toThrow();
+      expect(spy).toHaveBeenCalled();
+    } finally { spy.mockRestore(); }
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    expect(state.read(input.requirementId).data.lifecycle).not.toBe("active");
+    expect(state.events(input.requirementId).filter((e) => e.data.kind === "prd.approved")).toHaveLength(0);
+  });
 });

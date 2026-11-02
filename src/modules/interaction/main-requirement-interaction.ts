@@ -134,6 +134,8 @@ export class MainRequirementInteraction {
   #unsubscribeState: (() => void) | undefined;
   readonly #unsubscribeHost: () => void;
   #busy = false;
+  #savingDraft = false;
+  #dropInputAfterRun = false;
   #inputTargets: readonly MentionTarget[] = [];
   #openedItem: { repoId: string; requirementId: string; itemId: string } | undefined;
   readonly #titles = new Map<string, { hash: string; title: string }>();
@@ -147,18 +149,26 @@ export class MainRequirementInteraction {
     this.#unsubscribeHost = this.#authorization.onRevoke(() => this.revoke());
   }
   #now() { return this.#options.now?.() ?? Date.now(); }
-  /** 插入决策包时调用：此前截获的原话不能作为对这张卡片的回答。 */
-  revokeInput(): void { this.revoke(); }
+  /** 后台消息送进主对话前调用：用户之前的话不能作为对后台内容的回答。正在跑的工具调用发起在模型看到后台内容之前，所以不作废；保存草稿要靠这句话核对，等它结束再清；批准和裁决靠解释核心撤销来拦住旧话。 */
+  revokeInput(): void {
+    this.#openedItem = undefined;
+    if (this.#savingDraft) { this.#dropInputAfterRun = true; return; }
+    this.#dropInput();
+  }
   revoke(): void { this.#clearInput(); this.#openedItem = undefined; }
   #clearInput(): void {
     this.#generation++;
+    this.#dropInputAfterRun = false;
+    this.#dropInput();
+    this.#cursors.clear(); this.#deliveries.clear();
+  }
+  #dropInput(): void {
     this.#inputTargets = []; this.#addressed.clear();
     this.#core?.revoke(); this.#core?.shutdown(); this.#core = undefined; this.#coreRepo = undefined; this.#coreRequirement = undefined;
     this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined; this.#candidate = undefined; this.#adjudication = undefined; this.#resave = undefined;
     const input = this.#input; this.#input = undefined;
     if (input) { input.event.text = ""; input.abort.abort(); }
     this.#unsubscribeState?.(); this.#unsubscribeState = undefined;
-    this.#cursors.clear(); this.#deliveries.clear();
   }
   shutdown(): void { this.revoke(); this.#ctx = undefined; }
   dispose(): void { this.shutdown(); this.#unsubscribeHost(); }
@@ -415,12 +425,14 @@ export class MainRequirementInteraction {
       } });
     try {
       this.#live(ctx, host, generation);
-      if (input !== this.#input || input && input.abort.signal.aborted) denied("input_changed");
+      if (this.#input && input !== this.#input) denied("input_changed");
       core.startSession({ sessionId: host.sessionId, windowId: host.windowId });
-      if (input) this.#ticket = core.captureInput(input.event, host.sessionId);
+      if (input && this.#input) this.#ticket = core.captureInput(input.event, host.sessionId);
       const state = await RequirementStateStore.open({ dataRoot: this.#options.dataRoot, repositoryRoot: repository.path, repoId, authorize });
       this.#live(ctx, host, generation);
-      if (input !== this.#input) denied("input_changed");
+      if (this.#input && input !== this.#input) denied("input_changed");
+      // 此时核心还没挂到 this.#core，#dropInput 够不到它，要自己撤销让它放下原话文字
+      if (input && !this.#input) core.revoke();
       this.#unsubscribeState = state.onAccessInvalidated(requirementId, (change) => {
         this.#capability = undefined; this.#interpretation = undefined; this.#cursors.clear(); this.#deliveries.clear();
         const pending = this.#resave;
@@ -833,6 +845,7 @@ export class MainRequirementInteraction {
   async execute(toolCallId: string, ctx: ExtensionContext, repoId: string, params: Record<string, unknown>, run: () => Promise<unknown>, signal?: AbortSignal) {
     if (this.#busy) return denied("interaction_busy");
     this.#busy = true; this.#ctx = ctx;
+    this.#savingDraft = params.action === "create" || params.action === "updateDraft";
     const abort = () => this.revoke();
     signal?.addEventListener("abort", abort, { once: true });
     try {
@@ -859,7 +872,10 @@ export class MainRequirementInteraction {
       if (typeof code === "string" && /^[a-z][a-z_]{0,63}$/.test(code)) throw new HostAuthorizationError(code);
       recordUnexplained(this.#options.dataRoot, repoId, params.action, error);
       throw new HostAuthorizationError("interaction_denied");
-    } finally { signal?.removeEventListener("abort", abort); this.#busy = false; }
+    } finally {
+      signal?.removeEventListener("abort", abort); this.#busy = false; this.#savingDraft = false;
+      if (this.#dropInputAfterRun) { this.#dropInputAfterRun = false; this.#dropInput(); }
+    }
   }
   assertDelivery(toolCallId: string, ctx: ExtensionContext): void {
     const delivery = this.#deliveries.get(toolCallId); this.#deliveries.delete(toolCallId);

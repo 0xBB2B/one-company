@@ -57,7 +57,7 @@ async function world() {
     main.adjudicate(text, entries, target, itemVersion ?? (target === itemId ? version() : `${target}:${w.fixture.state.read(w.fixture.requirementId).version}`), opened);
   const { interaction, ctx } = main;
   const decisions = () => w.db((db) => db.list("short_decisions")).length;
-  return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx, windows: main.windows, answerWindows: main.answerWindows, panelAsk: main.panelAsk, register: main.register };
+  return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx, windows: main.windows, answerWindows: main.answerWindows, panelAsk: main.panelAsk, register: main.register, beforeAnswer: main.beforeAnswer };
 }
 
 test("M7-AC35：用户原话选择再给一次机会时登记用户决定，任务回到可派出，事项从概览消失，PM 收到固定告知，按用户上限派出且不能带 retry", async () => {
@@ -2168,5 +2168,67 @@ describe("请求拆分等用户裁决期间 PM 确认计划被拒，裁决并改
     expect(w.task("failure").status).toBe("awaiting_user");
 
     await expect(confirmPlan(w)).resolves.toBeDefined();
+  });
+});
+
+test("面板事项提问的窗口开着时后台消息到达（原话作废）：用户回答后 ask 正常返回 answered 并能送达", async () => {
+  const w = await world();
+  w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
+  w.beforeAnswer(() => { w.interaction.revokeInput(); });
+  w.answerWindows("再给一次机会，轮数上限 3");
+  const answered = await w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question: "任务 login 2 次未完成，怎么裁决？", rootCheck: "两次都是轮数用完",
+    choices: [choice("再给一次机会，轮数上限 3", true), choice("调整目标或范围", false), choice("终止这个任务", false)] });
+  expect(answered).toMatchObject({ status: "answered", answer: { choice: 1 } });
+});
+
+test("解释器正在处理裁决时后台消息到达（原话作废）：登记失败，没有新增决定", async () => {
+  const w = await world();
+  w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
+  w.interaction.captureInput({ source: "interactive", text: "再给一次，3 轮" }, w.ctx);
+  const before = w.decisions(), requests = w.provider.requests.length;
+  w.provider.queue.push({ type: "text", chunkDelayMs: 100, text: JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none",
+    entries: [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])] }) });
+  const pending = createUserInteractTool({ interaction: w.interaction }).execute(uuidv7(), { request: { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId,
+    requirementId: w.fixture.requirementId, itemId: w.itemId, itemVersion: w.version() } } as never, undefined, undefined, w.ctx);
+  const rejected = expect(pending).rejects.toThrow();
+  while (w.provider.requests.length === requests) await new Promise((r) => setTimeout(r, 2));
+  w.interaction.revokeInput();
+  await rejected;
+  await new Promise((r) => setTimeout(r, 150));
+  expect(w.decisions()).toBe(before);
+  expect(w.task("login").status).toBe("awaiting_user");
+});
+
+describe("面板事项提问的窗口开着时发生撤销之后登记裁决", () => {
+  async function answeredAfterRevoke() {
+    const w = await world();
+    let revokeNext = true;
+    w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
+    w.beforeAnswer(() => { if (revokeNext) w.interaction.revokeInput(); });
+    w.answerWindows("再给一次机会，轮数上限 3");
+    await w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question: "任务 login 2 次未完成，怎么裁决？", rootCheck: "两次都是轮数用完",
+      choices: [choice("再给一次机会，轮数上限 3", true), choice("调整目标或范围", false), choice("终止这个任务", false)] });
+    const register = () => w.register(w.itemId, w.version(), [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
+    return { w, register, revokeConfirm: (value: boolean) => { revokeNext = value; } };
+  }
+
+  test("回答成为原话后登记裁决：多弹一个登记裁决确认窗口，用户确认后登记成功", async () => {
+    const { w, register, revokeConfirm } = await answeredAfterRevoke();
+    revokeConfirm(false); w.answerWindows(true);
+    const before = w.decisions();
+    expect(await register()).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 3 });
+    expect(w.windows).toHaveLength(2);
+    expect(w.windows[1]!.title).toBe("登记裁决");
+    expect(w.decisions()).toBe(before + 1);
+  });
+
+  test("登记裁决的确认窗口开着时又发生撤销，用户点确认：登记失败，没有新增决定", async () => {
+    const { w, register, revokeConfirm } = await answeredAfterRevoke();
+    revokeConfirm(true); w.answerWindows(true);
+    const before = w.decisions();
+    await expect(register()).rejects.toThrow();
+    expect(w.windows).toHaveLength(2);
+    expect(w.decisions()).toBe(before);
+    expect(w.task("login").status).toBe("awaiting_user");
   });
 });
