@@ -7,7 +7,7 @@ import type { WindowChoice, WindowLine } from "../../core/host/question-window.t
 import { dataRoot } from "../../core/storage/data-root.ts";
 import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { writeFileAtomic } from "../../core/storage/store.ts";
-import { lineDiff, symlinkTarget } from "../verification/project-conventions.ts";
+import { symlinkTarget } from "../verification/project-conventions.ts";
 import { agentSwitchOf, readDisabledAgents } from "./agent-settings.ts";
 import { copyExampleFiles, ExampleCopyError, examplesDir, inspectExample, layerTargets, listExamples, mergeConventions } from "./spec-examples.ts";
 import type { ExampleInspection, ExampleTargets } from "./spec-examples.ts";
@@ -85,17 +85,21 @@ export function confirmLines(input: ConfirmInput): WindowLine[] {
   else if (conventions.over) {
     lines.push({ text: `  合并后 ${conventions.bytes} 字节，超过 16 KB 上限 ${conventions.excess} 字节，这次不写。`, tone: "warning" },
       { text: "  精简 AGENTS.md 后再运行 /one:examples，会只补写这一段。", tone: "warning" });
-  } else if (conventions.before === null) lines.push({ text: "  还没有 AGENTS.md，新建一份，下一步给你看全文再写" });
-  else lines.push({ text: `  追加「${heading}」一段，下一步给你看差异再写` });
+  } else if (conventions.before === null) lines.push({ text: "  还没有 AGENTS.md，新建一份，下一步问你是否写入" });
+  else lines.push({ text: `  追加「${heading}」一段，下一步问你是否写入` });
   return lines;
 }
 
-export function conventionsWindow(input: { layer: LayerKey; file: string; before: string | null; merged: string; linkTarget?: string | null }) {
+export function conventionsWindow(input: { layer: LayerKey; file: string; before: string | null; heading: string; exampleText: string; examplePath: string; linkTarget?: string | null }) {
   const title = input.layer === "user" ? `把这些改动写入用户规范 ${tilde(input.file)}？` : "把这些改动写入项目规范 AGENTS.md？";
+  const rows = input.exampleText.split(/\r?\n/);
+  if (rows[rows.length - 1] === "") rows.pop();
+  const summary = input.before === null ? `还没有 AGENTS.md，新建一份，写入「${input.heading}」一段，共 ${rows.length} 行。`
+    : `在现有 AGENTS.md 末尾追加「${input.heading}」一段，共 ${rows.length} 行，原有内容不动。`;
   const lines: WindowLine[] = [
     ...(input.linkTarget ? [{ text: `AGENTS.md 是软链接，实际写到 ${tilde(input.linkTarget)}`, tone: "warning" } satisfies WindowLine] : []),
-    { text: input.before === null ? "还没有 AGENTS.md，要写入的全文如下：" : "与现有的 AGENTS.md 相比的改动：", tone: "muted" },
-    ...lineDiff((input.before ?? "").replace(/\r\n/g, "\n"), input.merged.replace(/\r\n/g, "\n")).map((text): WindowLine => ({ text, tone: text.startsWith("+ ") ? "added" : "muted" })),
+    { text: summary },
+    { text: `这段内容在 ${tilde(input.examplePath)}`, tone: "muted" },
     { text: "" },
     { text: "写入后，此后派出的 PM、worker、reviewer 都按新内容工作。", tone: "muted" },
   ];
@@ -172,7 +176,8 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
   const targets = targetsOf[layer];
   // 第一个窗口之后可能已有别处写入，按此刻的文件重新判定，避免覆盖或重复追加
   const inspection = await inspect(row.name, layer);
-  const exampleText = await readFile(join(root, row.name, "AGENTS.md"), "utf8");
+  const examplePath = join(root, row.name, "AGENTS.md");
+  const exampleText = await readFile(examplePath, "utf8");
   const before = await readTextOrNull(targets.conventionsFile);
   const merged = mergeConventions(before, exampleText);
   const disabled = readDisabledAgents({ agentDir, repositoryRoot: repoRoot, projectTrusted: trust === "trusted" || layer === "project" });
@@ -218,7 +223,7 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
     if (merged.over) outcome = "over";
     else {
       const linkTarget = await symlinkTarget(targets.conventionsFile);
-      const answer = await chooseWindow(ctx, conventionsWindow({ layer, file: targets.conventionsFile, before, merged: merged.content, linkTarget }));
+      const answer = await chooseWindow(ctx, conventionsWindow({ layer, file: targets.conventionsFile, before, heading: inspection.section.heading, exampleText, examplePath, linkTarget }));
       if (answer !== WRITE) outcome = "declined";
       else if (await readTextOrNull(targets.conventionsFile) !== before) outcome = "changed";
       else {
