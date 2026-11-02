@@ -97,9 +97,14 @@ describe("worker 职责规矩的重试验证引用", () => {
 });
 
 describe("prototype 职责规矩", () => {
-  test("含单个 HTML、四种状态、深色等宽 80 列终端、多步按顺序、先读上一版按意见改，不含先红后绿", () => {
+  test("页面里不写说明性字样和切换控件，说明都写进清单", () => {
     const rules = loadRoleRules("prototype");
-    for (const phrase of ["单个 HTML", "样式和脚本", "写在文件里", "正常", "空数据", "加载中", "出错", "深色背景", "等宽字体", "80 列", "按顺序", "上一版", "意见"]) {
+    for (const phrase of ["演示", "示例", "待确认", "不画切换条、状态选择和方案标签", "按钮和标题写真实文案", "示例数据写成真实的样子", "notes 写这个画面要注意什么", "在 note 里写明"]) expect(rules).toContain(phrase);
+  });
+
+  test("含单个 HTML、四种状态各一个画面、终端铺满隔离框、多步每步一个画面、先读上一版按意见改，不含先红后绿", () => {
+    const rules = loadRoleRules("prototype");
+    for (const phrase of ["单个完整的 HTML", "样式和脚本", "不引用外部文件", "正常", "空数据", "加载中", "出错", "各是一个画面", "深色背景", "等宽字体", "80 列", "铺满隔离框", "左上角", "不画窗口标题栏", "每一步是一个画面", "上一版", "意见"]) {
       expect(rules).toContain(phrase);
     }
     expect(rules).not.toContain("先红后绿");
@@ -107,16 +112,31 @@ describe("prototype 职责规矩", () => {
 
   test("任务说明给出上一版文件和用户意见时，按用户原话改、没提到的保持不变，不含返工", () => {
     const rules = loadRoleRules("prototype");
-    expect(rules).toContain("任务说明里给出上一版文件和用户的意见时，先用 read 读上一版，按用户原话改，没提到的地方保持不变");
+    expect(rules).toContain("任务说明里给出上一版文件和用户的意见时，先用 read 读上一版");
+    expect(rules).toContain("按用户原话改，没提到的地方保持不变，再分开交稿");
+    expect(rules).toContain("&lt;/textarea 是 </textarea 的转义");
     expect(rules).not.toContain("返工");
   });
 });
 
 describe("下游职责规矩的原型要求", () => {
+  test.each(["worker", "reviewer", "qa"] as const)("%s 只认被设计的页面，写明转义和页面怎么显示各个画面", (role) => {
+    const rules = loadRoleRules(role);
+    for (const phrase of ["prototype-page", "&amp; 是 & 的转义", "&lt;/textarea 是 </textarea 的转义", "data-page", "data-view", "data-option"]) expect(rules).toContain(phrase);
+  });
+
+  test.each(["worker", "reviewer"] as const)("%s 对照的是页面，不写成对照原型文件", (role) => {
+    expect(loadRoleRules(role)).not.toMatch(/原型文件逐项对照/);
+  });
+
+  test("worker 可以用说明理解页面", () => {
+    expect(loadRoleRules("worker")).toContain("说明可以用来理解页面");
+  });
+
   test.each([
     ["worker", ["有原型时先读原型", "与它一致"]],
-    ["reviewer", ["与原型不一致", "改了界面但需求里没有用户通过的原型"]],
-    ["qa", ["对照原型逐项验收", "不一致"]],
+    ["reviewer", ["不一致列为阻塞", "改了界面但需求里没有用户通过的原型"]],
+    ["qa", ["逐项验收", "不一致"]],
     ["pm", ["要改用户看得到的界面", "批准版本里没有对应原型", "不派这个任务", "上报", "回主窗口补原型", "批准新版本", "面板上还有", "调整"]],
   ] as const)("%s 的职责规矩含原型要求", (role, phrases) => {
     const rules = loadRoleRules(role);

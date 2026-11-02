@@ -13,11 +13,12 @@ description: 新增纯函数，把设计师交的页面和清单拼成左边切�
 - 方案提示框：黄色边框，标题"这份原型有 N 个方案，点这里切换对比"，方案按钮写"方案 <字母>：<名称>"，底部"最后选哪个，在“确认原型”窗口里定"。切换页面、画面时它不变。
 - "切换要看的内容"依次是"页面"组、当前页面的切换组（组名没写时显示"状态"）。只有一项可选的组不显示；两组都不显示时连小标题一起不显示。选中按钮高亮成黄色。
 - 隔离框上方左侧固定写"▼ 被设计的页面：只有这个框里的内容要实现"；右侧有方案清单时最前面是黄色标签"方案 <字母>：<名称>"，后面是页面名称、画面名称，用" · "隔开，只有一项可选的组不写。
-- 说明区和隔离框等宽，顶部标签"设计说明 · 不属于页面"和"这一块上线后不存在"，从左到右并排"这个画面的说明"、"只在原型里成立"、"还没确认的问题"。空的一块连小标题一起不显示；三块都空时没有说明区，隔离框占满右边。"还没确认的问题"按序号列出，其余按项目符号列出。说明区最高占窗口三分之一，超出时只有它自己滚动。
+- 说明区和隔离框等宽，顶部标签"设计说明 · 不属于页面"和"这一块上线后不存在"，从左到右并排"这个画面的说明"、"只在原型里成立"、"还没确认的问题"。空的一块连小标题一起不显示；三块都空时没有说明区，隔离框占满右边。"还没确认的问题"按序号列出，其余按项目符号列出。窗口宽度超过 760 像素时说明区最高占窗口三分之一，超出时只有它自己滚动。
 - 打开时选中第一个页面、它的第一个画面、方案 A。切换页面时画面回到新页面的第一个，方案不变；切换画面或方案时其余选择不变。每次切换隔离框重新载入，页面里输入的内容清空，"这个画面的说明"换成当前画面的。
 - 页面开始运行前能读到当前选择：`<html>` 根元素上 `data-page` 是页面名称，`data-view` 是画面名称，`data-option` 是方案字母（没有方案清单时不存在）。
 - 模型写的所有文字按纯文字显示，其中的 HTML 标签不生效。
-- 窗口宽度不超过 760 像素时，从上到下是切换栏、隔离框、说明区，说明区三块上下排列，整个原型没有横向滚动。
+- 窗口宽度不超过 760 像素时，从上到下是切换栏、隔离框、说明区，说明区三块上下排列、不限高度，方案名称写满 20 字时也没有横向滚动。
+- 点击页面里的 `href="#"` 或页内锚点链接时，隔离框仍显示这个页面。
 - 文件不引用外部文件，不需要服务器。浏览器标题是"<原型名称> 第 N 版"。
 - 读文件工具读到的文本里能直接看到页面的标签、文字和样式，不能编码成 base64 之类看不懂的形式。
 
@@ -58,13 +59,14 @@ body{display:grid;grid-template-columns:260px minmax(0,1fr);background:var(--sta
 .option-box{margin:14px 14px 2px;padding:10px 12px;border:2px solid var(--accent);border-radius:8px;background:#2b2a20}
 .option-title{font-size:14px;font-weight:700;color:var(--accent);margin-bottom:8px;line-height:1.45}
 .option-foot{font-size:12px;color:var(--rail-muted);margin-top:8px;line-height:1.5}
-.option-pill{background:var(--accent);color:#2b2108;font-weight:700;font-size:13px;padding:1px 10px;border-radius:4px;white-space:nowrap}
+.option-pill{background:var(--accent);color:#2b2108;font-weight:700;font-size:13px;padding:1px 10px;border-radius:4px;overflow-wrap:anywhere}
 .stage{height:100vh;min-width:0;display:flex;flex-direction:column;padding:10px 14px 14px}
-.stage-label{font-size:12px;color:#39424c;padding:0 2px 6px;display:flex;justify-content:space-between;gap:12px}
+.stage-label{font-size:12px;color:#39424c;padding:0 2px 6px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px}
 .stage-label b{font-weight:600}
-.stage-now{display:flex;align-items:center;gap:10px;min-width:0}
+.stage-now{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;min-width:0}
+#where{overflow-wrap:anywhere}
 iframe{flex:1;min-height:0;width:100%;border:0;background:#fff;box-shadow:0 0 0 1px #8b949d,0 6px 24px #0002;border-radius:4px}
-.band{flex:0 1 auto;max-height:33.4vh;overflow:auto;margin-top:10px;background:var(--rail);color:var(--rail-text);border-top:4px solid var(--accent);border-radius:4px;padding:10px 16px 12px}
+.band{flex:0 1 auto;max-height:calc(100vh / 3);overflow:auto;margin-top:10px;background:var(--rail);color:var(--rail-text);border-top:4px solid var(--accent);border-radius:4px;padding:10px 16px 12px}
 .band-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
 .band-head small{color:var(--rail-muted);font-size:12px}
 .band-cols{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:20px}
@@ -105,7 +107,7 @@ function optionLabel(i){return '方案 '+LETTERS.charAt(i)+'：'+data.options[i]
 function list(col,host,items,tag){$(col).hidden=!items.length;var box=$(host);box.textContent='';if(!items.length)return;var l=document.createElement(tag);items.forEach(function(t){var li=document.createElement('li');li.textContent=t;l.appendChild(li)});box.appendChild(l)}
 function seg(labels,index,pick){var s=document.createElement('div');s.className='seg';labels.forEach(function(label,i){var b=document.createElement('button');b.type='button';b.textContent=label;b.setAttribute('aria-pressed',String(i===index));b.onclick=function(){pick(i)};s.appendChild(b)});return s}
 function group(name,labels,index,pick){var g=document.createElement('div');g.className='group';var n=document.createElement('div');n.className='group-name';n.textContent=name;g.appendChild(n);g.appendChild(seg(labels,index,pick));return g}
-function withSelection(){var p=data.pages[cur.page],sel={page:p.name,view:p.views[cur.view].name};if(data.options.length)sel.option=LETTERS.charAt(cur.option);var js='(function(r,s){for(var k in s)r.dataset[k]=s[k]})(document.documentElement,'+JSON.stringify(sel).replace(/</g,'\\u003c')+')';var head=/^\s*<!doctype[^>]*>/i.exec(source),at=head?head[0].length:0;return source.slice(0,at)+'<script>'+js+'<\/script>'+source.slice(at)}
+function withSelection(){var p=data.pages[cur.page],sel={page:p.name,view:p.views[cur.view].name};if(data.options.length)sel.option=LETTERS.charAt(cur.option);var js='(function(r,s){for(var k in s)r.dataset[k]=s[k]})(document.documentElement,'+JSON.stringify(sel).replace(/</g,'\\u003c')+')';var head=/^\s*<!doctype[^>]*>/i.exec(source),at=head?head[0].length:0;return source.slice(0,at)+'<base href="about:srcdoc"><script>'+js+'<\/script>'+source.slice(at)}
 function render(){
   var p=data.pages[cur.page],box=$('switches'),ob=$('option-box');box.textContent='';ob.textContent='';
   if(data.pages.length>1)box.appendChild(group('页面',data.pages.map(function(x){return x.name}),cur.page,function(i){cur.page=i;cur.view=0;render()}));
@@ -129,7 +131,7 @@ render();
 
 三个填充位的转义规则：
 - `<<TITLE>>`：`<原型名称> 第 N 版`，`&` 转成 `&amp;`，`<` 转成 `&lt;`。
-- `<<DATA>>`：`JSON.stringify` 后把 `<` 换成 `<`。对象字段是 `name`、`version`、`pages`、`options`、`prototypeOnly`、`openQuestions`；`pages` 每项的 `group` 已填好默认值"状态"，每个画面的 `notes` 是数组。
+- `<<DATA>>`：`JSON.stringify` 后，把所有小于号换成 JSON 的转义写法（反斜杠加 u003c）。对象字段是 `name`、`version`、`pages`、`options`、`prototypeOnly`、`openQuestions`；`pages` 每项的 `group` 已填好默认值"状态"，每个画面的 `notes` 是数组。
 - `<<PAGE>>`：`&` 转成 `&amp;`，`</textarea`（不分大小写）里的 `<` 转成 `&lt;`，其余字符原样保留，这样读文件时能直接看到页面源码。`textarea` 的 `.value` 会还原这两种转义。
 
 ## 函数清单
@@ -152,4 +154,4 @@ render();
 - [ ] 页面含 `</textarea>`、`&amp;`、`$&`、`</script>` 时，取出 `textarea` 内容并还原 `&lt;/textarea` 和 `&amp;` 后与原页面完全相同。
 - [ ] 取出 `prototype-data` 的 JSON 能解析；说明里写 `</script><script>x</script>` 时，这段 JSON 文本里没有字面的 `</script`。
 - [ ] 输出里除页面自身内容外没有 `http://`、`https://`、`src=`、`<link`。
-- [ ] 真实浏览器核对（由 exec 主代理用浏览器工具按本地文件打开一份样例，不写自动化测试）：默认选中项、三组切换后的隔离框 `data-page`/`data-view`/`data-option`、切换后输入清空、只有 1 个页面 1 个画面无方案时切换区和黄色标签不出现、三块说明全空时说明区不出现且隔离框占满、说明里的 `<b>` 显示成文字、长说明时说明区不超过窗口三分之一且只有它滚动、窗口变窄时三块上下排列且没有横向滚动、页面把 `body` 背景改成红色时切换栏和说明区不变。
+- [ ] 真实浏览器核对（由 exec 主代理用浏览器工具按本地文件打开一份样例，不写自动化测试）：默认选中项、三组切换后的隔离框 `data-page`/`data-view`/`data-option`、切换后输入清空、只有 1 个页面 1 个画面无方案时切换区和黄色标签不出现、三块说明全空时说明区不出现且隔离框占满、说明里的 `<b>` 显示成文字、窗口宽度超过 760 像素时长说明不超过窗口三分之一且只有说明区滚动、窗口不超过 760 像素时三块上下排列且说明区不限高度、方案名写满 20 字时各种窗口宽度都没有横向滚动、点页面里的 `href="#"` 和页内锚点后隔离框仍是这个页面、页面把 `body` 背景改成红色时切换栏和说明区不变。

@@ -19,7 +19,7 @@ description: 设计师规矩写明页面和说明怎么分开交，worker、revi
 ## 涉及文件
 - `role-rules/prototype.md`（修改）
 - `role-rules/worker.md`、`role-rules/reviewer.md`、`role-rules/qa.md`（修改）
-- `tests/role-catalog.test.ts`（修改）
+- `tests/role-catalog.test.ts`、`tests/role-rules.test.ts`、`tests/prototype-windows.test.ts`（修改：这些测试写着旧规矩的文字）
 
 ## 成品定义
 `role-rules/prototype.md` 全文改成：
@@ -33,9 +33,9 @@ description: 设计师规矩写明页面和说明怎么分开交，worker、revi
 - 图形界面（网页、桌面或手机界面）：还原布局、配色、文案，正常、空数据、加载中、出错四种状态各是一个画面，有交互的地方做成能点的。手机界面在页面里自己限定宽度并居中。
 - 终端界面（命令行输出、表格、进度条、交互提示）：页面铺满隔离框，深色背景、等宽字体，文字从左上角开始，按 80 列换行，不居中，不画窗口标题栏，颜色按实际终端效果还原；多步交互的每一步是一个画面，group 写"步骤"。
 - 一份原型里画了多个方案时，交稿必须附方案清单（options），最少 2 个、最多 6 个，每个名称最多 20 字。页面按 data-option 的字母显示对应方案，字母和清单顺序一致。只画了一种方案时不附清单。
-- 任务说明里给出上一版文件和用户的意见时，先用 read 读上一版：id 为 prototype-page 的 textarea 里是页面（其中的 &amp; 是 & 的转义），id 为 prototype-data 的 JSON 里是各张清单。按用户原话改，没提到的地方保持不变，再分开交稿。
+- 任务说明里给出上一版文件和用户的意见时，先用 read 读上一版：id 为 prototype-page 的 textarea 里是页面（其中的 &amp; 是 & 的转义，&lt;/textarea 是 </textarea 的转义），id 为 prototype-data 的 JSON 里是各张清单。按用户原话改，没提到的地方保持不变，再分开交稿。
 - 只能读仓库里的文件，不能改文件，也不能运行命令；需要了解现有界面时读源码和样式。
-- 任务说明里有项目规范时，原型不得与之冲突；不清楚就停下，在说明里写明，不猜。
+- 任务说明里有项目规范时，原型不得与之冲突；不清楚就停下，在 note 里写明，不猜。
 ```
 
 `role-rules/worker.md` 第 12 行，把开头的
@@ -47,7 +47,7 @@ description: 设计师规矩写明页面和说明怎么分开交，worker、revi
 换成
 
 ```text
-任务说明里有原型时先读原型（用 read）：文件里 id 为 prototype-page 的 textarea 是被设计的页面，只实现它，实现出来的界面须与它一致；id 为 prototype-data 的 JSON 里的说明可以用来理解页面，切换栏、说明区和外框本身不实现；
+任务说明里有原型时先读原型（用 read）：文件里 id 为 prototype-page 的 textarea 是被设计的页面（其中的 &amp; 是 & 的转义，&lt;/textarea 是 </textarea 的转义），只实现它，实现出来的界面须与它一致；这份页面按 html 根元素的 data-page、data-view、data-option 决定显示哪个页面、画面和方案；id 为 prototype-data 的 JSON 里的说明可以用来理解页面，切换栏、说明区和外框本身不实现；
 ```
 
 `role-rules/reviewer.md` 第 9 行，把
@@ -59,7 +59,7 @@ description: 设计师规矩写明页面和说明怎么分开交，worker、revi
 换成
 
 ```text
-用 read 读它，只对照文件里 id 为 prototype-page 的 textarea 中被设计的页面，核对改动后的界面（布局、文案、各种状态、交互），不一致列为阻塞；切换栏、说明区和外框里的文字与实现不一致不算阻塞。
+用 read 读它，只对照文件里 id 为 prototype-page 的 textarea 中被设计的页面（其中的 &amp; 是 & 的转义，&lt;/textarea 是 </textarea 的转义），核对改动后的界面（布局、文案、各种状态、交互），不一致列为阻塞；这份页面按 html 根元素的 data-page、data-view、data-option 决定显示哪个页面、画面和方案；切换栏、说明区和外框里的文字与实现不一致不算阻塞。
 ```
 
 `role-rules/qa.md` 第 8 行，把
@@ -71,8 +71,10 @@ description: 设计师规矩写明页面和说明怎么分开交，worker、revi
 换成
 
 ```text
-只对照文件里 id 为 prototype-page 的 textarea 中被设计的页面逐项验收：把实际输出（返回的 HTML、样式、终端文字等）与它逐项对照，布局结构、文案、样式、各种状态与交互一致的算已验证，不一致的列为阻塞；切换栏、说明区和外框里的内容不列入验收。
+只对照文件里 id 为 prototype-page 的 textarea 中被设计的页面（其中的 &amp; 是 & 的转义，&lt;/textarea 是 </textarea 的转义）逐项验收：把实际输出（返回的 HTML、样式、终端文字等）与它逐项对照，布局结构、文案、样式、各种状态与交互一致的算已验证，不一致的列为阻塞；这份页面按 html 根元素的 data-page、data-view、data-option 决定显示哪个页面、画面和方案；切换栏、说明区和外框里的内容不列入验收。
 ```
+
+worker.md 第 12 行、reviewer.md 第 9 行后半句里的"原型文件"改成"页面"，让同一条前后一致。
 
 ## 函数清单
 本 plan 只改文字文件，没有函数。
@@ -89,4 +91,6 @@ description: 设计师规矩写明页面和说明怎么分开交，worker、revi
 - [ ] worker 规矩含"只实现它""切换栏、说明区和外框本身不实现"。
 - [ ] reviewer 规矩含"切换栏、说明区和外框里的文字与实现不一致不算阻塞"。
 - [ ] qa 规矩含"切换栏、说明区和外框里的内容不列入验收"。
-- [ ] `pnpm test tests/role-catalog.test.ts` 通过。
+- [ ] worker、reviewer、qa 三份规矩都含两种转义说明和 data-page、data-view、data-option。
+- [ ] worker、reviewer 规矩不含"原型文件逐项对照"。
+- [ ] `npx vitest run tests/role-catalog.test.ts tests/role-rules.test.ts tests/prototype-windows.test.ts` 通过。
