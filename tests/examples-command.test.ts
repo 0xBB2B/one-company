@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, realpathSync, writeFileSync } from "node:fs";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { openExamplesPage } from "../src/modules/settings/examples-extension.ts";
 import { saveDisabledAgentsSetting, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
@@ -44,17 +44,19 @@ async function readTrust(): Promise<Record<string, boolean>> {
   return JSON.parse(await readFile(trustPath(), "utf8"));
 }
 
-async function run(steps: Step[]) {
+const tagTheme = { ...theme, fg: (kind: string, text: string) => `<${kind}>${text}</${kind}>` };
+
+async function run(steps: Step[], options: { width?: number; theme?: typeof theme } = {}) {
   const queue = [...steps];
   const screens: string[] = [];
   const notifications: Array<{ message: string; level?: string }> = [];
   const ui = {
     custom<T>(factory: (...args: unknown[]) => unknown): Promise<T> {
       return new Promise<T>((resolve) => {
-        const component = factory({ requestRender() {} }, theme, undefined, resolve) as { render(width: number): string[]; handleInput(data: string): void };
+        const component = factory({ requestRender() {} }, options.theme ?? theme, undefined, resolve) as { render(width: number): string[]; handleInput(data: string): void };
         const step = queue.shift();
         if (!step) throw new Error("脚本步骤用完了");
-        const text = component.render(200).map((line) => line.trimEnd()).join("\n");
+        const text = component.render(options.width ?? 200).map((line) => line.trimEnd()).join("\n");
         screens.push(text);
         step({ keys: (...keys) => { for (const key of keys) component.handleInput(key); }, text });
       });
@@ -74,6 +76,7 @@ const capture = (store: string[], then: Step): Step => (screen) => { store.push(
 
 const sample = (name: string, ...parts: string[]) => readFile(join(EXAMPLES, name, ...parts), "utf8");
 const exists = (path: string) => existsSync(path);
+const tildeOf = (path: string) => (path.startsWith(`${homedir()}/`) ? `~${path.slice(homedir().length)}` : path);
 
 async function copyGolangToUser() {
   await run([GOLANG, USER_LAYER, COPY, WRITE]);
@@ -200,7 +203,9 @@ describe("golang 复制到用户层", () => {
     expect(screens[0]).toContain("新复制 2：go-worker、go-reviewer");
     expect(screens[0]).toContain("复制后替换同名的内置定义。开关按定义名记，go-worker、go-reviewer 现在都是开启。");
     expect(screens[0]).toContain(`AGENTS.md → ${join(agentDir, "AGENTS.md")}`);
-    expect(screens[0]).toContain("还没有 AGENTS.md，新建一份，下一步给你看全文再写");
+    expect(screens[0]).toContain("还没有 AGENTS.md，新建一份，下一步问你是否写入");
+    expect(screens[0]).not.toContain("给你看全文");
+    expect(screens[0]).not.toContain("给你看差异");
     expect(screens[0]).toContain("复制");
     expect(screens[0]).toContain("不复制");
 
@@ -214,11 +219,12 @@ describe("golang 复制到用户层", () => {
     const dialog = screens[1]!;
     const title = dialog.split("\n").find((line) => line.includes("把这些改动写入用户规范 "))!;
     expect(title.trim()).toMatch(/^把这些改动写入用户规范 .*AGENTS\.md？$/u);
-    expect(dialog).toContain("还没有 AGENTS.md，要写入的全文如下：");
-    expect(dialog).toContain("+ ## 后端设计约定");
+    expect(dialog).toContain("还没有 AGENTS.md，新建一份，写入「## 后端设计约定」一段，共 68 行。");
+    expect(dialog).not.toContain("要写入的全文如下");
+    expect(dialog).not.toContain("+ ## 后端设计约定");
     expect(dialog).toContain("写入后，此后派出的 PM、worker、reviewer 都按新内容工作。");
     expect(dialog).toMatch(/^\s*(→ )?写入/mu);
-    expect(dialog).toContain("不写入");
+    expect(dialog).toMatch(/^\s*(→ )?不写入/mu);
     expect(dialog).not.toContain("其他");
 
     expect(result.notifications).toHaveLength(1);
@@ -242,14 +248,16 @@ describe("golang 复制到用户层", () => {
     expect(result.last()).toBe("Go 后端样例在用户层和项目层都已全部复制，和样例一致。");
   });
 
-  test("用户层已有 AGENTS.md：确认窗口写追加，窗口四对比改动，写入后是原内容加空行加样例全文", async () => {
+  test("用户层已有 AGENTS.md：确认窗口写追加，写入窗口写摘要，写入后是原内容加空行加样例全文", async () => {
     await setup();
     await writeFile(join(agentDir, "AGENTS.md"), "个人规范一\n个人规范二\n");
     const screens: string[] = [];
     await run([GOLANG, USER_LAYER, capture(screens, COPY), capture(screens, WRITE)]);
-    expect(screens[0]).toContain("追加「## 后端设计约定」一段，下一步给你看差异再写");
-    expect(screens[1]).toContain("与现有的 AGENTS.md 相比的改动：");
-    expect(screens[1]).toContain("+ ## 后端设计约定");
+    expect(screens[0]).toContain("追加「## 后端设计约定」一段，下一步问你是否写入");
+    expect(screens[0]).not.toContain("给你看差异");
+    expect(screens[1]).toContain("在现有 AGENTS.md 末尾追加「## 后端设计约定」一段，共 68 行，原有内容不动。");
+    expect(screens[1]).not.toContain("与现有的 AGENTS.md 相比的改动：");
+    expect(screens[1]).not.toContain("+ ## 后端设计约定");
     expect(await readFile(join(agentDir, "AGENTS.md"), "utf8")).toBe(`个人规范一\n个人规范二\n\n${await sample("golang", "AGENTS.md")}`);
   });
 
@@ -300,7 +308,7 @@ describe("AGENTS.md 软链接和 CRLF", () => {
     expect(await readFile(real, "utf8")).toBe(`个人规范一\n\n${await sample("golang", "AGENTS.md")}`);
   });
 
-  test("用户层 AGENTS.md 是软链接：差异窗口在说明行上方写出真实路径", async () => {
+  test("用户层 AGENTS.md 是软链接：写入窗口在摘要上方写出真实路径", async () => {
     await setup();
     const real = join(root, "elsewhere.md");
     await writeFile(real, "个人规范一\n");
@@ -309,29 +317,186 @@ describe("AGENTS.md 软链接和 CRLF", () => {
     await run([GOLANG, USER_LAYER, COPY, capture(screens, WRITE)]);
     const note = `AGENTS.md 是软链接，实际写到 ${await realpath(real)}`;
     expect(screens[0]).toContain(note);
-    expect(screens[0]!.indexOf(note)).toBeLessThan(screens[0]!.indexOf("与现有的 AGENTS.md 相比的改动："));
+    expect(screens[0]!.indexOf(note)).toBeLessThan(screens[0]!.indexOf("在现有 AGENTS.md 末尾追加"));
   });
 
-  test("用户层 AGENTS.md 是普通文件：差异窗口没有软链接说明行", async () => {
+  test("用户层 AGENTS.md 是普通文件：写入窗口没有软链接说明行", async () => {
     await setup();
     await writeFile(join(agentDir, "AGENTS.md"), "个人规范一\n");
     const screens: string[] = [];
     await run([GOLANG, USER_LAYER, COPY, capture(screens, WRITE)]);
-    expect(screens[0]).toContain("与现有的 AGENTS.md 相比的改动：");
+    expect(screens[0]).toContain("在现有 AGENTS.md 末尾追加「## 后端设计约定」一段");
     expect(screens[0]).not.toContain("AGENTS.md 是软链接");
   });
 
-  test("用户层 AGENTS.md 是 CRLF：差异窗口没有 \\r，写入后没有单独的 \\n，再运行窗口一显示已复制", async () => {
+  test("用户层 AGENTS.md 是 CRLF：写入窗口没有 \\r，摘要照常，写入后没有单独的 \\n，再运行窗口一显示已复制", async () => {
     await setup();
     const agentsPath = join(agentDir, "AGENTS.md");
     await writeFile(agentsPath, "个人规范一\r\n个人规范二\r\n");
     const screens: string[] = [];
     await run([GOLANG, USER_LAYER, COPY, capture(screens, WRITE)]);
     expect(screens[0]).not.toContain("\r");
+    expect(screens[0]).toContain("在现有 AGENTS.md 末尾追加「## 后端设计约定」一段，共 68 行，原有内容不动。");
     expect(await readFile(agentsPath, "utf8")).not.toMatch(/(?<!\r)\n/u);
     const after: string[] = [];
     await run([capture(after, CANCEL)]);
     expect(after[0]).toContain("Go 后端 · 用户层：已复制");
+  });
+});
+
+describe("写入窗口摘要", () => {
+  const lineOf = (text: string, part: string) => text.split("\n").find((line) => line.includes(part));
+  const writeDialog = async (steps: Step[], options?: Parameters<typeof run>[1]) => {
+    const screens: string[] = [];
+    const result = await run([...steps, capture(screens, WRITE)], options);
+    return { dialog: screens[0]!, result };
+  };
+
+  test("用户层目标不存在：golang 写新建摘要", async () => {
+    await setup();
+    const { dialog } = await writeDialog([GOLANG, USER_LAYER, COPY]);
+    expect(dialog).toContain(`把这些改动写入用户规范 ${tildeOf(join(agentDir, "AGENTS.md"))}？`);
+    expect(dialog).toContain("还没有 AGENTS.md，新建一份，写入「## 后端设计约定」一段，共 68 行。");
+    expect(dialog).not.toContain("在现有 AGENTS.md");
+  });
+
+  test("用户层目标不存在：vue 写新建摘要，共 29 行", async () => {
+    await setup();
+    const { dialog } = await writeDialog([VUE, USER_LAYER, COPY]);
+    expect(dialog).toContain("还没有 AGENTS.md，新建一份，写入「## 前端设计约定」一段，共 29 行。");
+  });
+
+  test("用户层目标存在：vue 写追加摘要，共 29 行", async () => {
+    await setup();
+    await writeFile(join(agentDir, "AGENTS.md"), "个人规范一\n");
+    const { dialog } = await writeDialog([VUE, USER_LAYER, COPY]);
+    expect(dialog).toContain("在现有 AGENTS.md 末尾追加「## 前端设计约定」一段，共 29 行，原有内容不动。");
+  });
+
+  test("项目层目标不存在：标题写项目规范，摘要写新建", async () => {
+    await setup({ trusted: true });
+    const { dialog } = await writeDialog([GOLANG, PROJECT_LAYER, COPY]);
+    expect(dialog).toContain("把这些改动写入项目规范 AGENTS.md？");
+    expect(dialog).toContain("还没有 AGENTS.md，新建一份，写入「## 后端设计约定」一段，共 68 行。");
+  });
+
+  test("项目层目标存在：标题写项目规范，摘要写追加", async () => {
+    await setup({ trusted: true });
+    await writeFile(join(repoDir, "AGENTS.md"), "项目规范一\n");
+    const { dialog } = await writeDialog([GOLANG, PROJECT_LAYER, COPY]);
+    expect(dialog).toContain("把这些改动写入项目规范 AGENTS.md？");
+    expect(dialog).toContain("在现有 AGENTS.md 末尾追加「## 后端设计约定」一段，共 68 行，原有内容不动。");
+  });
+
+  test("各行顺序：标题、软链接、摘要、样例路径、空行、写入后说明", async () => {
+    await setup();
+    const real = join(root, "elsewhere.md");
+    await writeFile(real, "个人规范一\n");
+    await symlink(real, join(agentDir, "AGENTS.md"));
+    const { dialog } = await writeDialog([GOLANG, USER_LAYER, COPY]);
+    const lines = dialog.split("\n");
+    const at = (part: string) => lines.findIndex((line) => line.includes(part));
+    const [title, link, summary, path, after] = [at("把这些改动写入用户规范 "), at("AGENTS.md 是软链接"), at("在现有 AGENTS.md 末尾追加"), at("这段内容在 "), at("写入后，此后派出的")];
+    expect(title).toBeGreaterThanOrEqual(0);
+    expect(link).toBeGreaterThan(title);
+    expect(summary).toBe(link + 1);
+    expect(path).toBe(summary + 1);
+    expect(after).toBe(path + 2);
+    expect(lines[path + 1]!.trim()).toBe("");
+  });
+
+  test("样例路径行：写本次读取的样例 AGENTS.md，家目录开头的写成 ~", async () => {
+    await setup();
+    const savedHome = process.env.HOME;
+    process.env.HOME = join(EXAMPLES, "..");
+    try {
+      const { dialog } = await writeDialog([GOLANG, USER_LAYER, COPY]);
+      expect(lineOf(dialog, "这段内容在 ")!.trim()).toBe("这段内容在 ~/examples/golang/AGENTS.md");
+      const vue = await writeDialog([VUE, USER_LAYER, COPY]);
+      expect(lineOf(vue.dialog, "这段内容在 ")!.trim()).toBe("这段内容在 ~/examples/vue/AGENTS.md");
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    }
+  });
+
+  test("样例路径不在家目录下：写完整绝对路径", async () => {
+    await setup();
+    const savedHome = process.env.HOME;
+    process.env.HOME = join(root, "other-home");
+    try {
+      const { dialog } = await writeDialog([GOLANG, USER_LAYER, COPY]);
+      expect(lineOf(dialog, "这段内容在 ")!.trim()).toBe(`这段内容在 ${join(EXAMPLES, "golang", "AGENTS.md")}`);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    }
+  });
+
+  test("颜色：软链接行 warning，摘要普通颜色，样例路径行和写入后说明 muted", async () => {
+    await setup();
+    const real = join(root, "elsewhere.md");
+    await writeFile(real, "个人规范一\n");
+    await symlink(real, join(agentDir, "AGENTS.md"));
+    const { dialog } = await writeDialog([GOLANG, USER_LAYER, COPY], { theme: tagTheme });
+    expect(lineOf(dialog, "AGENTS.md 是软链接")).toContain("<warning>");
+    const summary = lineOf(dialog, "在现有 AGENTS.md 末尾追加")!;
+    expect(summary).not.toContain("<muted>");
+    expect(summary).not.toContain("<toolDiffAdded>");
+    expect(summary).not.toContain("<warning>");
+    expect(lineOf(dialog, "这段内容在 ")).toMatch(/<muted>这段内容在 .*<\/muted>/u);
+    expect(lineOf(dialog, "写入后，此后派出的")).toContain("<muted>写入后，此后派出的 PM、worker、reviewer 都按新内容工作。</muted>");
+  });
+
+  test("目标不存在时摘要同样是普通颜色", async () => {
+    await setup();
+    const { dialog } = await writeDialog([VUE, USER_LAYER, COPY], { theme: tagTheme });
+    const summary = lineOf(dialog, "还没有 AGENTS.md，新建一份，写入")!;
+    expect(summary).not.toContain("<muted>");
+    expect(summary).not.toContain("<toolDiffAdded>");
+  });
+
+  test.each([["目标已存在", true], ["目标不存在", false]] as const)("%s：不显示样例正文，也不显示目标原有内容，样例标题只出现在摘要里", async (_name, targetExists) => {
+    await setup();
+    if (targetExists) await writeFile(join(agentDir, "AGENTS.md"), "个人规范一\n特殊标记行-不应出现\n");
+    const { dialog } = await writeDialog([GOLANG, USER_LAYER, COPY]);
+    expect(dialog).not.toContain("特殊标记行-不应出现");
+    expect(dialog).not.toContain("个人规范一");
+    const sampleLines = (await sample("golang", "AGENTS.md")).split("\n").map((line) => line.trim()).filter((line) => line.length >= 4 && line !== "## 后端设计约定");
+    expect(sampleLines.length).toBeGreaterThan(20);
+    for (const line of sampleLines) expect(dialog).not.toContain(line);
+    expect(dialog.split("## 后端设计约定").length - 1).toBe(1);
+    expect(dialog.split("\n").some((line) => line.trimStart().startsWith("+ "))).toBe(false);
+  });
+
+  test("目标 AGENTS.md 有 500 行：用户层写入窗口 80 列下不超过 20 行，含写入和不写入", async () => {
+    await setup();
+    await writeFile(join(agentDir, "AGENTS.md"), Array.from({ length: 500 }, (_, i) => `规则${i}`).join("\n") + "\n");
+    const { dialog } = await writeDialog([GOLANG, USER_LAYER, COPY], { width: 80 });
+    expect(dialog.split("\n").length).toBeLessThanOrEqual(20);
+    expect(dialog).toContain("在现有 AGENTS.md 末尾追加「## 后端设计约定」一段，共 68 行，原有内容不动。");
+    expect(dialog).toMatch(/^\s*(→ )?写入/mu);
+    expect(dialog).toMatch(/^\s*(→ )?不写入/mu);
+  });
+
+  test("原内容末尾没有换行：写入后是原内容加空行加样例全文", async () => {
+    await setup();
+    await writeFile(join(agentDir, "AGENTS.md"), "个人规范一");
+    await run([GOLANG, USER_LAYER, COPY, WRITE]);
+    expect(await readFile(join(agentDir, "AGENTS.md"), "utf8")).toBe(`个人规范一\n\n${await sample("golang", "AGENTS.md")}`);
+  });
+
+  test.each([["选不写入", [DOWN, ENTER]], ["按 Esc", [ESC]]] as const)("目标已有内容，%s：文件不变", async (_name, sequence) => {
+    await setup();
+    await writeFile(join(agentDir, "AGENTS.md"), "个人规范一\n个人规范二\n");
+    await run([GOLANG, USER_LAYER, COPY, pick(...sequence)]);
+    expect(await readFile(join(agentDir, "AGENTS.md"), "utf8")).toBe("个人规范一\n个人规范二\n");
+  });
+
+  test("写入窗口默认停在写入", async () => {
+    await setup();
+    const screens: string[] = [];
+    await run([GOLANG, USER_LAYER, COPY, capture(screens, WRITE)]);
+    expect(screens[0]).toMatch(/→ 写入/u);
+    expect(screens[0]).not.toMatch(/→ 不写入/u);
   });
 });
 
@@ -454,7 +619,7 @@ describe("复制到项目层", () => {
     expect(screens[0]).toContain("go-worker 现在是关闭，go-reviewer 是开启");
   });
 
-  test("项目层复制并写入：窗口四标题写项目规范，AGENTS.md 写在仓库根", async () => {
+  test("项目层复制并写入：写入窗口标题写项目规范，AGENTS.md 写在仓库根", async () => {
     await setup({ trusted: true });
     const screens: string[] = [];
     const result = await run([GOLANG, PROJECT_LAYER, COPY, capture(screens, WRITE)]);
@@ -490,7 +655,7 @@ describe("审查补充", () => {
     expect(last()).toMatch(/被改过、没有覆盖：.*vue-worker\.md。$/mu);
   });
 
-  test("选层窗口开着时别处写进了一致的那一段：确认窗口写不动，不弹差异窗口，那一段只有一份", async () => {
+  test("选层窗口开着时别处写进了一致的那一段：确认窗口写不动，不弹写入窗口，那一段只有一份", async () => {
     await setup();
     const text = await sample("golang", "AGENTS.md");
     const confirm: string[] = [];
