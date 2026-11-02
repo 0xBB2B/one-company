@@ -1,11 +1,12 @@
 import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { formatProgramStatus } from "@earendil-works/pi-tui";
 import { afterEach, expect, test, vi } from "vitest";
 import { openSettingsPage } from "../src/modules/settings/settings-extension.ts";
 import type { SettingsExtensionContext } from "../src/modules/settings/settings-extension.ts";
 import { createClock } from "../src/core/policy/clock.ts";
-import { chooseOrWriteWindow, chooseWindow, openProgramWindow } from "../src/core/host/question-window.ts";
+import { askWindow, chooseOrWriteWindow, chooseWindow, confirmWindow, openProgramWindow } from "../src/core/host/question-window.ts";
 import { openShellPage } from "../src/modules/shell/shell-page.ts";
 import { ShellRegistry } from "../src/core/host/shell-registry.ts";
 
@@ -156,4 +157,188 @@ test("带输入行的窗口设了最长字数：超长时回车不能确认、�
   view.handleInput(BACKSPACE);
   view.handleInput(ENTER);
   expect(await answer).toEqual({ choices: [], other: "一二三四五" });
+});
+
+function statusRecorder(options: { idle?: () => boolean; sessionName?: string | undefined; withIdle?: boolean } = {}) {
+  const opened: Opened[] = [];
+  const statuses: Array<Record<string, unknown>> = [];
+  const terminal = { rows: 40, columns: 80, setProgramStatus: (status: Record<string, unknown>) => { statuses.push(status); } };
+  const custom = vi.fn((factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: unknown) => void) => Opened["component"]) =>
+    new Promise((resolve) => { opened.push({ component: factory({ requestRender: () => {}, terminal }, theme, {}, resolve), done: resolve }); }));
+  const host: Record<string, unknown> = { hasUI: true, ui: { custom }, sessionManager: { getSessionName: () => options.sessionName } };
+  cleanups.push(async () => { for (let round = 0; round < 3; round++) { for (const window of opened) window.done(undefined); await settle(10); } });
+  if (options.withIdle !== false) host.isIdle = options.idle ?? (() => false);
+  return { host, custom, opened, statuses };
+}
+
+const blocked = (message: string) => ({ state: "blocked", kind: "question", app: "pi", message });
+const working = (message: string) => ({ state: "working", app: "pi", message });
+const decodedMessage = (status: Record<string, unknown>) => {
+  const sequence = formatProgramStatus(status as never);
+  const encoded = /msg=([A-Za-z0-9+/=]+)/.exec(sequence)![1]!;
+  return Buffer.from(encoded, "base64").toString("utf8");
+};
+const oneChoice = [{ label: "甲" }];
+
+test("主代理运行中打开提问窗口：显示时上报一次 blocked，message 是问题文字", async () => {
+  const r = statusRecorder({ sessionName: "会话甲" });
+  const answer = askWindow(r.host as never, { question: "要不要继续？", choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  expect(r.statuses).toEqual([blocked("要不要继续？")]);
+  r.opened[0]!.component.handleInput(ENTER);
+  await answer;
+});
+
+test("主代理运行中打开确认窗口：上报 blocked，message 是窗口标题", async () => {
+  const r = statusRecorder({ sessionName: "会话甲" });
+  const answer = confirmWindow(r.host as never, { title: "确认执行吗", lines: [{ text: "正文不上报" }] });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  expect(r.statuses).toEqual([blocked("确认执行吗")]);
+  r.opened[0]!.component.handleInput(ESC);
+  await answer;
+});
+
+test("主代理运行中打开选择窗口：上报 blocked，message 是窗口标题", async () => {
+  const r = statusRecorder({ sessionName: "会话甲" });
+  const answer = chooseWindow(r.host as never, { title: "选一个", lines: [], choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  expect(r.statuses).toEqual([blocked("选一个")]);
+  r.opened[0]!.component.handleInput(ESC);
+  await answer;
+});
+
+test("主代理运行中打开选择或输入窗口：上报 blocked，message 是窗口标题", async () => {
+  const r = statusRecorder({ sessionName: "会话甲" });
+  const answer = chooseOrWriteWindow(r.host as never, { title: "选或写", lines: [], choices: oneChoice, otherLabel: "其他" });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  expect(r.statuses).toEqual([blocked("选或写")]);
+  r.opened[0]!.component.handleInput(ESC);
+  await answer;
+});
+
+test("带换行的问题交给 formatProgramStatus 编码后，msg 解码是一行，换行变成空格", async () => {
+  const r = statusRecorder();
+  const answer = askWindow(r.host as never, { question: "第一行\n第二行", choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  expect(r.statuses).toHaveLength(1);
+  expect(decodedMessage(r.statuses[0]!)).toBe("第一行 第二行");
+  r.opened[0]!.component.handleInput(ENTER);
+  await answer;
+});
+
+test("回车作答关闭且主代理仍在运行：上报 working，message 是会话名", async () => {
+  const r = statusRecorder({ sessionName: "会话甲" });
+  const answer = askWindow(r.host as never, { question: "问题", choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  r.opened[0]!.component.handleInput(ENTER);
+  await answer;
+  expect(r.statuses).toEqual([blocked("问题"), working("会话甲")]);
+});
+
+test("Esc 取消关闭且主代理仍在运行：上报 working，message 是会话名", async () => {
+  const r = statusRecorder({ sessionName: "会话甲" });
+  const answer = chooseWindow(r.host as never, { title: "选一个", lines: [], choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  r.opened[0]!.component.handleInput(ESC);
+  await answer;
+  expect(r.statuses).toEqual([blocked("选一个"), working("会话甲")]);
+});
+
+test("AbortSignal 中断关闭且主代理仍在运行：上报 working，message 是会话名", async () => {
+  const r = statusRecorder({ sessionName: "会话甲" });
+  const controller = new AbortController();
+  const answer = askWindow(r.host as never, { question: "问题", choices: oneChoice }, controller.signal);
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  controller.abort();
+  expect(await answer).toBeUndefined();
+  expect(r.statuses).toEqual([blocked("问题"), working("会话甲")]);
+});
+
+test("没有会话名：working 不带 message 字段", async () => {
+  const r = statusRecorder({ sessionName: undefined });
+  const answer = askWindow(r.host as never, { question: "问题", choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  r.opened[0]!.component.handleInput(ENTER);
+  await answer;
+  expect(r.statuses).toHaveLength(2);
+  expect(r.statuses[1]).toEqual({ state: "working", app: "pi" });
+  expect("message" in r.statuses[1]!).toBe(false);
+});
+
+test("打开后主代理停下再关闭：只有 blocked，没有 working", async () => {
+  let idle = false;
+  const r = statusRecorder({ idle: () => idle, sessionName: "会话甲" });
+  const answer = askWindow(r.host as never, { question: "问题", choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  idle = true;
+  r.opened[0]!.component.handleInput(ENTER);
+  await answer;
+  expect(r.statuses).toEqual([blocked("问题")]);
+});
+
+test("打开后主代理停下再被信号中断关闭：只有 blocked，没有 working", async () => {
+  let idle = false;
+  const r = statusRecorder({ idle: () => idle, sessionName: "会话甲" });
+  const controller = new AbortController();
+  const answer = askWindow(r.host as never, { question: "问题", choices: oneChoice }, controller.signal);
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  idle = true;
+  controller.abort();
+  expect(await answer).toBeUndefined();
+  expect(r.statuses).toEqual([blocked("问题")]);
+});
+
+test("打开时主代理没在运行：打开和关闭都不上报", async () => {
+  const r = statusRecorder({ idle: () => true, sessionName: "会话甲" });
+  const answer = askWindow(r.host as never, { question: "问题", choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  r.opened[0]!.component.handleInput(ENTER);
+  await answer;
+  expect(r.statuses).toEqual([]);
+});
+
+test("窗口宿主没有 isIdle：按没在运行处理，不上报", async () => {
+  const r = statusRecorder({ withIdle: false, sessionName: "会话甲" });
+  const answer = askWindow(r.host as never, { question: "问题", choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  r.opened[0]!.component.handleInput(ENTER);
+  await answer;
+  expect(r.statuses).toEqual([]);
+});
+
+test("关闭时 isIdle 抛错：窗口照常关闭并返回结果，没有 working 记录", async () => {
+  let broken = false;
+  const r = statusRecorder({ idle: () => { if (broken) throw new Error("上下文已失效"); return false; }, sessionName: "会话甲" });
+  const answer = askWindow(r.host as never, { question: "问题", choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  broken = true;
+  r.opened[0]!.component.handleInput(ENTER);
+  expect(await answer).toEqual({ choices: ["甲"] });
+  expect(r.statuses).toEqual([blocked("问题")]);
+});
+
+test("两个窗口排队：上报顺序是 blocked、working、blocked、working，第一个开着时没有第二个的记录", async () => {
+  const r = statusRecorder({ sessionName: "会话甲" });
+  const first = askWindow(r.host as never, { question: "问题一", choices: oneChoice });
+  const second = askWindow(r.host as never, { question: "问题二", choices: oneChoice });
+  await vi.waitFor(() => expect(r.opened).toHaveLength(1));
+  await settle();
+  expect(r.opened).toHaveLength(1);
+  expect(r.statuses).toEqual([blocked("问题一")]);
+  r.opened[0]!.component.handleInput(ENTER);
+  await first;
+  await vi.waitFor(() => expect(r.opened).toHaveLength(2));
+  r.opened[1]!.component.handleInput(ENTER);
+  await second;
+  expect(r.statuses).toEqual([blocked("问题一"), working("会话甲"), blocked("问题二"), working("会话甲")]);
+});
+
+test("不带等待文字的 openProgramWindow：即使 isIdle 返回 false 也不上报", async () => {
+  const r = statusRecorder({ sessionName: "会话甲" });
+  const a = plain("A");
+  const opening = openProgramWindow(r.host as never, a.factory as never);
+  await vi.waitFor(() => expect(r.custom).toHaveBeenCalledTimes(1));
+  a.finish("结果");
+  expect(await opening).toBe("结果");
+  expect(r.statuses).toEqual([]);
 });

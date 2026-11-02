@@ -1,8 +1,8 @@
 # 执行进度
 | 序号 | Plan | 状态 | 完成时间 |
 |---|---|---|---|
-| 01 | 01-window-blocked-status | pending | — |
+| 01 | 01-window-blocked-status | done | 2026-11-02 |
 ## 当前
-尚未开始。
+全部完成。Review 问题已自修：假终端补 `setProgramStatus`、删掉走不到的 try/catch、补信号中断用例；PRD 按用户决定改了用例和已知限制。全量纯代码测试里的失败都是高负载下的启动超时，单独重跑已通过，main 上同样负载也失败。
 ## 阻塞
 （无）

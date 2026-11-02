@@ -358,18 +358,36 @@ export class QuestionWindowView {
   invalidate(): void {}
 }
 
-export type WindowHost = Pick<ExtensionContext, "hasUI"> & { ui: Pick<ExtensionUIContext, "custom"> };
+export type WindowHost = Pick<ExtensionContext, "hasUI"> & { ui: Pick<ExtensionUIContext, "custom"> } & {
+  isIdle?: ExtensionContext["isIdle"];
+  sessionManager?: { getSessionName(): string | undefined };
+};
 export interface ProgramWindow { title: string; lines: WindowLine[] }
 
 export interface ProgramWindowHost {
   hasUI?: boolean;
   ui?: { custom?: unknown };
+  isIdle?: () => boolean;
+  sessionManager?: { getSessionName(): string | undefined };
 }
 type WindowFactory<T> = (tui: TUI, theme: Theme, keybindings: KeybindingsManager, done: (value: T | undefined) => void) => unknown;
 const QUEUE = Symbol.for("one-company.program-window-queue");
 
+function reportWaiting(host: ProgramWindowHost, tui: TUI, message: string): () => void {
+  if (host.isIdle?.() !== false) return () => {};
+  tui.terminal.setProgramStatus({ state: "blocked", kind: "question", app: "pi", message });
+  // pi 的状态上报器不知道这里写过 blocked，会因"和上次相同"跳过 working，只能在这里补写
+  return () => {
+    try {
+      if (host.isIdle?.() !== false) return;
+      const name = host.sessionManager?.getSessionName();
+      tui.terminal.setProgramStatus({ state: "working", app: "pi", ...(name ? { message: name } : {}) });
+    } catch { /* 会话已被替换，不上报 */ }
+  };
+}
+
 /** 所有程序窗口共用一个先进先出队列，同一时间只显示一个；队列挂在 globalThis 上，模块被加载多份时也只有一份。 */
-export async function openProgramWindow<T>(host: ProgramWindowHost, factory: WindowFactory<T>, signal?: AbortSignal, options?: { overlay?: boolean }): Promise<T | undefined> {
+export async function openProgramWindow<T>(host: ProgramWindowHost, factory: WindowFactory<T>, signal?: AbortSignal, options?: { overlay?: boolean }, waitingText?: string): Promise<T | undefined> {
   const custom = host.ui?.custom as ((factory: WindowFactory<T>, options?: { overlay?: boolean }) => Promise<T | undefined>) | undefined;
   if (host.hasUI === false || typeof custom !== "function" || signal?.aborted) return undefined;
   const queue = ((globalThis as Record<symbol, unknown>)[QUEUE] ??= { tail: Promise.resolve() }) as { tail: Promise<void> };
@@ -384,7 +402,9 @@ export async function openProgramWindow<T>(host: ProgramWindowHost, factory: Win
     });
     if (aborted || signal?.aborted) return undefined;
     return await custom.call(host.ui, (tui, theme, keybindings, done) => {
-      const finish = (value: T | undefined) => { signal?.removeEventListener("abort", abort); done(value); };
+      const restore = waitingText === undefined ? () => {} : reportWaiting(host, tui, waitingText);
+      // 必须在 done 之前同步恢复，否则下一个排队窗口的 blocked 会被这里的 working 盖掉
+      const finish = (value: T | undefined) => { signal?.removeEventListener("abort", abort); restore(); done(value); };
       const abort = () => finish(undefined);
       signal?.addEventListener("abort", abort, { once: true });
       return factory(tui, theme, keybindings, finish);
@@ -400,7 +420,7 @@ async function showWindow(host: WindowHost, questions: WindowQuestion[], tone: W
     return { render: (width: number) => view.render(width), invalidate: () => view.invalidate(),
       handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); },
       handleMouse: (event: TuiMouseEvent) => { const result = view.handleMouse(event); tui.requestRender(); return result; } };
-  }, signal);
+  }, signal, undefined, questions[0]!.question);
 }
 
 /** 主代理提问窗口：标准颜色，一次一个问题；Esc 或没有界面时为 undefined。 */
