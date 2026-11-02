@@ -926,6 +926,24 @@ const BAD_PAGES: Array<[string, unknown[], string]> = [
   ["页面没有画面", [{ name: "设置", views: [] }], "页面「设置」没有画面，至少写 1 个"],
   ["第 2 个画面名是空的", [{ name: "设置", views: [view("正常"), view("\u200b ")] }], "页面「设置」的第 2 个画面名是空的"],
   ["同一页面里两个画面重名", [{ name: "设置", views: [view("正常"), view(" 正常")] }], "页面「设置」的画面「正常」重名"],
+  ["第 2 个页面名首尾有空白", [{ name: "设置", views: [view("正常")] }, { name: " 登录页 ", views: [view("正常")] }], "第 2 个页面名有多余空白或不可见字符"],
+  ["第 2 个页面名有连续空白", [{ name: "设置", views: [view("正常")] }, { name: "账号  设置", views: [view("正常")] }], "第 2 个页面名有多余空白或不可见字符"],
+  ["第 2 个页面名有全角空格", [{ name: "设置", views: [view("正常")] }, { name: "登录\u3000页", views: [view("正常")] }], "第 2 个页面名有多余空白或不可见字符"],
+  ["第 2 个页面名有换行", [{ name: "设置", views: [view("正常")] }, { name: "登录\n页", views: [view("正常")] }], "第 2 个页面名有多余空白或不可见字符"],
+  ["第 2 个页面名有零宽字符", [{ name: "设置", views: [view("正常")] }, { name: "登\u200b录页", views: [view("正常")] }], "第 2 个页面名有多余空白或不可见字符"],
+  ["第 2 个页面名有控制字符", [{ name: "设置", views: [view("正常")] }, { name: "登录页\x1b[31m", views: [view("正常")] }], "第 2 个页面名有多余空白或不可见字符"],
+  ["第 2 个画面名首尾有空白", [{ name: "设置", views: [view("正常"), view(" 空数据")] }], "页面「设置」的第 2 个画面名有多余空白或不可见字符"],
+  ["第 2 个画面名有连续空白", [{ name: "设置", views: [view("正常"), view("空  数据")] }], "页面「设置」的第 2 个画面名有多余空白或不可见字符"],
+  ["第 2 个画面名有全角空格", [{ name: "设置", views: [view("正常"), view("空\u3000数据")] }], "页面「设置」的第 2 个画面名有多余空白或不可见字符"],
+  ["第 2 个画面名有零宽字符", [{ name: "设置", views: [view("正常"), view("空\u200b数据")] }], "页面「设置」的第 2 个画面名有多余空白或不可见字符"],
+  ["第 2 个页面名有不换行空格", [{ name: "设置", views: [view("正常")] }, { name: "登录 页", views: [view("正常")] }], "第 2 个页面名有多余空白或不可见字符"],
+  ["第 2 个页面名有制表符", [{ name: "设置", views: [view("正常")] }, { name: "登录\t页", views: [view("正常")] }], "第 2 个页面名有多余空白或不可见字符"],
+  ["第 2 个画面名有换行", [{ name: "设置", views: [view("正常"), view("空\n数据")] }], "页面「设置」的第 2 个画面名有多余空白或不可见字符"],
+  ["第 2 个画面名有控制字符", [{ name: "设置", views: [view("正常"), view("空数据\x1b[31m")] }], "页面「设置」的第 2 个画面名有多余空白或不可见字符"],
+  ["第 2 个画面名有不换行空格", [{ name: "设置", views: [view("正常"), view("空 数据")] }], "页面「设置」的第 2 个画面名有多余空白或不可见字符"],
+  ["第 2 个画面名有制表符", [{ name: "设置", views: [view("正常"), view("空\t数据")] }], "页面「设置」的第 2 个画面名有多余空白或不可见字符"],
+  ["页面这一层的检查排在画面检查之前", [{ name: "设置 ", views: [view(" 正常")] }], "第 1 个页面名有多余空白或不可见字符"],
+  ["所有页面名的检查排在所有画面名的检查之前", [{ name: "设置", views: [view(" 正常")] }, { name: "登录 ", views: [view("正常")] }], "第 2 个页面名有多余空白或不可见字符"],
 ];
 
 const frameData = (name: string, version = 1) =>
@@ -956,10 +974,10 @@ test("页面名中间的换行和连续空白合并成一个空格后判重", as
   expect(error.advice.why).toBe("页面「管理 页」重名");
 });
 
-test("页面名和画面名里的控制字符与零宽字符去掉后判重", async () => {
+test("画面名里的控制字符与零宽字符去掉后判重", async () => {
   const runId = uuidv7();
   await begin("登录页", runId);
-  const pages = [{ name: "设\u200b置\x1b[31m", views: [view("正\u202e常"), view("正常")] }];
+  const pages = [{ name: "设置", views: [view("正\u202e常"), view("正常")] }];
   const error = await failure(() => submitDesign(ref, { requirementId, name: "登录页", runId, html: HTML, note: "n", pages }));
   expect(error.advice.why).toBe("页面「设置」的画面「正常」重名");
 });
@@ -975,13 +993,13 @@ test("带全部字段交稿被收下", async () => {
     pages: [{ name: "设置", group: "状态", views: [{ name: "正常", notes: ["三项横排"] }, { name: "空数据", notes: [] }] }, { name: "列表", group: "状态", views: [{ name: "正常", notes: [] }] }] });
 });
 
-test("写进文件的名称是清洗后的，组名默认状态，说明只去首尾空白、丢掉空条", async () => {
+test("页面名和画面名原样写进文件，组名清洗后默认状态，说明只去首尾空白、丢掉空条", async () => {
   const runId = uuidv7();
   await begin("登录页", runId);
-  const pages = [{ name: " 设\u200b置\n 页 ", group: "  ", views: [{ name: "正\u202e常", notes: ["  保留 <b>标签</b>  ", "   ", ""] }] }, { name: "终端", group: " 步骤 ", views: [view("第 1 步")] }];
+  const pages = [{ name: "设置 页", group: "  ", views: [{ name: "正常 态", notes: ["  保留 <b>标签</b>  ", "   ", ""] }] }, { name: "终端", group: " 步骤 ", views: [view("第 1 步")] }];
   await submitDesign(ref, { requirementId, name: "登录页", runId, html: HTML, note: "n", pages, prototypeOnly: ["  假数据  ", " "], openQuestions: ["", " 问题 "] });
   expect(frameData("登录页")).toMatchObject({ prototypeOnly: ["假数据"], openQuestions: ["问题"],
-    pages: [{ name: "设置 页", group: "状态", views: [{ name: "正常", notes: ["保留 <b>标签</b>"] }] }, { name: "终端", group: "步骤", views: [{ name: "第 1 步", notes: [] }] }] });
+    pages: [{ name: "设置 页", group: "状态", views: [{ name: "正常 态", notes: ["保留 <b>标签</b>"] }] }, { name: "终端", group: "步骤", views: [{ name: "第 1 步", notes: [] }] }] });
 });
 
 test("只带 html、note、pages 交稿被收下", async () => {

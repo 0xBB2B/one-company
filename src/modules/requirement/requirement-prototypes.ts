@@ -182,6 +182,8 @@ function checkPageList(raw: readonly SubmittedPage[]): PrototypePage[] {
   if (empty >= 0) deny("invalid_pages", `第 ${empty + 1} 个页面名是空的`, next);
   const second = names.findIndex((name, index) => names.indexOf(name) !== index);
   if (second >= 0) deny("invalid_pages", `页面「${names[second]}」重名`, next);
+  const dirty = raw.findIndex((page, index) => page.name !== names[index]);
+  if (dirty >= 0) deny("invalid_pages", `第 ${dirty + 1} 个页面名有多余空白或不可见字符`, next);
   return raw.map((page, index) => {
     const name = names[index]!;
     if (page.views.length === 0) deny("invalid_pages", `页面「${name}」没有画面，至少写 1 个`, next);
@@ -190,6 +192,8 @@ function checkPageList(raw: readonly SubmittedPage[]): PrototypePage[] {
     if (emptyView >= 0) deny("invalid_pages", `页面「${name}」的第 ${emptyView + 1} 个画面名是空的`, next);
     const repeated = viewNames.findIndex((viewName, i) => viewNames.indexOf(viewName) !== i);
     if (repeated >= 0) deny("invalid_pages", `页面「${name}」的画面「${viewNames[repeated]}」重名`, next);
+    const dirtyView = page.views.findIndex((view, i) => view.name !== viewNames[i]);
+    if (dirtyView >= 0) deny("invalid_pages", `页面「${name}」的第 ${dirtyView + 1} 个画面名有多余空白或不可见字符`, next);
     return { name, group: cleanName(page.group ?? "") || "状态", views: page.views.map((view, i) => ({ name: viewNames[i]!, notes: cleanLines(view.notes) })) };
   });
 }
