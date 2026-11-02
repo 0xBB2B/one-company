@@ -44,6 +44,12 @@ const UP_KEY = "\x1b[A";
 // 足够宽，pi 编辑器不会自动折行，只按用户的换行分行
 const EDITOR_WIDTH = 10000;
 
+// pi 不告诉窗口实际可用高度，下面还有状态面板和底栏，窗口太高时全屏布局会按比例切掉尾部
+const HEIGHT_RATIO = 0.6;
+const MIN_HEIGHT = 10;
+const SCROLL_STEP = 3;
+const SCROLL_HINT = "Shift+↑↓ 滚动内容";
+
 interface BarRow { editorLine: number; start: number; dots: number }
 interface Bar { index: number; cursor: number; start: number; end: number; collapsed: boolean; textWidth: number; rows: Array<BarRow | undefined> }
 
@@ -102,6 +108,8 @@ function wrapSegments(text: string, width: number): string[] {
 }
 const TONE_COLOR: Record<LineTone, string | undefined> = { normal: undefined, muted: "muted", added: "toolDiffAdded", removed: "toolDiffRemoved", warning: "warning" };
 
+interface PendingBar { bar: Bar; group: number }
+interface OptionEntry { group: number; offset: number; visible: number }
 interface QuestionState { cursor: number; picked: Set<number>; editors: Map<number, Editor>; answered: boolean }
 
 /** 通用问答窗口：一到多个问题，单选或多选，可带"其他（自己输入）"；Esc 取消时答案为 undefined，问题带 escapeChoice 时按它作答。 */
@@ -112,6 +120,10 @@ export class QuestionWindowView {
   private readonly options: { questions: WindowQuestion[]; tone: WindowTone; theme: WindowTheme; tui: Pick<TUI, "requestRender" | "terminal">; onDone(answers: WindowAnswer[] | undefined): void };
   private bars: Bar[] = [];
   private readonly scrolls = new Map<Editor, { line: number; start: number }>();
+  private scroll = 0;
+  private maxScroll = 0;
+  private scrollStep = SCROLL_STEP;
+  private scrollTab = 0;
 
   constructor(options: QuestionWindowView["options"]) {
     this.options = options;
@@ -161,7 +173,15 @@ export class QuestionWindowView {
     this.tab = index + 1;
   }
 
+  private scrollBy(direction: 1 | -1): boolean {
+    if (this.maxScroll === 0) return false;
+    this.scroll = Math.min(this.maxScroll, Math.max(0, this.scroll + direction * this.scrollStep));
+    return true;
+  }
+
   handleInput(data: string): void {
+    if (matchesKey(data, "shift+down") && this.scrollBy(1)) return;
+    if (matchesKey(data, "shift+up") && this.scrollBy(-1)) return;
     if (this.onReview) { this.handleReview(data); return; }
     const index = this.tab, state = this.states[index]!, question = this.options.questions[index]!;
     if (matchesKey(data, "escape")) { this.options.onDone(question.escapeChoice !== undefined ? [{ choices: [question.escapeChoice] }] : undefined); return; }
@@ -200,6 +220,7 @@ export class QuestionWindowView {
   }
 
   handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+    if (event.type === "wheel") return this.scrollBy((event.wheelDelta ?? 0) > 0 ? 1 : -1) ? { handled: true } : undefined;
     if (event.type !== "click" || event.button !== "left") return undefined;
     const bar = this.bars.find((item) => event.y >= item.start && event.y < item.end);
     if (!bar || this.onReview) return undefined;
@@ -228,91 +249,174 @@ export class QuestionWindowView {
   }
 
   render(width: number): string[] {
+    if (this.tab !== this.scrollTab) { this.scrollTab = this.tab; this.scroll = 0; }
     const { theme, tone } = this.options;
     const warning = tone === "warning";
     const border = theme.fg(warning ? "warning" : "border", "─".repeat(width));
     const highlight = (text: string) => theme.fg(warning ? "warning" : "accent", text);
     const muted = (text: string) => theme.fg("muted", text);
     const wrap = (text: string, indent: number) => wrapTextWithAnsi(text, Math.max(8, width - indent)).map((line) => " ".repeat(indent) + line);
-    const lines: string[] = [border];
-    this.bars = [];
-    if (this.multi) lines.push(this.renderTabs(), "");
+    const head: string[] = [border];
+    const content: string[] = [];
+    const groups: string[][] = [];
+    const pending: PendingBar[] = [];
+    if (this.multi) head.push(this.renderTabs(), "");
 
     if (this.onReview) {
-      lines.push(` ${theme.bold("核对你的回答")}`, "");
+      content.push(` ${theme.bold("核对你的回答")}`, "");
       this.options.questions.forEach((question, i) => {
         const answer = this.answer(i);
         const text = [...answer.choices, ...(answer.other ? [answer.other] : [])].join("、");
-        lines.push(...wrap(`${question.header ?? question.question}：${this.states[i]!.answered ? text : muted("未回答")}`, 1));
+        content.push(...wrap(`${question.header ?? question.question}：${this.states[i]!.answered ? text : muted("未回答")}`, 1));
       });
-      lines.push("", ...["提交", "取消"].map((label, i) => i === this.reviewCursor ? ` ${highlight(`→ ${label}`)}` : `   ${label}`),
-        "", ` ${muted("↑↓ 选择 · 回车确认 · ←→ 回去修改 · Esc 取消")}`, border);
-      return lines;
+      groups.push(...["提交", "取消"].map((label, i) => [i === this.reviewCursor ? ` ${highlight(`→ ${label}`)}` : `   ${label}`]));
+      const bottomFor = (scrollable: boolean) => {
+        const hint = ["↑↓ 选择", "回车确认", ...(scrollable ? [SCROLL_HINT] : []), "←→ 回去修改", "Esc 取消"].join(" · ");
+        return ["", ...wrapPlain(hint, width - 1).map((piece) => ` ${muted(piece)}`), border];
+      };
+      return this.compose(head, content, groups, pending, this.reviewCursor, bottomFor, muted);
     }
 
     const index = this.tab, question = this.options.questions[index]!, state = this.states[index]!;
-    if (question.caption) lines.push(...wrapPlain(question.caption, width - 1).map((piece) => ` ${muted(piece)}`), "");
-    if (warning) lines.push(...wrap(theme.fg("warning", theme.bold(question.question)), 1), "");
-    else lines.push(...wrapPlain(question.question, width - 1).map((piece) => ` ${theme.bold(piece)}`), "");
+    if (question.caption) content.push(...wrapPlain(question.caption, width - 1).map((piece) => ` ${muted(piece)}`), "");
+    if (warning) content.push(...wrap(theme.fg("warning", theme.bold(question.question)), 1), "");
+    else content.push(...wrapPlain(question.question, width - 1).map((piece) => ` ${theme.bold(piece)}`), "");
     if (!warning && question.rootCheck) {
       const label = "根源自检  ", indent = " ".repeat(visibleWidth(label));
-      lines.push(...wrapPlain(question.rootCheck, width - 1 - indent.length).map((piece, i) => ` ${muted(`${i ? indent : label}${piece}`)}`), "");
+      content.push(...wrapPlain(question.rootCheck, width - 1 - indent.length).map((piece, i) => ` ${muted(`${i ? indent : label}${piece}`)}`), "");
     }
     for (const line of question.lines ?? []) {
       const color = TONE_COLOR[line.tone ?? "normal"];
-      for (const piece of wrapTextWithAnsi(line.text, Math.max(8, width - 1))) lines.push(` ${color ? theme.fg(color, piece) : piece}`);
+      for (const piece of wrapTextWithAnsi(line.text, Math.max(8, width - 1))) content.push(` ${color ? theme.fg(color, piece) : piece}`);
     }
-    if (question.lines?.length) lines.push("");
+    if (question.lines?.length) content.push("");
+    content.pop();
 
     const labels = [...question.choices.map((choice) => choice.label + (warning && choice.recommended ? "（推荐）" : "")), ...(question.allowOther ? [question.otherLabel ?? OTHER] : [])];
     const labelWidth = Math.max(...labels.map((label) => visibleWidth(label)));
     labels.forEach((label, i) => {
+      const group: string[] = [];
+      groups.push(group);
       const selected = i === state.cursor;
       const box = question.multiSelect ? `[${state.picked.has(i) || (this.isOther(index, i) && this.otherText(index)) ? "x" : " "}] ` : "";
       const description = question.choices[i]?.description, disabled = question.choices[i]?.disabled;
       if (disabled) {
         const lead = `${label}${" ".repeat(labelWidth - visibleWidth(label) + 3)}`;
-        wrapPlain(disabled, Math.max(8, width - 3 - visibleWidth(lead))).forEach((piece, n) => lines.push(`   ${muted(`${n ? " ".repeat(visibleWidth(lead)) : lead}${piece}`)}`));
+        wrapPlain(disabled, Math.max(8, width - 3 - visibleWidth(lead))).forEach((piece, n) => group.push(`   ${muted(`${n ? " ".repeat(visibleWidth(lead)) : lead}${piece}`)}`));
         return;
       }
       if (warning) {
         const text = `${box}${label}`;
         const padded = description ? text + " ".repeat(labelWidth - visibleWidth(label) + 3) : text;
         const pieces = description ? wrapSegments(description, Math.max(8, width - 3 - visibleWidth(padded))) : [];
-        lines.push((selected ? ` ${highlight(`→ ${text}`)}` : `   ${text}`) + (description ? padded.slice(text.length) + muted(pieces[0]!) : ""));
-        for (const piece of pieces.slice(1)) lines.push(" ".repeat(3 + visibleWidth(padded)) + muted(piece));
+        group.push((selected ? ` ${highlight(`→ ${text}`)}` : `   ${text}`) + (description ? padded.slice(text.length) + muted(pieces[0]!) : ""));
+        for (const piece of pieces.slice(1)) group.push(" ".repeat(3 + visibleWidth(padded)) + muted(piece));
       } else {
         const choice = question.choices[i], number = `${box}${i + 1}. `, tag = choice?.recommended ? `  ${theme.fg("success", theme.bold("推荐"))}` : "";
         const pieces = wrapPlain(label, width - 3 - visibleWidth(number) - (tag ? 6 : 0));
         pieces.forEach((piece, n) => {
           const text = n ? `${" ".repeat(visibleWidth(number))}${piece}` : `${number}${piece}`;
-          lines.push((selected ? ` ${highlight(`${n ? "  " : "→ "}${text}`)}` : `   ${text}`) + (n === pieces.length - 1 ? tag : ""));
+          group.push((selected ? ` ${highlight(`${n ? "  " : "→ "}${text}`)}` : `   ${text}`) + (n === pieces.length - 1 ? tag : ""));
         });
-        if (description) lines.push(...wrapPlain(description, width - 6).map((piece) => `      ${muted(piece)}`));
+        if (description) group.push(...wrapPlain(description, width - 6).map((piece) => `      ${muted(piece)}`));
         if (choice?.recommended && choice.recommendedReason) {
-          lines.push(...wrapPlain(`推荐理由：${choice.recommendedReason}`, width - 6).map((piece) => `      ${theme.fg("success", piece)}`));
+          group.push(...wrapPlain(`推荐理由：${choice.recommendedReason}`, width - 6).map((piece) => `      ${theme.fg("success", piece)}`));
         }
       }
       const editor = this.editorAt(index, i);
       if (!editor) return;
       editor.focused = selected;
       if (selected || editor.getText()) {
-        const bar = this.renderInput(editor, index, i, selected, width - INPUT_INDENT, lines.length, highlight, muted);
-        lines.push(...bar.lines);
-        this.bars.push(bar.bar);
+        const bar = this.renderInput(editor, index, i, selected, width - INPUT_INDENT, group.length, highlight, muted);
+        group.push(...bar.lines);
+        pending.push({ bar: bar.bar, group: i });
       }
       const excess = question.otherMaxLength !== undefined ? this.textAt(index, i).length - question.otherMaxLength : 0;
-      if (excess > 0) lines.push(`      ${muted(`超出 ${excess} 字，最多 ${question.otherMaxLength} 字`)}`);
+      if (excess > 0) group.push(`      ${muted(`超出 ${excess} 字，最多 ${question.otherMaxLength} 字`)}`);
     });
 
     const enter = question.multiSelect && this.multi ? "回车下一题" : "回车确认";
-    const hint = [
-      ...(this.isOther(index, state.cursor) ? ["直接输入", enter, "Shift+Enter 换行", "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
-      ...(this.multi ? ["←→ 切换问题"] : []),
-      question.escapeHint ?? `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
-    ].join(" · ");
-    lines.push("", ...wrapPlain(hint, width - 1).map((piece) => ` ${muted(piece)}`), border);
-    return lines;
+    const bottomFor = (scrollable: boolean) => {
+      const hint = [
+        ...(this.isOther(index, state.cursor) ? ["直接输入", enter, "Shift+Enter 换行", "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
+        ...(scrollable ? [SCROLL_HINT] : []),
+        ...(this.multi ? ["←→ 切换问题"] : []),
+        question.escapeHint ?? `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
+      ].join(" · ");
+      return ["", ...wrapPlain(hint, width - 1).map((piece) => ` ${muted(piece)}`), border];
+    };
+    return this.compose(head, content, groups, pending, state.cursor, bottomFor, muted);
+  }
+
+  private compose(head: string[], content: string[], groups: string[][], pending: PendingBar[], cursor: number,
+    bottomFor: (scrollable: boolean) => string[], muted: (text: string) => string): string[] {
+    const rows = this.options.tui.terminal?.rows;
+    const cap = rows === undefined ? undefined : Math.max(MIN_HEIGHT, Math.floor(rows * HEIGHT_RATIO));
+    const optionLines = groups.reduce((sum, group) => sum + group.length, 0);
+    let bottom = bottomFor(false), contentOut = content, optionOut = groups.flat();
+    let entries: OptionEntry[] = [];
+    let offset = 0;
+    groups.forEach((group, i) => { entries.push({ group: i, offset, visible: group.length }); offset += group.length; });
+    this.maxScroll = 0;
+    if (cap !== undefined && head.length + content.length + 1 + optionLines + bottom.length > cap) {
+      bottom = bottomFor(true);
+      const avail = cap - head.length - 1 - bottom.length;
+      const minContent = Math.min(content.length, 3);
+      if (optionLines > avail - minContent) ({ lines: optionOut, entries } = this.optionWindow(groups, cursor, Math.max(3, avail - minContent), pending.some((item) => item.group === cursor), muted));
+      const room = Math.max(1, avail - optionOut.length);
+      if (content.length <= room) bottom = bottomFor(false);
+      else {
+        const hints = room < 3 ? 0 : 1;
+        this.maxScroll = content.length - room + hints;
+        this.scrollStep = Math.min(SCROLL_STEP, room - 2 * hints);
+        this.scroll = Math.min(this.scroll, this.maxScroll);
+        contentOut = this.contentWindow(content, room, hints, muted);
+      }
+    }
+    this.scroll = Math.min(this.scroll, this.maxScroll);
+    const base = head.length + contentOut.length + 1;
+    this.bars = pending.flatMap(({ bar, group }) => {
+      const entry = entries.find((item) => item.group === group);
+      if (!entry || bar.start >= entry.visible) return [];
+      return [{ ...bar, start: base + entry.offset + bar.start, end: base + entry.offset + Math.min(bar.end, entry.visible) }];
+    });
+    return [...head, ...contentOut, "", ...optionOut, ...bottom];
+  }
+
+  private contentWindow(content: string[], room: number, hints: number, muted: (text: string) => string): string[] {
+    const { scroll } = this, total = content.length;
+    if (!hints) return content.slice(scroll, scroll + room);
+    const up = scroll > 0 ? [` ${muted(`↑ 上面还有 ${scroll} 行`)}`] : [], body = room - up.length;
+    if (scroll + body >= total) return [...up, ...content.slice(scroll)];
+    const shown = content.slice(scroll, scroll + body - 1);
+    return [...up, ...shown, ` ${muted(`↓ 下面还有 ${total - scroll - shown.length} 行`)}`];
+  }
+
+  /** 光标在输入栏上时整组都显示，不然看不到正在编辑的行。 */
+  private optionWindow(groups: string[][], cursor: number, height: number, keepWhole: boolean, muted: (text: string) => string): { lines: string[]; entries: OptionEntry[] } {
+    const fit = (from: number) => {
+      const up = from > 0 ? 1 : 0;
+      const rest = groups.slice(from).reduce((sum, group) => sum + group.length, 0);
+      const body = height - up - (rest > height - up ? 1 : 0);
+      let used = 0, count = 0;
+      while (from + count < groups.length && used + groups[from + count]!.length <= body) used += groups[from + count++]!.length;
+      return count;
+    };
+    let from = 0;
+    while (from < cursor && cursor >= from + fit(from)) from++;
+    const count = Math.max(1, fit(from)), hidden = groups.length - from - count;
+    const lines = from > 0 ? [` ${muted(`↑ 上面还有 ${from} 项`)}`] : [];
+    const body = height - lines.length - (hidden > 0 ? 1 : 0);
+    const entries: OptionEntry[] = [];
+    let used = 0;
+    for (let g = from; g < from + count; g++) {
+      const visible = keepWhole && g === cursor ? groups[g]!.length : Math.min(groups[g]!.length, body - used);
+      entries.push({ group: g, offset: (from > 0 ? 1 : 0) + used, visible });
+      lines.push(...groups[g]!.slice(0, visible));
+      used += visible;
+    }
+    if (hidden > 0) lines.push(` ${muted(`↓ 下面还有 ${hidden} 项`)}`);
+    return { lines, entries };
   }
 
   private renderInput(editor: Editor, index: number, cursor: number, expanded: boolean, width: number, start: number,

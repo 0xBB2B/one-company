@@ -1,5 +1,5 @@
-import { expect, test } from "vitest";
-import { getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS, visibleWidth } from "@earendil-works/pi-tui";
+import { describe, expect, test } from "vitest";
+import { Editor, getKeybindings, KeybindingsManager, setKeybindings, TUI_KEYBINDINGS, visibleWidth } from "@earendil-works/pi-tui";
 import { chooseOrWriteWindow, chooseWindow, confirmWindow, QuestionWindowView } from "../src/core/host/question-window.ts";
 import type { WindowAnswer, WindowHost } from "../src/core/host/question-window.ts";
 
@@ -950,4 +950,493 @@ test("编辑器\"上移\"键被改绑后点击多行收起行：在有限时间�
   } finally {
     setKeybindings(original);
   }
+});
+
+describe("窗口超过屏幕高度", () => {
+  const SHIFT_UP = "\x1b[1;2A", SHIFT_DOWN = "\x1b[1;2B";
+  const ABOVE = /^ ↑ 上面还有 (\d+) 行$/u, BELOW = /^ ↓ 下面还有 (\d+) 行$/u;
+  const BORDER = /^─{80}$/u;
+  const marks = (count: number) => Array.from({ length: count }, (_, n) => ({ text: `内容${n + 1}行`, tone: "normal" as const }));
+  const longQuestion = (extra: Record<string, unknown> = {}) => ({ caption: "提问 · 测试", question: "要选哪一个", lines: marks(100),
+    choices: [{ label: "选项甲" }, { label: "选项乙" }], cancelNote: "不写入", ...extra });
+  const wheel = (wheelDelta: number) => ({ type: "wheel", button: "none", x: 0, y: 0, screenX: 0, screenY: 0, width: 80, height: 40, shift: false, alt: false, ctrl: false, wheelDelta });
+  const handled = (result: unknown) => (result as { handled?: boolean } | undefined)?.handled;
+
+  function tall(rows: number | undefined, questions: Array<Record<string, unknown>>, tone: "warning" | "standard" = "warning") {
+    const terminal = { rows: rows ?? 0, columns: 80 };
+    const done: Array<WindowAnswer[] | undefined> = [];
+    const tui = rows === undefined ? { requestRender() {} } : { requestRender() {}, terminal };
+    const window = new QuestionWindowView({ tone, questions, theme, onDone: (answers) => done.push(answers), tui } as never);
+    window.render(80);
+    return { window, done, terminal, raw: (width = 80) => window.render(width), plain: (width = 80) => window.render(width).map(bare), text: (width = 80) => window.render(width).join("\n") };
+  }
+  const one = (rows: number | undefined, extra: Record<string, unknown> = {}, tone: "warning" | "standard" = "warning") => tall(rows, [longQuestion(extra)], tone);
+
+  const firstChoice = (plain: string[]) => plain.findIndex((line) => line.includes("选项甲"));
+  function frame(plain: string[]) {
+    const first = firstChoice(plain);
+    const content = plain.slice(1, first - 1);
+    const shown = content.filter((line) => !ABOVE.test(line.trimEnd()) && !BELOW.test(line.trimEnd()));
+    const above = Number(content.map((line) => ABOVE.exec(line.trimEnd())).find(Boolean)?.[1] ?? 0);
+    const below = Number(content.map((line) => BELOW.exec(line.trimEnd())).find(Boolean)?.[1] ?? 0);
+    return { first, shown: shown.length, above, below };
+  }
+  const fullTotal = (extra: Record<string, unknown> = {}, tone: "warning" | "standard" = "warning") => {
+    const plain = one(10000, extra, tone).plain();
+    return firstChoice(plain) - 2;
+  };
+  const pressTimes = (window: QuestionWindowView, data: string, times: number) => { for (let n = 0; n < times; n++) window.handleInput(data); };
+  const tones = ["warning", "standard"] as const;
+
+  test.each([[5, false], [6, true]])("内容有 %i 行：刚好放得下时输出和没限高时完全相同，多一行才限高", (count, limited) => {
+    const extra = { lines: marks(count), caption: undefined };
+    const small = one(24, extra), unlimited = one(undefined, extra);
+    if (limited) {
+      expect(small.raw()).toHaveLength(14);
+      expect(small.text()).toContain("下面还有");
+      return;
+    }
+    expect(small.raw()).toEqual(unlimited.raw());
+    expect(small.raw()).toHaveLength(14);
+    expect(small.text()).not.toMatch(/上面还有|下面还有|Shift\+↑↓/u);
+  });
+
+  test("tui 没有 terminal 字段时不限高，长内容全部输出", () => {
+    const { plain, text } = one(undefined);
+    expect(plain().length).toBeGreaterThan(100);
+    expect(text()).toContain("内容100行");
+    expect(text()).not.toMatch(/上面还有|下面还有|Shift\+↑↓/u);
+  });
+
+  test.each(tones.flatMap((tone) => [[24, 14], [84, 50], [10, 10], [5, 10]].map(([rows, cap]) => [tone, rows, cap] as const)))(
+    "%s 语气 终端 %i 行：总行数等于上限 %i，选项、提示、上下边框都在", (tone, rows, cap) => {
+      const { plain } = one(rows, {}, tone);
+      const lines = plain();
+      expect(lines).toHaveLength(cap);
+      expect(lines.join("\n")).toContain("选项甲");
+      expect(lines.join("\n")).toContain("选项乙");
+      expect(lines.join("\n")).toContain("Esc 取消（不写入）");
+      expect(lines[0]).toMatch(BORDER);
+      expect(lines.at(-1)).toMatch(BORDER);
+    });
+
+  test.each(tones)("%s 语气 刚打开：内容从最上面开始，末行是灰色的下面还有 N 行，N 等于没显示出来的内容行数，内容和选项间空一行", (tone) => {
+    const { raw, plain } = one(24, {}, tone);
+    const lines = plain(), total = fullTotal({}, tone);
+    const { first, shown, above, below } = frame(lines);
+    expect(lines[1]).toContain("提问 · 测试");
+    expect(lines.join("\n")).toContain("要选哪一个");
+    expect(lines.join("\n")).toContain("内容1行");
+    expect(above).toBe(0);
+    expect(lines.join("\n")).not.toContain("上面还有");
+    expect(below).toBe(total - shown);
+    expect(raw()[first - 2]).toBe(` <muted>↓ 下面还有 ${below} 行</>`);
+    expect(lines[first - 1]).toBe("");
+  });
+
+  test("提示行：超高时单选带 Shift+↑↓ 滚动内容，cancelNote 写在括号里", () => {
+    expect(one(24).text()).toContain("<muted>↑↓ 选择 · 回车确认 · Shift+↑↓ 滚动内容 · Esc 取消（不写入）</>");
+  });
+
+  test("提示行：多选", () => {
+    expect(one(24, { multiSelect: true, cancelNote: undefined }).text()).toContain("↑↓ 选择 · 空格勾选 · 回车确认 · Shift+↑↓ 滚动内容 · Esc 取消</>");
+  });
+
+  test("提示行：多问题窗口里 Shift+↑↓ 滚动内容 排在 ←→ 切换问题 前面", () => {
+    const { text } = tall(24, [longQuestion({ header: "甲" }), longQuestion({ header: "乙" })], "standard");
+    expect(text()).toContain("↑↓ 选择 · 回车确认 · Shift+↑↓ 滚动内容 · ←→ 切换问题 · Esc 取消（不写入）</>");
+  });
+
+  test.each([[80], [40]])("提示行：光标在其他输入行时含 Shift+↑↓ 滚动内容，宽度 %i 折行后总行数仍等于上限", (width) => {
+    const { window, plain } = one(24, { allowOther: true, cancelNote: undefined });
+    pressTimes(window, DOWN, 2);
+    const lines = plain(width);
+    expect(lines).toHaveLength(14);
+    const hint = lines.slice(-4, -1).join("").replace(/\s/gu, "");
+    expect(hint).toContain("直接输入·回车确认·Shift+Enter换行·↑↓选择·Shift+↑↓滚动内容·Esc取消");
+  });
+
+  test("Shift+↓ 每次下移 3 行、Shift+↑ 每次上移 3 行，选项和提示的文字位置、总行数、光标都不变，两个提示行数之和与显示行数凑成内容总行数", () => {
+    const { window, plain, text } = one(24);
+    window.handleInput(DOWN);
+    const total = fullTotal();
+    const base = plain();
+    const baseTail = base.slice(frame(base).first);
+    for (let step = 1; step <= 4; step++) {
+      window.handleInput(SHIFT_DOWN);
+      const lines = plain(), now = frame(lines);
+      expect(now.above).toBe(3 * step);
+      expect(now.first).toBe(frame(base).first);
+      expect(lines.slice(now.first)).toEqual(baseTail);
+      expect(lines).toHaveLength(14);
+      expect(text()).toContain("<warning>→ 选项乙</>");
+      expect(now.above + now.below + now.shown).toBe(total);
+    }
+    for (let step = 3; step >= 0; step--) {
+      window.handleInput(SHIFT_UP);
+      const now = frame(plain());
+      expect(now.above).toBe(3 * step);
+    }
+    expect(plain()).toEqual(base);
+  });
+
+  test("滚到最后没有下面还有且能看到最后一行，继续 Shift+↓ 不变；滚回最上面没有上面还有，继续 Shift+↑ 不变", () => {
+    const { window, plain, text } = one(24);
+    const top = plain();
+    pressTimes(window, SHIFT_DOWN, 60);
+    const bottom = plain(), now = frame(bottom);
+    expect(now.below).toBe(0);
+    expect(bottom.join("\n")).not.toContain("下面还有");
+    expect(text()).toContain("内容100行");
+    expect(now.above + now.shown).toBe(fullTotal());
+    window.handleInput(SHIFT_DOWN);
+    expect(plain()).toEqual(bottom);
+    pressTimes(window, SHIFT_UP, 60);
+    expect(plain()).toEqual(top);
+    expect(top.join("\n")).not.toContain("上面还有");
+    window.handleInput(SHIFT_UP);
+    expect(plain()).toEqual(top);
+  });
+
+  test.each([[1], [5], [120]])("滚轮向下 wheelDelta=%i 等于按一次 Shift+↓（3 行），handled 为 true", (delta) => {
+    const wheeled = one(24), keyed = one(24);
+    expect(handled(wheeled.window.handleMouse(wheel(delta) as never))).toBe(true);
+    keyed.window.handleInput(SHIFT_DOWN);
+    expect(wheeled.raw()).toEqual(keyed.raw());
+    expect(frame(wheeled.plain()).above).toBe(3);
+  });
+
+  test.each([[-1], [-7]])("滚轮向上 wheelDelta=%i 等于按一次 Shift+↑（3 行）", (delta) => {
+    const wheeled = one(24), keyed = one(24);
+    pressTimes(wheeled.window, SHIFT_DOWN, 3); pressTimes(keyed.window, SHIFT_DOWN, 3);
+    expect(handled(wheeled.window.handleMouse(wheel(delta) as never))).toBe(true);
+    keyed.window.handleInput(SHIFT_UP);
+    expect(wheeled.raw()).toEqual(keyed.raw());
+    expect(frame(wheeled.plain()).above).toBe(6);
+  });
+
+  test("内容放得下时滚轮返回 undefined，内容不变", () => {
+    const { window, raw } = one(24, { lines: marks(2) });
+    const before = raw();
+    expect(window.handleMouse(wheel(1) as never)).toBeUndefined();
+    expect(window.handleMouse(wheel(-1) as never)).toBeUndefined();
+    expect(raw()).toEqual(before);
+  });
+
+  test("Shift+↑↓ 不改变选项光标；滚动后回车选中光标所在项，Esc 仍取消", () => {
+    const picked = one(24);
+    picked.window.handleInput(DOWN);
+    pressTimes(picked.window, SHIFT_DOWN, 5); pressTimes(picked.window, SHIFT_UP, 2);
+    expect(picked.text()).toContain("<warning>→ 选项乙</>");
+    picked.window.handleInput(ENTER);
+    expect(picked.done).toEqual([[{ choices: ["选项乙"] }]]);
+    const plainEnter = one(24);
+    plainEnter.window.handleInput(DOWN); plainEnter.window.handleInput(ENTER);
+    expect(plainEnter.done).toEqual(picked.done);
+    const cancelled = one(24);
+    pressTimes(cancelled.window, SHIFT_DOWN, 3); cancelled.window.handleInput(ESC);
+    expect(cancelled.done).toEqual([undefined]);
+  });
+
+  test("光标在其他输入行上，内容放不下时 Shift+↑↓ 滚内容，不动输入框的文字和光标", () => {
+    const { window, done, plain } = one(24, { allowOther: true });
+    pressTimes(window, DOWN, 2);
+    typeText(window, "ab"); window.handleInput(LEFT);
+    const before = frame(plain()).above;
+    pressTimes(window, SHIFT_DOWN, 3);
+    const scrolled = frame(plain()).above;
+    expect(scrolled).toBeGreaterThan(before);
+    window.handleInput(SHIFT_UP);
+    expect(frame(plain()).above).toBeLessThan(scrolled);
+    typeText(window, "X");
+    window.handleInput(ENTER);
+    expect(done).toEqual([[{ choices: [], other: "aXb" }]]);
+  });
+
+  test("内容放得下时 Shift+↑↓ 不滚动", () => {
+    const { window, raw } = one(24, { lines: marks(2) });
+    const before = raw();
+    pressTimes(window, SHIFT_DOWN, 2); window.handleInput(SHIFT_UP);
+    expect(raw()).toEqual(before);
+    expect(raw().join("\n")).not.toMatch(/上面还有|下面还有/u);
+  });
+
+  const manyChoices = (extra: Record<string, unknown> = {}) => Array.from({ length: 20 }, (_, n) => ({ label: `选项${String(n + 1).padStart(2, "0")}`, ...extra }));
+  const label = (n: number) => `选项${String(n).padStart(2, "0")}`;
+
+  test("选项有 20 个、内容 30 行：总行数等于上限，内容区固定 3 行（两行正文加下提示），选项区只显示一段，上下隐藏个数按项计", () => {
+    const { window, plain } = one(24, { choices: manyChoices(), lines: marks(30), caption: undefined });
+    const lines = plain();
+    expect(lines).toHaveLength(14);
+    expect(lines[1]).toContain("要选哪一个");
+    expect(lines[2]).toBe("");
+    expect(lines[3]).toMatch(/^ ↓ 下面还有 \d+ 行$/u);
+    expect(lines[4]).toBe("");
+    const region = lines.slice(5, -3);
+    expect(region.some((line) => /^ ↓ 下面还有 \d+ 项$/u.test(line))).toBe(true);
+    expect(region.some((line) => line.includes("上面还有"))).toBe(false);
+    window.handleInput(SHIFT_DOWN);
+    expect(plain().slice(4)).toEqual(lines.slice(4));
+    expect(plain().slice(1, 4)).not.toEqual(lines.slice(1, 4));
+  });
+
+  test.each(tones)("%s 语气：按 DOWN 走到底再 UP 走回最上，每一步光标所在选项都显示，隐藏项数写对", (tone) => {
+    const { window, plain, text } = one(24, { choices: manyChoices() }, tone);
+    const check = (n: number) => {
+      const lines = plain();
+      expect(lines).toHaveLength(14);
+      expect(text()).toMatch(tone === "warning" ? new RegExp(`<warning>→ ${label(n)}</>`, "u") : new RegExp(`→ ${n}\\. ${label(n)}`, "u"));
+      const visible = lines.flatMap((line) => { const found = /选项(\d\d)/u.exec(line); return found ? [Number(found[1])] : []; });
+      const aboveHint = lines.map((line) => /^ ↑ 上面还有 (\d+) 项$/u.exec(line)).find(Boolean), belowHint = lines.map((line) => /^ ↓ 下面还有 (\d+) 项$/u.exec(line)).find(Boolean);
+      expect(Number(aboveHint?.[1] ?? 0)).toBe(Math.min(...visible) - 1);
+      expect(Number(belowHint?.[1] ?? 0)).toBe(20 - Math.max(...visible));
+    };
+    check(1);
+    for (let n = 2; n <= 20; n++) { window.handleInput(DOWN); check(n); }
+    for (let n = 19; n >= 1; n--) { window.handleInput(UP); check(n); }
+  });
+
+  test("选项带说明占多行：光标所在选项的第一行（含 →）每一步都显示", () => {
+    const { window, plain, text } = one(24, { choices: manyChoices({ description: "说明文字很长".repeat(30) }) });
+    for (let n = 1; n <= 20; n++) {
+      if (n > 1) window.handleInput(DOWN);
+      expect(plain()).toHaveLength(14);
+      expect(text()).toContain(`<warning>→ ${label(n)}`);
+    }
+  });
+
+  test("多问题窗口第一题滚到底后回车，第二题和核对页都从最上面开始", () => {
+    const { window, plain } = tall(24, [..."甲乙丙"].map((header) => longQuestion({ header, question: `问题${header}`, choices: [{ label: "选项甲" }] })), "standard");
+    pressTimes(window, SHIFT_DOWN, 60);
+    expect(plain().join("\n")).toContain("内容100行");
+    window.handleInput(ENTER);
+    expect(plain().join("\n")).toContain("问题乙");
+    expect(plain().join("\n")).not.toContain("上面还有");
+    pressTimes(window, SHIFT_DOWN, 60); window.handleInput(ENTER);
+    expect(plain().join("\n")).toContain("问题丙");
+    expect(plain().join("\n")).not.toContain("上面还有");
+    pressTimes(window, SHIFT_DOWN, 60); window.handleInput(ENTER);
+    expect(plain().join("\n")).toContain("核对你的回答");
+    expect(plain().join("\n")).not.toContain("上面还有");
+    pressTimes(window, SHIFT_DOWN, 60);
+    window.handleInput(LEFT);
+    expect(plain().join("\n")).toContain("问题丙");
+    expect(plain().join("\n")).not.toContain("上面还有");
+  });
+
+  test("核对页答案放不下时限高，提交取消和提示固定在下方，Shift+↑↓ 滚动答案列表", () => {
+    const letters = [..."甲乙丙丁戊己庚辛壬癸"];
+    const { window, plain, text } = tall(24, letters.map((header) => ({ header, question: `问题${header}`, choices: [{ label: `答案${header}` }] })));
+    pressTimes(window, ENTER, 10);
+    expect(text()).toContain("核对你的回答");
+    const top = plain();
+    expect(top).toHaveLength(14);
+    expect(top.at(-1)).toMatch(BORDER);
+    expect(text()).toContain("<warning>→ 提交</>");
+    expect(top.join("\n")).toContain("Shift+↑↓ 滚动内容");
+    expect(top.join("\n")).toMatch(/下面还有 \d+ 行/u);
+    window.handleInput(SHIFT_DOWN);
+    const scrolled = plain();
+    expect(scrolled.join("\n")).toContain("上面还有 3 行");
+    expect(scrolled).toHaveLength(14);
+    expect(scrolled.slice(-6)).toEqual(top.slice(-6));
+    pressTimes(window, SHIFT_DOWN, 20);
+    expect(plain().join("\n")).toContain("癸：答案癸");
+    expect(plain().join("\n")).not.toContain("下面还有");
+  });
+
+  test("内容放不下时点击输入栏所在行，光标定位到输入栏，收起和展开两种状态都行", () => {
+    const collapsed = one(24, { allowOther: true, choices: [{ label: "选项甲" }] });
+    collapsed.window.handleInput(DOWN);
+    typeText(collapsed.window, "abc");
+    collapsed.window.handleInput(UP);
+    const row = collapsed.plain().findIndex((line) => line.startsWith("      › abc"));
+    expect(row).toBeGreaterThan(-1);
+    collapsed.window.handleMouse(click(8, row) as never);
+    typeText(collapsed.window, "Z");
+    expect(collapsed.text()).toContain("<warning>→ 其他（自己输入）</>");
+    expect(collapsed.plain().some((line) => line.startsWith("      › ") && line.includes("Z"))).toBe(true);
+
+    const expanded = one(24, { allowOther: true, choices: [{ label: "选项甲" }] });
+    expanded.window.handleInput(DOWN);
+    typeText(expanded.window, "abc");
+    const barRow = expanded.plain().findIndex((line) => line.startsWith("      › abc"));
+    expanded.window.handleMouse(click(8 + visibleWidth("a"), barRow) as never);
+    typeText(expanded.window, "Z");
+    expect(expanded.plain().some((line) => line.startsWith("      › aZbc"))).toBe(true);
+  });
+
+  test("滚到最后后终端变矮或变高再 render：总行数不超过新上限，上面还有、显示的内容、下面还有三项之和等于内容总行数", () => {
+    const { terminal, window, plain } = one(24);
+    const total = fullTotal();
+    pressTimes(window, SHIFT_DOWN, 60);
+    for (const [rows, cap] of [[40, 24], [12, 10], [84, 50], [24, 14]]) {
+      terminal.rows = rows!;
+      const lines = plain();
+      const now = frame(lines);
+      expect(lines.length).toBeLessThanOrEqual(cap!);
+      expect(now.above + now.shown + now.below).toBe(total);
+      expect(now.shown).toBeGreaterThan(0);
+    }
+  });
+
+  test.each(tones)("%s 语气：滚到最后后内容最后一行可见", (tone) => {
+    const { window, text } = one(24, {}, tone);
+    pressTimes(window, SHIFT_DOWN, 60);
+    expect(text()).toContain("内容100行");
+    expect(text()).toContain("选项甲");
+  });
+
+  test("standard 语气下问题文字折成 30 行、没有 lines：问题文字跟着内容滚动，选项固定", () => {
+    const question = "问".repeat(39 * 30);
+    const { window, plain } = one(24, { question, lines: undefined, caption: undefined }, "standard");
+    const top = plain();
+    expect(top).toHaveLength(14);
+    expect(top.join("\n")).toMatch(/下面还有 \d+ 行/u);
+    expect(top.join("\n")).not.toContain("上面还有");
+    const tail = top.slice(frame(top).first);
+    window.handleInput(SHIFT_DOWN);
+    const scrolled = plain();
+    expect(scrolled.join("\n")).toContain("上面还有 3 行");
+    expect(scrolled).toHaveLength(14);
+    expect(scrolled.slice(frame(scrolled).first)).toEqual(tail);
+  });
+
+  test.each(tones.flatMap((tone) => [80, 40].map((width) => [tone, width] as const)))("%s 语气 宽度 %i：顶部、滚动中、滚到底的每一行都不超过宽度", (tone, width) => {
+    const { window, raw } = one(24, {}, tone);
+    const check = () => { for (const line of raw(width)) expect(visibleWidth(bare(line))).toBeLessThanOrEqual(width); };
+    check();
+    pressTimes(window, SHIFT_DOWN, 5); check();
+    pressTimes(window, SHIFT_DOWN, 60); check();
+  });
+
+  const allContentRows = (plain: string[]) => plain.flatMap((line) => { const found = /内容(\d+)行/u.exec(line); return found ? [Number(found[1])] : []; });
+  const sweep = (window: QuestionWindowView, plain: () => string[], key: string) => {
+    const seen = new Set<number>();
+    let previous = "";
+    for (let n = 0; n < 200; n++) {
+      const current = plain().join("\n");
+      for (const row of allContentRows(plain())) seen.add(row);
+      if (current === previous) break;
+      previous = current;
+      window.handleInput(key);
+    }
+    return seen;
+  };
+  const everyRow = (count: number) => Array.from({ length: count }, (_, n) => n + 1);
+
+  test.each([
+    ["5 个选项", 24, 5], ["20 个选项", 24, 20], ["选项 6 个", 24, 6], ["选项 7 个", 24, 7], ["选项 8 个", 24, 8], ["矮终端 20 个选项", 5, 20],
+  ] as const)("%s 终端 %i 行：Shift+↓ 滚到底不漏任何内容行，Shift+↑ 能回到第一行", (_name, rows, count) => {
+    const choices = Array.from({ length: count }, (_, n) => ({ label: n === 0 ? "选项甲" : `选项${n}` }));
+    const { window, plain } = one(rows, { choices, lines: marks(40), caption: undefined });
+    const down = sweep(window, plain, SHIFT_DOWN);
+    expect([...down].sort((a, b) => a - b)).toEqual(everyRow(40));
+    const up = sweep(window, plain, SHIFT_UP);
+    expect(up.has(1)).toBe(true);
+    expect(plain().join("\n")).toContain("要选哪一个");
+    expect(plain().join("\n")).not.toContain("上面还有");
+  });
+
+  test("问题只有一行没有 lines、选项 20 个：内容不用滚动，不出现 Shift+↑↓ 和行数提示，只有项数提示，Shift+↓ 不改变输出", () => {
+    const { window, raw, text } = one(24, { choices: manyChoices(), lines: undefined, caption: undefined });
+    expect(raw()).toHaveLength(14);
+    expect(text()).toContain("要选哪一个");
+    expect(text()).not.toMatch(/Shift\+↑↓|上面还有 \d+ 行|下面还有 \d+ 行/u);
+    expect(text()).toMatch(/下面还有 \d+ 项/u);
+    const before = raw();
+    window.handleInput(SHIFT_DOWN);
+    expect(raw()).toEqual(before);
+  });
+
+  test("矮终端 5 行（上限 10）、20 个选项、内容 40 行：DOWN 走到底再 UP 走回顶，每一步总行数等于 10 且光标所在选项可见", () => {
+    const { window, raw, text } = one(5, { choices: manyChoices(), lines: marks(40) });
+    const check = (n: number) => {
+      expect(raw()).toHaveLength(10);
+      expect(text()).toContain(`<warning>→ ${label(n)}</>`);
+    };
+    check(1);
+    for (let n = 2; n <= 20; n++) { window.handleInput(DOWN); check(n); }
+    for (let n = 19; n >= 1; n--) { window.handleInput(UP); check(n); }
+  });
+
+  const reviewOf = (count: number, answer: (header: string) => string) => {
+    const result = tall(24, [..."甲乙丙丁戊己庚辛壬癸"].slice(0, count).map((header) => ({ header, question: `问题${header}`, choices: [{ label: answer(header) }] })));
+    pressTimes(result.window, ENTER, count);
+    return result;
+  };
+
+  test.each([[40], [60]])("核对页内容放不下、宽度 %i：每行都不超过宽度，提示文字完整", (width) => {
+    const { plain } = reviewOf(4, (header) => Array(12).fill("答案内容").join(" ") + header);
+    const lines = plain(width);
+    expect(lines.join("\n")).toContain("核对你的回答");
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+    const hint = lines.join("").replace(/\s/gu, "");
+    expect(hint).toContain("Shift+↑↓滚动内容");
+    expect(hint).toContain("Esc取消");
+  });
+
+  test("核对页内容放不下时提示顺序：选择、确认、滚动内容、回去修改、取消", () => {
+    expect(reviewOf(10, (header) => `答案${header}`).text()).toContain("↑↓ 选择 · 回车确认 · Shift+↑↓ 滚动内容 · ←→ 回去修改 · Esc 取消</>");
+  });
+
+  test("内容放得下且光标在其他输入行：Shift+↑ 不被吞掉，输入框收到和直接给编辑器一样的按键", () => {
+    const { window, done, plain } = one(24, { allowOther: true, choices: [{ label: "选项甲" }], lines: marks(1) });
+    const editor = new Editor({ requestRender() {}, terminal: { rows: 24, columns: 80 } } as never, { borderColor: (text: string) => text, selectList: {} } as never, { paddingX: 0 });
+    const feed = (data: string) => { window.handleInput(data); editor.handleInput(data); };
+    window.handleInput(DOWN);
+    for (const data of ["a", "b", SHIFT_ENTER, "c", "d", SHIFT_UP, "Z"]) feed(data);
+    expect(plain().join("\n")).not.toMatch(/上面还有 \d+ 行/u);
+    window.handleInput(ENTER);
+    expect(done).toEqual([[{ choices: [], other: editor.getExpandedText().trim() }]]);
+  });
+
+  test("光标在其他行、输入 9 行、内容放不下：输入框每一可见行连同光标行、提示行和下边框都显示，总行数允许超过上限", () => {
+    const typeRows = (window: QuestionWindowView) => {
+      window.handleInput(DOWN);
+      for (let n = 1; n <= 9; n++) { if (n > 1) window.handleInput(SHIFT_ENTER); typeText(window, `行${n}`); }
+    };
+    const fit = one(24, { allowOther: true, choices: [{ label: "选项甲" }], lines: marks(1), cancelNote: undefined });
+    typeRows(fit.window);
+    const expected = barOf(fit.raw(), OTHER_LABEL);
+    const overflow = one(24, { allowOther: true, choices: [{ label: "选项甲" }], cancelNote: undefined });
+    typeRows(overflow.window);
+    const rendered = overflow.raw();
+    const actual = barOf(rendered, OTHER_LABEL);
+    expect(actual.lines).toEqual(expected.lines);
+    expect(actual.raw.some((line) => line.includes("\x1b_pi:fc\x07"))).toBe(true);
+    expect(bare(rendered.at(-2)!)).toContain("Esc 取消");
+    expect(bare(rendered.at(-2)!)).toContain("Shift+↑↓ 滚动内容");
+    expect(rendered.at(-1)).toMatch(/─{80}/u);
+    expect(overflow.text()).toContain("直接输入");
+  });
+
+  const tailChoices = () => Array.from({ length: 20 }, (_, n) => ({ label: label(n + 1) }));
+
+  test("选项很多、窗口起点不在第一项：点击输入栏的实际行把光标定位到输入栏里点中的位置", () => {
+    const { window, plain } = one(24, { allowOther: true, choices: tailChoices() });
+    pressTimes(window, DOWN, 20);
+    typeText(window, "abc");
+    const lines = plain();
+    expect(lines.some((line) => /^ ↑ 上面还有 \d+ 项$/u.test(line))).toBe(true);
+    const row = lines.findIndex((line) => line.startsWith("      › abc"));
+    expect(row).toBeGreaterThan(-1);
+    window.handleMouse(click(8 + visibleWidth("a"), row) as never);
+    typeText(window, "Z");
+    expect(plain().some((line) => line.startsWith("      › aZbc"))).toBe(true);
+  });
+
+  test("输入栏不在可见选项里：点击窗口任何一行都不会把光标移到输入栏，打字也不进输入框", () => {
+    const { window, plain, text } = one(24, { allowOther: true, choices: tailChoices() });
+    pressTimes(window, DOWN, 20);
+    typeText(window, "abc");
+    pressTimes(window, UP, 20);
+    const lines = plain();
+    expect(lines.some((line) => line.startsWith("      › "))).toBe(false);
+    for (let y = 0; y < lines.length; y++) window.handleMouse(click(8, y) as never);
+    typeText(window, "Z");
+    expect(text()).toContain(`<warning>→ ${label(1)}</>`);
+    pressTimes(window, DOWN, 20);
+    expect(barOf(window.render(80), OTHER_LABEL).lines.map((line) => line.trimEnd())).toContain("      › abc");
+  });
 });
