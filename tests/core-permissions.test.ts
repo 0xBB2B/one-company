@@ -15,6 +15,8 @@ import { uuidv7 } from "../src/core/storage/database.ts";
 import { WORKFLOW_MANAGE_PARAMETERS } from "../src/modules/delivery/workflow-manage.ts";
 import { MAIN_AGENT_MANAGE_PARAMETERS } from "../src/modules/explore/agent-manage-extension.ts";
 
+const PAGES = [{ name: "页面", views: [{ name: "正常" }] }];
+
 function actionLiterals(schema: TSchema): string[] {
   const found = new Set<string>();
   const visit = (node: unknown) => {
@@ -173,6 +175,18 @@ test("worker 不能提交原型：授权为假，工具层以动作不允许拒�
   expect(authorizeToolAction("worker", "result_submit", "prototype")).toBe(false);
   expect(granted("worker", "result_submit")).toEqual(["verdict"]);
   const tool = createResultSubmitTool({ grant: { role: "worker", callerId: uuidv7(), runId: uuidv7(), parentRunId: uuidv7() }, authorize: () => true });
-  await expect(Promise.resolve().then(() => tool.execute({ action: "prototype", html: "<html></html>", note: "说明" }))).rejects.toMatchObject({ code: "action_not_allowed" });
+  await expect(Promise.resolve().then(() => tool.execute({ action: "prototype", html: "<html></html>", note: "说明", pages: PAGES }))).rejects.toMatchObject({ code: "action_not_allowed" });
+  tool.dispose();
+});
+
+test.each([
+  ["缺 pages", { action: "prototype", html: "<html></html>", note: "说明" }],
+  ["pages 不是数组", { action: "prototype", html: "<html></html>", note: "说明", pages: "页面" }],
+  ["pages 里的画面缺名字", { action: "prototype", html: "<html></html>", note: "说明", pages: [{ name: "页面", views: [{}] }] }],
+])("prototype 交稿工具：%s 时以 invalid_shape 退回并写到 pages", async (_label, input) => {
+  const tool = createResultSubmitTool({ grant: { role: "prototype", callerId: uuidv7(), runId: uuidv7(), parentRunId: uuidv7() }, authorize: () => true });
+  const error = await Promise.resolve().then(() => tool.execute(input)).then(() => null, (caught: unknown) => caught as { code: string; advice: { why: string } });
+  expect(error?.code).toBe("invalid_shape");
+  expect(error?.advice.why).toContain("pages");
   tool.dispose();
 });

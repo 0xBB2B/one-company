@@ -11,6 +11,8 @@ import type { LocalDatabase } from "../../core/storage/database.ts";
 import { hash as sha256Hex, id, object, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { unsafeFilenameKind } from "./requirement-identity.ts";
+import { buildPrototypeFrame } from "./prototype-frame.ts";
+import type { PrototypePage } from "./prototype-frame.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 
 const PROTOTYPES = "requirement_prototypes";
@@ -151,10 +153,12 @@ export async function beginDesign(ref: Ref, input: { requirementId: string; name
 export const optionLetter = (index: number): PickedOption["letter"] => OPTION_LETTERS[index]!;
 export const pickedOptionText = (picked: PickedOption): string => `${picked.letter}「${picked.name}」，其余方案不做`;
 
+const cleanName = (name: string): string => sanitizeText(name).replace(/\s+/g, " ").trim();
+
 function checkOptionList(raw: readonly string[] | undefined): string[] {
   if (!raw?.length) return [];
   const next = "改好方案清单后重交";
-  const options = raw.map((name) => sanitizeText(name).replace(/\s+/g, " ").trim());
+  const options = raw.map(cleanName);
   if (options.length < 2) deny("invalid_options", `方案清单只有 ${options.length} 个方案，至少 2 个；只画了一种方案时不附清单`, next);
   if (options.length > OPTION_LETTERS.length) deny("invalid_options", `方案清单有 ${options.length} 个方案，最多 ${OPTION_LETTERS.length} 个`, next);
   const empty = options.findIndex((name) => name === "");
@@ -166,22 +170,50 @@ function checkOptionList(raw: readonly string[] | undefined): string[] {
   return options;
 }
 
+export interface SubmittedPage { name: string; group?: string; views: { name: string; notes?: string[] }[] }
+
+const cleanLines = (lines: readonly string[] | undefined): string[] => (lines ?? []).map((line) => line.trim()).filter((line) => line !== "");
+
+function checkPageList(raw: readonly SubmittedPage[]): PrototypePage[] {
+  const next = "改好页面清单后重交";
+  if (raw.length === 0) deny("invalid_pages", "页面清单是空的，至少写 1 个页面", next);
+  const names = raw.map((page) => cleanName(page.name));
+  const empty = names.findIndex((name) => name === "");
+  if (empty >= 0) deny("invalid_pages", `第 ${empty + 1} 个页面名是空的`, next);
+  const second = names.findIndex((name, index) => names.indexOf(name) !== index);
+  if (second >= 0) deny("invalid_pages", `页面「${names[second]}」重名`, next);
+  return raw.map((page, index) => {
+    const name = names[index]!;
+    if (page.views.length === 0) deny("invalid_pages", `页面「${name}」没有画面，至少写 1 个`, next);
+    const viewNames = page.views.map((view) => cleanName(view.name));
+    const emptyView = viewNames.findIndex((viewName) => viewName === "");
+    if (emptyView >= 0) deny("invalid_pages", `页面「${name}」的第 ${emptyView + 1} 个画面名是空的`, next);
+    const repeated = viewNames.findIndex((viewName, i) => viewNames.indexOf(viewName) !== i);
+    if (repeated >= 0) deny("invalid_pages", `页面「${name}」的画面「${viewNames[repeated]}」重名`, next);
+    return { name, group: cleanName(page.group ?? "") || "状态", views: page.views.map((view, i) => ({ name: viewNames[i]!, notes: cleanLines(view.notes) })) };
+  });
+}
+
 const HTML_START = /^\s*<(?:!doctype\s+html|html)[\s>]/i;
 
-export async function submitDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; html: string; note: string; options?: string[] }): Promise<void> {
-  const bytes = Buffer.byteLength(input.html, "utf8");
-  if (bytes > PROTOTYPE_MAX_BYTES) deny("too_large", `原型 ${bytes} 字节，超过 ${PROTOTYPE_MAX_BYTES} 字节上限`, "精简原型后重交");
+export async function submitDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; html: string; note: string; pages: SubmittedPage[]; options?: string[]; prototypeOnly?: string[]; openQuestions?: string[] }): Promise<void> {
   if (!HTML_START.test(input.html)) deny("not_html", "交稿内容不是 HTML 页面", "交一份以 <!doctype html> 或 <html> 开头的完整页面");
   if (input.note.length > NOTE_MAX_LENGTH) deny("note_too_long", `交稿说明超过 ${NOTE_MAX_LENGTH} 字`, "缩短说明后重交");
   const options = checkOptionList(input.options);
+  const pages = checkPageList(input.pages);
+  const prototypeOnly = cleanLines(input.prototypeOnly);
+  const openQuestions = cleanLines(input.openQuestions);
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (board) => {
     assertRequirementEditable(db, input.requirementId);
     const { inFlight } = requireInFlight(board, input.name, "designing");
     if (inFlight.runId !== input.runId) deny("run_mismatch", "这次运行不是这份原型当前的设计运行", "只有被派出的设计运行才能交稿");
     const path = prototypeFilePath(ref, { requirementId: input.requirementId, name: input.name, version: inFlight.version });
-    writeFileAtomicSync(path, input.html);
+    const content = buildPrototypeFrame({ html: input.html, name: input.name, version: inFlight.version, pages, options, prototypeOnly, openQuestions });
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes > PROTOTYPE_MAX_BYTES) deny("too_large", `原型 ${bytes} 字节，超过 ${PROTOTYPE_MAX_BYTES} 字节上限`, "精简原型后重交");
+    writeFileAtomicSync(path, content);
     inFlight.status = "awaiting";
-    inFlight.file = { version: inFlight.version, hash: sha256(input.html), bytes, note: input.note, options, picked: null };
+    inFlight.file = { version: inFlight.version, hash: sha256(content), bytes, note: input.note, options, picked: null };
   }));
 }
 

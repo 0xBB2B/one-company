@@ -1105,6 +1105,7 @@ describe("草稿核验模型没有 60 秒时限", () => {
 });
 
 const PROTOTYPE_HTML = "<!doctype html><html><body><h1>设置页</h1></body></html>";
+const PAGES = [{ name: "页面", views: [{ name: "正常" }] }];
 type World = Awaited<ReturnType<typeof world>>;
 const boardRef = (w: World) => ({ dataRoot: w.dataRoot, repoId: w.repoId });
 
@@ -1112,7 +1113,7 @@ async function designed(w: World, requirementId: string, name: string, reworks =
   for (let round = 0; round <= reworks; round++) {
     const runId = uuidv7(), accept = round === reworks;
     await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer" });
-    await submitDesign(boardRef(w), { requirementId, name, runId, html: PROTOTYPE_HTML, note: "三项状态横排", options: pick?.options });
+    await submitDesign(boardRef(w), { pages: PAGES, requirementId, name, runId, html: PROTOTYPE_HTML, note: "三项状态横排", options: pick?.options });
     const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
     await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash,
       choice: accept ? "accept" : "opinion", opinion: accept ? null : "再改一版", option: accept ? pick?.option ?? null : null });
@@ -1149,7 +1150,7 @@ describe("批准时连同草稿里的原型一起批准", () => {
     const w = await world(), created = await w.create(), id = String(created.requirementId);
     const runId = uuidv7();
     await beginDesign(boardRef(w), { requirementId: id, name: "设置页", runId, agent: "designer" });
-    await submitDesign(boardRef(w), { requirementId: id, name: "设置页", runId, html: PROTOTYPE_HTML, note: "说明" });
+    await submitDesign(boardRef(w), { pages: PAGES, requirementId: id, name: "设置页", runId, html: PROTOTYPE_HTML, note: "说明" });
     await beginDesign(boardRef(w), { requirementId: id, name: "命令行输出", runId: uuidv7(), agent: "designer" });
     const before = await readPrototypeBoard(boardRef(w), id);
     for (const mention of [true, false]) {
@@ -1437,7 +1438,7 @@ describe("批准时核对原型文件和在途原型", () => {
     w.beforeAnswer(async () => {
       const runId = uuidv7();
       await beginDesign(boardRef(w), { requirementId: id, name: "另一份", runId, agent: "designer" });
-      await submitDesign(boardRef(w), { requirementId: id, name: "另一份", runId, html: PROTOTYPE_HTML, note: "说明" });
+      await submitDesign(boardRef(w), { pages: PAGES, requirementId: id, name: "另一份", runId, html: PROTOTYPE_HTML, note: "说明" });
     });
     const { input } = await w.request(created);
     w.capture("同意"); scriptReview(w.provider, phoneReview);
