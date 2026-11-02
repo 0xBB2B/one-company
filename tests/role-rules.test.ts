@@ -99,7 +99,7 @@ describe("worker 职责规矩的重试验证引用", () => {
 describe("prototype 职责规矩", () => {
   test("页面里不写说明性字样和切换控件，说明都写进清单", () => {
     const rules = loadRoleRules("prototype");
-    for (const phrase of ["演示", "示例", "待确认", "不画切换条、状态选择和方案标签", "按钮和标题写真实文案", "示例数据写成真实的样子", "notes 写这个画面要注意什么", "不清楚的写进 openQuestions"]) expect(rules).toContain(phrase);
+    for (const phrase of ["演示", "示例", "待确认", "不画切换条、状态选择和方案标签", "按钮和标题写真实文案", "示例数据写成真实的样子", "notes 写这个画面要注意什么", "不清楚的写进 openQuestions", "localStorage", "alert", "confirm", "弹窗和提示都画在页面里"]) expect(rules).toContain(phrase);
   });
 
   test("含单个 HTML、四种状态各一个画面、终端铺满隔离框、多步每步一个画面、先读上一版按意见改，不含先红后绿", () => {

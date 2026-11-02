@@ -37,43 +37,43 @@ description: 新增纯函数，把设计师交的页面和清单拼成左边切�
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title><<TITLE>></title>
 <style>
-:root{--rail:#17202a;--rail-2:#222e3a;--rail-line:#35434f;--rail-text:#e8edf1;--rail-muted:#9fadb8;--accent:#f5b84b;--stage:#c9ced4}
+:root{--rail:#0a2744;--rail-line:#2a4f78;--rail-text:#d3e8ff;--rail-muted:#86a9cd;--accent:#6fd6ff;--accent-ink:#06223c;--stage:#0e3257;--label:#a9cdf0}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{height:100%;margin:0}
-body{display:grid;grid-template-columns:260px minmax(0,1fr);background:var(--stage);font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-.rail{background:var(--rail);color:var(--rail-text);height:100vh;overflow:auto;border-right:4px solid var(--accent)}
+body{display:grid;grid-template-columns:260px minmax(0,1fr);background:var(--stage);background-image:linear-gradient(#ffffff0b 1px,transparent 1px),linear-gradient(90deg,#ffffff0b 1px,transparent 1px);background-size:20px 20px;font:14px/1.6 Menlo,Consolas,"PingFang SC","Microsoft YaHei",monospace}
+.rail{background:var(--rail);color:var(--rail-text);height:100vh;overflow:auto;border-right:1px dashed var(--accent)}
 .rail-head{padding:16px 18px 14px;border-bottom:1px solid var(--rail-line)}
-.rail-tag{display:inline-block;background:var(--accent);color:#2b2108;font-size:12px;font-weight:700;padding:2px 8px;border-radius:4px}
+.rail-tag{display:inline-block;border:1px dashed var(--accent);color:var(--accent);font-size:12px;font-weight:700;padding:1px 8px}
 .rail-head h1{font-size:16px;margin:10px 0 2px;line-height:1.4;overflow-wrap:anywhere}
 .rail-head p{margin:0;color:var(--rail-muted);font-size:12px}
 .rail-section{padding:14px 18px;border-bottom:1px solid var(--rail-line)}
 .rail-section h2,.col h2{font-size:12px;color:var(--rail-muted);font-weight:600;margin:0 0 8px;letter-spacing:.5px}
+.col h2{margin-bottom:2px}
 .group{margin-bottom:12px}.group:last-child{margin-bottom:0}
 .group-name{font-size:12px;color:var(--rail-muted);margin-bottom:5px}
 .seg{display:flex;flex-direction:column;gap:4px}
-.seg button{all:unset;box-sizing:border-box;cursor:pointer;padding:7px 10px;border-radius:6px;background:var(--rail-2);color:var(--rail-text);font-size:13px;border:1px solid transparent;overflow-wrap:anywhere}
-.seg button:hover{border-color:var(--rail-line)}
+.seg button{all:unset;box-sizing:border-box;cursor:pointer;padding:6px 10px;color:var(--rail-text);font-size:13px;border:1px solid var(--rail-line);overflow-wrap:anywhere}
+.seg button:hover{border-color:var(--accent)}
 .seg button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.seg button[aria-pressed=true]{background:var(--accent);color:#2b2108;font-weight:600}
-.option-box{margin:14px 14px 2px;padding:10px 12px;border:2px solid var(--accent);border-radius:8px;background:#2b2a20}
+.seg button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.option-box{margin:14px 14px 2px;padding:10px 12px;border:1px dashed var(--accent);background:#0d3056}
 .option-title{font-size:14px;font-weight:700;color:var(--accent);margin-bottom:8px;line-height:1.45}
 .option-foot{font-size:12px;color:var(--rail-muted);margin-top:8px;line-height:1.5}
-.option-pill{background:var(--accent);color:#2b2108;font-weight:700;font-size:13px;padding:1px 10px;border-radius:4px;overflow-wrap:anywhere}
+.option-pill{border:1px dashed var(--accent);color:var(--accent);font-weight:700;font-size:12px;padding:0 8px;overflow-wrap:anywhere}
 .stage{height:100vh;min-width:0;display:flex;flex-direction:column;padding:10px 14px 14px}
-.stage-label{font-size:12px;color:#39424c;padding:0 2px 6px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px}
+.stage-label{font-size:12px;color:var(--label);padding:0 2px 6px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px}
 .stage-label b{font-weight:600}
 .stage-now{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;min-width:0}
 #where{overflow-wrap:anywhere}
-iframe{flex:1;min-height:0;width:100%;border:0;background:#fff;box-shadow:0 0 0 1px #8b949d,0 6px 24px #0002;border-radius:4px}
-.band{flex:0 1 auto;max-height:calc(100vh / 3);overflow:auto;margin-top:10px;background:var(--rail);color:var(--rail-text);border-top:4px solid var(--accent);border-radius:4px;padding:10px 16px 12px}
-.band-head{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+iframe{flex:1;min-height:0;width:100%;margin:3px 0;border:0;background:#fff;outline:1px dashed var(--accent);outline-offset:3px}
+.band{flex:0 1 auto;max-height:calc(100vh / 3);overflow:auto;margin-top:8px;background:var(--rail);color:var(--rail-text);border-top:1px dashed var(--accent);padding:6px 12px 8px}
+.band-head{display:flex;align-items:center;gap:10px;margin-bottom:3px}
 .band-head small{color:var(--rail-muted);font-size:12px}
 .band-cols{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:20px}
-.notes{font-size:13px;line-height:1.75;overflow-wrap:anywhere}
+.notes{font-size:13px;line-height:1.45;overflow-wrap:anywhere}
 .notes ul,.notes ol{margin:0;padding-left:18px}
-.notes li{margin-bottom:6px}
-@media(max-width:760px){body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto;height:auto}html{height:auto}.rail{height:auto;border-right:0;border-bottom:4px solid var(--accent)}.stage{height:auto;padding:10px 16px 16px}iframe{flex:none;height:70vh}.band{max-height:none}.band-cols{grid-auto-flow:row}}
+@media(max-width:760px){body{grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto;height:auto}html{height:auto}.rail{height:auto;border-right:0;border-bottom:1px dashed var(--accent)}.stage{height:auto;padding:10px 16px 16px}iframe{flex:none;height:70vh}.band{max-height:none}.band-cols{grid-auto-flow:row}}
 </style>
 </head>
 <body>
@@ -84,7 +84,7 @@ iframe{flex:1;min-height:0;width:100%;border:0;background:#fff;box-shadow:0 0 0 
 </aside>
 <main class="stage">
   <div class="stage-label"><b>▼ 被设计的页面：只有这个框里的内容要实现</b><span class="stage-now"><span class="option-pill" id="where-option" hidden></span><span id="where"></span></span></div>
-  <iframe id="page" title="被设计的页面"></iframe>
+  <iframe id="page" title="被设计的页面" sandbox="allow-scripts"></iframe>
   <section class="band" id="band" aria-label="设计说明，不属于被设计的页面" hidden>
     <div class="band-head"><span class="rail-tag">设计说明 · 不属于页面</span><small>这一块上线后不存在</small></div>
     <div class="band-cols">

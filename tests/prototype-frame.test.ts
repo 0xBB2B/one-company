@@ -142,6 +142,19 @@ test("相同输入两次调用结果相同", () => {
   expect(buildPrototypeFrame(baseInput)).toBe(buildPrototypeFrame(baseInput));
 });
 
+test("隔离框是沙箱，外框是蓝图风格，说明区条目收紧", () => {
+  const output = buildPrototypeFrame({ html: "<!doctype html><html><body></body></html>", name: "设置页", version: 1, pages: [{ name: "页", group: "状态", views: [{ name: "正常", notes: [] }] }], options: [], prototypeOnly: [], openQuestions: [] });
+  expect(output).toContain('<iframe id="page" title="被设计的页面" sandbox="allow-scripts">');
+  expect(output).toContain("--rail:#0a2744");
+  expect(output).toContain("--accent:#6fd6ff");
+  expect(output).toContain("background-size:20px 20px");
+  expect(output).toContain("border-right:1px dashed var(--accent)");
+  expect(output).toContain("outline:1px dashed var(--accent)");
+  expect(output).toContain(".notes{font-size:13px;line-height:1.45;");
+  expect(output).not.toContain("#f5b84b");
+  expect(output).not.toContain(".notes li");
+});
+
 test("页面里的链接留在隔离框里，说明区上限是窗口的三分之一，长名称不撑破窗口", () => {
   const output = buildPrototypeFrame({ html: "<!doctype html><html><body></body></html>", name: "设置页", version: 1, pages: [{ name: "页", group: "状态", views: [{ name: "正常", notes: [] }] }], options: [], prototypeOnly: [], openQuestions: [] });
   expect(output).toContain('<base href="about:srcdoc">');
