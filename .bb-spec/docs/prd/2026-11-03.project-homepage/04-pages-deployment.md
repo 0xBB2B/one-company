@@ -1,6 +1,6 @@
 ---
 name: 04-pages-deployment
-description: 用 GitHub Actions 把 site 目录发布到 GitHub Pages，并随 main 分支更新
+description: 用 GitHub Actions 把 site 目录发布到 one-company.0xbb.me，并随 main 分支更新
 date: 2026-11-03
 ---
 
@@ -13,7 +13,7 @@ date: 2026-11-03
 **用例（主路径）**
 - 场景：维护者改了 `site/index.html`，合并到 `main`。
 - 操作：等部署任务跑完。
-- 预期：打开 `https://0xbb2b.github.io/one-company/` 看到新内容。
+- 预期：打开 `https://one-company.0xbb.me/` 看到新内容。
 
 **用例（边界）**
 - 场景：维护者只改了 `src/` 下的代码，合并到 `main`。
@@ -43,7 +43,10 @@ date: 2026-11-03
 - 工作流用到的第三方 Action 都锁定到经官方渠道核实的版本。
 - 同一时间只有一个部署在跑；新部署开始时，排队中的旧部署被取消。
 - 工作流不需要安装依赖，也不运行构建。
-- 仓库设置里的 Pages 来源是 GitHub Actions，仓库主页字段是 `https://0xbb2b.github.io/one-company/`。这两项设置和合并到 `main` 一样，要用户另外授权后才操作。
+- 主页地址是 `https://one-company.0xbb.me/`。仓库 Pages 设置的自定义域名填 `one-company.0xbb.me`，并开启强制 HTTPS。
+- 用户在 `0xbb.me` 的 DNS 服务商处加一条 CNAME 记录：名称 `one-company`，指向 `0xbb2b.github.io`。必须先在 GitHub 填好域名，再加这条记录；不用通配符记录。原因：GitHub 官方文档要求这个顺序，否则别人可能抢先在这个子域名上挂站点。
+- `site/` 里不放 `CNAME` 文件：用 Actions 发布时 GitHub 会忽略它。
+- 仓库设置里的 Pages 来源是 GitHub Actions，仓库主页字段是 `https://one-company.0xbb.me/`。Pages 来源、自定义域名、强制 HTTPS 和主页字段这些设置，和合并到 `main` 一样，要用户另外授权后才操作。
 - `package.json` 的 `files` 不加 `site`。
 - 改 `site/` 不改变守护进程的代码指纹（根据安装目录里 `src/`、`resources/` 和 `package.json` 算出的摘要），所以不触发守护进程换新。
 
@@ -58,12 +61,14 @@ date: 2026-11-03
 - [ ] 工作流里没有安装依赖和构建步骤。
 - [ ] `package.json` 的 `files` 里没有 `site`。
 - [ ] 改 `site/` 下的文件后，代码指纹不变。
-- [ ] 用户授权后：Pages 来源设为 GitHub Actions，部署成功，线上主页能打开且访问不到仓库其他文件，仓库主页字段已设置。
+- [ ] `site/` 里没有 `CNAME` 文件。
+- [ ] 用户授权后：Pages 来源设为 GitHub Actions，自定义域名是 `one-company.0xbb.me`，部署成功；DNS 生效后 `https://one-company.0xbb.me/` 能打开、开启了强制 HTTPS、访问不到仓库其他文件；仓库主页字段已设置。
 
 ## 验证路径
 
 1. 读 `.github/workflows/pages.yml` → 触发条件、权限、发布目录和并发设置符合约束。
 2. 跑 `pnpm run typecheck`、`pnpm test`、`pnpm run test:integration`、`pnpm run test:installation` → 全部通过。
-3. 用户授权后，用 `gh api` 把 Pages 来源设为 GitHub Actions，合并到 `main` → Actions 页面里部署任务成功。
-4. 打开 `https://0xbb2b.github.io/one-company/` → 显示主页；打开 `https://0xbb2b.github.io/one-company/README.md` → 404。
-5. 只改 `src/` 下的文件并推送到 `main` → 部署任务没有运行。
+3. 用户授权后，用 `gh api` 把 Pages 来源设为 GitHub Actions、自定义域名设为 `one-company.0xbb.me`，合并到 `main` → Actions 页面里部署任务成功。
+4. 用户加好 CNAME 记录后，`dig +short one-company.0xbb.me` → 返回 `0xbb2b.github.io.`；证书签好后开启强制 HTTPS（GitHub 文档说最多要等 24 小时）。
+5. 打开 `https://one-company.0xbb.me/` → 显示主页；打开 `https://one-company.0xbb.me/README.md` → 404。
+6. 只改 `src/` 下的文件并推送到 `main` → 部署任务没有运行。

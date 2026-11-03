@@ -146,8 +146,8 @@ date: 2026-11-03
 | 治理说明 | 代理写代码很快，也很会说"做完了"。OneCompany 把关键判断交给程序和你。 | Agents write code fast, and they are quick to say “done”. OneCompany leaves the key calls to the program and to you. |
 | 卡片 1 | 只有你能批准：批准和裁决只认你的原话和你在程序窗口里的选择。代理说"用户同意了"不算数，代理之间也不能互相批准。 | Only you can approve: Approvals count only from your own words or your choice in a program window. An agent saying “the user agreed” does not count, and agents can’t approve each other. |
 | 卡片 2 | 自称完成不算完成：各角色的权限、版本和阶段门槛都由程序核对。代理说"通过了"不能代替实际检查。 | Claiming done isn’t done: The program checks every role’s permissions, versions and stage gates. An agent saying “passed” never replaces the actual check. |
-| 卡片 3 | 改动不出范围：worker 改了任务范围外的文件，结果被拒收。新增第三方依赖要你裁决。同一文件同一时间只有一个任务能写。 | Changes stay in scope: A worker that edits files outside its task gets its result rejected. New third-party dependencies need your ruling. Only one task can write a file at a time. |
-| 卡片 4 | 每处改动查得回需求：提交带需求编号，需求关闭时正文和原型归档进分支。以后能从代码查到当初为什么这样做。 | Every change traces back: Commits carry the requirement ID, and the requirement and prototypes are archived in the branch on close. You can always find why the code looks the way it does. |
+| 卡片 3 | 改动不出范围：worker 改了本需求任务范围外的文件，结果被拒收。写入范围重叠的任务不会同时派出。 | Changes stay in scope: A worker that edits files outside the requirement’s task scopes gets its result rejected. Tasks with overlapping write scopes are never dispatched at the same time. |
+| 卡片 4 | 每处改动查得回需求：提交带需求编号，需求完成时正文和原型归档进分支。以后能从代码查到当初为什么这样做。 | Every change traces back: Commits carry the requirement ID, and the requirement and prototypes are archived in the branch when it completes. You can always find why the code looks the way it does. |
 | 团队标题 | 一支随包附带的团队 | A team that ships with the package |
 | 团队说明 | 你只和主代理说话，其他角色都在后台运行。不用另装子代理系统。 | You talk only to the main agent. Every other role runs in the background, with no separate subagent system to install. |
 | 角色：主代理 | 和你理清需求，弹窗问你拿主意 | Main agent：Clarifies the requirement and asks for your decisions |

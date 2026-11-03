@@ -32,7 +32,7 @@ features: [project-homepage]
 - 不给产品界面做英文版。
 - 不做文档站，不把 README 拆到主页上。
 - 不加 CI 测试，不加真实测试徽章。
-- 不绑定自定义域名。
+- 不改账号主页 `0xbb.me` 的设置。
 - 不做社交分享图、访问统计、订阅表单。
 - 不写用户评价、下载量、star 数这类数据。
 
@@ -56,7 +56,7 @@ features: [project-homepage]
 3. 把浏览器宽度缩到 390 像素，页面变成单列，整页没有横向滚动条。
 4. 在 GitHub 上看分支的 README，第一屏能看到新横幅图、一句话介绍、徽章和导航，没有 Tests 徽章，图下没有重复的大标题。
 5. 跑 `pnpm run typecheck`、`pnpm test`、`pnpm run test:integration`、`pnpm run test:installation`，全部通过。
-6. 合并到 `main` 后，GitHub Actions 的部署任务成功，打开 `https://0xbb2b.github.io/one-company/` 看到第 1 步的页面。
+6. 合并到 `main`、加好 DNS 记录后，GitHub Actions 的部署任务成功，打开 `https://one-company.0xbb.me/` 看到第 1 步的页面。
 
 ## 决策记录
 
@@ -72,4 +72,6 @@ features: [project-homepage]
 - **首屏放状态面板，不放横幅图**：状态面板是产品真实的样子，比概念图更能说明产品。
 - **系统字体，不加载外部字体**：Google Fonts 在国内访问不稳定，系统字体没有这个风险。
 - **语言记忆（用户 2026-11-02 决定）**：访客手动切换后浏览器记住选择，常用另一种语言的访客不用每次重新切。
+- **主页地址用专用子域名 `one-company.0xbb.me`（用户 2026-11-03 决定）**：用户的账号主页绑了 `0xbb.me`，GitHub 让同账号的项目站点默认跟随它，2026-11-03 实测 `https://0xbb2b.github.io/one-company/` 会 301 跳到 `https://0xbb.me/one-company/`。原计划写 github.io 地址是代理按默认规则推断、没有实测，审查时才发现。否决了直接用 `0xbb.me/one-company/`（挂在个人主页路径下）和保留 github.io 地址（多一次跳转，写的地址和实际地址不一致）。
+- **卖点只写程序真的做到的事（用户 2026-11-03 决定）**：审查对照代码发现原文有 3 处说宽了：结果拒收看的是整个需求所有任务的范围，不是单个任务；"新增第三方依赖要你裁决"只是提示词规矩，程序不拦，所以删掉；归档只在需求以完成关闭时发生。"同一文件只有一个任务能写"改成派工门槛的准确说法。主页标题写着"程序核对的才算"，靠模型自觉的规矩不能写在这里。
 - **主页标题（用户 2026-11-02 决定）**：中文写"一个人，撑起一家有规矩的 AI 公司。"，英文沿用现有标语 "One human. A governed autonomous company."。
