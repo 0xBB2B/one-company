@@ -186,7 +186,7 @@ describe("任务说明带上用户选定的方案", () => {
     await until(() => w.owner().context.baseline?.revision === 2);
     await w.readDiffs(["revision 1 → 2"]);
     const version = () => withDatabase(repositoryDatabase(w.ref.dataRoot, w.ref.repoId), (db) => db.read<{ planVersion: number }>("plans", w.requirementId)!.data.planVersion);
-    await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: ["a", "b"].map((key) => ({ taskId: w.task(key).taskId,
+    await w.plan.execute({ action: "assess-update", revision: 2, tasks: ["a", "b"].map((key) => ({ taskId: w.task(key).taskId,
       version: 1, assessment: "unaffected", rationale: `${key} 不受影响` })), global: { assessment: "unaffected", rationale: "只换了设置页原型" } });
     await w.plan.execute({ action: "update", planVersion: version(), add: [spec("resend", { goalUnitIds: ["goal.resend"], writePaths: ["web/"] })] });
     await w.plan.execute({ action: "confirm", planVersion: version() });
@@ -272,7 +272,7 @@ describe("批准新版本不改已派出的任务", () => {
     await until(() => w.owner().context.baseline?.revision === 2);
     await w.readDiffs(["revision 1 → 2"]);
     const version = () => withDatabase(repositoryDatabase(w.ref.dataRoot, w.ref.repoId), (db) => db.read<{ planVersion: number }>("plans", w.requirementId)!.data.planVersion);
-    await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: ["a", "b"].map((key) => ({ taskId: w.task(key).taskId,
+    await w.plan.execute({ action: "assess-update", revision: 2, tasks: ["a", "b"].map((key) => ({ taskId: w.task(key).taskId,
       version: 1, assessment: "unaffected", rationale: `${key} 不受影响` })), global: { assessment: "unaffected", rationale: "只换了设置页原型" } });
     await w.plan.execute({ action: "update", planVersion: version(), add: [spec("resend", { goalUnitIds: ["goal.resend"], writePaths: ["web/"] })] });
     await w.plan.execute({ action: "confirm", planVersion: version() });

@@ -239,7 +239,7 @@ test("M7-AC35：终止任务后整个需求暂停：PM 与子代理暂停、不�
   expect((await close.deliveryCheck(w.fixture.requirementId)).blockers).not.toContain("terminated_goal_in_scope");
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
-  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
     global: { assessment: "unaffected", rationale: "只改登录做法" } });
   await w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("login-stub", "goal.login", { objective: "用测试桩实现登录", writePaths: ["lib/"] })] });
@@ -356,7 +356,7 @@ test("上报后批准新版本，PM 复核判这个任务受影响：事项从�
   await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败，并按原型提示。\n" });
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
-  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: w.task("login").taskId, version: w.task("login").version, assessment: "unaffected", rationale: "登录不变" },
     { taskId: failure, version: w.task("failure").version, assessment: "affected", rationale: "失败提示按原型" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -391,7 +391,7 @@ test("M7-AC35：调整目标或范围后须等新的批准版本才能按新范�
   await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 测试桩登录 {#goal.stub}\n短信用测试桩。\n" });
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
-  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: w.login, version: w.task("login").version, assessment: "affected", rationale: "登录目标改为测试桩" },
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -686,7 +686,7 @@ test("用户再给一次机会后，那次运行因批准新版本、任务被�
   await until(async () => await state(third.runId) === "paused");
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
-  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: w.login, version: w.task("login").version, assessment: "affected", rationale: "登录要记住设备" },
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -929,7 +929,7 @@ describe("用户对已有尝试的任务选调整后，PM 不能用同目标新�
     await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，短信用测试桩。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n" });
     await until(() => w.owner().context.baseline?.revision === 2);
     await w.readDiffs(["revision 1 → 2"]);
-    await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
       { taskId: id, version: w.task("login").version, assessment: "affected", rationale: "登录范围变了" },
       { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
       global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -961,7 +961,7 @@ describe("用户对已有尝试的任务选调整后，PM 不能用同目标新�
     await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功，短信用测试桩。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n" });
     await until(() => w.owner().context.baseline?.revision === 2);
     await w.readDiffs(["revision 1 → 2"]);
-    await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
       { taskId: w.login, version: w.task("login").version, assessment: "affected", rationale: "登录范围变了" },
       { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
       global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -1145,7 +1145,7 @@ test("用户选调整并批准新 PRD 版本、复核判受影响后 PM 修改�
   await w.fixture.approveRevision({ body: "# 验证码失败 {#scenario.failure}\n错误验证码显示失败。\n# 测试桩登录 {#goal.stub}\n短信用测试桩。\n" });
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
-  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: w.login, version: w.task("login").version, assessment: "affected", rationale: "登录目标改为测试桩" },
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -1244,7 +1244,7 @@ test("用户给再一次机会时额度恢复，被作废后 PM 修改开新周�
   await until(async () => await state(third.runId) === "paused");
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
-  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: login, version: w.task("login").version, assessment: "affected", rationale: "复核认为登录受影响" },
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "affected", rationale: "失败场景的章节变了" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -1273,7 +1273,7 @@ async function affectedLoginAfterRevision(failureBody: string, loginBody = LOGIN
   await w.fixture.approveRevision({ body: `${loginBody}# 验证码失败 {#scenario.failure}\n${failureBody}\n` });
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
-  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: id, version: w.task("login").version, assessment: "affected", rationale: "复核认为登录受影响" },
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: failureBody === UNRELATED_EDIT ? "affected" : "unaffected", rationale: "失败场景的章节是否变了" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -1327,7 +1327,7 @@ describe("复核判受影响、没有用户调整决定的已执行任务：不�
     await w.fixture.approveRevision({ body: `${LOGIN_BODY}# 验证码失败 {#scenario.failure}\n${UNRELATED_EDIT}\n` });
     await until(() => w.owner().context.baseline?.revision === 2);
     await w.readDiffs(["revision 1 → 2"]);
-    await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
       { taskId: id, version: w.task("login").version, assessment: "affected", rationale: "复核认为登录受影响" },
       { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "affected", rationale: "失败场景的章节变了" }],
       global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -1347,7 +1347,7 @@ async function approveAndAssessLoginAffected(w: Awaited<ReturnType<typeof pendin
   await w.fixture.approveRevision({ body });
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
-  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: loginId, version: w.task("login").version, assessment: "affected", rationale: "复核认为登录受影响" },
     { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "affected", rationale: "失败场景的章节变了" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -1703,7 +1703,7 @@ describe("待更新且占住目标的任务可以请求拆分", () => {
     await w.fixture.approveRevision({ body: NEXT_BODY });
     await until(() => w.owner().context.baseline?.revision === 3);
     await w.readDiffs(["revision 2 → 3"]);
-    await w.plan.execute({ action: "assess-update", revision: 3, assessmentId: uuidv7(), tasks: [
+    await w.plan.execute({ action: "assess-update", revision: 3, tasks: [
       { taskId: id, version: w.task("login").version, assessment: "affected", rationale: "登录受影响" },
       { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "affected", rationale: "失败场景受影响" }],
       global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -1746,7 +1746,7 @@ describe("请求拆分后用户选“拆分”：不需要新的批准版本就�
     await w.fixture.approveRevision({ body: NEXT_BODY });
     await until(() => w.owner().context.baseline?.revision === 3);
     await w.readDiffs(["revision 2 → 3"]);
-    await w.plan.execute({ action: "assess-update", revision: 3, assessmentId: uuidv7(), tasks: [
+    await w.plan.execute({ action: "assess-update", revision: 3, tasks: [
       { taskId: id, version: w.task("login").version, assessment: "unaffected", rationale: "登录无关" },
       { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "affected", rationale: "失败场景的章节变了" }],
       global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -1793,7 +1793,7 @@ describe("请求拆分后用户选“拆分”：不需要新的批准版本就�
     await w.fixture.approveRevision({ body: NEXT_BODY });
     await until(() => w.owner().context.baseline?.revision === 3);
     await w.readDiffs(["revision 2 → 3"]);
-    await w.plan.execute({ action: "assess-update", revision: 3, assessmentId: uuidv7(), tasks: [
+    await w.plan.execute({ action: "assess-update", revision: 3, tasks: [
       { taskId: id, version: w.task("login").version, assessment: "affected", rationale: "测试桩要限制频率" },
       { taskId: failure.taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景没变" }],
       global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -2112,7 +2112,7 @@ describe("请求拆分等用户裁决期间 PM 确认计划被拒，裁决并改
     await w.fixture.approveRevision({ body: GOAL_CHANGED_BODY });
     await until(() => w.owner().context.baseline?.revision === 2);
     await w.readDiffs(["revision 1 → 2"]);
-    await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
       { taskId: id, version: w.task("login").version, assessment: "affected", rationale: "登录范围变了" },
       { taskId: w.task("failure").taskId, version: w.task("failure").version, assessment: "unaffected", rationale: "失败场景不变" }],
       global: { assessment: "unaffected", rationale: "无全局变化" } });

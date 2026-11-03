@@ -65,7 +65,7 @@ export const PLAN_MANAGE_PARAMETERS = Type.Union([
     cancel: Type.Optional(Type.Array(object({ taskId: id, version: positive }), { maxItems: 64 })) }),
   object({ action: Type.Literal("confirm"), planVersion: positive }),
   object({ action: Type.Literal("read") }),
-  object({ action: Type.Literal("assess-update"), revision: positive, assessmentId: id,
+  object({ action: Type.Literal("assess-update"), revision: positive,
     tasks: Type.Array(object({ taskId: id, version: positive, assessment: Assessment, rationale: text }), { maxItems: 256 }),
     global: object({ assessment: Assessment, rationale: text }) }),
 ]);
@@ -652,7 +652,13 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     const current = lease();
     const { record, manifest, current: plan } = snapshot();
     if (!plan) deny("plan_missing");
-    if (record.data.pendingRevision !== params.revision || record.data.revision !== params.revision) deny("assessment_invalid", ["没有待复核的该批准版本"]);
+    const assessments = [...params.tasks.map((item) => ({ taskId: item.taskId, impact: item.assessment, reason: item.rationale })),
+      { taskId: "global", impact: params.global.assessment, reason: params.global.rationale }];
+    // 需求状态已记下同内容复核、计划还没写上时放行，让上次中断的复核续完；含 unknown 的复核不解除待复核，不是要续完的那份
+    const resuming = record.data.pendingRevision === null && record.data.revision === params.revision && plan.plan.prdRevision < params.revision
+      && assessments.every((item) => item.impact !== "unknown")
+      && state.hasAssessment(grant.requirementId, params.revision, assessments);
+    if (!resuming && (record.data.pendingRevision !== params.revision || record.data.revision !== params.revision)) deny("assessment_invalid", ["没有待复核的该批准版本"]);
     const pmContext = withDatabase(database, (db) => db.read<{ context?: { diffRevision?: number; baseline: { runId: string; fence: number; contextGeneration: number; revision: number } | null } }>(
       "pm_ownership", grant.requirementId)?.data.context);
     const context = pmContext?.baseline;
@@ -680,9 +686,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       const status: TaskStatus = assessment === "unknown" ? "blocked" : assessment === "affected" ? "needs_update" : fresh.status;
       return checked(TaskRecord, { ...fresh, status, lastAssessedRevision: params.revision, updatedAt: now() });
     };
-    await state.assessUpdate({ lease: current, version: record.version, revision: params.revision, assessmentId: params.assessmentId,
-      tasks: [...params.tasks.map((item) => ({ taskId: item.taskId, impact: item.assessment, reason: item.rationale })),
-        { taskId: "global", impact: params.global.assessment, reason: params.global.rationale }] });
+    if (!resuming) await state.assessUpdate({ lease: current, version: record.version, revision: params.revision, tasks: assessments });
     const after = state.read(grant.requirementId);
     const next = checked(PlanRecord, { ...plan.plan, planVersion: plan.plan.planVersion + 1,
       knownUnits: manifest.units.map((unit) => ({ unitId: unit.id, hash: unit.hash })), prdRevision: params.revision, updatedAt: now() });

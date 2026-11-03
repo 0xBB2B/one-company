@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
-import { createPlanManageTool, TASKS } from "../src/modules/pm/plan-manage.ts";
+import { createPlanManageTool, PLAN_MANAGE_PARAMETERS, TASKS } from "../src/modules/pm/plan-manage.ts";
 import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import { evaluatePmIntakeGate } from "../src/modules/pm/pm-intake-runtime.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
@@ -39,7 +39,7 @@ async function world() {
   const setStatus = (taskId: string, status: string) => withDatabase(repositoryDatabase(fixture.dataRoot, fixture.repoId), (db) => {
     const row = db.read<Record<string, unknown>>(TASKS, taskId)!; db.update(TASKS, taskId, row.version, { ...row.data, status });
   });
-  const assess = async (tasks: Array<[Task, string]>, global = "unaffected") => { await kit.consume(); return run({ action: "assess-update", revision: revision().revision, assessmentId: uuidv7(),
+  const assess = async (tasks: Array<[Task, string]>, global = "unaffected") => { await kit.consume(); return run({ action: "assess-update", revision: revision().revision,
     tasks: tasks.map(([task, assessment]) => ({ taskId: task.taskId, version: task.version, assessment, rationale: `${task.key} ${assessment}` })),
     global: { assessment: global, rationale: "整体判断" } }); };
   return { fixture, kit, run, first, byKey, revision, gate, setStatus, assess };
@@ -85,7 +85,7 @@ test("M7-AC12：运行中、已完成、失败任务按 unaffected/affected/unkn
   w.setStatus(login.taskId, "completed"); w.setStatus(failure.taskId, "running");
   const oldRevision = w.revision().revision;
   await w.fixture.approveRevision({ body: `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n` });
-  await expect(w.run({ action: "assess-update", revision: oldRevision, assessmentId: uuidv7(),
+  await expect(w.run({ action: "assess-update", revision: oldRevision,
     tasks: [login, failure].map((task) => ({ taskId: task.taskId, version: task.version, assessment: "unaffected", rationale: "旧" })),
     global: { assessment: "unaffected", rationale: "旧" } })).rejects.toMatchObject({ code: "assessment_invalid" });
   const unknown = await w.assess([[login, "unaffected"], [failure, "unknown"]]);
@@ -279,4 +279,93 @@ test("M8O-AC3：上一版本下做过尝试的任务被判为受影响后仍占�
   const modified = await w.run({ action: "update", planVersion: assessed.plan.planVersion,
     modify: [{ taskId: login.taskId, version: w.byKey(assessed, "login").version, spec: { ...spec("login", "goal.login"), maxTurns: 40 } }] });
   expect(w.byKey(modified, "login").status).toBe("pending");
+});
+
+test("assess-update 的工具参数里没有 assessmentId", () => {
+  const branch = PLAN_MANAGE_PARAMETERS.anyOf.find((candidate) => candidate.properties.action.const === "assess-update")!;
+  expect(Object.keys(branch.properties)).not.toContain("assessmentId");
+});
+
+test("不带编号复核：受影响任务标为 needs_update、计划版本加 1 并记到新版本、解除待复核", async () => {
+  const w = await world();
+  const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
+  await w.fixture.approveRevision({ body: `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n` });
+  const revision = w.revision().revision;
+  const assessed = await w.assess([[login, "affected"], [failure, "unaffected"]]);
+  expect(assessed.plan).toMatchObject({ planVersion: w.first.plan.planVersion + 1, prdRevision: revision });
+  expect(w.byKey(assessed, "login").status).toBe("needs_update");
+  expect(w.revision().pendingRevision).toBeNull();
+});
+
+test("内容相同的复核再交一次不新增复核记录，内容不同则新增一条", async () => {
+  const w = await world();
+  const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
+  await w.fixture.approveRevision({ body: `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n` });
+  const revision = w.revision().revision;
+  const count = () => withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) =>
+    db.list<{ requirementId: string; toRevision: number }>("impact_assessments")
+      .filter((row) => row.data.requirementId === w.fixture.requirementId && row.data.toRevision === revision).length);
+  const params = (rationale: string, global = "unaffected") => ({ action: "assess-update", revision,
+    tasks: [{ taskId: login.taskId, version: login.version, assessment: "unaffected", rationale: `login ${rationale}` },
+      { taskId: failure.taskId, version: failure.version, assessment: "unknown", rationale: "failure 待查" }],
+    global: { assessment: global, rationale: "整体判断" } });
+  await w.kit.consume();
+  await w.run(params("a"));
+  expect(w.revision().pendingRevision).toBe(revision);
+  expect(count()).toBe(1);
+  await w.run(params("a"));
+  expect(count()).toBe(1);
+  await w.run(params("b"));
+  expect(count()).toBe(2);
+  await w.run(params("a", "affected"));
+  expect(count()).toBe(3);
+});
+
+test("需求状态里已登记相同内容的复核但计划还没更新到该版本：同样内容再调成功续完，不同内容仍被拒", async () => {
+  const w = await world();
+  const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
+  await w.fixture.approveRevision({ body: `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n` });
+  const revision = w.revision().revision;
+  const count = () => withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => db.list("impact_assessments").length);
+  const params = (loginAssessment: string) => ({ action: "assess-update", revision,
+    tasks: [{ taskId: login.taskId, version: login.version, assessment: loginAssessment, rationale: `login ${loginAssessment}` },
+      { taskId: failure.taskId, version: failure.version, assessment: "unaffected", rationale: "failure unaffected" }],
+    global: { assessment: "unaffected", rationale: "整体判断" } });
+  await w.kit.consume();
+  await w.fixture.state.assessUpdate({ lease: w.fixture.lease, version: w.fixture.state.read(w.fixture.requirementId).version, revision,
+    tasks: [{ taskId: login.taskId, impact: "affected", reason: "login affected" }, { taskId: failure.taskId, impact: "unaffected", reason: "failure unaffected" },
+      { taskId: "global", impact: "unaffected", reason: "整体判断" }] });
+  expect(w.revision().pendingRevision).toBeNull();
+  const before = count();
+  await expect(w.run(params("unaffected"))).rejects.toMatchObject({ code: "assessment_invalid", detail: ["没有待复核的该批准版本"] });
+  const resumed = await w.run(params("affected"));
+  expect(resumed.plan.prdRevision).toBe(revision);
+  expect(w.byKey(resumed, "login").status).toBe("needs_update");
+  expect(count()).toBe(before);
+});
+
+test("需求状态里先登记的是含 unknown 的复核、后来又登记了全部判定的复核：用含 unknown 的内容再调被拒，用全部判定的内容再调成功续完", async () => {
+  const w = await world();
+  const login = w.byKey(w.first, "login"), failure = w.byKey(w.first, "failure");
+  await w.fixture.approveRevision({ body: `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n` });
+  const revision = w.revision().revision;
+  const params = (loginAssessment: string) => ({ action: "assess-update", revision,
+    tasks: [{ taskId: login.taskId, version: login.version, assessment: loginAssessment, rationale: `login ${loginAssessment}` },
+      { taskId: failure.taskId, version: failure.version, assessment: "unaffected", rationale: "failure unaffected" }],
+    global: { assessment: "unaffected", rationale: "整体判断" } });
+  const register = (loginImpact: string) => w.fixture.state.assessUpdate({ lease: w.fixture.lease, version: w.fixture.state.read(w.fixture.requirementId).version, revision,
+    tasks: [{ taskId: login.taskId, impact: loginImpact, reason: `login ${loginImpact}` }, { taskId: failure.taskId, impact: "unaffected", reason: "failure unaffected" },
+      { taskId: "global", impact: "unaffected", reason: "整体判断" }] });
+  await w.kit.consume();
+  await register("unknown");
+  expect(w.revision().pendingRevision).toBe(revision);
+  await register("affected");
+  expect(w.revision().pendingRevision).toBeNull();
+  await expect(w.run(params("unknown"))).rejects.toMatchObject({ code: "assessment_invalid", detail: ["没有待复核的该批准版本"] });
+  const untouched = await w.run({ action: "read" });
+  expect(untouched.plan.prdRevision).toBeLessThan(revision);
+  expect(untouched.tasks.map((task) => task.status)).toEqual(w.first.tasks.map((task) => task.status));
+  const resumed = await w.run(params("affected"));
+  expect(resumed.plan.prdRevision).toBe(revision);
+  expect(w.byKey(resumed, "login").status).toBe("needs_update");
 });

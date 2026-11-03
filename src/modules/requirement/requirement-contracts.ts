@@ -113,7 +113,7 @@ export const commands = {
   close: object({ requirementId: id, version: positive, intent: CloseIntent }),
   finish: object({ requirementId: id, version: positive, operationId: id }),
   block: object({ requirementId: id, version: positive, reason: RecoveryReason }),
-  assess: object({ lease: PmLease, version: positive, revision: positive, assessmentId: id,
+  assess: object({ lease: PmLease, version: positive, revision: positive,
     tasks: Type.Array(object({ taskId: Type.String({ minLength: 1, maxLength: 256 }), impact: Type.Union([Type.Literal("unaffected"), Type.Literal("affected"), Type.Literal("unknown")]),
       reason: Type.String({ maxLength: 1024 }) }), { minItems: 1, maxItems: 512 }) }),
   eventLease: object({ lease: PmLease }),

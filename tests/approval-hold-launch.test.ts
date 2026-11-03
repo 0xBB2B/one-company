@@ -1,5 +1,4 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { uuidv7 } from "../src/core/storage/database.ts";
 import { TASKS } from "../src/modules/pm/plan-manage.ts";
 import type { TaskRecord, TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import { mainAdjudication } from "./helpers/main-adjudication.ts";
@@ -66,7 +65,7 @@ async function approveWhileHeld({ w }: World, body: string) {
 
 async function replanFailure(x: World) {
   const { w, task, planVersion } = x;
-  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: task("login").taskId, version: task("login").version, assessment: "unaffected", rationale: "登录" },
     { taskId: task("failure").taskId, version: task("failure").version, assessment: "affected", rationale: "失败场景" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -214,7 +213,7 @@ test("E5：任务本周期已执行 1 次没做完，带 retry 第二次派出�
   expect(notice).toContain(`确认基于当前批准版本的计划后，用 agent_manage dispatch taskId=${login} 重新派出；带不带 retry 按本周期已执行次数定。`);
   expect(notice).not.toContain("重新派出，不带 retry。");
 
-  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: login, version: task("login").version, assessment: "unaffected", rationale: "登录" },
     { taskId: task("failure").taskId, version: task("failure").version, assessment: "unaffected", rationale: "失败场景" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
