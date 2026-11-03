@@ -94,6 +94,15 @@ describe("代码指纹", () => {
     expect(await codeFingerprint(root)).toBe(original);
   });
 
+  test("只改 site/index.html，指纹不变", async () => {
+    const root = await makeInstall();
+    await mkdir(join(root, "site"));
+    await writeFile(join(root, "site", "index.html"), "home\n");
+    const original = await codeFingerprint(root);
+    await writeFile(join(root, "site", "index.html"), "changed\n");
+    expect(await codeFingerprint(root)).toBe(original);
+  });
+
   test("只改 role-rules/pm.md，指纹不变", async () => {
     const root = await makeInstall();
     const original = await codeFingerprint(root);
