@@ -6,6 +6,8 @@ const KEY = {
   down: "\x1b[B",
   downKittyRelease: "\x1b[1;1:3B",
   up: "\x1b[A",
+  upKitty: "\x1b[1;1:1A",
+  upKittyRelease: "\x1b[1;1:3A",
   escape: "\x1b",
   escapeKitty: "\x1b[27u",
   escapeKittyRelease: "\x1b[27;1:3u",
@@ -34,10 +36,12 @@ function createFakeTerminalInputSource() {
 // 面板只对自己识别的键（如 ↓/Enter）报告已处理，Ctrl+C 等未知键必须让 dock 据此不消费——不能不论按键一律消费
 function createFakePanel(hasRowsInitially: boolean) {
   let rows = hasRowsInitially;
+  let atFirst = true;
   const handled: string[] = [];
   return {
     panel: {
       hasRows: () => rows,
+      atFirstRow: () => atFirst,
       handleInput: (data: string): boolean => {
         handled.push(data);
         return data !== KEY.ctrlC;
@@ -46,6 +50,9 @@ function createFakePanel(hasRowsInitially: boolean) {
     handled,
     setHasRows: (value: boolean) => {
       rows = value;
+    },
+    setAtFirstRow: (value: boolean) => {
+      atFirst = value;
     },
   };
 }
@@ -128,24 +135,91 @@ describe("五种情况下 ↓ 不被消费，焦点保持在输入栏", () => {
   });
 });
 
-describe("Esc（含 Kitty 协议编码）与条目清空后焦点返回输入栏", () => {
-  test("面板聚焦时按传统 Esc 编码返回输入栏", () => {
+describe("面板有可选行时 Esc 被消费且焦点、光标不变", () => {
+  test("传统与 Kitty 编码的 Esc 连按三次：每次都消费，焦点留在面板，面板收不到 Esc", () => {
+    for (const esc of [KEY.escape, KEY.escapeKitty]) {
+      const { dock, fakePanel } = buildDock();
+      dock.handleKey(KEY.down);
+      expect(dock.focus()).toBe("panel");
+
+      for (let i = 0; i < 3; i++) {
+        expect(dock.handleKey(esc)?.consume).toBe(true);
+        expect(dock.focus()).toBe("panel");
+      }
+      expect(fakePanel.handled).toEqual([]);
+    }
+  });
+});
+
+describe("面板光标在第一行时按 ↑ 回到输入栏", () => {
+  test("传统与 Kitty 编码的 ↑：消费，焦点回输入栏，面板收不到 ↑", () => {
+    for (const up of [KEY.up, KEY.upKitty]) {
+      const { dock, fakePanel } = buildDock();
+      dock.handleKey(KEY.down);
+      expect(dock.focus()).toBe("panel");
+
+      expect(dock.handleKey(up)?.consume).toBe(true);
+      expect(dock.focus()).toBe("editor");
+      expect(fakePanel.handled).toEqual([]);
+    }
+  });
+
+  test("↑ 的按键抬起事件不触发，焦点留在面板", () => {
     const { dock } = buildDock();
     dock.handleKey(KEY.down);
-    expect(dock.focus()).toBe("panel");
 
-    const result = dock.handleKey(KEY.escape);
-    expect(result?.consume).toBe(true);
+    expect(dock.handleKey(KEY.upKittyRelease)).toBeUndefined();
+    expect(dock.focus()).toBe("panel");
+  });
+
+  test("光标不在第一行时 ↑ 交给面板上移，焦点留在面板", () => {
+    const { dock, fakePanel } = buildDock();
+    dock.handleKey(KEY.down);
+    fakePanel.setAtFirstRow(false);
+
+    expect(dock.handleKey(KEY.up)?.consume).toBe(true);
+    expect(fakePanel.handled).toEqual([KEY.up]);
+    expect(dock.focus()).toBe("panel");
+  });
+
+  test("用 ↑ 回到输入栏后，输入框为空时 ↓ 能再次进入面板", () => {
+    const { dock } = buildDock();
+    dock.handleKey(KEY.down);
+    dock.handleKey(KEY.up);
+    expect(dock.focus()).toBe("editor");
+
+    expect(dock.handleKey(KEY.down)?.consume).toBe(true);
+    expect(dock.focus()).toBe("panel");
+  });
+});
+
+describe("焦点在输入栏时 Esc 不被消费", () => {
+  test("Esc 交给 pi，面板收不到", () => {
+    for (const esc of [KEY.escape, KEY.escapeKitty]) {
+      const { dock, fakePanel } = buildDock();
+      expect(dock.handleKey(esc)).toBeUndefined();
+      expect(fakePanel.handled).toEqual([]);
+      expect(dock.focus()).toBe("editor");
+    }
+  });
+});
+
+describe("面板没有可选行时焦点返回输入栏", () => {
+  test("Esc 回输入栏并被消费", () => {
+    const { dock, fakePanel } = buildDock();
+    dock.handleKey(KEY.down);
+    fakePanel.setHasRows(false);
+
+    expect(dock.handleKey(KEY.escape)?.consume).toBe(true);
     expect(dock.focus()).toBe("editor");
   });
 
-  test("面板聚焦时按 Kitty 协议编码的 Esc 同样返回输入栏", () => {
-    const { dock } = buildDock();
+  test("其他键（Ctrl+C）回输入栏且不消费、交给输入栏", () => {
+    const { dock, fakePanel } = buildDock();
     dock.handleKey(KEY.down);
-    expect(dock.focus()).toBe("panel");
+    fakePanel.setHasRows(false);
 
-    const result = dock.handleKey(KEY.escapeKitty);
-    expect(result?.consume).toBe(true);
+    expect(dock.handleKey(KEY.ctrlC)).toBeUndefined();
     expect(dock.focus()).toBe("editor");
   });
 
@@ -213,6 +287,22 @@ describe("别的窗口拿走焦点后，面板对所有按键放行，窗口关�
   });
 });
 
+describe("窗口关闭后焦点仍在面板时 Esc 被消费", () => {
+  test("窗口开着时 ↑、Esc 放行且焦点不变；窗口关闭后 Esc 被消费、焦点仍在面板", () => {
+    const { dock, setEditorFocused } = buildDock();
+    dock.handleKey(KEY.down);
+    setEditorFocused(false);
+
+    expect(dock.handleKey(KEY.up)).toBeUndefined();
+    expect(dock.handleKey(KEY.escape)).toBeUndefined();
+    expect(dock.focus()).toBe("panel");
+
+    setEditorFocused(true);
+    expect(dock.handleKey(KEY.escape)?.consume).toBe(true);
+    expect(dock.focus()).toBe("panel");
+  });
+});
+
 describe("attach/release：注册与卸载原始终端输入监听", () => {
   test("attach 后终端输入驱动 dock，release 后不再拦截且焦点归还输入栏", () => {
     const terminal = createFakeTerminalInputSource();
@@ -252,6 +342,49 @@ describe("Kitty 协议释放事件一律不消费", () => {
 
     const result = dock.handleKey(KEY.escapeKittyRelease);
     expect(result).toBeUndefined();
+    expect(dock.focus()).toBe("panel");
+  });
+});
+
+describe("真实状态面板：↑ 逐行上移，第一行再按 ↑ 回输入栏", () => {
+  function threeRowDock() {
+    const panel = new PmPanel({ now: () => 1_000, openItem: () => {}, togglePause: () => {}, openSteps: () => {} } as never);
+    const mk = (id: string, goal: string, pendingItems: unknown[]) => ({ repoId: "r", fetchedAt: 1_000, overview: {
+      requirementId: id, pmRunId: id, goals: [goal], status: "running", doing: "执行中", turns: 1, toolUses: 1, tokens: 1, cacheRate: null,
+      elapsedMs: 0, taskProgress: null, pendingItems, taskRows: [] } as never });
+    panel.update([
+      mk("01900000-0000-7000-8000-000000000001", "导出", [{ itemId: "task:t1", kind: "adjudicate", label: "待裁决", version: "v1", taskKey: "t1" }]),
+      mk("01900000-0000-7000-8000-000000000002", "快跑", []),
+    ]);
+    const dock = new BottomDock({ panel, getEditorText: () => "", isCompletionOpen: () => false, isEditorFocused: () => true });
+    return { dock, panel };
+  }
+
+  test("光标在第 3 行：↑ 两次光标到第 1 行、焦点一直在面板，第 3 次 ↑ 回输入栏", () => {
+    const { dock, panel } = threeRowDock();
+    dock.handleKey(KEY.down);
+    panel.focus();
+    dock.handleKey(KEY.down);
+    dock.handleKey(KEY.down);
+
+    expect(dock.handleKey(KEY.up)?.consume).toBe(true);
+    expect(dock.focus()).toBe("panel");
+    expect(panel.atFirstRow()).toBe(false);
+    expect(dock.handleKey(KEY.up)?.consume).toBe(true);
+    expect(dock.focus()).toBe("panel");
+    expect(panel.atFirstRow()).toBe(true);
+
+    expect(dock.handleKey(KEY.up)?.consume).toBe(true);
+    expect(dock.focus()).toBe("editor");
+  });
+
+  test("回到输入栏后输入框为空再按 ↓，焦点再次进入面板", () => {
+    const { dock } = threeRowDock();
+    dock.handleKey(KEY.down);
+    dock.handleKey(KEY.up);
+    expect(dock.focus()).toBe("editor");
+
+    dock.handleKey(KEY.down);
     expect(dock.focus()).toBe("panel");
   });
 });

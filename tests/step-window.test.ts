@@ -514,6 +514,29 @@ describe("openStepWindow：结束后停掉定时器", () => {
   });
 });
 
+describe("openStepWindow：带着存好的步骤打开", () => {
+  test("不向后台进程请求，窗口显示全部步骤和已完成，过多久都不请求", async () => {
+    const timeSource = createFakeTimeSource();
+    const clock = createClock({ timeSource });
+    const call = vi.fn(async () => ({}));
+    let component: { render(w: number): string[]; handleInput(d: string): void } | undefined;
+    const ctx = { ui: { custom: (factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (r: unknown) => void) => unknown) =>
+      new Promise((resolve) => { component = factory({ requestRender: () => {} }, {}, {}, resolve) as typeof component; }) } };
+    const promise = openStepWindow({ ctx, clock, client: { call }, runId: "run-1", title: "标题",
+      view: view({ state: "completed", turns: 12, maxTurns: 12, elapsedMs: 3000, steps: steps(3) }) } as never);
+    await flush();
+    timeSource.advance(5000);
+    await flush();
+    expect(call).not.toHaveBeenCalled();
+    const text = component!.render(200).join("\n");
+    expect(text).toContain("✓ 已完成 · 共 3 步 · ↻12/12 · 3.0s");
+    for (const n of [1, 2, 3]) expect(text).toContain(`步骤 ${n}`);
+    component!.handleInput(ESC);
+    await promise;
+    clock.stopGapWatcher();
+  });
+});
+
 describe("步骤窗口：来自模型的文字去掉双向文字控制符和零宽字符", () => {
   const BIDI = "‮", ZW = "​";
   const open = () => new StepWindow({ title: `导出${BIDI}页${ZW}（第 1 版）· prototype`, now: () => 0, onClose: () => {} });

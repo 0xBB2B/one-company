@@ -9,7 +9,7 @@ export type RunStepsState = "queued" | "running" | "pausing" | "paused" | "compl
 export interface RunStepsView { state: RunStepsState; reason?: string; turns: number; maxTurns: number | null; elapsedMs: number; steps: RunStep[] }
 
 const MAX_STEP_TEXT = 1000;
-// 已结束的子代理不能回看；打开着的窗口拿到结束状态后 0.5 秒内就停止取数，所以留 60 秒足够
+// 打开着的窗口和面板的已结束行拿到结束状态后就停止取数，所以留 60 秒足够
 const ENDED_KEEP_MS = 60_000;
 const ENDING_EVENTS = ["completed", "failed", "turn_limit_reached", "ended_without_result", "stopped"] as const;
 

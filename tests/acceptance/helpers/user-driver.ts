@@ -2,7 +2,8 @@ import { existsSync } from "node:fs";
 import { recommendedChoice } from "./installed-host.ts";
 import type { InstalledHost } from "./installed-host.ts";
 
-const DOWN = "\x1b[B", UP = "\x1b[A", ENTER = "\r", ESCAPE = "\x1b";
+const DOWN = "\x1b[B", UP = "\x1b[A", ENTER = "\r";
+const leavePanel = (host: InstalledHost) => { for (let i = 0; i < 50; i++) host.press(UP); };
 
 export interface UserScript {
   /** 第一句：需求描述与授权范围。 */
@@ -121,14 +122,15 @@ export async function driveUser(host: InstalledHost, script: UserScript, limits:
           : label.includes("PM 请求拆分") ? (window.choices.includes("让 PM 按新版本拆分") ? "让 PM 按新版本拆分" : undefined)
           : label.includes("待裁决") && script.adjudicate ? { other: script.adjudicate } : undefined;
         const before = host.session.messages.length;
-        // 面板光标会保留上次位置：先回到第一行，再按可选行（PM 行与事项行）数到目标
+        // 面板光标会保留上次位置：先退回输入框让光标回到第一行，再进面板，按可选行（PM 行与事项行）数到目标
         const pmRows = lines.slice(0, itemIndex).filter((line) => /[├└]─ /.test(line)).length;
         const itemRows = lines.slice(0, itemIndex + 1).filter((line) => line.includes("⚑")).length;
         host.press(DOWN);
-        for (let i = 0; i < 50; i++) host.press(UP);
+        leavePanel(host);
+        host.press(DOWN);
         for (let i = 0; i < pmRows + itemRows - 1; i++) host.press(DOWN);
         host.press(ENTER);
-        host.press(ESCAPE);
+        leavePanel(host);
         await waitTurn(host, before, 30_000);
         await host.session.waitForIdle();
         // 已在问答窗口里答过、事项随之消失的，不再重复说台词

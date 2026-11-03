@@ -13,6 +13,7 @@ export interface TerminalInputSource {
 
 export interface DockPanel {
   hasRows(): boolean;
+  atFirstRow(): boolean;
   handleInput(data: string): boolean;
 }
 
@@ -54,17 +55,17 @@ export class BottomDock {
     if (isKeyRelease(data)) return undefined;
     if (!this.options.isEditorFocused()) return undefined;
 
-    if (matchesKey(data, "escape")) {
-      if (this.focusState !== "panel") return undefined;
-      this.setFocus("editor");
-      return { consume: true };
-    }
-
     if (this.focusState === "panel") {
       const panel = this.options.panel;
+      const isEscape = matchesKey(data, "escape");
       if (!panel || !panel.hasRows()) {
         this.setFocus("editor");
-        return undefined;
+        return isEscape ? { consume: true } : undefined;
+      }
+      if (isEscape) return { consume: true };
+      if (matchesKey(data, "up") && panel.atFirstRow()) {
+        this.setFocus("editor");
+        return { consume: true };
       }
       return panel.handleInput(data) ? { consume: true } : undefined;
     }
