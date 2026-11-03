@@ -353,3 +353,94 @@ describe("README Shell 任务事实", () => {
     expect(section).not.toContain("所有仓库");
   });
 });
+
+describe("README 开头", () => {
+  const BANNER = '<img src="assets/onecompany-banner.webp" alt="OneCompany: One human. A governed autonomous company." width="100%" />';
+  const TAGLINE = "**你说需求、点头确认，后台的 AI 团队把它规划、实现、审查、验收完。**";
+  const BADGES = [
+    "[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)",
+    "[![pi package](https://img.shields.io/badge/pi-package-8A2BE2.svg)](#前置条件)",
+    "[![Node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen.svg)](package.json)",
+    "[![Homepage](https://img.shields.io/badge/homepage-one--company.0xbb.me-0A58CA.svg)](https://one-company.0xbb.me/)",
+  ];
+  const NAV = [
+    "[主页 · Homepage](https://one-company.0xbb.me/)",
+    "[为什么用它](#为什么用-onecompany)",
+    "[前置条件](#前置条件)",
+    "[安装](#安装)",
+    "[上手](#上手)",
+    "[功能](#功能)",
+    "[设置](#设置)",
+    "[设计规范样例](#设计规范样例)",
+    "[原理](#原理)",
+    "[已知限制](#已知限制)",
+    "[常见问题](#常见问题)",
+    "[参与开发](CONTRIBUTING.md)",
+  ].join(" · ");
+  const WHY_TEXTS = [
+    "OneCompany 是 [pi](https://github.com/earendil-works/pi)（一个在终端里运行的编码代理）的扩展包。它让模型按一家有规矩的公司那样干活：你只和主代理（和你对话的那个代理）说话，PM 拆任务，worker 写代码，reviewer 审查，QA 验收。",
+    '- **只有你能批准**：批准和裁决只认你的原话和你在程序窗口里的选择。代理说"用户同意了"不算数，代理之间也不能互相批准。',
+    '- **自称完成不算完成**：各角色的权限、版本和阶段门槛都由程序核对。代理说"通过了"不能代替实际检查。',
+    "- **改动不出范围**：worker 改了本需求任务范围外的文件，结果被拒收。写入范围重叠的任务不会同时派出。",
+    "- **每处改动查得回需求**：提交带需求编号，需求完成时正文和原型归档进分支。以后能从代码查到当初为什么这样做。",
+    '一个需求这样走完，后面三处"你"只有你能做：',
+    "理清需求 → 你批准 → PM 规划 → worker 实现 → reviewer 审查 → QA 验收 → 你验收 → 你交付",
+    "Looking for English? Start at the [homepage](https://one-company.0xbb.me/). The product UI and this README are in Chinese today.",
+  ];
+  test("开头区块顺序：横幅、介绍、徽章、导航、分隔线、为什么用、前置条件", async () => {
+    const body = await readText(README);
+    const positions = [
+      body.indexOf(BANNER),
+      body.indexOf(TAGLINE),
+      body.indexOf(BADGES[0]),
+      body.indexOf(NAV),
+      body.indexOf("\n---\n"),
+      body.indexOf("## 为什么用 OneCompany"),
+      body.indexOf("## 前置条件"),
+    ];
+    expect(positions.every((p) => p >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+  });
+
+  test("横幅图使用指定文件、宽度和替代文字", async () => {
+    expect(await readText(README)).toContain(BANNER);
+  });
+
+  test("没有 h1 标签，前置条件之前没有单独一行的英文口号", async () => {
+    const body = await readText(README);
+    const head = body.slice(0, body.indexOf("## 前置条件"));
+    expect(body).not.toContain("<h1");
+    expect(head.split("\n")).not.toContain("One human. A governed autonomous company.");
+  });
+
+  test("一句话介绍加粗", async () => {
+    expect(await readText(README)).toContain(TAGLINE);
+  });
+
+  for (const badge of BADGES) {
+    test(`含徽章: ${badge.slice(0, 30)}`, async () => {
+      expect(await readText(README)).toContain(badge);
+    });
+  }
+
+  test("不含 tests 徽章", async () => {
+    expect(await readText(README)).not.toContain("badge/tests");
+  });
+
+  test("导航一行，链接和顺序正确", async () => {
+    expect((await readText(README)).split("\n")).toContain(NAV);
+  });
+
+  for (const text of WHY_TEXTS) {
+    test(`为什么用 OneCompany 含原文: ${text.slice(0, 20)}`, async () => {
+      const section = extractSection(await readText(README), "为什么用 OneCompany");
+      expect(section).toContain(text);
+    });
+  }
+
+  test("为什么用 OneCompany 是第一个二级标题，且排在前置条件前面", async () => {
+    const headings = extractH2Headings(await readText(README));
+    expect(headings[0]).toBe("为什么用 OneCompany");
+    expect(headings.indexOf("为什么用 OneCompany")).toBeLessThan(headings.indexOf("前置条件"));
+  });
+});
