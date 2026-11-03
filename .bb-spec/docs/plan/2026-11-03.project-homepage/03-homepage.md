@@ -31,8 +31,7 @@ description: 新建单文件主页 site/index.html，中英双语，能复制安
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>OneCompany：一个人，撑起一家有规矩的 AI 公司</title>
-  <meta name="description" content="One human. A governed autonomous company. A pi extension that plans, builds, reviews and verifies your requirements.">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='9' fill='%23ffbf66'/%3E%3C/svg%3E">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='9' fill='%237cb0ff'/%3E%3C/svg%3E">
   <style>
     :root { --bg: #080b12; --alt: #0b0f19; --sf: #0e1320; --line: #1e2738; --edge: #2a3650; --tx: #e9edf5; --mut: #8f9bb0; --blue: #7cb0ff; --you: #ffbf66; color-scheme: dark; }
     :root[lang="zh-CN"] [data-l="en"], :root[lang="en"] [data-l="zh"] { display: none; }
@@ -216,14 +215,14 @@ description: 新建单文件主页 site/index.html，中英双语，能复制安
   <figure class="win">
     <figcaption class="mono">pi · status panel</figcaption>
     <pre class="panel mono"><span class="ok">●</span> 2 个需求运行中
-├─ <i class="sp">⠹</i> 角色跳跃、跳跃动画 · 任务 1/5 · ↻5 · 33.8k token · 12.3s
+├─ <i class="sp">⠹</i> 角色跳跃、跳跃动画 · 任务 1/5 · ↻5 · 5 tool uses · 33.8k token · 12.3s
 │    ├ <span class="flag">⚑ login 待裁决：2 次未完成</span>
 │    ├ jump 第 1 轮审查
 │    │ ├ <i class="sp">⠹</i> reviewer · ↻5/12 · 1m2s
 │    │ ├ <i class="sp">⠹</i> go-reviewer · ↻3/12 · 58.0s
 │    │ └ <span class="ok">✓ vue-reviewer 通过</span> · ↻6/12 · 1m40s
 │    └ <i class="sp">⠹</i> anim 执行 · vue-worker（第 1 次尝试）· ↻8/20 · 3m2s
-└─ <i class="sp">⠹</i> 角色快跑 · 任务 0/3 · ↻42 · 91.0k token · 2m17s
+└─ <i class="sp">⠹</i> 角色快跑 · 任务 0/3 · ↻42 · 38 tool uses · 91.0k token · 2m17s
      └ 规划中（计划 v2 · 3 个任务）</pre>
   </figure>
   <p class="cap"><span data-l="zh">状态面板示例。产品界面目前是中文。</span><span data-l="en">Sample status panel. The product UI is Chinese-only today.</span></p>

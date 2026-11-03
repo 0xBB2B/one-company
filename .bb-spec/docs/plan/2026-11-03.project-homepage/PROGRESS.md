@@ -4,11 +4,11 @@
 |---|---|---|---|
 | 01 | readme-banner | done | 2026-11-03 |
 | 02 | readme-opening | done | 2026-11-03 |
-| 03 | homepage | pending | — |
+| 03 | homepage | done | 2026-11-03 |
 | 04 | pages-deployment | pending | — |
 
 ## 当前
-正在执行 `03-homepage.md`。第 2 步审查发现主页地址会跳到 0xbb.me、3 条卖点说宽，经用户 2026-11-03 决定改了 PRD 并重新确认；写死 README 后半部分摘要的测试已删除。
+正在执行 `04-pages-deployment.md`。第 3 步审查后：面板示例补回工具调用次数（用户 2026-11-03 决定，改了 PRD），网站图标改蓝色，删掉 PRD 没要求的页面描述，修了两处测试。浏览器实测语言判断、记忆、复制失败、存储不可用都符合。
 
 ## 阻塞
 （无）
