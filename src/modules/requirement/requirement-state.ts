@@ -709,29 +709,27 @@ export class RequirementStateStore {
     });
   }
 
-  hasAssessment(requirementId: string, revision: number, tasks: Static<typeof commands.assess>["tasks"]): boolean {
-    return withDatabase(this.path(), (db) => this.hasAssessmentIn(db, requirementId, revision, tasks));
-  }
-
   private hasAssessmentIn(db: LocalDatabase, requirementId: string, revision: number, tasks: Static<typeof commands.assess>["tasks"]): boolean {
     return db.list<{ requirementId: string; toRevision: number; tasks: unknown }>("impact_assessments")
       .some((row) => row.data.requirementId === requirementId && row.data.toRevision === revision && equal(row.data.tasks, tasks));
   }
 
   /** 已确认更新的逐任务影响复核：全部任务不再 unknown 才解除 pendingRevision；记录本身不改写历史验证输入。 */
-  async assessUpdate(input: Static<typeof commands.assess>): Promise<StoredRecord<RequirementRecord>> {
+  async assessUpdate(input: Static<typeof commands.assess>): Promise<StoredRecord<RequirementRecord>>;
+  async assessUpdate<T>(input: Static<typeof commands.assess>, apply: (db: LocalDatabase, record: StoredRecord<RequirementRecord>) => T & SyncResult<T>): Promise<T>;
+  async assessUpdate(input: Static<typeof commands.assess>, apply: (db: LocalDatabase, record: StoredRecord<RequirementRecord>) => unknown = (_db, record) => record): Promise<unknown> {
     const request = checked(commands.assess, input);
     await this.workspaceForLease("assess-update", request.lease);
-    return this.mutate("assess-update", request, (db) => {
+    return this.mutate<unknown>("assess-update", request, (db) => {
       const { record } = this.validateOwner(db, request.lease);
       this.version(record, request.version);
       if (record.data.pendingRevision !== request.revision || record.data.revision !== request.revision || !record.data.approved) throw new RequirementStateError("assessment_conflict");
-      if (this.hasAssessmentIn(db, record.id, request.revision, request.tasks)) return record;
+      if (this.hasAssessmentIn(db, record.id, request.revision, request.tasks)) return apply(db, record);
       const unknown = request.tasks.filter((task) => task.impact === "unknown").length;
       db.create("impact_assessments", uuidv7(), { requirementId: record.id, fromRevision: request.revision - 1, toRevision: request.revision,
         toHash: record.data.approved.hash, tasks: request.tasks, unknown, runId: request.lease.runId, fence: request.lease.fence, at: this.now() });
-      if (unknown > 0) return record;
-      return this.write(db, record, { ...record.data, pendingRevision: null }, "update.assessed", null, record.data.approved).record;
+      if (unknown > 0) return apply(db, record);
+      return apply(db, this.write(db, record, { ...record.data, pendingRevision: null }, "update.assessed", null, record.data.approved).record);
     });
   }
   /** guard 在同一事务内以同步数据库依据再核对关闭前提并登记关闭意图；任一依据变化则本次关闭不生效。 */

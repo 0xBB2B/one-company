@@ -521,29 +521,33 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     return { records, chances };
   }
 
-  /** 写入前逐任务比对快照时的内容：快照后被派工或结局登记改动过的任务不被覆盖。 */
   function commit(expected: { planVersion: number | null; recordVersion: number; tasks: ReadonlyMap<string, TaskRecord> }, plan: PlanRecord, tasks: TaskRecord[],
     merge?: (fresh: TaskRecord) => TaskRecord) {
     return withDatabase(database, (db) => db.transaction(() => {
-      const record = state.read(grant.requirementId);
-      if (record.version !== expected.recordVersion) deny("version_conflict", ["需求状态已变化"]);
-      const row = db.read<unknown>(PLANS, grant.requirementId);
-      const stored = row ? checked(PlanRecord, row.data) : null;
-      if ((stored?.planVersion ?? null) !== expected.planVersion) deny("version_conflict", ["计划版本已变化"]);
-      for (const task of tasks) {
-        const existing = db.read<unknown>(TASKS, task.taskId);
-        if (merge) {
-          if (!existing) deny("version_conflict", [`任务 ${task.key} 不存在`]);
-          db.update(TASKS, task.taskId, existing.version, merge(checked(TaskRecord, existing.data)));
-          continue;
-        }
-        const seen = expected.tasks.get(task.taskId);
-        if ((existing === null) !== (seen === undefined) || (existing && JSON.stringify(existing.data) !== JSON.stringify(seen))) deny("version_conflict", [`任务 ${task.key} 已被并发改动`]);
-        if (existing) db.update(TASKS, task.taskId, existing.version, task); else db.create(TASKS, task.taskId, task);
-      }
-      if (row) db.update(PLANS, grant.requirementId, row.version, plan); else db.create(PLANS, grant.requirementId, plan);
-      return { plan, tasks: plan.taskIds.map((taskId) => checked(TaskRecord, db.read<unknown>(TASKS, taskId)!.data)) };
+      if (state.read(grant.requirementId).version !== expected.recordVersion) deny("version_conflict", ["需求状态已变化"]);
+      return commitIn(db, expected, plan, tasks, merge);
     }));
+  }
+
+  /** 写入前逐任务比对快照时的内容：快照后被派工或结局登记改动过的任务不被覆盖。 */
+  function commitIn(db: LocalDatabase, expected: { planVersion: number | null; tasks: ReadonlyMap<string, TaskRecord> },
+    plan: PlanRecord, tasks: TaskRecord[], merge?: (fresh: TaskRecord) => TaskRecord) {
+    const row = db.read<unknown>(PLANS, grant.requirementId);
+    const stored = row ? checked(PlanRecord, row.data) : null;
+    if ((stored?.planVersion ?? null) !== expected.planVersion) deny("version_conflict", ["计划版本已变化"]);
+    for (const task of tasks) {
+      const existing = db.read<unknown>(TASKS, task.taskId);
+      if (merge) {
+        if (!existing) deny("version_conflict", [`任务 ${task.key} 不存在`]);
+        db.update(TASKS, task.taskId, existing.version, merge(checked(TaskRecord, existing.data)));
+        continue;
+      }
+      const seen = expected.tasks.get(task.taskId);
+      if ((existing === null) !== (seen === undefined) || (existing && JSON.stringify(existing.data) !== JSON.stringify(seen))) deny("version_conflict", [`任务 ${task.key} 已被并发改动`]);
+      if (existing) db.update(TASKS, task.taskId, existing.version, task); else db.create(TASKS, task.taskId, task);
+    }
+    if (row) db.update(PLANS, grant.requirementId, row.version, plan); else db.create(PLANS, grant.requirementId, plan);
+    return { plan, tasks: plan.taskIds.map((taskId) => checked(TaskRecord, db.read<unknown>(TASKS, taskId)!.data)) };
   }
 
   async function propose(submitted: TaskSpec[]) {
@@ -654,11 +658,7 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
     if (!plan) deny("plan_missing");
     const assessments = [...params.tasks.map((item) => ({ taskId: item.taskId, impact: item.assessment, reason: item.rationale })),
       { taskId: "global", impact: params.global.assessment, reason: params.global.rationale }];
-    // 需求状态已记下同内容复核、计划还没写上时放行，让上次中断的复核续完；含 unknown 的复核不解除待复核，不是要续完的那份
-    const resuming = record.data.pendingRevision === null && record.data.revision === params.revision && plan.plan.prdRevision < params.revision
-      && assessments.every((item) => item.impact !== "unknown")
-      && state.hasAssessment(grant.requirementId, params.revision, assessments);
-    if (!resuming && (record.data.pendingRevision !== params.revision || record.data.revision !== params.revision)) deny("assessment_invalid", ["没有待复核的该批准版本"]);
+    if (record.data.pendingRevision !== params.revision || record.data.revision !== params.revision) deny("assessment_invalid", ["没有待复核的该批准版本"]);
     const pmContext = withDatabase(database, (db) => db.read<{ context?: { diffRevision?: number; baseline: { runId: string; fence: number; contextGeneration: number; revision: number } | null } }>(
       "pm_ownership", grant.requirementId)?.data.context);
     const context = pmContext?.baseline;
@@ -686,11 +686,10 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
       const status: TaskStatus = assessment === "unknown" ? "blocked" : assessment === "affected" ? "needs_update" : fresh.status;
       return checked(TaskRecord, { ...fresh, status, lastAssessedRevision: params.revision, updatedAt: now() });
     };
-    if (!resuming) await state.assessUpdate({ lease: current, version: record.version, revision: params.revision, tasks: assessments });
-    const after = state.read(grant.requirementId);
     const next = checked(PlanRecord, { ...plan.plan, planVersion: plan.plan.planVersion + 1,
       knownUnits: manifest.units.map((unit) => ({ unitId: unit.id, hash: unit.hash })), prdRevision: params.revision, updatedAt: now() });
-    return commit({ planVersion: plan.plan.planVersion, recordVersion: after.version, tasks: new Map() }, next, live, apply);
+    return state.assessUpdate({ lease: current, version: record.version, revision: params.revision, tasks: assessments },
+      (db) => commitIn(db, { planVersion: plan.plan.planVersion, tasks: new Map() }, next, live, apply));
   }
 
   async function read() {
