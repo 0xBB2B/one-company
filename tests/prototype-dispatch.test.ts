@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { approvedPrototypeListLines, prototypeContext, requirementPrototypeLines } from "../src/modules/prototype/prototype-dispatch.ts";
 import { RunManager, registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
@@ -19,6 +20,7 @@ const cleanups: Array<() => unknown | Promise<unknown>> = [];
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });
 
 const HTML = "<!doctype html><html><body><h1>登录页草图</h1></body></html>";
+const PAGES = [{ name: "页面", views: [{ name: "正常" }] }];
 const MAIN_MODEL = { provider: "team-model", id: "test" };
 type Handler = (params: Record<string, unknown>, client: unknown) => Promise<Record<string, unknown>>;
 
@@ -59,7 +61,7 @@ async function world(options: { index?: boolean; disabled?: Set<string> } = {}) 
   const requestsText = () => JSON.stringify(w.provider.requests);
   const started = () => until(() => w.provider.requests.some((request) => JSON.stringify(request).includes("手机号加验证码登录界面")));
   const slow = { type: "text" as const, text: "慢慢画", chunkDelayMs: 3_000 };
-  const submit = (html: string) => ({ type: "toolcall" as const, name: "one_company_result_submit", input: { action: "prototype", html, note: "手机号输入框加验证码按钮" } });
+  const submit = (html: string) => ({ type: "toolcall" as const, name: "one_company_result_submit", input: { action: "prototype", pages: PAGES, html, note: "手机号输入框加验证码按钮" } });
   await connect("connection-a");
   await connect("connection-b");
   return { ...w, repoRoot, insideFile, outsideFile, userDir, call, dispatch, dispatchParams, disconnect, ref, board, entry, events, requestsText, slow, submit, started };
@@ -185,7 +187,7 @@ test("提意见后重派时设计师能读上一版文件，任务说明带用�
   const first = uuidv7();
   const params = { requirementId: w.fixture.requirementId, name: "登录页" };
   await beginDesign(w.ref, { ...params, runId: first, agent: "prototype" });
-  await submitDesign(w.ref, { ...params, runId: first, html: HTML, note: "第一版" });
+  await submitDesign(w.ref, { pages: PAGES, ...params, runId: first, html: HTML, note: "第一版" });
   const pending = await pendingConfirmation(w.ref, params);
   await decidePrototype(w.ref, { ...params, version: pending.version, hash: pending.hash, choice: "opinion", option: null, opinion });
   const previousPath = prototypeFilePath(w.ref, { ...params, version: 1 });
@@ -224,7 +226,7 @@ test("设计师交不合格稿时收到原因，看板仍是 designing", async (
 });
 
 const submitWithOptions = (options: string[]) => ({ type: "toolcall" as const, name: "one_company_result_submit",
-  input: { action: "prototype", html: HTML, note: "手机号输入框加验证码按钮", options } });
+  input: { action: "prototype", pages: PAGES, html: HTML, note: "手机号输入框加验证码按钮", options } });
 
 test("设计师通过交稿工具附方案清单交稿后，待确认信息里读到这份清单", async () => {
   const w = await world();
@@ -393,7 +395,7 @@ test("prototypes.pending 有待确认版本时带需求标题、草稿版本号�
   const version = await awaitingPrototype(w);
   const pending = await w.call("prototypes.pending", pendingInput(w));
   const revision = w.fixture.state.read(w.fixture.requirementId).data.revision;
-  expect(pending).toMatchObject({ requirementTitle: expect.any(String), draftVersion: revision + 1, name: "登录页", version, bytes: Buffer.byteLength(HTML),
+  expect(pending).toMatchObject({ requirementTitle: expect.any(String), draftVersion: revision + 1, name: "登录页", version, bytes: expect.any(Number),
     path: prototypeFilePath(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", version }), note: "手机号输入框加验证码按钮", previousOpinion: null });
   expect((pending.requirementTitle as string).length).toBeGreaterThan(0);
   expect(pending.hash).toMatch(/^[0-9a-f]{64}$/);
@@ -544,4 +546,36 @@ test("任务说明在有意见时写用户对上一版的意见原话，不出�
   const text = prototypeContext({ title: "登录", name: "登录页", version: 2, brief: "要求", maxTurns: 12, previous: { path: "/p/v1.html", opinion: "改成横向滚动" } });
   expect(text).toContain("用户对上一版的意见原话：改成横向滚动");
   expect(text).not.toContain("返工");
+});
+
+test("设计师交稿时页面清单有重名，收到原因，看板仍是 designing", async () => {
+  const w = await world();
+  const pages = [{ name: "登录", views: [{ name: "正常" }] }, { name: "登录", views: [{ name: "正常" }] }];
+  w.provider.queue.push({ type: "toolcall", name: "one_company_result_submit", input: { action: "prototype", pages, html: HTML, note: "手机号输入框加验证码按钮" } }, w.slow);
+  const { runId } = await w.dispatch();
+  await until(() => w.requestsText().includes("页面「登录」重名"));
+  expect((await w.entry())?.inFlight).toMatchObject({ status: "designing", file: null });
+  expect(w.events("prototype.submitted")).toEqual([]);
+  await w.call("runs.stop", { runId });
+});
+
+test("设计师交稿后待确认信息里的大小与指纹是拼好的文件的", async () => {
+  const w = await world();
+  const version = await awaitingPrototype(w);
+  const pending = await w.call("prototypes.pending", pendingInput(w));
+  const bytes = await readFile(prototypeFilePath(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", version }));
+  expect(pending.bytes).toBe(bytes.length);
+  expect(pending.hash).toBe(createHash("sha256").update(bytes).digest("hex"));
+  expect(bytes.toString("utf8")).toContain("<h1>登录页草图</h1>");
+});
+
+test("交稿工具把两张说明清单和画面说明都写进拼好的文件", async () => {
+  const w = await world();
+  const pages = [{ name: "登录", views: [{ name: "正常", notes: ["验证码六位"] }] }];
+  w.provider.queue.push({ type: "toolcall", name: "one_company_result_submit", input: { action: "prototype", pages, html: HTML, note: "手机号输入框加验证码按钮", prototypeOnly: ["验证码是假的"], openQuestions: ["要不要记住手机号？"] } });
+  const { version } = await w.dispatch();
+  await until(async () => (await w.entry())?.inFlight?.status === "awaiting");
+  const text = await readFile(prototypeFilePath(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", version }), "utf8");
+  const data = JSON.parse(/id="prototype-data">([\s\S]*?)<\/script>/.exec(text)![1]!);
+  expect(data).toMatchObject({ prototypeOnly: ["验证码是假的"], openQuestions: ["要不要记住手机号？"], pages: [{ name: "登录", group: "状态", views: [{ name: "正常", notes: ["验证码六位"] }] }] });
 });

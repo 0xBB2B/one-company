@@ -599,12 +599,13 @@ test("SQLite 原始 records/events 不含正文、patch 或正文副本字段", 
 });
 
 const PROTOTYPE_HTML = "<!doctype html><html><body><h1>设置页</h1></body></html>";
+const PAGES = [{ name: "页面", views: [{ name: "正常" }] }];
 const boardRef = (w: Awaited<ReturnType<typeof world>>) => ({ dataRoot: w.options.dataRoot, repoId: w.options.repoId });
 
 async function acceptedPrototype(w: Awaited<ReturnType<typeof world>>, requirementId: string, name: string, options?: string[]) {
   const runId = uuidv7();
   await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer" });
-  await submitDesign(boardRef(w), { requirementId, name, runId, html: PROTOTYPE_HTML, note: "说明", ...(options ? { options } : {}) });
+  await submitDesign(boardRef(w), { pages: PAGES, requirementId, name, runId, html: PROTOTYPE_HTML, note: "说明", ...(options ? { options } : {}) });
   const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
   await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash, choice: "accept", option: options ? "B" : null, opinion: null });
 }

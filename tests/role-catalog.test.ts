@@ -106,6 +106,38 @@ describe("内置默认团队", () => {
     for (const role of AGENT_ROLES) expect(loadRoleRules(role)).not.toMatch(/\bspec\b|spec_change|规则候选/);
   });
 
+  test("prototype 规矩写明只放正式上线后用户能看到的内容、外框由程序拼、终端页面不居中、多步交互的切换组写「步骤」，不要求页面里给方案打标签", async () => {
+    const rules = loadRoleRules("prototype");
+    for (const text of [
+      "正式上线后用户能看到的才放进 html",
+      "data-page",
+      "data-view",
+      "data-option",
+      "prototypeOnly",
+      "openQuestions",
+      "不居中",
+      "prototype-page",
+      "prototype-data",
+      "group 写",
+      "步骤",
+    ]) expect(rules, text).toContain(text);
+    expect(rules).not.toContain("页面里每个方案标上");
+  });
+
+  test("worker 只实现页面，切换栏、说明区和外框本身不实现", async () => {
+    const rules = loadRoleRules("worker");
+    expect(rules).toContain("只实现它");
+    expect(rules).toContain("切换栏、说明区和外框本身不实现");
+  });
+
+  test("reviewer 只对照页面，切换栏、说明区和外框里的文字与实现不一致不算阻塞", async () => {
+    expect(loadRoleRules("reviewer")).toContain("切换栏、说明区和外框里的文字与实现不一致不算阻塞");
+  });
+
+  test("qa 只对照页面验收，切换栏、说明区和外框里的内容不列入验收", async () => {
+    expect(loadRoleRules("qa")).toContain("切换栏、说明区和外框里的内容不列入验收");
+  });
+
   test("M9：reviewer 逐条核对需求里「不做、不改」的边界并在结论里写明，QA 凭审查结论判断这类边界", async () => {
     const body = (name: string) => loadRoleRules(name);
     expect(body("reviewer")).toMatch(/核对需求边界[\s\S]*「不做、不改」[\s\S]*违反列为阻塞[\s\S]*summary 逐条写明这些边界的核对结果/);

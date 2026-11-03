@@ -656,5 +656,5 @@ test("confirm 重开的窗口和自动弹出的窗口选项一样，选方案 B 
 
 test("原型设计师职责规矩要求画了多个方案时交稿附方案清单", () => {
   const rules = readFileSync(new URL("../role-rules/prototype.md", import.meta.url), "utf8");
-  expect(rules).toContain("- 一份原型里画了多个方案时，交稿必须附方案清单（options），最少 2 个、最多 6 个，每个名称最多 20 字；页面里每个方案标上\"方案 A\"\"方案 B\"……，字母和清单顺序一致。只画了一种方案时不附清单。");
+  expect(rules).toContain("- 一份原型里画了多个方案时，交稿必须附方案清单（options），最少 2 个、最多 6 个，每个名称最多 20 字。页面按 data-option 的字母显示对应方案，字母和清单顺序一致。只画了一种方案时不附清单。");
 });

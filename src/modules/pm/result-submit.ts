@@ -24,9 +24,12 @@ const Grant = object({
 export type ResultSubmitGrant = Static<typeof Grant>;
 /** worker、reviewer、QA 看到的参数：result 直接给出裁决格式，模型不必猜字段。 */
 export const VERDICT_SUBMIT_PARAMETERS = object({ action: Type.Literal("verdict"), result: VERDICT_PAYLOAD });
-/** 原型设计师看到的参数：html 是完整的单个 HTML 文件，note 用一句话说明画了什么，options 是画了多个方案时按顺序列出的方案名称。 */
+const PROTOTYPE_VIEW = object({ name: Type.String(), notes: Type.Optional(Type.Array(Type.String())) });
+const PROTOTYPE_PAGE = object({ name: Type.String(), group: Type.Optional(Type.String()), views: Type.Array(PROTOTYPE_VIEW) });
+/** 原型设计师看到的参数：html 是被设计的页面，pages 列出页面和画面，note 用一句话说明画了什么，options 是画了多个方案时按顺序列出的方案名称，prototypeOnly 和 openQuestions 分别是只在原型里成立的事和还没确认的问题。 */
 export const PROTOTYPE_SUBMIT_PARAMETERS = object({ action: Type.Literal("prototype"), html: Type.String({ minLength: 1 }), note: Type.String({ minLength: 1, maxLength: 1024 }),
-  options: Type.Optional(Type.Array(Type.String())) });
+  pages: Type.Array(PROTOTYPE_PAGE), options: Type.Optional(Type.Array(Type.String())),
+  prototypeOnly: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.String())) });
 export const RESULT_SUBMIT_PARAMETERS = Type.Union([
   object({ action: Type.Literal("research"), result: Type.Unknown() }),
   VERDICT_SUBMIT_PARAMETERS,
@@ -109,13 +112,13 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
     let params: ResultSubmitParameters;
     try { params = checkServiceInput(RESULT_SUBMIT_PARAMETERS, input); } catch {
       const raw = input && typeof input === "object" ? input as { action?: unknown; result?: unknown } : {};
-      throw new ResultSubmitError("invalid_shape", raw.action === "verdict" ? shapeIssue(VERDICT_PAYLOAD, raw.result) : undefined);
+      throw new ResultSubmitError("invalid_shape", raw.action === "verdict" ? shapeIssue(VERDICT_PAYLOAD, raw.result) : raw.action === "prototype" ? shapeIssue(PROTOTYPE_SUBMIT_PARAMETERS, raw) : undefined);
     }
     host(params.action);
     if (params.action === "prototype") {
       const binding = options.prototypeBinding;
       if (!binding || grant.role !== "prototype") throw new ResultSubmitError("prototype_unavailable");
-      return submitDesign(binding.ref, { requirementId: binding.requirementId, name: binding.name, runId: grant.runId, html: params.html, note: params.note, options: params.options }).then(() => {
+      return submitDesign(binding.ref, { requirementId: binding.requirementId, name: binding.name, runId: grant.runId, html: params.html, note: params.note, pages: params.pages, options: params.options, prototypeOnly: params.prototypeOnly, openQuestions: params.openQuestions }).then(() => {
         binding.onSubmitted();
         return freeze({ kind: "prototype" as const, accepted: true, runId: grant.runId });
       });

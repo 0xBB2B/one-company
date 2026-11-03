@@ -26,6 +26,7 @@ const BODY = "## 背景 {#background}\n用户未说明。\n## 需求 {#requireme
   "### 手机号登录页面 {#goal.login}\n页面有手机号输入框、验证码输入框和登录按钮，按需求附带的原型呈现。\n### 验证码失败 {#scenario.failure}\n验证码错误时在按钮下方显示红色的失败提示。\n" +
   "## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n页面与需求附带的原型一致，验证码错误时显示失败提示。\n";
 const PROTOTYPE_NAME = "登录页";
+const PAGES = [{ name: "页面", views: [{ name: "正常" }] }];
 const PROTOTYPE = "<!doctype html><html><head><style>.login{width:320px}.error{color:#d93025}</style></head><body><form class=\"login\"><h1>手机号登录</h1>" +
   "<input name=\"phone\" placeholder=\"手机号\"><input name=\"code\" placeholder=\"验证码\"><button>登录</button><p class=\"error\">验证码错误</p></form></body></html>";
 const PAGE = "/** 输出登录页面的 HTML；error 为 true 时在按钮下方显示失败提示。 */\nexport function loginPage(error: boolean): string {\n" +
@@ -53,7 +54,7 @@ test.skipIf(!config || process.platform !== "darwin")("P10：需求第 1 版带�
   // 主窗口出原型、用户通过、随第 1 版需求批准，由脚本直接经看板与快照完成
   const designRun = uuidv7();
   await beginDesign(ref, { requirementId, name: PROTOTYPE_NAME, runId: designRun, agent: "prototype" });
-  await submitDesign(ref, { requirementId, name: PROTOTYPE_NAME, runId: designRun, html: PROTOTYPE, note: "表单居中，失败提示红色" });
+  await submitDesign(ref, { pages: PAGES, requirementId, name: PROTOTYPE_NAME, runId: designRun, html: PROTOTYPE, note: "表单居中，失败提示红色" });
   const pending = await pendingConfirmation(ref, { requirementId, name: PROTOTYPE_NAME });
   await decidePrototype(ref, { requirementId, name: PROTOTYPE_NAME, version: pending.version, hash: pending.hash, choice: "accept", opinion: null, option: null });
   const draft = await draftPrototypes(ref, requirementId);

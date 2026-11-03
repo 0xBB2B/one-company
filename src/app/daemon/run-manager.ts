@@ -918,7 +918,7 @@ export class RunManager {
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: this.options.repositoryRoot, definition: resolved.definition,
         roleRules: loadRoleRules("prototype"),
         context: withSkills(await this.withConventions(prototypeContext({ title, name: request.name, version, brief: request.brief, maxTurns: request.maxTurns, previous })), resolved.skillsContext),
-        coreTools: [toPiTool("result_submit", "提交原型（action=prototype）：html 是完整的单个 HTML 文件，note 用一句话说明画了什么；一份原型里画了多个方案时，options 按页面里方案 A、B、C……的顺序列出方案名称（2 到 6 个，每个最多 20 字），只画一种时不填。", PROTOTYPE_SUBMIT_PARAMETERS, result),
+        coreTools: [toPiTool("result_submit", "提交原型（action=prototype）：html 是被设计的页面，只含正式上线后用户能看到的内容；pages 列出要看的页面，每个页面的 views 列出它的画面，notes 写这个画面的说明，group 是这组切换的名字，不写时显示\"状态\"；note 用一句话说明画了什么；prototypeOnly 写只在原型里成立的事；openQuestions 写还没确认的问题；一份原型里画了多个方案时，options 按方案 A、B、C……的顺序列出方案名称（2 到 6 个，每个最多 20 字），只画一种时不填。", PROTOTYPE_SUBMIT_PARAMETERS, result),
           ...this.knowledgeTool(runId)],
         readRoots: [this.options.repositoryRoot, ...(previous ? [previous.path] : [])],
         runtime: this.options.runtime, modelRef: resolved.model, thinking: resolved.thinking, maxTurns: request.maxTurns,
