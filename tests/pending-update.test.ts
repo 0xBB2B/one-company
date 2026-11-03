@@ -77,7 +77,7 @@ async function world() {
     cleanups.push(async () => instance.dispose()); return instance;
   }
   const assess = (revision: number, tasks: Array<{ taskId: string; impact: "unaffected" | "affected" | "unknown"; reason: string }>, extra: Partial<{ lease: typeof lease }> = {}) =>
-    state.assessUpdate({ lease: structuredClone(extra.lease ?? lease), version: state.read(created.requirementId).version, revision, assessmentId: uuidv7(), tasks });
+    state.assessUpdate({ lease: structuredClone(extra.lease ?? lease), version: state.read(created.requirementId).version, revision, tasks });
   return { ...options, state, created, lease, workspace, rounds, verification, submit, reader, approve, assess, database: repositoryDatabase(options.dataRoot, options.repoId) };
 }
 const finding = (kind: "blocking" | "suggestion" | "unverified") => ({ kind, targetRef: "prd:goals", evidenceRef: null, trigger: "按方向键", impact: "无法移动" });

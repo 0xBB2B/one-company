@@ -1,6 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { Context } from "@earendil-works/pi-ai";
-import { uuidv7 } from "../src/core/storage/database.ts";
 import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import { evaluatePmIntakeGate, PM_INTAKE_TOOL } from "../src/modules/pm/pm-intake-runtime.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
@@ -59,7 +58,7 @@ test("M7-AC1：主代理核对通过前不建立理解基线也不投递通知�
   expect(evaluatePmIntakeGate({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease }))
     .toMatchObject({ allowed: false, reasons: expect.arrayContaining(["impact_link_gap"]) });
 
-  const assess = (revision: number) => w.plan.execute({ action: "assess-update", revision, assessmentId: uuidv7(),
+  const assess = (revision: number) => w.plan.execute({ action: "assess-update", revision,
     tasks: view.tasks.map((task) => ({ taskId: task.taskId, version: task.version, assessment: "unaffected", rationale: "未涉及登录" })),
     global: { assessment: "unaffected", rationale: "新增独立功能" } });
   const unread = await assess(3).catch((caught: unknown) => caught) as Error;
@@ -107,7 +106,7 @@ test("M7-AC1/AC5：PM 停止后不再向它投递；新 PM 须重新核对才建
   await until(() => w.diffPrompts().length === 1);
   expect(w.diffPrompts()[0]!.systemPrompt).toContain(next.runId);
   await until(() => w.owner().context.baseline?.revision === revision);
-  await expect(w.plan.execute({ action: "assess-update", revision, assessmentId: uuidv7(), tasks: [], global: { assessment: "unaffected", rationale: "旧" } }))
+  await expect(w.plan.execute({ action: "assess-update", revision, tasks: [], global: { assessment: "unaffected", rationale: "旧" } }))
     .rejects.toBeTruthy();
   await new Promise((resolve) => setTimeout(resolve, 1_200));
   expect(w.diffPrompts()).toHaveLength(1);
@@ -209,7 +208,7 @@ test.each([1, 2, 3, 4])("M7 性能采样：第 %i 个需求批准五次并记录
     deliverySamples.push(performance.now() - start);
     await until(() => w.owner().context.baseline?.revision === revision);
     await w.readDiffs([`revision ${revision - 1} → ${revision}`]);
-    await w.plan.execute({ action: "assess-update", revision, assessmentId: uuidv7(),
+    await w.plan.execute({ action: "assess-update", revision,
       tasks: view.tasks.map((task) => ({ taskId: task.taskId, version: task.version, assessment: "unaffected", rationale: "附加章节不涉及登录" })),
       global: { assessment: "unaffected", rationale: "附加章节" } });
   }

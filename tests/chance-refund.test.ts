@@ -105,7 +105,7 @@ describe("开工前作废：用户的「再给一次机会」退回", () => {
     expect(task("login").attempts[2]).toMatchObject({ runId: heldRunId, outcome: "superseded" });
     expect(task("login").userDecision).toMatchObject({ choice: "retry", maxTurns: 3, usedByRunId: null });
 
-    await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
       { taskId: login, version: task("login").version, assessment: "unaffected", rationale: "登录" },
       { taskId: task("failure").taskId, version: task("failure").version, assessment: "unaffected", rationale: "失败场景" }],
       global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -164,7 +164,7 @@ describe("开工前作废：用户终止了另一个任务", () => {
     await w.fixture.approveRevision({ body: `${BASE}# 重发验证码 {#goal.resend}\n可重发。\n` });
     await until(() => w.owner().context.baseline?.revision === 2);
     await w.readDiffs(["revision 1 → 2"]);
-    await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+    await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
       { taskId: login, version: task("login").version, assessment: "unaffected", rationale: "登录" }],
       global: { assessment: "unaffected", rationale: "无全局变化" } });
     await w.plan.execute({ action: "update", planVersion: planVersion(), add: [spec("failure-again", "scenario.failure"), spec("resend", "goal.resend")] });

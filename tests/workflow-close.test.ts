@@ -221,7 +221,7 @@ test("M6-AC11：预检通过后注入 PRD 更新、代码变化、阻塞裁决�
   await w.approve(BODY_2);
   const updated = await main.execute({ action: "close", reason: "completed", receiptId }) as { missing: string[] };
   expect(updated.missing).toEqual(expect.arrayContaining(["有新批准的需求版本还没复核"]));
-  await w.state.assessUpdate({ lease: w.lease, version: w.state.read(w.created.requirementId).version, revision: w.state.read(w.created.requirementId).data.revision, assessmentId: uuidv7(), tasks: [{ taskId: "move", impact: "unaffected", reason: "章节未变" }] });
+  await w.state.assessUpdate({ lease: w.lease, version: w.state.read(w.created.requirementId).version, revision: w.state.read(w.created.requirementId).data.revision, tasks: [{ taskId: "move", impact: "unaffected", reason: "章节未变" }] });
   const stale = await main.execute({ action: "close", reason: "completed", receiptId }) as { missing: string[] };
   expect(stale.missing).toEqual(expect.arrayContaining(["检查轮依据的批准版本不是当前版本"]));
   const { round: round2 } = await w.fullEvidence([finding("blocking")]);
@@ -625,7 +625,7 @@ test("早先版本带原型、最终批准版本不带原型时，归档的原�
   await approvePrototypes(w, [PROTOTYPES[0]]);
   await w.approve(BODY_2);
   expect(w.state.read(w.created.requirementId).data.revision).toBeGreaterThan(1);
-  await w.state.assessUpdate({ lease: w.lease, version: w.state.read(w.created.requirementId).version, revision: w.state.read(w.created.requirementId).data.revision, assessmentId: uuidv7(), tasks: [{ taskId: "move", impact: "unaffected", reason: "章节未变" }] });
+  await w.state.assessUpdate({ lease: w.lease, version: w.state.read(w.created.requirementId).version, revision: w.state.read(w.created.requirementId).data.revision, tasks: [{ taskId: "move", impact: "unaffected", reason: "章节未变" }] });
   expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "archived" } });
   expect(storedArchive(w).prototypes).toEqual([]);
   expect((await readdir(join(w.worktree.root, "docs", "prd"))).filter((name) => name.endsWith(".html"))).toEqual([]);

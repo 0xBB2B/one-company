@@ -39,7 +39,7 @@ async function approvedWhileRunning(failure: "affected" | "unaffected", options:
   await expect(w.manager.resume(run.runId)).rejects.toMatchObject({ code: "plan_not_confirmed" });
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
-  await w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: task("login").taskId, version: task("login").version, assessment: "affected", rationale: "登录要记住设备" },
     { taskId: task("failure").taskId, version: task("failure").version, assessment: failure, rationale: "失败场景" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
@@ -107,7 +107,7 @@ async function midway(body: string, options: { loginReviewed?: boolean; failureE
   await until(async () => await state(run.runId) === "paused");
   await until(() => w.owner().context.baseline?.revision === 2);
   await w.readDiffs(["revision 1 → 2"]);
-  const assess = (login: "affected" | "unaffected", failure: "affected" | "unaffected") => w.plan.execute({ action: "assess-update", revision: 2, assessmentId: uuidv7(), tasks: [
+  const assess = (login: "affected" | "unaffected", failure: "affected" | "unaffected") => w.plan.execute({ action: "assess-update", revision: 2, tasks: [
     { taskId: task("login").taskId, version: task("login").version, assessment: login, rationale: "登录" },
     { taskId: task("failure").taskId, version: task("failure").version, assessment: failure, rationale: "失败场景" }],
     global: { assessment: "unaffected", rationale: "无全局变化" } });
