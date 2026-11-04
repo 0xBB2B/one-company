@@ -243,3 +243,43 @@ test("提问记录块在 pi 的工具显示组件里只画一份问题和回答�
   expect(text.split("你的回答").length - 1).toBe(1);
   expect(text).toContain(caption);
 });
+
+const TECH_CAPTION = "图书馆借还系统（第 2 版）";
+const TECH_QUESTION = "上面 4 项新技术，同意引入吗？";
+const TECH_AGREE = "全部同意引入以下新技术：\n1. Vue 3（框架）\n2. Go（语言）\n3. PostgreSQL（数据库）\n4. Redis（中间件或外部服务）";
+function renderedTech(result: { details?: unknown; content?: Array<{ type: "text"; text: string }> } | undefined, isError = false) {
+  const tool = createUserInteractTool({ interaction: {} as never });
+  const technologies = [["Vue 3", "框架"], ["Go", "语言"], ["PostgreSQL", "数据库"], ["Redis", "中间件或外部服务"]].map(([name, kind]) => ({
+    name, kind, source: "AI 提议", purpose: "用途", necessity: "必须", alternatives: "别的不行" }));
+  const args = { request: { ...base, action: "ask-tech", technologies } };
+  const context = { args, state: {} as Record<string, unknown>, isError, invalidate: () => {} } as never;
+  const lines = () => [
+    ...tool.renderCall!(args as never, renderTheme as never, context).render(80),
+    ...(result ? tool.renderResult!({ content: result.content ?? [], details: result.details } as never, { expanded: false, isPartial: false }, renderTheme as never, context).render(80) : []),
+  ].map((line) => line.trimEnd());
+  lines();
+  return lines();
+}
+
+test("TB-28：技术清单提问结果出来前，标题行显示确认问题", () => {
+  expect(renderedTech(undefined)).toEqual([`<b>提问</b>  <muted>${TECH_QUESTION}</>`]);
+});
+
+test("TB-29：技术清单回答“全部同意”时，显示需求名、确认问题和 1. 全部同意", () => {
+  expect(renderedTech({ details: { caption: TECH_CAPTION, question: TECH_QUESTION, status: "answered", answer: { text: TECH_AGREE, choice: 1 } } })).toEqual([
+    `<b>提问</b>  <muted>${TECH_CAPTION}</>`, "", TECH_QUESTION, "<muted>你的回答  </>1. 全部同意"]);
+});
+
+test("TB-30：技术清单回答“写修改意见”时，回答行写明选项和用户写的内容", () => {
+  expect(renderedTech({ details: { caption: TECH_CAPTION, question: TECH_QUESTION, status: "answered", answer: { text: "后端换成 Java，数据库换成 MongoDB", other: true } } }).at(-1))
+    .toBe("<muted>你的回答  </>2. 写修改意见：后端换成 Java，数据库换成 MongoDB");
+});
+
+test("TB-31：技术清单暂不回答时，写明清单保留", () => {
+  expect(renderedTech({ details: { caption: TECH_CAPTION, question: TECH_QUESTION, status: "pending", answer: null } }).at(-1)).toBe("<muted>你暂不回答，清单保留。</>");
+});
+
+test("TB-32：技术清单登记出错时照旧显示没有登记和原因", () => {
+  expect(renderedTech({ content: [{ type: "text", text: "one_company_user_interact 的 ask-tech 动作失败。\n原因：第 2 项缺少备选为什么不选\n建议：补全后重新登记" }] }, true).at(-1))
+    .toBe("<error>没有登记：第 2 项缺少备选为什么不选</>");
+});

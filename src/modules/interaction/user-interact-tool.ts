@@ -13,6 +13,7 @@ import { MainRequirementInteraction } from "./main-requirement-interaction.ts";
 import { ApprovalUnitIds } from "../requirement/user-interaction-format.ts";
 import { ASK_CHOICES, ASK_ROOT_CHECK, askQuestionIssues } from "./ask-question.ts";
 import type { AskChoice } from "./ask-question.ts";
+import { techQuestionText } from "./tech-list.ts";
 
 const id = Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", minLength: 36, maxLength: 36 });
 const base = { repoId: Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 }), requirementId: id,
@@ -41,12 +42,13 @@ const variants = {
 export const USER_INTERACT_PARAMETERS = requestParameters(Object.values(variants));
 
 interface AskView { caption?: string; question?: string; status?: string; answer?: { text: string; choice?: number; other?: boolean } | null }
-type AskArgs = { request?: { action?: string; question?: string; choices?: AskChoice[] } };
+type AskArgs = { request?: { action?: string; question?: string; choices?: AskChoice[]; technologies?: unknown[] } };
 type RenderTheme = { fg(kind: string, text: string): string; bold(text: string): string };
 
 // 只有提问改样式；其余动作抛错，由 pi 退回它的默认显示
 function askRequest(args: unknown): NonNullable<AskArgs["request"]> {
   const request = (args as AskArgs | undefined)?.request;
+  if (request?.action === "ask-tech") return { ...request, question: techQuestionText(request.technologies?.length ?? 0) };
   if (request?.action !== "ask") throw new Error("not_ask");
   return request;
 }
@@ -73,8 +75,10 @@ function renderAskResult(result: { content: Array<{ type: string; text?: string 
   const view = result.details as AskView;
   // 只原地改标题：在这里让 pi 重画整块会重入它正在进行的重画，问答块被加进去两份
   if (context.state.view !== view) { context.state.view = view; context.state.header?.setText(askHeader(theme, view.caption ?? request.question ?? "")); }
-  const choice = view.answer?.choice ? request.choices?.[view.answer.choice - 1] : undefined;
-  const answer = !view.answer ? theme.fg("muted", "你暂不回答，问题保留。")
+  const tech = request.action === "ask-tech";
+  const choice = view.answer?.choice && !tech ? request.choices?.[view.answer.choice - 1] : undefined;
+  const answer = !view.answer ? theme.fg("muted", tech ? "你暂不回答，清单保留。" : "你暂不回答，问题保留。")
+    : tech ? `${theme.fg("muted", "你的回答  ")}${view.answer.other ? `2. 写修改意见：${view.answer.text}` : "1. 全部同意"}`
     : `${theme.fg("muted", "你的回答  ")}${choice ? `${view.answer.choice}. ${choice.label}${choice.recommended ? theme.fg("success", "（推荐）") : ""}`
       : `${view.answer.text}${theme.fg("muted", "（自己输入）")}`}`;
   return new Text(`\n${view.question ?? ""}\n${answer}`, 0, 0);

@@ -18,6 +18,8 @@ export interface WindowQuestion {
   /** 问题上方的灰色一行，例如"提问 · 需求名（第 2 版）"。 */
   caption?: string;
   question: string;
+  /** 问题下面紧跟的一行普通颜色文字。 */
+  subtitle?: string;
   /** 选项上方固定显示的加粗问题，不随内容滚动。 */
   prompt?: string;
   rootCheck?: string;
@@ -294,7 +296,7 @@ export class QuestionWindowView {
     const index = this.tab, question = this.options.questions[index]!, state = this.states[index]!;
     if (question.caption) content.push(...wrapPlain(question.caption, width - 1).map((piece) => ` ${muted(piece)}`), "");
     if (warning) content.push(...wrap(theme.fg("warning", theme.bold(question.question)), 1), "");
-    else content.push(...wrapPlain(question.question, width - 1).map((piece) => ` ${theme.bold(piece)}`), "");
+    else content.push(...wrapPlain(question.question, width - 1).map((piece) => ` ${theme.bold(piece)}`), ...(question.subtitle ? wrapPlain(question.subtitle, width - 1).map((piece) => ` ${piece}`) : []), "");
     if (!warning && question.rootCheck) {
       const label = "根源自检  ", indent = " ".repeat(visibleWidth(label));
       content.push(...wrapPlain(question.rootCheck, width - 1 - indent.length).map((piece, i) => ` ${muted(`${i ? indent : label}${piece}`)}`), "");

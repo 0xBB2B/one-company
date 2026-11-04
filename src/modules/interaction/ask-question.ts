@@ -13,6 +13,8 @@ export const ASK_ROOT_CHECK = Type.String({ minLength: 1, maxLength: 300 });
 export const ASK_CHOICES = Type.Array(AskChoice, { minItems: 2, maxItems: 4 });
 export interface AskQuestion { question: string; rootCheck: string; choices: AskChoice[] }
 
+export const PRONOUN_FIX = "请改用“用户”或这个人在需求里的角色（如负责人）指回答问题的人，用“AI”指主代理自己";
+
 const text = (value: unknown) => typeof value === "string" && value.trim() !== "";
 
 /** 问题记录只存问题加各选项名称，推荐项标"（推荐）"；用户点选的那一项连同它的说明另作为用户原话交给模型，根源自检与推荐理由只在窗口里给用户看。 */
@@ -44,11 +46,10 @@ export function askQuestionIssues(value: { question?: unknown; rootCheck?: unkno
 }
 
 function pronounIssues(value: { question?: unknown; rootCheck?: unknown; choices?: unknown }): string[] {
-  const fix = "请改用“用户”或这个人在需求里的角色（如负责人）指回答问题的人，用“AI”指主代理自己";
   const found = (field: string, where: string, content: unknown) => {
     if (typeof content !== "string") return [];
     const chars = [...new Set(content.match(/[我你您]/gu) ?? [])];
-    return chars.length ? [`${where}${field}含“${chars.join("”“")}”：${fix}`] : [];
+    return chars.length ? [`${where}${field}含“${chars.join("”“")}”：${PRONOUN_FIX}`] : [];
   };
   const choices = Array.isArray(value.choices) ? value.choices as Array<Record<string, unknown> | null> : [];
   return [
