@@ -70,6 +70,7 @@ pnpm run test:acceptance:parallel [--only <编号…>]
 | P17 | 原型设计师收到一个带界面的设计任务 | 按分开的格式交稿：四种状态都在页面清单里，页面里没有"演示""原型""待确认"字样 |
 | P18 | vue-reviewer 装上 Vue 样例定义（正文写明 auth-session 第 15 条不适用），改动里有 refresh token 存 localStorage、refresh token 拼进 URL、v-html 渲染评论 | URL 和 v-html 两处列为阻塞，localStorage 那处不列 |
 | P19 | 空的样例项目里要做网页版图书馆借还系统（要前端、后端、数据库）；另起一次在已有的 TypeScript 移动逻辑上加快跑 | 前一种在请用户批准前弹技术清单窗口，至少含一项数据库，选全部同意后草稿「实现」板块写进每一项；后一种不弹技术清单窗口 |
+| P19 | vue-reviewer 装上 Vue 样例定义后删掉正文里 auth-session 第 15 条那一行，只有 vue-worker 正文写明不适用；改动里有 refresh token 存 localStorage、refresh token 拼进 URL、v-html 渲染评论 | URL 和 v-html 两处列为阻塞，localStorage 那处不列 |
 
 完整流程（2 条）：在临时目录真实安装本包、建样例项目，由真实模型扮演主代理和各角色，从提需求走到完成关闭。
 
