@@ -262,8 +262,8 @@ describe("验收单点数量", () => {
     const agents = await readText(join(PACKAGE_ROOT, "AGENTS.md"));
     const contributing = await readText(CONTRIBUTING);
     for (const text of [agents, contributing]) {
-      expect(text).not.toContain("P1–P18");
-      expect(text).not.toContain("18 个单点");
+      expect(text).not.toContain("P1–P19");
+      expect(text).not.toContain("19 个单点");
     }
     expect(contributing).toMatch(/^\| P20 \|/m);
     expect(contributing).toContain("20 个单点");

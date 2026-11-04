@@ -67,10 +67,11 @@ pnpm run test:acceptance:parallel [--only <编号…>]
 | P14 | 主代理在提交说明没有需求编号时 | 读了提交新增的归档文件，回答里带上需求编号 |
 | P15 | go-worker 的改动里埋了 5 个 Go 常见坑（请求无超时、写未初始化的 map、并发写 map、拼接 SQL、释放 Redis 锁不比对 token） | 自动挂上的 go-reviewer 打回，5 个坑各有一条阻塞意见，指到埋坑的文件和行号 |
 | P16 | vue-worker 的改动里埋了 5 个 Vue 常见坑（v-html 渲染评论、:href 绑用户链接、监听不移除、路由守卫当权限校验、解构 reactive） | 自动挂上的 vue-reviewer 打回，5 个坑各有一条阻塞意见，指到埋坑的文件和行号 |
-| P17 | 原型设计师收到一个带界面的设计任务 | 按分开的格式交稿：四种状态都在页面清单里，页面里没有"演示""原型""待确认"字样 |
+| P17 | 原型设计师收到一个带界面的设计任务 | 按分开的格式交稿：四种状态都在页面清单里，页面里没有"演示""原型""待确认"字样，交稿带的 DESIGN.md 通过程序检查 |
 | P18 | vue-reviewer 装上 Vue 样例定义（正文写明 auth-session 第 15 条不适用），改动里有 refresh token 存 localStorage、refresh token 拼进 URL、v-html 渲染评论 | URL 和 v-html 两处列为阻塞，localStorage 那处不列 |
 | P19 | 空的样例项目里要做网页版图书馆借还系统（要前端、后端、数据库）；另起一次在已有的 TypeScript 移动逻辑上加快跑 | 前一种在请用户批准前弹技术清单窗口，至少含一项数据库，选全部同意后草稿「实现」板块写进每一项；后一种不弹技术清单窗口 |
 | P20 | vue-reviewer 装上 Vue 样例定义后删掉正文里 auth-session 第 15 条那一行，只有 vue-worker 正文写明不适用；改动里有 refresh token 存 localStorage、refresh token 拼进 URL、v-html 渲染评论 | URL 和 v-html 两处列为阻塞，localStorage 那处不列 |
+| P21 | 样例项目已有顶栏导航"工作台、订单、客户、设置"、主色 `#0f766e` 和带"账号安全""通知"两块的设置页，要在设置页加"每日提醒时间" | 交稿被收下，页面里有 4 个导航文字、主色值和设置页原有的两块标题；DESIGN.md 明亮一节的主色是 `#0f766e` |
 
 完整流程（2 条）：在临时目录真实安装本包、建样例项目，由真实模型扮演主代理和各角色，从提需求走到完成关闭。
 
