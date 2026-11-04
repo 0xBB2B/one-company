@@ -131,6 +131,11 @@ describe("prototype 职责规矩", () => {
     expect(rules).toContain("&lt;/textarea 是 </textarea 的转义");
     expect(rules).not.toContain("返工");
   });
+
+  test("含先读懂整体布局和现有样式、改已有页面先整页还原、新页面套进整体布局、终端照现有命令输出还原、找不到代码自己定、读不懂写进 openQuestions", () => {
+    const rules = loadRoleRules("prototype");
+    for (const phrase of ["整体布局（顶栏、侧边导航、页脚、内容区宽度和边距）", "先把这个页面照现在的样子整页还原", "照现有命令的输出格式还原", "读不懂的地方写进 openQuestions", "现有样式（配色、字体、字号、间距、圆角）", "把它套进项目现有的整体布局，用现有样式和现有组件的样子画", "项目里没有的组件，按现有样式的配色、字号、间距画", "仓库里找不到界面代码时，按任务说明自己定布局和样式"]) expect(rules).toContain(phrase);
+  });
 });
 
 describe("下游职责规矩的原型要求", () => {

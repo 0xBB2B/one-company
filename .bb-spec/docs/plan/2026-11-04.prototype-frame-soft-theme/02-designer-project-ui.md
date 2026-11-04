@@ -28,7 +28,7 @@ description: 设计师规矩加"先读项目整体布局和现有样式再画"�
 - 仓库里找不到界面代码时，按任务说明自己定布局和样式；找到了但读不懂某一部分的样子时，把读不懂的地方写进 openQuestions，不猜。
 ```
 
-P19 样例项目文件（测试里写进 `w.fixture.root`，再派设计师）：
+P19 样例项目文件（测试里写进设计师能读的 `w.fixture.repositoryRoot`，再派设计师）：
 
 ```text
 src/layout/AppShell.html
