@@ -337,8 +337,8 @@ Git 交付有两档：
 | 包内 `rules/` | 主代理 | 主会话职责、沟通方式、递进式澄清、执行授权、归档需求、简报格式 |
 | 包内 `role-rules/` | 对应职责 | 各职责的流程规矩，程序加在定义正文之后，冲突时以它为准 |
 | 包内 `agents/` | 对应角色 | 内置角色定义：五个通用定义（worker、reviewer、qa、explore、prototype，正文为空）；Go、Node.js/TypeScript、Python、Java/Spring、Vue、React 六个技术栈各一对 `<栈>-worker`、`<栈>-reviewer`，写明专攻什么并预设 skills |
-| 包内 `skills/` | 定义里点名的角色 | 按技术栈和服务分的编码规范与排查清单，同栈的 worker 和 reviewer 共用一组；每项写问题、怎么认出、修法、出处。和仓库 `AGENTS.md` 冲突时以 `AGENTS.md` 为准 |
-| `~/.pi/agent/AGENTS.md` | 主代理和每个子代理 | 你的个人规范；`/one:examples` 经你确认后会在末尾追加样例那一段 |
+| 包内 `skills/` | 定义里点名的角色 | 按技术栈和服务分的编码规范与排查清单，同栈的 worker 和 reviewer 共用一组；每项写问题、怎么认出、修法、出处。和仓库 `AGENTS.md` 冲突时以 `AGENTS.md` 为准；定义正文写明某一条不适用时，按定义正文 |
+| `~/.pi/agent/AGENTS.md` | 主代理和每个子代理 | 你的个人规范 |
 | 仓库根目录 `AGENTS.md` | 主代理和每个子代理 | 项目长期约定；改了以后，新派出的子代理读到新内容 |
 
 ### 角色定义
@@ -351,7 +351,7 @@ Git 交付有两档：
 
 同名时按项目 → 用户 → 包内的顺序取。定义只认 worker、reviewer、qa、explore、prototype 五种职责。新增一个角色，就在前两个目录里放一份 md 文件，然后在 `/one:setting` 里查看。正文只写这个角色的专长和偏好（例如"擅长 Go，新函数按 Go 官方库风格写说明注释"），可以为空；流程规矩由程序加上。reviewer 审查时会拿到被审任务所用 worker 定义的正文，违反其中写明的规范列为阻塞。
 
-PM 规划时可以给 worker 任务指定专项定义，并给任务写上要加的专项审查，每个写一句理由。用了 `<栈>-worker` 的任务，程序自动加上同栈的 `<栈>-reviewer`。专项审查只按预设的 skills 和项目 `AGENTS.md` 审自己专长的部分，能指到代码行的问题列为阻塞，只写修法，由 worker 返修；返修后再派审查，通用 reviewer 和名单里全部专项审查都重新审一遍。worker 加载的 skill 由本轮实际审了的专项审查核对；没有专项审查覆盖的（例如自定义 worker 自带的 skill，或同栈专项审查本轮被关掉、跳过时）加载给通用 reviewer 逐条核对。
+PM 规划时可以给 worker 任务指定专项定义，并给任务写上要加的专项审查，每个写一句理由。用了 `<栈>-worker` 的任务，程序自动加上同栈的 `<栈>-reviewer`。专项审查只按预设的 skills 和项目 `AGENTS.md` 审自己专长的部分；专项审查自己的定义正文写明不适用的 skill 条目，违反它但符合定义正文的不算问题，同一份 skill 的其他条目照常审。能指到代码行的问题列为阻塞，只写修法，由 worker 返修；返修后再派审查，通用 reviewer 和名单里全部专项审查都重新审一遍。worker 加载的 skill 由本轮实际审了的专项审查核对；没有专项审查覆盖的（例如自定义 worker 自带的 skill，或同栈专项审查本轮被关掉、跳过时）加载给通用 reviewer 逐条核对。
 
 每一轮由 PM 整轮派出审查开始。某个审查没交出结论时，PM 立刻收到原因，单独重派它（可以调大轮数上限）；同一轮里第 2 次还没交出结论，就等这一轮结束后交你裁决。缺条件、PM 补不上时，PM 也可以直接交你裁决。PM 还可以临时加名单外的专项审查（写理由），加了的也要通过任务才算完成。一轮里所有审查都有了结果，PM 才收到一条按审查代理分段的汇总。
 
@@ -420,23 +420,22 @@ PM 规划时可以给 worker 任务指定专项定义，并给任务写上要加
 | Go 后端 | `examples/golang/` |
 | Vue 前端 | `examples/vue/` |
 
-每套样例有三类文件：
+每套样例有两类文件：
 
-- `AGENTS.md`：团队的关键设计决定，比如分层怎么分、错误码长什么样、token 存在哪。PM、worker、reviewer 都会读用户级和仓库根目录的 `AGENTS.md`。
 - `skills/`：详细规范，每个目录是一份 skill。每份 `SKILL.md` 的头部写了 `disable-model-invocation: true`，pi 主窗口的模型看不到它们，只有在定义里点名它们的子代理会拿到全文。
-- `agents/`：和内置专项定义同名的角色定义（Go 样例是 go-worker、go-reviewer，Vue 样例是 vue-worker、vue-reviewer）。skills 名单先列内置定义原有的 skill，后面加上样例自带的 skill。
+- `agents/`：和内置专项定义同名的角色定义（Go 样例是 go-worker、go-reviewer，Vue 样例是 vue-worker、vue-reviewer）。skills 名单先列内置定义原有的 skill，后面加上样例自带的 skill。定义正文还写明本团队不适用的内置 skill 条目，例如两套样例都写明 auth-session 第 15 条「登录 token 存在 localStorage 或 sessionStorage 里」不适用（Vue 样例把 access token 放内存、refresh token 存 localStorage，Go 样例的 Web 端 token 存 localStorage）。worker 和审查按定义正文办：违反那一条但符合定义正文的不算问题，同一份 skill 的其他条目照常执行。
 
 用 `pi install git:github.com/0xBB2B/one-company` 装好后，样例在 `~/.pi/agent/git/github.com/0xBB2B/one-company/examples/`，也可以在仓库网页上看。
 
-运行 `/one:examples`，依次选样例、选复制到哪一层、确认。每个样例后面写着它在两层的状态：未复制、部分复制、已复制（全部和样例一致）、有改动（有文件被你改过）。三类文件一起放到你选的那一层：
+运行 `/one:examples`，依次选样例、选复制到哪一层、确认。每个样例后面写着它在两层的状态：未复制、部分复制、已复制（全部和样例一致）、有改动（有文件被你改过）。两类文件一起放到你选的那一层：
 
-| 层 | skills | 角色定义 | AGENTS.md | 生效范围 |
-|---|---|---|---|---|
-| 用户层 | `~/.pi/agent/skills/` | `~/.pi/agent/agents/` | `~/.pi/agent/AGENTS.md` | 你的所有项目 |
-| 项目层 | 仓库内 `.pi/skills/` | 仓库内 `.pi/agents/` | 仓库根目录 `AGENTS.md` | 只有这个项目；项目还没有授信记录时，确认复制后先把项目设为受信任；在 pi 里选过不信任时不能选 |
+| 层 | skills | 角色定义 | 生效范围 |
+|---|---|---|---|
+| 用户层 | `~/.pi/agent/skills/` | `~/.pi/agent/agents/` | 你的所有项目 |
+| 项目层 | 仓库内 `.pi/skills/` | 仓库内 `.pi/agents/` | 只有这个项目；项目还没有授信记录时，确认复制后先把项目设为受信任；在 pi 里选过不信任时不能选 |
 
-- 只复制还没有的文件。你改过的文件不覆盖，确认窗口和结果里会列出来。
-- `AGENTS.md` 按样例那一段的标题（如「## 后端设计约定」）认：没有就追加到末尾，先问你是否写入，窗口里写明追加多少行和样例文件的路径，选「写入」才写；已经有了就不动。合并后超过 16 KB 就不写，skills 和定义照常复制，精简 `AGENTS.md` 后再运行一次会只补写这一段。其中和内置 skill 写法冲突的条目，代理按 `AGENTS.md` 执行，例如 Vue 样例把 refresh token 存在 localStorage。
+- 只复制还没有的文件，你改过的文件不覆盖。
+- 确认窗口正常只写复制几份、跳过几份；有特殊情况才各写一行黄字说明：你改过的文件、复制到项目层会替换你在用户层的同名定义、要复制的定义在 `/one:setting` 里是关闭的、项目层已有同名定义所以用户层这份在本项目不生效。
 - 复制后同名的内置定义被替换，派工用的是复制过去的这一份；删掉复制的文件，就恢复用内置的。`/one:setting` 里的开关按定义名记：复制前关掉的，复制后照样关着；删掉复制的文件后，开关状态留给内置那一份。
 
 样例是一个团队的规范，复制后按你团队的做法改。
