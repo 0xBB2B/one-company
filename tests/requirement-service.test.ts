@@ -607,8 +607,8 @@ async function acceptedPrototype(w: Awaited<ReturnType<typeof world>>, requireme
   const runId = uuidv7();
   await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer", designBase: null });
   await submitDesign(boardRef(w), { design: VALID_DESIGN, pages: PAGES, requirementId, name, runId, html: PROTOTYPE_HTML, note: "说明", ...(options ? { options } : {}) });
-  const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
-  await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash, choice: "accept", option: options ? "B" : null, opinion: null });
+  const pending = await pendingConfirmation(boardRef(w), { repositoryRoot: w.options.repositoryRoot, requirementId, name });
+  await decidePrototype(boardRef(w), { repositoryRoot: w.options.repositoryRoot, requirementId, name, version: pending.version, hash: pending.hash, choice: "accept", option: options ? "B" : null, opinion: null });
 }
 
 async function prototypeApproval(w: Awaited<ReturnType<typeof world>>) {

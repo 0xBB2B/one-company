@@ -5,10 +5,10 @@
 | 02 | designer-project-ui | done | 2026-11-04 |
 | 03 | design-spec-check | done | 2026-11-04 |
 | 04 | design-submit-dispatch | done | 2026-11-04 |
-| 05 | design-confirm-write | pending | — |
+| 05 | design-confirm-write | done | 2026-11-04 |
 | 06 | design-follow-guard | pending | — |
 | 07 | acceptance-design-judgement | pending | — |
 ## 当前
-04 完成：审查 10/10 合规；测试工程师漏改的 database-migration-prompt、database-storage 两个测试里写死的库版本 9 由主 Agent 改成 10。计划 05 已补"指纹算法要和派工时一致"的提醒。下一步：05 design-confirm-write。
+05 完成：审查 15/15 合规。主 Agent 修了三处：两个测试辅助函数把 designBase 写死成 null（改成读根目录当前指纹）；改动超过 10 章时窗口显示 undefined（章数中文数字支持 11 以上）；通过类选项全部变灰时光标停在灰色选项上（question-window 光标初值改为落到"其他"）。下一步：06 design-follow-guard。
 ## 阻塞
 （无）

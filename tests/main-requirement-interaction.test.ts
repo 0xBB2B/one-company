@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { ModelRegistry, ModelRuntime, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -1115,10 +1116,11 @@ const boardRef = (w: World) => ({ dataRoot: w.dataRoot, repoId: w.repoId });
 async function designed(w: World, requirementId: string, name: string, reworks = 0, pick: { options: string[]; option: string } | null = null) {
   for (let round = 0; round <= reworks; round++) {
     const runId = uuidv7(), accept = round === reworks;
-    await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer", designBase: null });
+    const rootDesign = await readFile(join(w.repositoryRoot, "DESIGN.md"), "utf8").catch(() => null);
+    await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer", designBase: rootDesign === null ? null : createHash("sha256").update(rootDesign).digest("hex") });
     await submitDesign(boardRef(w), { design: VALID_DESIGN, pages: PAGES, requirementId, name, runId, html: PROTOTYPE_HTML, note: "三项状态横排", options: pick?.options });
-    const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
-    await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash,
+    const pending = await pendingConfirmation(boardRef(w), { repositoryRoot: w.repositoryRoot, requirementId, name });
+    await decidePrototype(boardRef(w), { repositoryRoot: w.repositoryRoot, requirementId, name, version: pending.version, hash: pending.hash,
       choice: accept ? "accept" : "opinion", opinion: accept ? null : "再改一版", option: accept ? pick?.option ?? null : null });
   }
 }

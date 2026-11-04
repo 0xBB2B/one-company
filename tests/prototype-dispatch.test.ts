@@ -189,8 +189,8 @@ test("提意见后重派时设计师能读上一版文件，任务说明带用�
   const params = { requirementId: w.fixture.requirementId, name: "登录页" };
   await beginDesign(w.ref, { ...params, runId: first, agent: "prototype", designBase: null });
   await submitDesign(w.ref, { design: VALID_DESIGN, pages: PAGES, ...params, runId: first, html: HTML, note: "第一版" });
-  const pending = await pendingConfirmation(w.ref, params);
-  await decidePrototype(w.ref, { ...params, version: pending.version, hash: pending.hash, choice: "opinion", option: null, opinion });
+  const pending = await pendingConfirmation(w.ref, { ...params, repositoryRoot: w.fixture.repositoryRoot });
+  await decidePrototype(w.ref, { ...params, repositoryRoot: w.fixture.repositoryRoot, version: pending.version, hash: pending.hash, choice: "opinion", option: null, opinion });
   const previousPath = prototypeFilePath(w.ref, { ...params, version: 1 });
   const previousDesign = join(dirname(previousPath), "登录页.v1.design.md");
 
@@ -237,7 +237,7 @@ test("设计师通过交稿工具附方案清单交稿后，待确认信息里�
   w.provider.queue.push(submitWithOptions(["顶部分栏", "左侧导航"]), { type: "text", text: "已交稿" });
   await w.dispatch();
   await until(() => w.events("prototype.submitted").length === 1);
-  expect((await pendingConfirmation(w.ref, { requirementId: w.fixture.requirementId, name: "登录页" })).options).toEqual(["顶部分栏", "左侧导航"]);
+  expect((await pendingConfirmation(w.ref, { repositoryRoot: w.fixture.repositoryRoot, requirementId: w.fixture.requirementId, name: "登录页" })).options).toEqual(["顶部分栏", "左侧导航"]);
 });
 
 test("设计师通过交稿工具只附 1 个方案时交稿被退回并看到原因，看板仍是 designing", async () => {
@@ -648,4 +648,49 @@ test("设计师交的 DESIGN.md 合格时写成候选文件并记进 designs", a
   const path = join(dirname(prototypeFilePath(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", version })), `登录页.v${version}.design.md`);
   expect(await readFile(path, "utf8")).toBe(VALID_DESIGN);
   expect((await w.entry())?.inFlight?.designs).toEqual([{ letter: null, hash: createHash("sha256").update(VALID_DESIGN).digest("hex"), bytes: Buffer.byteLength(VALID_DESIGN) }]);
+});
+
+const rootDesign = (w: Awaited<ReturnType<typeof world>>) => join(w.repoRoot, "DESIGN.md");
+
+test("prototypes.pending 根目录没有 DESIGN.md 时 design 是 created，通过后根目录写入设计师交的那份", async () => {
+  const w = await world();
+  await awaitingPrototype(w);
+  expect((await w.call("prototypes.pending", pendingInput(w))).design).toEqual({ state: "created" });
+  await decideInput(w, "accept");
+  expect(await readFile(rootDesign(w), "utf8")).toBe(VALID_DESIGN);
+});
+
+test("prototypes.pending 根目录 DESIGN.md 和交的相同时 design 是 same", async () => {
+  const w = await world();
+  await writeFile(rootDesign(w), VALID_DESIGN);
+  await awaitingPrototype(w);
+  expect((await w.call("prototypes.pending", pendingInput(w))).design).toEqual({ state: "same" });
+});
+
+test("prototypes.pending 根目录 DESIGN.md 含非法 UTF-8 字节时，指纹算法和派工时一致，design 不是 conflict", async () => {
+  const w = await world();
+  await writeFile(rootDesign(w), Buffer.concat([Buffer.from(VALID_DESIGN), Buffer.from([0xff])]));
+  await awaitingPrototype(w);
+  expect(((await w.call("prototypes.pending", pendingInput(w))).design as { state: string }).state).not.toBe("conflict");
+});
+
+test("交稿后根目录 DESIGN.md 被改：pending 的 design 是 conflict，通过被 design_changed 退回，看板仍是 awaiting、文件保持被改后的内容", async () => {
+  const w = await world();
+  await writeFile(rootDesign(w), VALID_DESIGN);
+  await awaitingPrototype(w);
+  const edited = VALID_DESIGN.replace("- 按钮高度：32px", "- 按钮高度：36px");
+  await writeFile(rootDesign(w), edited);
+  expect((await w.call("prototypes.pending", pendingInput(w))).design).toEqual({ state: "conflict" });
+  await expect(decideInput(w, "accept")).rejects.toMatchObject({ message: expect.stringContaining("DESIGN.md 在你确认时被改过，这一版没有通过") });
+  expect((await w.entry())?.inFlight).toMatchObject({ status: "awaiting" });
+  expect(await readFile(rootDesign(w), "utf8")).toBe(edited);
+});
+
+test("交稿后根目录 DESIGN.md 被改，放弃仍然成功且不改 DESIGN.md", async () => {
+  const w = await world();
+  await writeFile(rootDesign(w), VALID_DESIGN);
+  await awaitingPrototype(w);
+  await writeFile(rootDesign(w), "别人改的");
+  await decideInput(w, "abandon");
+  expect(await readFile(rootDesign(w), "utf8")).toBe("别人改的");
 });

@@ -7,11 +7,12 @@ import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { writeFileAtomic } from "../../core/storage/store.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
 import { hash as sha256Hex, id, object, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { unsafeFilenameKind } from "./requirement-identity.ts";
-import { DesignSpecError, checkDesignSpec } from "./design-spec.ts";
+import { DESIGN_SPEC_FILE, DesignSpecError, changedChapters, checkDesignSpec } from "./design-spec.ts";
 import { buildPrototypeFrame } from "./prototype-frame.ts";
 import type { PrototypePage } from "./prototype-frame.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
@@ -302,32 +303,64 @@ export async function clearStaleDesigns(ref: Ref): Promise<void> {
   endRuns(ref, "守护进程重启，设计中断", () => true);
 }
 
+function voidVersion(ref: Ref, requirementId: string, name: string, version: number): never {
+  withDatabase(databaseOf(ref), (db) => mutate(db, requirementId, (board) => {
+    const entry = entryNamed(board, name);
+    if (entry?.inFlight?.status !== "awaiting" || entry.inFlight.version !== version) return;
+    entry.lastEnded = { version, reason: "文件在交稿后被改过，这一版已作废" };
+    entry.inFlight = null;
+  }));
+  return deny("file_changed", "文件在交稿后被改过，与登记的指纹不一致", "这一版已作废，请让主代理重新派原型设计师");
+}
+
+const readOrNull = (path: string) => readFile(path).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+
 async function verifiedFile(ref: Ref, requirementId: string, name: string, file: PrototypeFile): Promise<string> {
   const path = prototypeFilePath(ref, { requirementId, name, version: file.version });
-  const content = await readFile(path).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
-  if (!content || sha256(content) !== file.hash) {
-    withDatabase(databaseOf(ref), (db) => mutate(db, requirementId, (board) => {
-      const entry = entryNamed(board, name);
-      if (entry?.inFlight?.status !== "awaiting" || entry.inFlight.version !== file.version) return;
-      entry.lastEnded = { version: file.version, reason: "文件在交稿后被改过，这一版已作废" };
-      entry.inFlight = null;
-    }));
-    deny("file_changed", "文件在交稿后被改过，与登记的指纹不一致", "这一版已作废，请让主代理重新派原型设计师");
-  }
+  const content = await readOrNull(path);
+  if (!content || sha256(content) !== file.hash) voidVersion(ref, requirementId, name, file.version);
   return path;
 }
 
-export async function pendingConfirmation(ref: Ref, input: { requirementId: string; name: string }):
-  Promise<{ name: string; version: number; hash: string; bytes: number; note: string; options: string[]; path: string; previousOpinion: string | null }> {
+type DesignCandidate = { letter: PickedOption["letter"] | null; text: string };
+
+async function verifiedDesigns(ref: Ref, requirementId: string, name: string, inFlight: NonNullable<PrototypeEntry["inFlight"]>): Promise<DesignCandidate[]> {
+  const candidates: DesignCandidate[] = [];
+  for (const design of inFlight.designs ?? []) {
+    const content = await readOrNull(designFilePath(ref, { requirementId, name, version: inFlight.version, letter: design.letter }));
+    if (!content || sha256(content) !== design.hash) voidVersion(ref, requirementId, name, inFlight.version);
+    candidates.push({ letter: design.letter, text: content!.toString("utf8") });
+  }
+  return candidates;
+}
+
+const readRootDesign = (repositoryRoot: string) => readFile(join(repositoryRoot, DESIGN_SPEC_FILE), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+const rootFingerprint = (root: string | null) => root === null ? null : sha256(root);
+
+export type DesignState =
+  | { state: "created" | "same" | "conflict" }
+  | { state: "changed"; changes: Array<{ letter: PickedOption["letter"] | null; chapters: string[] }> };
+
+function designState(root: string | null, designBase: string | null, candidates: DesignCandidate[]): DesignState {
+  if (rootFingerprint(root) !== designBase) return { state: "conflict" };
+  if (root === null) return { state: "created" };
+  const changes = candidates.map(({ letter, text }) => ({ letter, chapters: changedChapters(root, text) }));
+  return changes.every((change) => change.chapters.length === 0) ? { state: "same" } : { state: "changed", changes };
+}
+
+export async function pendingConfirmation(ref: Ref, input: { repositoryRoot: string; requirementId: string; name: string }):
+  Promise<{ name: string; version: number; hash: string; bytes: number; note: string; options: string[]; path: string; previousOpinion: string | null; design: DesignState }> {
   withDatabase(databaseOf(ref), (db) => assertRequirementEditable(db, input.requirementId));
   const board = await readPrototypeBoard(ref, input.requirementId);
   const { entry, inFlight } = requireInFlight(board, input.name, "awaiting");
   const file = inFlight.file!;
   const path = await verifiedFile(ref, input.requirementId, input.name, file);
-  return { name: input.name, version: file.version, hash: file.hash, bytes: file.bytes, note: file.note, options: file.options, path, previousOpinion: entry.lastOpinion && entry.lastOpinion.version < file.version ? entry.lastOpinion.opinion : null };
+  const candidates = await verifiedDesigns(ref, input.requirementId, input.name, inFlight);
+  const design = designState(await readRootDesign(input.repositoryRoot), inFlight.designBase, candidates);
+  return { name: input.name, version: file.version, hash: file.hash, bytes: file.bytes, note: file.note, options: file.options, path, previousOpinion: entry.lastOpinion && entry.lastOpinion.version < file.version ? entry.lastOpinion.opinion : null, design };
 }
 
-export async function decidePrototype(ref: Ref, input: { requirementId: string; name: string; version: number; hash: string; choice: "accept" | "opinion" | "abandon"; opinion: string | null; option: string | null }): Promise<void> {
+export async function decidePrototype(ref: Ref, input: { repositoryRoot: string; requirementId: string; name: string; version: number; hash: string; choice: "accept" | "opinion" | "abandon"; opinion: string | null; option: string | null }): Promise<void> {
   withDatabase(databaseOf(ref), (db) => { assertRequirementEditable(db, input.requirementId); });
   const opinion = input.opinion?.trim() ?? "";
   if (input.choice === "opinion") {
@@ -342,7 +375,9 @@ export async function decidePrototype(ref: Ref, input: { requirementId: string; 
     }
     return found;
   };
-  await verifiedFile(ref, input.requirementId, input.name, matched(board).inFlight.file!);
+  const { inFlight } = matched(board);
+  await verifiedFile(ref, input.requirementId, input.name, inFlight.file!);
+  if (input.choice === "accept") await writeChosenDesign(ref, input, inFlight);
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (current) => {
     assertRequirementEditable(db, input.requirementId);
     const { entry, inFlight } = matched(current);
@@ -360,6 +395,15 @@ export async function decidePrototype(ref: Ref, input: { requirementId: string; 
     entry.lastOpinion = null;
     entry.inFlight = null;
   }));
+}
+
+async function writeChosenDesign(ref: Ref, input: { repositoryRoot: string; requirementId: string; name: string; option: string | null }, inFlight: NonNullable<PrototypeEntry["inFlight"]>): Promise<void> {
+  const candidates = await verifiedDesigns(ref, input.requirementId, input.name, inFlight);
+  const root = await readRootDesign(input.repositoryRoot);
+  if (rootFingerprint(root) !== inFlight.designBase) deny("design_changed", "DESIGN.md 在你确认时被改过，这一版没有通过", "在窗口里选「其他」写意见，让主代理按最新的 DESIGN.md 重派一版");
+  const chosen = candidates.length === 1 ? candidates[0] : candidates.find((candidate) => candidate.letter === input.option);
+  if (!chosen) return;
+  if (root === null || changedChapters(root, chosen.text).length > 0) await writeFileAtomic(join(input.repositoryRoot, DESIGN_SPEC_FILE), chosen.text, { followSymlink: true });
 }
 
 const inDraftSet = (entry: PrototypeEntry) => !entry.removed && (entry.draft ?? entry.approved);

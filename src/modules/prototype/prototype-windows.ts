@@ -2,7 +2,7 @@ import { mutedLines } from "../../core/host/question-window.ts";
 import type { WindowLine } from "../../core/host/question-window.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import { optionLetter } from "../requirement/requirement-prototypes.ts";
-import type { PickedOption } from "../requirement/requirement-prototypes.ts";
+import type { DesignState, PickedOption } from "../requirement/requirement-prototypes.ts";
 
 export const ACCEPT_LABEL = "通过（写进需求草稿）";
 export const ABANDON_LABEL = "放弃这一版";
@@ -12,7 +12,7 @@ export const KEEP_LABEL = "保留";
 export const optionLabel = (letter: string, name: string): string => `方案 ${letter}：${name}`;
 
 export interface PendingPrototype {
-  requirementTitle: string; draftVersion: number; name: string; version: number; path: string; bytes: number; hash: string; note: string; previousOpinion: string | null; options: string[];
+  requirementTitle: string; draftVersion: number; name: string; version: number; path: string; bytes: number; hash: string; note: string; previousOpinion: string | null; options: string[]; design: DesignState;
 }
 export interface PrototypeRemoval { requirementTitle: string; draftVersion: number; name: string; version: number; approvedRevision: number | null }
 
@@ -31,6 +31,28 @@ export function formatBytes(bytes: number): string {
   return bytes < 1024 ? `${bytes} B` : bytes < 1_048_576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
 
+const DIGITS = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+export const chapterCountText = (count: number): string => {
+  if (count === 2) return "两";
+  const tens = Math.floor(count / 10), ones = DIGITS[count % 10]!;
+  return tens === 0 ? ones : `${tens === 1 ? "" : DIGITS[tens]}十${ones}`;
+};
+
+const changedText = (chapters: string[]) => chapters.length ? `改了${chapters.join("、")}${chapterCountText(chapters.length)}章` : "不变";
+
+function designLines(design: DesignState): WindowLine[] {
+  switch (design.state) {
+    case "same": return [];
+    case "created": return [{ text: "通过后在仓库根目录新建 DESIGN.md，之后的原型、实现和审查都照它做。" }];
+    case "conflict": return [{ text: "设计师交稿后，仓库根目录的 DESIGN.md 被改过。要通过，请在「其他」里写意见，让主代理按最新的 DESIGN.md 重派一版。" }];
+    case "changed": {
+      const head = "通过后同时更新仓库根目录的 DESIGN.md：";
+      if (design.changes.length === 1 && design.changes[0]!.letter === null) return [{ text: `${head}${changedText(design.changes[0]!.chapters)}。` }];
+      return [{ text: head }, { text: `  ${design.changes.map((change) => `方案 ${change.letter} ${changedText(change.chapters)}`).join("；")}。` }];
+    }
+  }
+}
+
 export function confirmWindowContent(pending: PendingPrototype, opened: boolean) {
   const lines: WindowLine[] = [
     { text: `需求：${pending.requirementTitle}（草稿，第 ${pending.draftVersion} 版）` },
@@ -40,8 +62,10 @@ export function confirmWindowContent(pending: PendingPrototype, opened: boolean)
     opened ? { text: "已在默认浏览器打开这个文件。", tone: "muted" } : { text: "浏览器没有打开，请手动打开上面的文件。" },
     ...(pending.previousOpinion ? [{ text: `上一版你的意见：「${pending.previousOpinion}」`, tone: "muted" as const }] : []),
     { text: `设计师的说明（模型写的，仅供参考）：「${sanitizeText(pending.note, 2000).replace(/\s+/g, " ").trim()}」`, tone: "muted" },
+    ...designLines(pending.design),
   ];
-  return { title: "确认原型", lines, choices: pending.options.length > 0 ? pending.options.map((name, index) => ({ label: optionLabel(optionLetter(index), name) })) : [{ label: ACCEPT_LABEL }], escapeChoice: ABANDON_LABEL, escapeHint: "Esc 放弃这一版" };
+  const blocked = pending.design.state === "conflict" ? { disabled: "设计师交稿后 DESIGN.md 被改过，这一版不能通过" } : {};
+  return { title: "确认原型", lines, choices: pending.options.length > 0 ? pending.options.map((name, index) => ({ label: optionLabel(optionLetter(index), name), ...blocked })) : [{ label: ACCEPT_LABEL, ...blocked }], escapeChoice: ABANDON_LABEL, escapeHint: "Esc 放弃这一版" };
 }
 
 export function removeWindowContent(removal: PrototypeRemoval) {

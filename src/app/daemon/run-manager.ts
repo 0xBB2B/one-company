@@ -1090,7 +1090,7 @@ export class RunManager {
   async prototypePending(input: { requirementId: string; name: string }) {
     const ref = { dataRoot: this.options.dataRoot, repoId: this.repoId };
     try {
-      return { ...await this.draftContext(input.requirementId), ...await pendingConfirmation(ref, input) };
+      return { ...await this.draftContext(input.requirementId), ...await pendingConfirmation(ref, { ...input, repositoryRoot: this.options.repositoryRoot }) };
     } catch (error) {
       if (!(error instanceof PrototypeBoardError) || error.code !== "not_in_flight") throw error;
       const entry = (await readPrototypeBoard(ref, input.requirementId)).entries.find((candidate) => candidate.name === input.name);
@@ -1101,7 +1101,7 @@ export class RunManager {
     }
   }
 
-  prototypeDecide(input: Parameters<typeof decidePrototype>[1]) { return decidePrototype({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input); }
+  prototypeDecide(input: Omit<Parameters<typeof decidePrototype>[1], "repositoryRoot">) { return decidePrototype({ dataRoot: this.options.dataRoot, repoId: this.repoId }, { ...input, repositoryRoot: this.options.repositoryRoot }); }
 
   prototypeRemove(input: { requirementId: string; name: string; version: number }) { return removeFromDraft({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input); }
 
@@ -1815,7 +1815,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     return await manager.prototypeBoard(params.requirementId as string) as unknown as Record<string, unknown>;
   });
   register("prototypes.pending", async (params) => await manager.prototypePending(params as { requirementId: string; name: string }) as unknown as Record<string, unknown>);
-  register("prototypes.decide", async (params) => { await manager.prototypeDecide(params as Parameters<typeof decidePrototype>[1]); return {}; });
+  register("prototypes.decide", async (params) => { await manager.prototypeDecide(params as Parameters<typeof manager.prototypeDecide>[0]); return {}; });
   register("prototypes.remove", async (params) => { await manager.prototypeRemove(params as { requirementId: string; name: string; version: number }); return {}; });
   register("prototypes.removal", async (params) => await manager.prototypeRemoval(params as { requirementId: string; name: string }) as unknown as Record<string, unknown>);
   register("agents.dispatchPm", async (params) => {
