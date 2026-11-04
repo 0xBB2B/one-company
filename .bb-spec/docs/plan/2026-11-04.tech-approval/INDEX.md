@@ -7,4 +7,4 @@
 ## 阶段 3：规矩与验收
 - [04-prompts](04-prompts.md) — 主代理、需求文档规范、PM、worker、审查规矩和报错文字 [依赖: 03-tech-ask-flows]
 - [06-worker-implementation-section](06-worker-implementation-section.md) — 派给 worker 的任务内容附上批准版「实现」板块原文 [依赖: 04-prompts]
-- [05-acceptance-p18](05-acceptance-p18.md) — 真实模型单点 P18 与文档里的单点范围 [依赖: 06-worker-implementation-section]
+- [05-acceptance-p18](05-acceptance-p18.md) — 真实模型单点 P19 与文档里的单点范围 [依赖: 06-worker-implementation-section]
