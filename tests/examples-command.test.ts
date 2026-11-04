@@ -4,8 +4,9 @@ import { chmodSync, existsSync, realpathSync, writeFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { openExamplesPage } from "../src/modules/settings/examples-extension.ts";
-import { saveDisabledAgentsSetting, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
+import { confirmLines, openExamplesPage, resultText } from "../src/modules/settings/examples-extension.ts";
+import { readDisabledAgents, saveDisabledAgentsSetting, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
+import { copyExampleFiles, inspectExample } from "../src/modules/settings/spec-examples.ts";
 
 const DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b";
 const theme = { fg: (_kind: string, text: string) => text, bg: (_kind: string, text: string) => text, bold: (text: string) => text, inverse: (text: string) => text };
@@ -658,5 +659,85 @@ describe("写授信记录失败", () => {
     } finally {
       chmodSync(agentDir, 0o755);
     }
+  });
+});
+
+describe("被改过的 skill 还缺文件", () => {
+  async function build(options: { missingAgent?: boolean; refsPresent?: boolean } = {}) {
+    await setup();
+    const examples = join(root, "examples");
+    const layer = join(root, "layer");
+    const targets = { skillsDir: join(layer, "skills"), agentsDir: join(layer, "agents") };
+    await mkdir(join(examples, "demo", "skills", "multi", "refs"), { recursive: true });
+    await mkdir(join(examples, "demo", "agents"), { recursive: true });
+    await writeFile(join(examples, "demo", "skills", "multi", "SKILL.md"), "skill\n");
+    await writeFile(join(examples, "demo", "skills", "multi", "refs", "a.md"), "a\n");
+    await writeFile(join(examples, "demo", "skills", "multi", "refs", "b.md"), "b\n");
+    await writeFile(join(examples, "demo", "agents", "demo-worker.md"), "worker\n");
+    await mkdir(join(targets.skillsDir, "multi"), { recursive: true });
+    await writeFile(join(targets.skillsDir, "multi", "SKILL.md"), "改过\n");
+    if (options.refsPresent) {
+      await mkdir(join(targets.skillsDir, "multi", "refs"), { recursive: true });
+      await writeFile(join(targets.skillsDir, "multi", "refs", "a.md"), "a\n");
+      await writeFile(join(targets.skillsDir, "multi", "refs", "b.md"), "b\n");
+    }
+    if (!options.missingAgent) {
+      await mkdir(targets.agentsDir, { recursive: true });
+      await writeFile(join(targets.agentsDir, "demo-worker.md"), "worker\n");
+    }
+    return { examples, layer, targets };
+  }
+
+  async function linesOf(built: Awaited<ReturnType<typeof build>>) {
+    const inspection = await inspectExample({ examplesDir: built.examples, example: "demo", targets: built.targets });
+    const disabled = readDisabledAgents({ agentDir, repositoryRoot: repoDir, projectTrusted: false });
+    return confirmLines({ inspection, layerDir: built.layer, layer: "user", userAgentsDir: built.targets.agentsDir, projectAgentsDir: null, disabled });
+  }
+
+  test("SKILL.md 被改过、refs/a.md 和 refs/b.md 都缺：只缺这一份，黄字路径后写缺的文件数", async () => {
+    const built = await build();
+    const lines = await linesOf(built);
+    expect(lines.map((line) => line.text)).toEqual([
+      `复制 1 份到 ${tildeOf(built.layer)}/：1 份 skill。`,
+      "已经有、和样例一样的 1 份，跳过。",
+      "",
+      "你改过的 1 份保留你的版本，不覆盖：skills/multi（缺的 2 个文件照样补上）",
+    ]);
+    expect(lines[3]!.tone).toBe("warning");
+  });
+
+  test("同时缺一份角色定义：份数行 skill 和角色定义各 1 份，黄字不变", async () => {
+    const built = await build({ missingAgent: true });
+    const lines = await linesOf(built);
+    expect(lines.map((line) => line.text)).toEqual([
+      `复制 2 份到 ${tildeOf(built.layer)}/：1 份 skill、1 份角色定义。`,
+      "",
+      "你改过的 1 份保留你的版本，不覆盖：skills/multi（缺的 2 个文件照样补上）",
+    ]);
+  });
+
+  test("被改过的 skill 和定义都不缺文件：路径后面没有括号说明", async () => {
+    const built = await build({ refsPresent: true });
+    await writeFile(join(built.targets.agentsDir, "demo-worker.md"), "改过\n");
+    const texts = (await linesOf(built)).map((line) => line.text);
+    expect(texts).toEqual([
+      "这一层没有要复制的。",
+      "",
+      "你改过的 2 份保留你的版本，不覆盖：skills/multi、agents/demo-worker.md",
+    ]);
+  });
+
+  test("实际复制只新写缺的文件，改过的 SKILL.md 不动", async () => {
+    const built = await build();
+    const inspection = await inspectExample({ examplesDir: built.examples, example: "demo", targets: built.targets });
+    const written = await copyExampleFiles({ examplesDir: built.examples, example: "demo", targets: built.targets, inspection });
+    expect(await read(join(built.targets.skillsDir, "multi", "refs", "a.md"))).toBe("a\n");
+    expect(await read(join(built.targets.skillsDir, "multi", "refs", "b.md"))).toBe("b\n");
+    expect(await read(join(built.targets.skillsDir, "multi", "SKILL.md"))).toBe("改过\n");
+    const skillFile = join(built.targets.skillsDir, "multi", "SKILL.md");
+    expect(resultText({ label: "演示", layer: "user", written: written.length, skipped: [skillFile] }).split("\n").map((line) => line.trim())).toEqual([
+      "✓ 演示样例已复制到用户层：新复制 2 个文件。",
+      `被改过、没有覆盖：${tildeOf(skillFile)}。`,
+    ]);
   });
 });

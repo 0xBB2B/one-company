@@ -39,13 +39,14 @@ export function confirmLines(input: ConfirmInput): WindowLine[] {
   const agents = [...inspection.agents].sort(workerFirst);
   const skillsOf = (state: string) => inspection.skills.filter((skill) => skill.state === state);
   const agentsOf = (state: string) => agents.filter((agent) => agent.state === state);
-  const skillCount = skillsOf("missing").length, agentCount = agentsOf("missing").length;
+  const missingFiles = (skill: { files: { state: string }[] }) => skill.files.filter((file) => file.state === "missing").length;
+  const skillCount = inspection.skills.filter((skill) => missingFiles(skill) > 0).length, agentCount = agentsOf("missing").length;
   const same = skillsOf("same").length + agentsOf("same").length;
   const parts = [skillCount > 0 ? `${skillCount} 份 skill` : "", agentCount > 0 ? `${agentCount} 份角色定义` : ""].filter(Boolean);
   const lines: WindowLine[] = [{ text: parts.length === 0 ? "这一层没有要复制的。" : `复制 ${skillCount + agentCount} 份到 ${tilde(layerDir)}${sep}：${parts.join("、")}。` }];
   if (same > 0) lines.push({ text: `已经有、和样例一样的 ${same} 份，跳过。` });
   const warnings: string[] = [];
-  const changed = [...skillsOf("changed").map((skill) => join("skills", skill.name)), ...agentsOf("changed").map((agent) => join("agents", `${agent.name}.md`))];
+  const changed = [...skillsOf("changed").map((skill) => { const n = missingFiles(skill); return join("skills", skill.name) + (n > 0 ? `（缺的 ${n} 个文件照样补上）` : ""); }), ...agentsOf("changed").map((agent) => join("agents", `${agent.name}.md`))];
   if (changed.length > 0) warnings.push(`你改过的 ${changed.length} 份保留你的版本，不覆盖：${changed.join("、")}`);
   const fresh = agentsOf("missing");
   if (layer === "project") {
