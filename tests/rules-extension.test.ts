@@ -180,3 +180,69 @@ test("M8D-AC1：这句话 @ 到的需求由程序写进本轮系统提示，写�
     expect(await start(window)).not.toContain("## 这句话 @ 到的需求");
   } finally { registerRequirementInput(undefined); }
 });
+
+describe("新技术须经用户同意：主会话系统提示", () => {
+  test("TD-01 需求要用新技术时，请用户批准需求之前用 one_company_user_interact 的 ask-tech 一次列出全部新技术", async () => {
+    const prompt = await start(noWindow);
+    expect(prompt).toMatch(/新技术[\s\S]*批准需求之前[\s\S]*one_company_user_interact[\s\S]*ask-tech[\s\S]*一次列出全部/);
+  });
+
+  test("TD-02 新技术范围含编程语言、框架、数据库、第三方库、中间件或外部服务、工具（如 Docker），以及要升级的已有第三方库", async () => {
+    const prompt = await start(noWindow);
+    for (const word of ["编程语言", "框架", "数据库", "第三方库", "中间件", "外部服务", "Docker", "升级"]) expect(prompt).toContain(word);
+    expect(prompt).toMatch(/新技术[\s\S]*Docker[\s\S]*升级已有的?第三方库|升级[\s\S]*已有[\s\S]*第三方库/);
+  });
+
+  test("TD-03 读依赖清单文件（package.json、go.mod）和代码目录判断项目里有没有，拿不准就当新技术", async () => {
+    const prompt = await start(noWindow);
+    expect(prompt).toMatch(/package\.json[\s\S]*go\.mod[\s\S]*代码目录[\s\S]*拿不准就当新技术/);
+  });
+
+  test("TD-04 来源填法：用户点名、项目规范（AGENTS.md、专项代理、skill 推荐）、AI 提议；推荐依据不能代替用户同意", async () => {
+    const prompt = await start(noWindow);
+    expect(prompt).toMatch(/用户点名[\s\S]*项目规范[\s\S]*AGENTS\.md[\s\S]*AI 提议/);
+    expect(prompt).toMatch(/推荐依据[\s\S]*不能代替用户同意/);
+  });
+
+  test("TD-05 用户全部同意后用 updateDraft 把每项名称和类别写进「实现」板块，同意前不写", async () => {
+    const prompt = await start(noWindow);
+    expect(prompt).toMatch(/全部同意后[\s\S]*updateDraft[\s\S]*名称和类别[\s\S]*「实现」板块/);
+    expect(prompt).toMatch(/同意前不写/);
+  });
+
+  test("TD-06 用户写了修改意见，改好清单再用 ask-tech 弹一次完整清单，连带要用的新技术也列进去", async () => {
+    const prompt = await start(noWindow);
+    expect(prompt).toMatch(/修改意见[\s\S]*ask-tech[\s\S]*完整清单[\s\S]*连带/);
+  });
+
+  test("TD-07 状态面板里 PM 上报要用新技术的待裁决任务，用 purpose=panel-item 的 ask-tech；全部同意后先按返回的 next 以 adjudicate 登记，再写进「实现」板块请用户批准新版本", async () => {
+    const prompt = await start(noWindow);
+    expect(prompt).toMatch(/PM 上报[\s\S]*新技术[\s\S]*purpose=panel-item[\s\S]*ask-tech[\s\S]*返回的 next[\s\S]*adjudicate[\s\S]*「实现」板块[\s\S]*批准新版本/);
+  });
+
+  test("TD-08 包内默认需求文档规范的「实现」说明含「用户在技术清单窗口里同意的技术」，五大板块不变", async () => {
+    const prompt = await start(noWindow);
+    expect(prompt).toMatch(/- 实现：[^\n]*用户在技术清单窗口里同意的技术/);
+    const positions = ["## 背景 {#background}", "## 需求 {#requirements}", "## 功能 {#features}", "## 实现 {#implementation}", "## 验收 {#acceptance}"].map((heading) => prompt.indexOf(heading));
+    expect(positions.every((position) => position > 0)).toBe(true);
+  });
+
+  test("TD-28 项目里已经在用的技术接着用不算新技术；来源是项目规范的技术同样要用户同意并写进「实现」板块", async () => {
+    const prompt = await start(noWindow);
+    expect(prompt).toContain("项目里已经在用的接着用不算");
+    expect(prompt).toMatch(/来源是“项目规范”的技术同样要用户同意，同意后同样写进「实现」板块/);
+  });
+
+  test("TD-29 用户按 Esc 暂不回答后在对话里同意或改，照样处理；面板里 PM 上报的新技术事项用 ask-tech、不用 ask", async () => {
+    const prompt = await start(noWindow);
+    expect(prompt).toMatch(/按 Esc 暂不回答时清单保留，之后在对话里说同意或修改意见，也照这样处理/);
+    expect(prompt).toMatch(/purpose=panel-item 的 ask-tech 把这些技术列给用户，不用 ask/);
+  });
+
+  test("TD-09 主会话新增的新技术相关句子不含「不再」", async () => {
+    const prompt = await start(noWindow);
+    const related = prompt.split(/[。\n]/).filter((line) => line.includes("ask-tech"));
+    expect(related.length).toBeGreaterThan(0);
+    for (const line of related) expect(line).not.toContain("不再");
+  });
+});

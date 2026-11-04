@@ -60,10 +60,10 @@ description: 软件供应链排查清单：依赖安装脚本、lockfile 与版�
 - 修法：Dependabot 的版本更新默认等 3 天（文档原文，安全更新不受冷却影响），想和包管理器的冷却期一致，就在每个 `updates` 条目下写 `cooldown: default-days: 7`；Renovate 用 `minimumReleaseAge: "7 days"`。
 - 出处：https://docs.github.com/en/code-security/reference/supply-chain-security/dependabot-options-reference https://docs.renovatebot.com/configuration-options/#minimumreleaseage
 
-### 10. 新增第三方依赖没有经过用户同意
+### 10. 引入了需求「实现」板块里没有的新依赖
 - 问题：每多一个依赖，就多一个能在你的构建机和生产环境里执行代码的维护者；代码里能用标准库或现有依赖解决的，引入新包只增加攻击面。
-- 怎么认出：diff 里 `package.json` 的 `dependencies`/`devDependencies`、`go.mod`、`requirements.txt`、`pom.xml` 新增了条目，而需求描述里没有提到。
-- 修法：新增依赖前先向用户说明用途、能否用标准库或现有依赖替代、维护状态和下载量，得到经用户同意后再加；未获同意的依赖不提交。
+- 怎么认出：diff 里 `package.json` 的 `dependencies`/`devDependencies`、`go.mod`、`requirements.txt`、`pom.xml` 新增或升级了条目，而用户批准的需求「实现」板块（用户在技术清单里同意的技术写在这里）里没有它。
+- 修法：先看能不能用标准库或项目里已有的依赖解决；确实要用时不引入，在结果里写明要什么、为什么、能否用现有依赖替代，由 PM 上报给用户，用户同意并写进「实现」板块后再加。
 - 出处：https://cheatsheetseries.owasp.org/cheatsheets/NPM_Security_Cheat_Sheet.html
 
 ### 11. 新增的依赖名和知名包只差一两个字符
