@@ -21,39 +21,42 @@ const FRAME = String.raw`<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title><<TITLE>></title>
 <style>
-:root{--rail:#0a2744;--rail-line:#2a4f78;--rail-text:#d3e8ff;--rail-muted:#86a9cd;--accent:#6fd6ff;--accent-ink:#06223c;--stage:#0e3257;--label:#a9cdf0}
+:root{--bg:#d5dae1;--line:#b7bfca;--text:#1d2633;--muted:#4f5b6b;--accent:#47607f;--pick-bg:#c2cad5;--pick-text:#1d2633;--grid:rgba(71,96,127,.06)}
+:root[data-theme=dark]{--bg:#26282c;--line:#3a3d43;--text:#d4d4d4;--muted:#8f949b;--accent:#8e9aa8;--pick-bg:#33363c;--pick-text:#e6e6e6;--grid:rgba(255,255,255,.03)}
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 html,body{height:100%;margin:0}
-body{display:grid;grid-template-columns:260px minmax(0,1fr);background:var(--stage);background-image:linear-gradient(#ffffff0b 1px,transparent 1px),linear-gradient(90deg,#ffffff0b 1px,transparent 1px);background-size:20px 20px;font:14px/1.6 Menlo,Consolas,"PingFang SC","Microsoft YaHei",monospace}
-.rail{background:var(--rail);color:var(--rail-text);height:100vh;overflow:auto;border-right:1px dashed var(--accent)}
-.rail-head{padding:16px 18px 14px;border-bottom:1px solid var(--rail-line)}
+body{display:grid;grid-template-columns:260px minmax(0,1fr);background:var(--bg);background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:20px 20px;color:var(--text);font:14px/1.6 Menlo,Consolas,"PingFang SC","Microsoft YaHei",monospace}
+.rail{color:var(--text);height:100vh;overflow:auto;border-right:1px dashed var(--accent)}
+.rail-head{padding:16px 18px 14px;border-bottom:1px solid var(--line)}
 .rail-tag{display:inline-block;border:1px dashed var(--accent);color:var(--accent);font-size:12px;font-weight:700;padding:1px 8px}
 .rail-head h1{font-size:16px;margin:10px 0 2px;line-height:1.4;overflow-wrap:anywhere}
-.rail-head p{margin:0;color:var(--rail-muted);font-size:12px}
-.rail-section{padding:14px 18px;border-bottom:1px solid var(--rail-line)}
-.rail-section h2,.col h2{font-size:12px;color:var(--rail-muted);font-weight:600;margin:0 0 8px;letter-spacing:.5px}
+.rail-head p{margin:0;color:var(--muted);font-size:12px}
+.rail-section,.current{padding:14px 18px;border-bottom:1px solid var(--line)}
+.current-now{font-weight:700;color:var(--accent);line-height:1.45;overflow-wrap:anywhere}
+.current-foot{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.5}
+.rail-section h2,.col h2{font-size:12px;color:var(--muted);font-weight:600;margin:0 0 8px;letter-spacing:.5px}
 .col h2{margin-bottom:2px}
 .group{margin-bottom:12px}.group:last-child{margin-bottom:0}
-.group-name{font-size:12px;color:var(--rail-muted);margin-bottom:5px}
+.group-name{font-size:12px;color:var(--muted);margin-bottom:5px}
 .seg{display:flex;flex-direction:column;gap:4px}
-.seg button{all:unset;box-sizing:border-box;cursor:pointer;padding:6px 10px;color:var(--rail-text);font-size:13px;border:1px solid var(--rail-line);overflow-wrap:anywhere}
+.seg button{all:unset;box-sizing:border-box;cursor:pointer;max-width:100%;padding:6px 10px;color:var(--text);font-size:13px;border:1px solid var(--line);overflow-wrap:anywhere}
 .seg button:hover{border-color:var(--accent)}
 .seg button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
-.seg button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink);font-weight:600}
-.option-box{margin:14px 14px 2px;padding:10px 12px;border:1px dashed var(--accent);background:#0d3056}
-.option-title{font-size:14px;font-weight:700;color:var(--accent);margin-bottom:8px;line-height:1.45}
-.option-foot{font-size:12px;color:var(--rail-muted);margin-top:8px;line-height:1.5}
-.option-pill{border:1px dashed var(--accent);color:var(--accent);font-weight:700;font-size:12px;padding:0 8px;overflow-wrap:anywhere}
+.seg button[aria-pressed=true]{border:1px solid var(--accent);background:var(--pick-bg);color:var(--pick-text);font-weight:600}
 .stage{height:100vh;min-width:0;display:flex;flex-direction:column;padding:10px 14px 14px}
-.stage-label{font-size:12px;color:var(--label);padding:0 2px 6px;display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 12px}
+.stage-label{font-size:12px;color:var(--muted);padding:0 2px 6px;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-start;gap:6px 12px}
 .stage-label b{font-weight:600}
-.stage-now{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;min-width:0}
+.stage-now{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;min-width:0;padding-top:6px}
 #where{overflow-wrap:anywhere}
+.stage-tools{flex:1 1 260px;display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:6px 8px;min-width:0}
+#opts,#opts .seg{display:contents}
+.tools-label{flex:none}
+.stage-tools .theme{flex:none;flex-direction:row;padding-left:8px;border-left:1px solid var(--line)}
 iframe{flex:1;min-height:0;width:100%;margin:3px 0;border:0;background:#fff;outline:1px dashed var(--accent);outline-offset:3px}
-.band{flex:0 1 auto;max-height:calc(100vh / 3);overflow:auto;margin-top:8px;background:var(--rail);color:var(--rail-text);border-top:1px dashed var(--accent);padding:6px 12px 8px}
+.band{flex:0 1 auto;max-height:calc(100vh / 3);overflow:auto;margin-top:8px;color:var(--text);border-top:1px dashed var(--accent);padding:6px 12px 8px}
 .band-head{display:flex;align-items:center;gap:10px;margin-bottom:3px}
-.band-head small{color:var(--rail-muted);font-size:12px}
+.band-head small{color:var(--muted);font-size:12px}
 .band-cols{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:20px}
 .notes{font-size:13px;line-height:1.45;overflow-wrap:anywhere}
 .notes ul,.notes ol{margin:0;padding-left:18px}
@@ -63,11 +66,14 @@ iframe{flex:1;min-height:0;width:100%;margin:3px 0;border:0;background:#fff;outl
 <body>
 <aside class="rail" aria-label="设计说明，不属于被设计的页面">
   <div class="rail-head"><span class="rail-tag">设计说明 · 不属于页面</span><h1 id="name"></h1><p id="version"></p></div>
-  <div class="option-box" id="option-box" hidden></div>
+  <div class="current" id="current" hidden><div class="current-now" id="current-now"></div><div class="current-foot">最后选哪个，在“确认原型”窗口里定</div></div>
   <div class="rail-section" id="switch-box" hidden><h2>切换要看的内容</h2><div id="switches"></div></div>
 </aside>
 <main class="stage">
-  <div class="stage-label"><b>▼ 被设计的页面：只有这个框里的内容要实现</b><span class="stage-now"><span class="option-pill" id="where-option" hidden></span><span id="where"></span></span></div>
+  <div class="stage-label">
+    <span class="stage-now"><b>▼ 被设计的页面：只有这个框里的内容要实现</b><span id="where"></span></span>
+    <span class="stage-tools"><span class="tools-label" id="opts-label" hidden>方案</span><span id="opts" hidden></span><span class="seg theme"><button type="button" id="theme-light" aria-pressed="false">☀ 明亮</button><button type="button" id="theme-dark" aria-pressed="false">☾ 暗黑</button></span></span>
+  </div>
   <iframe id="page" title="被设计的页面"></iframe>
   <section class="band" id="band" aria-label="设计说明，不属于被设计的页面" hidden>
     <div class="band-head"><span class="rail-tag">设计说明 · 不属于页面</span><small>这一块上线后不存在</small></div>
@@ -83,6 +89,20 @@ iframe{flex:1;min-height:0;width:100%;margin:3px 0;border:0;background:#fff;outl
 <<PAGE>></textarea>
 <script>
 (function(){
+var root=document.documentElement,light=document.getElementById('theme-light'),dark=document.getElementById('theme-dark');
+function applyTheme(t){root.setAttribute('data-theme',t);light.setAttribute('aria-pressed',String(t==='light'));dark.setAttribute('aria-pressed',String(t==='dark'))}
+function initTheme(){
+  var mq=window.matchMedia?window.matchMedia('(prefers-color-scheme: dark)'):null,touched=false;
+  applyTheme(mq&&mq.matches?'dark':'light');
+  if(mq&&mq.addEventListener)mq.addEventListener('change',function(e){if(!touched)applyTheme(e.matches?'dark':'light')});
+  light.onclick=function(){touched=true;applyTheme('light')};
+  dark.onclick=function(){touched=true;applyTheme('dark')};
+}
+initTheme();
+})();
+</script>
+<script>
+(function(){
 var data=JSON.parse(document.getElementById('prototype-data').textContent);
 var source=document.getElementById('prototype-page').value;
 var LETTERS='ABCDEF',cur={page:0,view:0,option:0};
@@ -93,13 +113,13 @@ function seg(labels,index,pick){var s=document.createElement('div');s.className=
 function group(name,labels,index,pick){var g=document.createElement('div');g.className='group';var n=document.createElement('div');n.className='group-name';n.textContent=name;g.appendChild(n);g.appendChild(seg(labels,index,pick));return g}
 function withSelection(){var p=data.pages[cur.page],sel={page:p.name,view:p.views[cur.view].name};if(data.options.length)sel.option=LETTERS.charAt(cur.option);var js='(function(r,s){for(var k in s)r.dataset[k]=s[k]})(document.documentElement,'+JSON.stringify(sel).replace(/</g,'\\u003c')+')';var head=/^\s*<!doctype[^>]*>/i.exec(source),at=head?head[0].length:0;return source.slice(0,at)+'<base href="about:srcdoc"><script>'+js+'<\/script>'+source.slice(at)}
 function render(){
-  var p=data.pages[cur.page],box=$('switches'),ob=$('option-box');box.textContent='';ob.textContent='';
+  var p=data.pages[cur.page],box=$('switches'),opts=$('opts');box.textContent='';opts.textContent='';
   if(data.pages.length>1)box.appendChild(group('页面',data.pages.map(function(x){return x.name}),cur.page,function(i){cur.page=i;cur.view=0;render()}));
   if(p.views.length>1)box.appendChild(group(p.group,p.views.map(function(x){return x.name}),cur.view,function(i){cur.view=i;render()}));
   $('switch-box').hidden=!box.childNodes.length;
-  ob.hidden=!data.options.length;
-  if(data.options.length){var t=document.createElement('div');t.className='option-title';t.textContent='这份原型有 '+data.options.length+' 个方案，点这里切换对比';ob.appendChild(t);ob.appendChild(seg(data.options.map(function(x,i){return optionLabel(i)}),cur.option,function(i){cur.option=i;render()}));var f=document.createElement('div');f.className='option-foot';f.textContent='最后选哪个，在“确认原型”窗口里定';ob.appendChild(f)}
-  var pill=$('where-option');pill.hidden=!data.options.length;pill.textContent=data.options.length?optionLabel(cur.option):'';
+  var has=data.options.length>0;
+  $('opts-label').hidden=!has;opts.hidden=!has;$('current').hidden=!has;
+  if(has){opts.appendChild(seg(data.options.map(function(x,i){return optionLabel(i)}),cur.option,function(i){cur.option=i;render()}));$('current-now').textContent='当前：'+optionLabel(cur.option)}
   var where=[];if(data.pages.length>1)where.push(p.name);if(p.views.length>1)where.push(p.views[cur.view].name);$('where').textContent=where.join(' · ');
   var notes=p.views[cur.view].notes;list('notes-col','notes',notes,'ul');list('only-col','only',data.prototypeOnly,'ul');list('open-col','open',data.openQuestions,'ol');
   $('band').hidden=!(notes.length||data.prototypeOnly.length||data.openQuestions.length);
