@@ -33,11 +33,12 @@ features: [stack-agents, role-definitions]
 
 ## 整体验证路径
 1. `pnpm test` → 检查专项审查职责规矩原文的单元测试通过。
-2. 跑 P19 → vue-reviewer 正文没有 auth-session 那一行、只有 vue-worker 正文有时，vue-reviewer 不因 refresh token 存 localStorage 打回，token 拼进 URL、v-html 两处照样列为阻塞。
-3. `pnpm run typecheck`、`pnpm test`、`pnpm run test:integration`、`pnpm run test:installation` 全部通过；P1–P19 和 M9-AC12 按 2 次都过、或一过一不过时第 3 次过的规则判定通过。
+2. 跑 P20 → vue-reviewer 正文没有 auth-session 那一行、只有 vue-worker 正文有时，vue-reviewer 不因 refresh token 存 localStorage 打回，token 拼进 URL、v-html 两处照样列为阻塞。
+3. `pnpm run typecheck`、`pnpm test`、`pnpm run test:integration`、`pnpm run test:installation` 全部通过；P1–P20 和 M9-AC12 按 2 次都过、或一过一不过时第 3 次过的规则判定通过。
 
 ## 决策记录
 - 在专项审查的职责规矩里补上"被审 worker 定义的正文"，和通用审查的规矩、README、2026-11-04.examples-without-agents-md 里"所有审查都按 worker 正文对齐"的决定一致。原因：只靠模型推断，换模型或换写法时可能不推断。否决"让用户在专项审查定义里也抄一遍"：一个团队决定要写两处，漏一处就会被打回。用户 2026-11-04 决定。
-- 新增真实模型验收 P19，P18 保持不变。原因：只检查规矩原文证明不了模型照做；P18 验的是专项审查按自己正文放过，P19 验的是只按 worker 正文放过，两条路径都要保住。否决"只加单元测试"：证明不了模型照做；否决"改造 P18"：会丢掉按自己正文放过那条路径的验证。代价是每次验收多跑一条，约多 2 分钟。用户 2026-11-04 决定。
+- 新增真实模型验收 P20，P18 保持不变。原因：只检查规矩原文证明不了模型照做；P18 验的是专项审查按自己正文放过，P20 验的是只按 worker 正文放过，两条路径都要保住。否决"只加单元测试"：证明不了模型照做；否决"改造 P18"：会丢掉按自己正文放过那条路径的验证。代价是每次验收多跑一条，约多 2 分钟。用户 2026-11-04 决定。
+- 新验收编号用 P20，不用 P19。原因：tech-approval 分支已把 P19 用作另一条验收，两边都叫 P19 时后合并的一方会在编号表上冲突，`--only P19` 也会选中两条不相干的验收；本分支还没推送，改号代价最小。代价：对方合并之前，本分支文档写 P1–P20 但没有 P19。用户 2026-11-04 决定。
 - worker 正文和专项审查自己的正文对同一条说法相反时听谁的，这次不规定，和上一份 PRD 不规定"定义正文和 AGENTS.md 冲突时听谁的"一致；目前没有这样的定义。
-- 改了专项审查的提示词，按仓库规矩要跑全部单点验收和零自定义完整流程；没有改 PM、主代理的提示词，不跑渐进需求完整流程。仓库 `AGENTS.md` 和 `CONTRIBUTING.md` 里"全部单点测试（P1–P18）"改成 P1–P19。
+- 改了专项审查的提示词，按仓库规矩要跑全部单点验收和零自定义完整流程；没有改 PM、主代理的提示词，不跑渐进需求完整流程。仓库 `AGENTS.md` 和 `CONTRIBUTING.md` 里"全部单点测试（P1–P18）"改成 P1–P20。

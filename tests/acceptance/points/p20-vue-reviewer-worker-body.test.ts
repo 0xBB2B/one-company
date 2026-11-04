@@ -66,7 +66,7 @@ const PITS: SeededPit[] = [
   ].join("\n"), "用 v-html 渲染用户评论", ["v-html", "XSS", "转义", "净化"]),
 ];
 
-test.skipIf(!config || process.platform !== "darwin")("P19：只有 vue-worker 正文写明 auth-session 第 15 条不适用时，vue-reviewer 不为 localStorage 存 refresh token 阻塞，其余坑照常指到", async () => {
+test.skipIf(!config || process.platform !== "darwin")("P20：只有 vue-worker 正文写明 auth-session 第 15 条不适用时，vue-reviewer 不为 localStorage 存 refresh token 阻塞，其余坑照常指到", async () => {
   const agentDir = await mkdtemp(join(temporaryRoot(), "agent-"));
   cleanups.push(() => rm(agentDir, { recursive: true, force: true }));
   const targets = layerTargets("user", { agentDir, repoRoot: agentDir });
@@ -83,7 +83,7 @@ test.skipIf(!config || process.platform !== "darwin")("P19：只有 vue-worker �
   expect(reviewerText.split("\n").find((line) => line.startsWith("skills:")), "vue-reviewer 的 skills 行应仍含 auth-session").toContain("auth-session");
   expect(definitionBody(await readFile(join(targets.agentsDir, "vue-worker.md"), "utf8")), "只有 vue-worker 定义正文写明不适用：vue-worker 正文应含 auth-session 第 15 条").toContain("auth-session 第 15 条");
 
-  const evidence = await pointEvidence(config!, "p19");
+  const evidence = await pointEvidence(config!, "p20");
   const result = await runSpecialistReview("vue-worker", "vue-reviewer", PITS, {
     cleanups, config: config!, evidence, support: { ...SUPPORT, [TOKEN_STORE_PATH]: TOKEN_STORE },
     userDir: targets.agentsDir, skillDirs: [targets.skillsDir],

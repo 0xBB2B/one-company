@@ -1,6 +1,6 @@
 ---
 name: specialist-honors-worker-body
-description: 专项审查职责规矩补上被审 worker 定义正文；新增 P19 证明只靠 worker 正文也能放过
+description: 专项审查职责规矩补上被审 worker 定义正文；新增 P20 证明只靠 worker 正文也能放过
 date: 2026-11-04
 ---
 
@@ -22,15 +22,15 @@ date: 2026-11-04
 
 ## 约束
 - C-1：专项审查的职责规矩写明：你的定义正文或任务说明里被审 worker 定义的正文写明某份 skill 的某一条在本团队不适用时，违反那一条但符合定义正文的不算问题；同一份 skill 的其他条目照常核对。
-- C-2：新增真实模型验收 P19：按 `/one:examples` 把 Vue 样例复制到用户层，再删掉 vue-reviewer 正文里 auth-session 第 15 条那一行（vue-worker 正文保留），让 vue-reviewer 审一次改动，改动和 P18 相同：refresh token 存进 localStorage；刷新 token 的请求把 refresh token 拼进 URL 查询参数；用 v-html 渲染用户评论。通过条件和 P18 相同：URL 那一处和 v-html 那一处都列为阻塞；没有任何一条阻塞意见是因为 token 存在 localStorage。P19 和其他单点验收一样由 `pnpm run test:acceptance:parallel` 运行，按"2 次都过算通过，一过一不过跑第 3 次"判定。
+- C-2：新增真实模型验收 P20：按 `/one:examples` 把 Vue 样例复制到用户层，再删掉 vue-reviewer 正文里 auth-session 第 15 条那一行（vue-worker 正文保留），让 vue-reviewer 审一次改动，改动和 P18 相同：refresh token 存进 localStorage；刷新 token 的请求把 refresh token 拼进 URL 查询参数；用 v-html 渲染用户评论。通过条件和 P18 相同：URL 那一处和 v-html 那一处都列为阻塞；没有任何一条阻塞意见是因为 token 存在 localStorage。P20 和其他单点验收一样由 `pnpm run test:acceptance:parallel` 运行，按"2 次都过算通过，一过一不过跑第 3 次"判定。
 - C-3：P18 不变。
 
 ## 验收
 - [ ] C-1：单元测试检查专项审查职责规矩原文含「你的定义正文或任务说明里被审 worker 定义的正文写明某份 skill 的某一条在本团队不适用时，违反那一条但符合定义正文的不算问题」和「同一份 skill 的其他条目照常核对」。
-- [ ] C-2：`pnpm run test:acceptance:parallel --only P19` 按判定规则通过；跑 P19 时用户层 vue-reviewer 正文里没有 `auth-session`，vue-worker 正文里有。临时再删掉 vue-worker 正文里那一行跑 2 次，至少 1 次 vue-reviewer 因 token 存 localStorage 列阻塞，证明这条验收测得出规则有没有生效。
+- [ ] C-2：`pnpm run test:acceptance:parallel --only P20` 按判定规则通过；跑 P20 时用户层 vue-reviewer 正文里没有 `auth-session`，vue-worker 正文里有。临时再删掉 vue-worker 正文里那一行跑 2 次，至少 1 次 vue-reviewer 因 token 存 localStorage 列阻塞，证明这条验收测得出规则有没有生效。
 - [ ] C-3：P18 的测试文件在本次改动里内容不变，`--only P18` 按判定规则通过。
 
 ## 验证路径
 1. `pnpm test` → 专项审查职责规矩的单元测试通过。
-2. `ONE_COMPANY_ACCEPTANCE_MODEL=<提供方>/<模型> ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance:parallel --only P19` → 通过；vue-reviewer 的裁决有 URL 和 v-html 两处阻塞，没有 localStorage 的阻塞。
-3. 临时删掉 vue-worker 正文里 auth-session 那一行，跑 2 次 P19 → 至少 1 次 vue-reviewer 因 localStorage 列阻塞；改回。
+2. `ONE_COMPANY_ACCEPTANCE_MODEL=<提供方>/<模型> ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance:parallel --only P20` → 通过；vue-reviewer 的裁决有 URL 和 v-html 两处阻塞，没有 localStorage 的阻塞。
+3. 临时删掉 vue-worker 正文里 auth-session 那一行，跑 2 次 P20 → 至少 1 次 vue-reviewer 因 localStorage 列阻塞；改回。
