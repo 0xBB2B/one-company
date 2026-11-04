@@ -33,7 +33,7 @@ afterEach(async () => {
 async function prepare() {
   const root = await mkdtemp(join(tmpdir(), "pi-t-"));
   roots.push(root);
-  const targets = { skillsDir: join(root, "skills"), agentsDir: join(root, "agents"), conventionsFile: join(root, "AGENTS.md") };
+  const targets = { skillsDir: join(root, "skills"), agentsDir: join(root, "agents") };
   const inspection = await inspectExample({ examplesDir: EXAMPLES_DIR, example: "golang", targets });
   return { targets, inspection };
 }

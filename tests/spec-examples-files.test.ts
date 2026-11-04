@@ -10,7 +10,6 @@ import {
   examplesDir,
   inspectExample,
   listExamples,
-  mergeConventions,
 } from "../src/modules/settings/spec-examples.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -27,7 +26,6 @@ const GOLANG_SKILLS = [
   "service-constraints",
   "version-policy",
 ];
-const GOLANG_HEADING = "## 后端设计约定";
 
 const roots: string[] = [];
 
@@ -41,22 +39,13 @@ function targetsOf(root: string) {
   return {
     skillsDir: join(root, "skills"),
     agentsDir: join(root, "agents"),
-    conventionsFile: join(root, "AGENTS.md"),
   };
 }
-
-const exampleText = () => readFile(join(EXAMPLES_DIR, "golang", "AGENTS.md"), "utf8");
 
 async function placeFiles(root: string) {
   const targets = targetsOf(root);
   await cp(join(EXAMPLES_DIR, "golang", "skills"), targets.skillsDir, { recursive: true });
   await cp(join(EXAMPLES_DIR, "golang", "agents"), targets.agentsDir, { recursive: true });
-  return targets;
-}
-
-async function placeAll(root: string) {
-  const targets = await placeFiles(root);
-  await writeFile(targets.conventionsFile, await exampleText());
   return targets;
 }
 
@@ -91,30 +80,28 @@ describe("样例列表", () => {
 });
 
 describe("inspectExample 状态判定", () => {
-  test("空目标：10 个 skill、2 个定义、那一段全是 missing，整体未复制", async () => {
+  test("空目标：10 个 skill、2 个定义全是 missing，整体未复制", async () => {
     const root = await makeRoot();
     const result = await inspectGolang(targetsOf(root));
     expect(result.skills.map((s) => s.name)).toEqual(GOLANG_SKILLS);
     expect(result.skills.every((s) => s.state === "missing")).toBe(true);
     expect(result.agents.map((a) => a.name).sort()).toEqual(["go-reviewer", "go-worker"]);
     expect(result.agents.every((a) => a.state === "missing")).toBe(true);
-    expect(result.section).toEqual({ heading: GOLANG_HEADING, state: "missing" });
     expect(result.overall).toBe("未复制");
   });
 
-  test("文件和 AGENTS.md 那一段都一致：全是 same，整体已复制", async () => {
+  test("skills 和定义都一致：全是 same，整体已复制", async () => {
     const root = await makeRoot();
-    const targets = await placeAll(root);
+    const targets = await placeFiles(root);
     const result = await inspectGolang(targets);
     expect(result.skills.every((s) => s.state === "same" && s.files.every((f) => f.state === "same"))).toBe(true);
     expect(result.agents.every((a) => a.state === "same")).toBe(true);
-    expect(result.section.state).toBe("same");
     expect(result.overall).toBe("已复制");
   });
 
   test("定义的 path 是目标位置绝对路径", async () => {
     const root = await makeRoot();
-    const targets = await placeAll(root);
+    const targets = await placeFiles(root);
     const result = await inspectGolang(targets);
     const worker = result.agents.find((a) => a.name === "go-worker");
     expect(worker?.path).toBe(join(targets.agentsDir, "go-worker.md"));
@@ -122,32 +109,15 @@ describe("inspectExample 状态判定", () => {
 
   test("skill 的文件 path 是目标位置绝对路径", async () => {
     const root = await makeRoot();
-    const targets = await placeAll(root);
+    const targets = await placeFiles(root);
     const result = await inspectGolang(targets);
     const api = result.skills.find((s) => s.name === "api-design");
     expect(api?.files.map((f) => f.path)).toContain(join(targets.skillsDir, "api-design", "SKILL.md"));
   });
 
-  test("文件全一致但 AGENTS.md 没有那一段：部分复制", async () => {
-    const root = await makeRoot();
-    const targets = await placeFiles(root);
-    await writeFile(targets.conventionsFile, "## 别的约定\n\n内容\n");
-    const result = await inspectGolang(targets);
-    expect(result.section.state).toBe("missing");
-    expect(result.overall).toBe("部分复制");
-  });
-
-  test("文件全一致但 AGENTS.md 不存在：部分复制", async () => {
-    const root = await makeRoot();
-    const targets = await placeFiles(root);
-    const result = await inspectGolang(targets);
-    expect(result.section.state).toBe("missing");
-    expect(result.overall).toBe("部分复制");
-  });
-
   test("只复制了一部分文件：部分复制", async () => {
     const root = await makeRoot();
-    const targets = await placeAll(root);
+    const targets = await placeFiles(root);
     await rm(join(targets.agentsDir, "go-reviewer.md"));
     const result = await inspectGolang(targets);
     expect(result.agents.find((a) => a.name === "go-reviewer")?.state).toBe("missing");
@@ -156,7 +126,7 @@ describe("inspectExample 状态判定", () => {
 
   test("skill 目录里有的文件没复制：这个 skill 是 missing，整体部分复制", async () => {
     const root = await makeRoot();
-    const targets = await placeAll(root);
+    const targets = await placeFiles(root);
     await rm(join(targets.skillsDir, "api-design", "SKILL.md"));
     const result = await inspectGolang(targets);
     expect(result.skills.find((s) => s.name === "api-design")?.state).toBe("missing");
@@ -165,7 +135,7 @@ describe("inspectExample 状态判定", () => {
 
   test("改动一个 skill 的 SKILL.md：该 skill 为 changed，整体有改动", async () => {
     const root = await makeRoot();
-    const targets = await placeAll(root);
+    const targets = await placeFiles(root);
     const file = join(targets.skillsDir, "golang-testing", "SKILL.md");
     await writeFile(file, (await readFile(file, "utf8")) + "\n多一行\n");
     const result = await inspectGolang(targets);
@@ -176,162 +146,19 @@ describe("inspectExample 状态判定", () => {
 
   test("定义改动：该定义 changed，整体有改动", async () => {
     const root = await makeRoot();
-    const targets = await placeAll(root);
+    const targets = await placeFiles(root);
     await writeFile(join(targets.agentsDir, "go-worker.md"), "改过\n");
     const result = await inspectGolang(targets);
     expect(result.agents.find((a) => a.name === "go-worker")?.state).toBe("changed");
     expect(result.overall).toBe("有改动");
   });
 
-  test("那一段内容改了一条、文件全一致：section changed，整体有改动", async () => {
-    const root = await makeRoot();
-    const targets = await placeFiles(root);
-    const text = await exampleText();
-    const lines = text.split("\n");
-    lines[2] = lines[2] + "（改）";
-    await writeFile(targets.conventionsFile, lines.join("\n"));
-    const result = await inspectGolang(targets);
-    expect(result.section.state).toBe("changed");
-    expect(result.overall).toBe("有改动");
-  });
-
-  test("那一段后面还有别的二级标题：只比较到下一个二级标题之前", async () => {
-    const root = await makeRoot();
-    const targets = await placeAll(root);
-    const text = await exampleText();
-    await writeFile(targets.conventionsFile, `${text}\n## 其他约定\n\n别的内容\n`);
-    const result = await inspectGolang(targets);
-    expect(result.section.state).toBe("same");
-    expect(result.overall).toBe("已复制");
-  });
-
-  test("那一段在文件中间、前面还有别的内容也能认出", async () => {
-    const root = await makeRoot();
-    const targets = await placeAll(root);
-    const text = await exampleText();
-    await writeFile(targets.conventionsFile, `# 项目\n\n前面的内容\n\n## 前一段\n\n甲\n\n${text}\n## 后一段\n\n乙\n`);
-    const result = await inspectGolang(targets);
-    expect(result.section.state).toBe("same");
-    expect(result.overall).toBe("已复制");
-  });
-
-  test("下一个二级标题后的内容改动不影响那一段", async () => {
-    const root = await makeRoot();
-    const targets = await placeAll(root);
-    const text = await exampleText();
-    await writeFile(targets.conventionsFile, `${text}\n## 其他约定\n\n随便改\n`);
-    expect((await inspectGolang(targets)).section.state).toBe("same");
-  });
-
-  test("那一段末尾多几个空行仍算 same", async () => {
-    const root = await makeRoot();
-    const targets = await placeAll(root);
-    const text = await exampleText();
-    await writeFile(targets.conventionsFile, `${text}\n\n\n\n`);
-    const result = await inspectGolang(targets);
-    expect(result.section.state).toBe("same");
-  });
-
-  test("标题行只是前缀相同、不是整行相等：认作 missing", async () => {
-    const root = await makeRoot();
-    const targets = await placeFiles(root);
-    await writeFile(targets.conventionsFile, `${GOLANG_HEADING}（旧版）\n\n内容\n`);
-    const result = await inspectGolang(targets);
-    expect(result.section.state).toBe("missing");
-  });
-
-  test("标题出现多次时取第一处", async () => {
-    const root = await makeRoot();
-    const targets = await placeFiles(root);
-    const text = await exampleText();
-    await writeFile(targets.conventionsFile, `${text}\n## 中间\n\n${GOLANG_HEADING}\n\n另一份不同内容\n`);
-    const result = await inspectGolang(targets);
-    expect(result.section.state).toBe("same");
-  });
-
-  test("vue 样例用前端标题", async () => {
+  test("vue 样例的 skills 和定义", async () => {
     const root = await makeRoot();
     const result = await inspectExample({ examplesDir: EXAMPLES_DIR, example: "vue", targets: targetsOf(root) });
-    expect(result.section.heading).toBe("## 前端设计约定");
     expect(result.skills.map((s) => s.name)).toEqual(["frontend-constraints", "version-policy", "vue-constraints"]);
     expect(result.agents.map((a) => a.name).sort()).toEqual(["vue-reviewer", "vue-worker"]);
     expect(result.overall).toBe("未复制");
-  });
-});
-
-describe("mergeConventions", () => {
-  test("目标不存在时内容就是样例全文", () => {
-    const merged = mergeConventions(null, "样例\n");
-    expect(merged.content).toBe("样例\n");
-  });
-
-  test("已有内容去掉末尾换行后接两个换行和样例全文", () => {
-    expect(mergeConventions("a\n\n", "样例\n").content).toBe("a\n\n样例\n");
-    expect(mergeConventions("a", "样例\n").content).toBe("a\n\n样例\n");
-  });
-
-  test("正好 16384 字节不超限", () => {
-    const example = "x".repeat(16384 - 3);
-    const merged = mergeConventions("a", example);
-    expect(merged.bytes).toBe(16384);
-    expect(merged.over).toBe(false);
-    expect(merged.excess).toBe(0);
-  });
-
-  test("16385 字节超限，excess 为 1", () => {
-    const example = "x".repeat(16385 - 3);
-    const merged = mergeConventions("a", example);
-    expect(merged.bytes).toBe(16385);
-    expect(merged.over).toBe(true);
-    expect(merged.excess).toBe(1);
-  });
-
-  test("字节数按 UTF-8 计算而不是字符数", () => {
-    const example = "中".repeat(5462);
-    const merged = mergeConventions(null, example);
-    expect(merged.bytes).toBe(16386);
-    expect(merged.over).toBe(true);
-    expect(merged.excess).toBe(2);
-  });
-
-  test("12186 字节的 AGENTS.md 与 golang 样例合并：17024 字节，超 640", async () => {
-    const merged = mergeConventions(`${"x".repeat(12185)}\n`, await exampleText());
-    expect(merged.bytes).toBe(17024);
-    expect(merged.over).toBe(true);
-    expect(merged.excess).toBe(640);
-  });
-});
-
-describe("CRLF 换行的 AGENTS.md", () => {
-  const toCrlf = (text: string) => text.replace(/\n/g, "\r\n");
-
-  test("golang 样例全文换成 CRLF 写入：那一段是 same", async () => {
-    const targets = await placeAll(await makeRoot());
-    await writeFile(targets.conventionsFile, toCrlf(await exampleText()));
-    expect((await inspectGolang(targets)).section.state).toBe("same");
-  });
-
-  test("CRLF 文件里那一段改了一条：是 changed", async () => {
-    const targets = await placeAll(await makeRoot());
-    const text = toCrlf(await exampleText());
-    const lines = text.split("\r\n");
-    const index = lines.findIndex((line) => line.startsWith("- "));
-    lines[index] = `${lines[index]}（改）`;
-    await writeFile(targets.conventionsFile, lines.join("\r\n"));
-    expect((await inspectGolang(targets)).section.state).toBe("changed");
-  });
-
-  test("mergeConventions：before 用 CRLF 时结果全程 CRLF，bytes 按结果字节数算", () => {
-    const example = "## 样例\n- 中文条目\n";
-    const merged = mergeConventions("# 我的规范\r\n- 回复用中文\r\n", example);
-    const expected = `# 我的规范\r\n- 回复用中文\r\n\r\n${example.replace(/\n/g, "\r\n")}`;
-    expect(merged.content).toBe(expected);
-    expect(merged.content).not.toMatch(/(?<!\r)\n/u);
-    expect(merged.bytes).toBe(Buffer.byteLength(expected, "utf8"));
-  });
-
-  test("mergeConventions：before 用 LF 时行为不变", () => {
-    expect(mergeConventions("# 我的规范\n- 回复用中文\n", "样例\n").content).toBe("# 我的规范\n- 回复用中文\n\n样例\n");
   });
 });
 
@@ -343,7 +170,6 @@ describe("一个 skill 有多个文件", () => {
     await writeFile(join(dir, "demo", "skills", "multi", "SKILL.md"), "skill\n");
     await writeFile(join(dir, "demo", "skills", "multi", "refs", "a.md"), "a\n");
     await writeFile(join(dir, "demo", "agents", "demo-worker.md"), "worker\n");
-    await writeFile(join(dir, "demo", "AGENTS.md"), "## 演示约定\n");
     return dir;
   }
 
@@ -427,7 +253,7 @@ describe("copyExampleFiles", () => {
 
   test("目标 skill 目录缺失时一并创建", async () => {
     const root = await makeRoot();
-    const targets = await placeAll(root);
+    const targets = await placeFiles(root);
     await rm(join(targets.skillsDir, "version-policy"), { recursive: true });
     const inspection = await inspectGolang(targets);
     const written = await copyExampleFiles({ examplesDir: EXAMPLES_DIR, example: "golang", targets, inspection });
@@ -436,7 +262,7 @@ describe("copyExampleFiles", () => {
 
   test("全部已存在时不写任何文件", async () => {
     const root = await makeRoot();
-    const targets = await placeAll(root);
+    const targets = await placeFiles(root);
     const inspection = await inspectGolang(targets);
     expect(await copyExampleFiles({ examplesDir: EXAMPLES_DIR, example: "golang", targets, inspection })).toEqual([]);
   });

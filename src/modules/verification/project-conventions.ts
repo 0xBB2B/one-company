@@ -74,7 +74,7 @@ function abbreviateHome(path: string): string {
   return home && path.startsWith(`${home}${sep}`) ? `~${path.slice(home.length)}` : path;
 }
 
-export async function symlinkTarget(file: string): Promise<string | null> {
+async function symlinkTarget(file: string): Promise<string | null> {
   try {
     if (!(await lstat(file)).isSymbolicLink()) return null;
     return await realpath(file);

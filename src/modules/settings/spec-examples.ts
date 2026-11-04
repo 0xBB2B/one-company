@@ -1,7 +1,6 @@
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { defaultRoleDir } from "../agents/roles.ts";
-import { MAX_CONVENTIONS_BYTES } from "../verification/project-conventions.ts";
 
 export const EXAMPLE_LABELS: Record<string, string> = {
   golang: "Go 后端",
@@ -14,7 +13,6 @@ export type Overall = "未复制" | "已复制" | "有改动" | "部分复制";
 export interface ExampleTargets {
   skillsDir: string;
   agentsDir: string;
-  conventionsFile: string;
 }
 
 export interface FileInspection {
@@ -36,7 +34,6 @@ export interface AgentInspection extends FileInspection {
 export interface ExampleInspection {
   skills: SkillInspection[];
   agents: AgentInspection[];
-  section: { heading: string; state: FileState };
   overall: Overall;
 }
 
@@ -64,13 +61,11 @@ export function layerTargets(layer: "user" | "project", dirs: { agentDir: string
     return {
       skillsDir: join(dirs.agentDir, "skills"),
       agentsDir: join(dirs.agentDir, "agents"),
-      conventionsFile: join(dirs.agentDir, "AGENTS.md"),
     };
   }
   return {
     skillsDir: join(dirs.repoRoot, ".pi", "skills"),
     agentsDir: join(dirs.repoRoot, ".pi", "agents"),
-    conventionsFile: join(dirs.repoRoot, "AGENTS.md"),
   };
 }
 
@@ -98,14 +93,6 @@ async function listFiles(dir: string, prefix = ""): Promise<string[]> {
     else files.push(relative);
   }
   return files.sort();
-}
-
-export function findSection(text: string, heading: string): string | null {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  const start = lines.findIndex((line) => line === heading);
-  if (start === -1) return null;
-  const next = lines.findIndex((line, i) => i > start && line.startsWith("## "));
-  return lines.slice(start, next === -1 ? undefined : next).join("\n");
 }
 
 function skillState(files: FileInspection[]): FileState {
@@ -148,22 +135,8 @@ export async function inspectExample(input: ExampleInput): Promise<ExampleInspec
     })),
   );
 
-  const exampleText = await readFile(join(exampleDir, "AGENTS.md"), "utf8");
-  const heading = exampleText.split("\n")[0].trimEnd();
-  const targetText = await readOrNull(targets.conventionsFile);
-  const found = targetText === null ? null : findSection(targetText.toString("utf8"), heading);
-  const sectionState: FileState = found === null ? "missing" : found.trimEnd() === exampleText.trimEnd() ? "same" : "changed";
-
-  const overall = overallOf([...skills.map((s) => s.state), ...agents.map((a) => a.state), sectionState]);
-  return { skills, agents, section: { heading, state: sectionState }, overall };
-}
-
-export function mergeConventions(before: string | null, example: string) {
-  const content = before === null ? example
-    : before.includes("\r\n") ? `${before.replace(/(\r?\n)+$/, "")}\r\n\r\n${example.replace(/\r?\n/g, "\r\n")}`
-    : `${before.replace(/\n+$/, "")}\n\n${example}`;
-  const bytes = Buffer.byteLength(content, "utf8");
-  return { content, bytes, over: bytes > MAX_CONVENTIONS_BYTES, excess: Math.max(0, bytes - MAX_CONVENTIONS_BYTES) };
+  const overall = overallOf([...skills.map((s) => s.state), ...agents.map((a) => a.state)]);
+  return { skills, agents, overall };
 }
 
 export class ExampleCopyError extends Error {
