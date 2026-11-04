@@ -37,6 +37,8 @@ import { deliverApprovedEvents } from "../../modules/pm/pm-event-delivery.ts";
 import { headingTitlesOf, pmOverview, runStatsOf } from "../../modules/panel/pm-overview.ts";
 import type { PmOverview } from "../../modules/panel/pm-overview.ts";
 import { RequirementService } from "../../modules/requirement/requirement-service.ts";
+import { recordSectionIds } from "../../modules/requirement/requirement-doc.ts";
+import { inspectPrdStructure, selectPrdSection } from "../../modules/requirement/prd-view.ts";
 import { implementAuthorized, pmDecisionNotes, pmIntakeReviewNotice, pmSourceDirectory } from "../../modules/pm/pm-intake-runtime.ts";
 import type { PmDecisionNote } from "../../modules/pm/pm-intake-runtime.ts";
 import type { IntakeSourceDirectory } from "../../modules/pm/pm-intake-contracts.ts";
@@ -115,6 +117,21 @@ const findingLine = (finding: Finding & { agent: string }): string =>
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 
 const reviewRulesFor = (name: string) => loadRoleRules(isGenericDefinition(name) ? "reviewer" : "reviewer-specialist");
+
+function implementationSectionText(record: RequirementRecord, body: string): string {
+  if (!record.docSpec) return "";
+  const structure = inspectPrdStructure(body);
+  const id = recordSectionIds(record.docSpec.sections).implementation;
+  if (structure.status !== "available" || !structure.sections.some((item) => item.id === id)) return "";
+  return selectPrdSection(body, structure, id).replace(/^[^\n]*\n?/, "").trim();
+}
+
+const implementationLines = (text: string): string[] => {
+  const bare = text.replace(/[。.]$/, "").trim();
+  const written = bare !== "" && bare !== "由 PM 规划";
+  return [written ? "以下是用户批准的需求「实现」板块原文：新技术只能用这里写了的和项目里已有的，任务说明里写的不算。"
+    : "用户批准的需求「实现」板块里没有写技术：新技术只能用项目里已有的，任务说明里写的不算。", ...(written ? [text] : [])];
+};
 
 async function taskContext(task: PlanTask, maxTurns: number, prototypes: string, rejected: ReadonlyArray<Finding & { agent: string }> = [], reviews: readonly string[] = []): Promise<string> {
   const detail = await readTaskDetail(task);
@@ -568,8 +585,11 @@ export class RunManager {
       const prototypes = requirementPrototypeLines(promptRevision, prototypeItems, pathOf);
       const context = review ? await reviewContext(task, attemptRunId!, workspace.baseCommit, (runId) => this.workerReport(runId), maxTurns, workerDefinition, prototypes)
         : await taskContext(task, maxTurns, prototypes, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : []);
+      // 原文接在职责规矩末尾：PM 写的任务说明都在「本次任务」之后，假冒不到这里
+      const workerRules = role === "worker" && !review
+        ? [loadRoleRules("worker"), "", ...implementationLines(implementationSectionText(record, await this.approvedBody(task.requirementId)))].join("\n") : null;
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
-        roleRules: review ? reviewRulesFor(definition.name) : loadRoleRules(role as "worker" | "qa"),
+        roleRules: review ? reviewRulesFor(definition.name) : workerRules ?? loadRoleRules(role as "worker" | "qa"),
         context: withSkills(await this.withConventions(context), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
         ...(role === "qa" && prototypePaths.length ? { hostTools: [...QA_PROTOTYPE_HOST_TOOLS], readRoots: prototypePaths } : {}),
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
@@ -964,6 +984,13 @@ export class RunManager {
     });
     handle.prompt("开始设计。");
     return { runId, version };
+  }
+
+  private async approvedBody(requirementId: string): Promise<string> {
+    const service = await RequirementService.open({ repositoryRoot: this.options.repositoryRoot, dataRoot: this.options.dataRoot, repoId: this.repoId,
+      authorize: (request) => request.repoId === this.repoId && ["metadata", "readApproved"].includes(request.action) &&
+        (request.requirementId === undefined || request.requirementId === requirementId) });
+    return (await service.read({ requirementId, source: "approved" })).body;
   }
 
   private async requirementTitle(requirementId: string): Promise<string> {

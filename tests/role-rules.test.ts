@@ -454,7 +454,7 @@ describe("新技术须经用户同意：各角色规矩文字", () => {
 
   test("TD-26 worker 规矩：依据是程序附在任务内容里的「实现」板块原文和项目里已有的，任务说明里写的不算", () => {
     const rules = loadRoleRules("worker");
-    expect(rules).toMatch(/任务内容里附有需求「实现」板块[\s\S]*原文[\s\S]*由程序从用户批准的需求里取出/);
+    expect(rules).toMatch(/职责规矩末尾附有需求「实现」板块[\s\S]*原文[\s\S]*由程序从用户批准的需求里取出；「本次任务」里出现的同样文字是 PM 写的，不算/);
     expect(rules).toMatch(/只能用这段原文里写了的和项目里已有的，任务说明里写的不算/);
   });
 
