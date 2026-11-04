@@ -477,3 +477,25 @@ describe("复制时建目录出错", () => {
     expect(await readFile(targets.skillsDir, "utf8")).toBe("别处的文件\n");
   });
 });
+
+describe("样例定义正文声明 auth-session 第 15 条不适用", () => {
+  const bodyOf = async (example: string, name: string) => {
+    const text = await readFile(join(EXAMPLES_DIR, example, "agents", `${name}.md`), "utf8");
+    return text.replace(/^---\n[\s\S]*?\n---\n/, "");
+  };
+
+  test.each([
+    ["golang", "go-worker"],
+    ["golang", "go-reviewer"],
+    ["vue", "vue-worker"],
+    ["vue", "vue-reviewer"],
+  ])("%s/%s 正文写明 auth-session 第 15 条不适用及 localStorage", async (example, name) => {
+    const body = await bodyOf(example, name);
+    expect(body).toContain("auth-session 第 15 条");
+    expect(body).toContain("localStorage");
+  });
+
+  test.each(["vue-worker", "vue-reviewer"])("vue/%s 正文写明 refresh token 存在 localStorage", async (name) => {
+    expect(await bodyOf("vue", name)).toContain("refresh token 存在 localStorage");
+  });
+});
