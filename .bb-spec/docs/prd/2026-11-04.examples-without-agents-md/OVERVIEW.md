@@ -52,10 +52,11 @@ features: [spec-examples, role-definitions]
 - 确认窗口正常情况只说几份，有特殊情况才逐条说明；替换的是包里内置的定义时不写说明。原因：用户看原型时觉得现在逐个列名字的写法不直观，复制样例本来就是为了替换内置定义，这是预期中的结果。原型第 2 版还试过按"会怎样"分组、按文件类型分组两种写法，用户要求再简化。用户 2026-11-04 决定。这推翻了 2026-10-23.examples-command 确认窗口按类别列出名字、写「复制后替换同名的内置定义。开关按定义名记，…」的约定。
 - 冲突条目只找到 auth-session 第 15 条这一条。查法是按分层、主键、软删除、错误码、日志、token 有效期、token 存放、cookie 这些主题，在 go-worker、vue-worker 预设的内置 skill 里搜关键词，没有逐条通读 145 KB 的内置 skill。以后发现别的冲突，照同样的写法加进样例定义正文。
 - 新规则写进三份职责规矩：worker（`role-rules/worker.md`）、专项审查（`role-rules/reviewer-specialist.md`）、通用审查（`role-rules/reviewer.md`）。通用审查也要加，原因：专项审查被关掉时，通用审查会拿到 worker 定义加载的 auth-session（`src/app/daemon/run-manager.ts:636-648`），也会按第 15 条打回。这条规则对用户自己写的定义同样生效。
+- 专项审查也会收到被审 worker 定义的正文，这算正式决定：worker 正文是这个 worker 的团队规范，所有审查都按它对齐。来源是所有审查共用同一份任务说明（`src/app/daemon/run-manager.ts:150`、`:569`）；2026-10-13.role-rules-injection 定下通用审查收到 worker 正文，2026-10-21.stack-agents 加专项审查时复用了这份任务说明，当时没有记录要不要给专项审查。实测：只删 vue-reviewer 正文里那一行跑 2 次 P18 都通过，审查从 vue-worker 正文里读到了这条不适用；两份都删后跑 2 次，1 次因 localStorage 打回。否决"专项审查不再收到 worker 正文"：要改已合并的审查行为、另走需求，团队决定只写在 worker 正文时专项审查会打回符合决定的代码，它要防的重复打回也没有证据。用户 2026-11-04 决定。
 - 改了职责规矩，按仓库规矩要跑全部单点验收和零自定义完整流程；没有改 PM、主代理的提示词，不跑渐进需求完整流程。
 - 以下几条是写 PRD 时按确认过的原型和现有代码定的，用户在确认 PRD 时一并认可或推翻：
   - 份数按 skill 目录和定义文件计：一份 skill 是一个目录，一份角色定义是一个文件。结果提示里的"新复制 N 个文件"和现在一样按文件计，所以 skill 目录里有多个文件时，两处数字可能不同。
   - 一层里没有要复制的（全部跳过或被改过）时，第一行写「这一层没有要复制的。」。
   - 被改过的条目写成相对层目录的路径：skill 写 `skills/<名字>`，定义写 `agents/<名字>.md`。
-  - P18 用 Vue 样例：按 `/one:examples` 复制到用户层后的 vue-reviewer。对照组有两处：token 拼进 URL（auth-session 第 12 条），证明同一份 skill 的其他条目照常生效；v-html 渲染用户评论（和 P16 埋的问题相同），证明这次审查确实在审代码。另外临时删掉正文那一行跑 2 次，证明不写这一行时审查确实会打回。
+  - P18 用 Vue 样例：按 `/one:examples` 复制到用户层后的 vue-reviewer。对照组有两处：token 拼进 URL（auth-session 第 12 条），证明同一份 skill 的其他条目照常生效；v-html 渲染用户评论（和 P16 埋的问题相同），证明这次审查确实在审代码。另外临时删掉 vue-worker、vue-reviewer 两份正文里那一行跑 2 次，证明不写这一行时审查确实会打回。
   - 仓库 `AGENTS.md` 和 `CONTRIBUTING.md` 里"全部单点测试（P1–P17）"改成 P1–P18。

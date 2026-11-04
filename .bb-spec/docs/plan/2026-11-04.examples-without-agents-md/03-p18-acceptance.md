@@ -46,7 +46,7 @@ description: 新增真实模型验收 P18：装上 Vue 样例定义后，vue-rev
 
 ## 验证方式
 - 测试入口：`ONE_COMPANY_ACCEPTANCE_MODEL=<提供方>/<模型> ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> pnpm run test:acceptance:parallel --only P18`；不带模型配置时 `pnpm test` 不包含它。
-- 测试输入：上面三个文件和 P16 同样的支撑文件；用户层是复制后的 Vue 样例。
+- 测试输入：上面三个文件和一个把 access token 放在内存里的支撑文件；用户层是复制后的 Vue 样例。
 - 预期结果：
   - 真实模型被调用（turns > 0），vue-reviewer 交出结论，结论为 blocked。
   - URL 那处和 v-html 那处都被阻塞意见指到。
@@ -55,4 +55,4 @@ description: 新增真实模型验收 P18：装上 Vue 样例定义后，vue-rev
 - [ ] `--only P18` 能选中这条验收
 - [ ] P15、P16 用到的 `runSpecialistReview` 默认行为不变（不传新选项时 skillDirs 只有包内 `skills/`）
 - [ ] P18 按 2 次判定规则通过
-- [ ] 临时删掉 `examples/vue/agents/vue-reviewer.md` 正文里 auth-session 那一行，跑 2 次，至少 1 次 vue-reviewer 因 token 存 localStorage 列阻塞；之后改回
+- [ ] 临时删掉 `examples/vue/agents/vue-worker.md`、`vue-reviewer.md` 两份正文里 auth-session 那一行，跑 2 次，至少 1 次 vue-reviewer 因 token 存 localStorage 列阻塞；之后改回
