@@ -152,7 +152,7 @@ test("等确认的版本转换后方案清单为空，确认窗口只列通过",
   const options = migrated().latest("requirement_prototypes", REQUIREMENT_ID).entries[1].inFlight.file.options as string[];
   expect(options).toEqual([]);
   const content = confirmWindowContent({
-    requirementTitle: "需求", draftVersion: 1, name: "设置页", version: 1, path: "/tmp/p.html", bytes: 800, hash: HASH_B, note: "说明", previousOpinion: null, options,
+    requirementTitle: "需求", draftVersion: 1, name: "设置页", version: 1, path: "/tmp/p.html", bytes: 800, hash: HASH_B, note: "说明", previousOpinion: null, options, design: { state: "same" },
   }, true);
   expect(content.choices.map((choice) => choice.label)).toEqual(["通过（写进需求草稿）"]);
 });
