@@ -6,9 +6,9 @@
 | 03 | design-spec-check | done | 2026-11-04 |
 | 04 | design-submit-dispatch | done | 2026-11-04 |
 | 05 | design-confirm-write | done | 2026-11-04 |
-| 06 | design-follow-guard | pending | — |
+| 06 | design-follow-guard | done | 2026-11-05 |
 | 07 | acceptance-design-judgement | pending | — |
 ## 当前
-05 完成：审查 15/15 合规。主 Agent 修了三处：两个测试辅助函数把 designBase 写死成 null（改成读根目录当前指纹）；改动超过 10 章时窗口显示 undefined（章数中文数字支持 11 以上）；通过类选项全部变灰时光标停在灰色选项上（question-window 光标初值改为落到"其他"）。下一步：06 design-follow-guard。
+06 完成：审查 9/10 合规，发现 worker、reviewer 里 DESIGN.md 和原型哪个优先打架；用户 2026-11-05 选"原型画了的按原型，没画到的按 DESIGN.md"，已改 PRD C-15 和规矩。主 Agent 另修：设计师规矩"固定十章"改"至少有下面十章"、删重复的"原型照它画"；主窗口拦截改成比较文件真实名字，堵住 ſ 绕过（AGENTS.md 一并修好）；注释补上 DESIGN.md。下一步：07 acceptance-design-judgement。
 ## 阻塞
 （无）

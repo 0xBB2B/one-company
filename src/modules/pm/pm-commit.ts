@@ -33,6 +33,7 @@ const PROTECTED_WHY: Partial<Record<ManagedWritePathClass, (path: string) => str
   prd_archive: (path) => `这是需求归档目录，由程序在关闭需求时写入，不能提交：${path}`,
   agent_definition: (path) => `这是角色定义或 skills 目录，只能由用户修改，不能提交：${path}`,
   host_settings: (path) => `这是 pi 的项目设置文件，只能由用户修改，不能提交：${path}`,
+  design_spec: (path) => `这是界面设计规范文件 DESIGN.md，只能随原型通过写入，不能提交：${path}`,
   project_conventions: (path) => `这是项目规范文件 AGENTS.md，只能经用户确认后修改，不能提交：${path}`,
 };
 

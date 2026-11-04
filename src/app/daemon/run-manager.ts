@@ -75,7 +75,7 @@ import type { AgentRole } from "../../modules/agents/roles.ts";
 import { activeCheckRoundIn, assertWritersQuiescentIn } from "../../modules/verification/check-round.ts";
 import type { ProjectIndexHost } from "./project-index-host.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
-import { agentConventionsContext } from "../../modules/verification/project-conventions.ts";
+import { agentConventionsContext, designSpecContext } from "../../modules/verification/project-conventions.ts";
 
 export interface SelectedModel { provider: string; id: string }
 export type EmitFn = (event: string, data: Record<string, unknown>, filter?: (windowId: string) => boolean) => void;
@@ -600,7 +600,7 @@ export class RunManager {
         ? [loadRoleRules("worker"), "", ...implementationLines(implementationSectionText(record, await this.approvedBody(task.requirementId)))].join("\n") : null;
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
         roleRules: review ? reviewRulesFor(definition.name) : workerRules ?? loadRoleRules(role as "worker" | "qa"),
-        context: withSkills(await this.withConventions(context), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
+        context: withSkills(await this.withConventions(context, role === "worker" || role === "reviewer"), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
         ...(role === "qa" && prototypePaths.length ? { hostTools: [...QA_PROTOTYPE_HOST_TOOLS], readRoots: prototypePaths } : {}),
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
@@ -681,9 +681,10 @@ export class RunManager {
     }
   }
 
-  private async withConventions(context: string): Promise<string> {
+  private async withConventions(context: string, withDesignSpec = false): Promise<string> {
     const conventions = await agentConventionsContext({ agentDir: dirname(this.options.dataRoot), repositoryRoot: this.options.repositoryRoot });
-    return conventions ? `${context}\n\n${conventions}` : context;
+    const design = withDesignSpec ? await designSpecContext({ repositoryRoot: this.options.repositoryRoot }) : null;
+    return [context, conventions, design].filter((part) => part !== null).join("\n\n");
   }
 
   private workerReport(attemptRunId: string): Verdict | undefined {
