@@ -42,7 +42,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | pm | 计划、派工、PM 提交与同步目标分支、PM 接手复核、需求读取工具、验证命令、子代理交结果 | `src/modules/pm` | `plan-manage.ts`、`task-dispatch.ts`、`PmIntakeService`、`pm-commit.ts`、`result-submit.ts` |
 | delivery | 关闭需求与归档提交、需求流程管理、Git 交付（远程：推送、建 PR/MR、合并；仅本地：合进主仓库当前分支）、需求工作区（worktree）管理 | `src/modules/delivery` | `RequirementCloseService`、`archive-commit.ts`、`workflow-manage.ts`、`git-delivery.ts`（`deliverRequirement`）、`local-delivery.ts`（`deliverLocally`）、`WorkspaceManageService` |
 | panel | 状态面板、步骤窗口（在面板选中子代理按 Enter 弹出，列出它做过的每一步）、PM 概览、⚑ 事项（面板上等用户处理的事）的决策包（打开事项时插进对话、供主代理查原因的材料）、裁决（用户对上报事项做的决定，比如任务两次没完成时怎么办） | `src/modules/panel` | `pm-panel.ts`、`step-window.ts`、`pm-overview.ts`、`adjudication.ts` |
-| interaction | 主代理提问窗口、解读用户原话、主窗口的需求交互、@需求补全、`one_company_requirement_manage` 工具 | `src/modules/interaction` | `MainRequirementInteraction`、`user-interaction-model.ts`、`requirement-manage-tool.ts` |
+| interaction | 主代理提问窗口、技术清单（`tech-list.ts`：新技术清单的检查、窗口内容和原话文字）、解读用户原话、主窗口的需求交互、@需求补全、`one_company_requirement_manage` 工具 | `src/modules/interaction` | `MainRequirementInteraction`、`user-interaction-model.ts`、`requirement-manage-tool.ts` |
 | project-index | 项目索引、语法解析、知识查询、`one_company_project_manage` 和 `one_company_knowledge_query` 工具 | `src/modules/project-index` | `project-index-service.ts`、`knowledge-query.ts`、`syntax-parser.ts`、`project-manage-tool.ts` |
 | shell | `/one:ps` 页面、后台 shell 工具、shell 摘要 | `src/modules/shell` | `shell-page.ts`、`shell-bash.ts` |
 | input-suggestion | 输入建议：主代理一轮正常结束后，用主窗口的模型读最近 3 轮对话推测用户下一句，在空的主会话输入栏里显示成灰色，按右方向键填入；替换了 pi 的主会话输入栏 | `src/modules/input-suggestion` | `input-suggestion-extension.ts`、`suggestion-model.ts`（`requestSuggestion`）、`suggestion-editor.ts`（`SuggestionEditor`） |
