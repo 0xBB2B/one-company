@@ -7,6 +7,7 @@ import { createPmRunWorld } from "../../helpers/run-manager-fixture.ts";
 import { acceptanceConfig } from "../helpers/installed-host.ts";
 import { pointEvidence } from "../helpers/point-pm.ts";
 import { createRealModel } from "../helpers/real-model.ts";
+import { designChapters } from "../../../src/modules/requirement/design-spec.ts";
 
 const config = acceptanceConfig();
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -21,10 +22,10 @@ const PROJECT_FILES: Record<string, string> = {
 };
 const LAYOUT_WORDS = ["工作台", "订单", "客户", "设置", "账号安全", "通知"];
 type Handler = (params: Record<string, unknown>, client: unknown) => Promise<Record<string, unknown>>;
-interface Submitted { html?: string }
+interface Submitted { html?: string; design?: string | string[] }
 
-test.skipIf(!config || process.platform !== "darwin")("P19：样例项目已有整体布局和样式，原型设计师交的稿带着现有导航、已有页面内容和主题色", async () => {
-  const evidence = await pointEvidence(config!, "p19");
+test.skipIf(!config || process.platform !== "darwin")("P20：样例项目已有整体布局和样式，原型设计师交的稿带着现有导航、已有页面内容和主题色", async () => {
+  const evidence = await pointEvidence(config!, "p20");
   const w = await createPmRunWorld(cleanups);
   for (const [path, content] of Object.entries(PROJECT_FILES)) {
     await mkdir(dirname(join(w.fixture.repositoryRoot, path)), { recursive: true });
@@ -52,10 +53,14 @@ test.skipIf(!config || process.platform !== "darwin")("P19：样例项目已有�
   const html = last?.html ?? "";
   const missingWords = LAYOUT_WORDS.filter((word) => !html.includes(word));
   const hasPrimary = /#0f766e/i.test(html);
-  await writeFile(join(evidence, "judgement.json"), `${JSON.stringify({ realTurns: turns, status: await status(), submits: submits.length, missingWords, hasPrimary,
+  const design = last?.design === undefined ? "" : [last.design].flat()[0] ?? "";
+  const lightSection = (designChapters(design).get("颜色") ?? "").split(/^### /m).find((part) => part.startsWith("明亮")) ?? "";
+  const lightPrimary = /^- 主色[：:]\s*(\S+)/m.exec(lightSection)?.[1] ?? null;
+  await writeFile(join(evidence, "judgement.json"), `${JSON.stringify({ realTurns: turns, status: await status(), submits: submits.length, missingWords, hasPrimary, lightPrimary,
     calls: real.toolCalls().map((block) => block.name) }, null, 2)}\n`, { mode: 0o600 });
   expect(turns, "真实模型没有被调用：设计师没有派出").toBeGreaterThan(0);
   expect(await status(), "交稿没有被收下").toBe("awaiting");
   expect(missingWords, "稿子里缺现有布局或页面里的字").toEqual([]);
   expect(hasPrimary, "稿子里没有用现有主题色").toBe(true);
+  expect(lightPrimary?.toLowerCase(), "DESIGN.md 明亮一节的主色不是项目主色").toBe("#0f766e");
 }, 20 * 60_000);

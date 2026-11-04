@@ -7,6 +7,7 @@ import { createPmRunWorld } from "../../helpers/run-manager-fixture.ts";
 import { acceptanceConfig } from "../helpers/installed-host.ts";
 import { pointEvidence } from "../helpers/point-pm.ts";
 import { createRealModel } from "../helpers/real-model.ts";
+import { checkDesignSpec } from "../../../src/modules/requirement/design-spec.ts";
 
 const config = acceptanceConfig();
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -17,7 +18,7 @@ const BRIEF = "游戏的存档列表页：列出每条存档的名称和保存�
 const STATES = [/正常/, /空|无|没有/, /加载中|读取中/, /出错|失败|错误/];
 const NOTE_WORDS = /演示|原型|待确认/g;
 type Handler = (params: Record<string, unknown>, client: unknown) => Promise<Record<string, unknown>>;
-interface Submitted { action?: string; html?: string; pages?: Array<{ name: string; views: Array<{ name: string }> }> }
+interface Submitted { action?: string; html?: string; design?: string | string[]; pages?: Array<{ name: string; views: Array<{ name: string }> }> }
 
 test.skipIf(!config || process.platform !== "darwin")("P17：原型设计师收到一个带界面的设计任务，按分开的格式交稿：四种状态都在页面清单里，页面里没有说明性字样", async () => {
   const evidence = await pointEvidence(config!, "p17");
@@ -44,10 +45,13 @@ test.skipIf(!config || process.platform !== "darwin")("P17：原型设计师收�
   const views = (last?.pages ?? []).flatMap((page) => page.views.map((view) => view.name));
   const noteWords = (last?.html ?? "").match(NOTE_WORDS) ?? [];
   const missing = STATES.filter((state) => !views.some((view) => state.test(view))).map(String);
-  await writeFile(join(evidence, "judgement.json"), `${JSON.stringify({ realTurns: turns, status: await status(), submits: submits.length, pages: last?.pages, views, missing, noteWords,
+  const designs = last?.design === undefined ? [] : [last.design].flat();
+  const designProblems = designs.length ? designs.map((text) => { try { checkDesignSpec(text); return null; } catch (error) { return (error as Error).message; } }).filter(Boolean) : ["交稿没带 DESIGN.md"];
+  await writeFile(join(evidence, "judgement.json"), `${JSON.stringify({ realTurns: turns, status: await status(), submits: submits.length, pages: last?.pages, views, missing, noteWords, designProblems,
     calls: real.toolCalls().map((block) => block.name) }, null, 2)}\n`, { mode: 0o600 });
   expect(turns, "真实模型没有被调用：设计师没有派出").toBeGreaterThan(0);
   expect(await status(), "交稿没有被收下").toBe("awaiting");
   expect(missing, "页面清单缺状态").toEqual([]);
   expect(noteWords, "页面里有说明性字样").toEqual([]);
+  expect(designProblems, "交稿里的 DESIGN.md 没通过检查").toEqual([]);
 }, 20 * 60_000);
