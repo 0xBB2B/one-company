@@ -22,7 +22,7 @@ pi install /absolute/path/to/one-company
 | `pnpm run test:installation` | 按真实 pi 安装方式装好再测；没有 Docker 时跳过 Docker 安装测试 |
 | `pnpm run test:acceptance:parallel` | 真实模型验收：18 个单点，单点每条 1～6 分钟，同时跑全部单点约 20 分钟，加两条完整流程约 35 分钟 |
 
-合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P18）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`src/modules/requirement/requirement-state.ts`、`src/modules/requirement/requirement-service.ts`、`src/modules/pm/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
+合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P19）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`src/modules/requirement/requirement-state.ts`、`src/modules/requirement/requirement-service.ts`、`src/modules/pm/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
 
 ### 测试注意事项
 
@@ -69,6 +69,7 @@ pnpm run test:acceptance:parallel [--only <编号…>]
 | P16 | vue-worker 的改动里埋了 5 个 Vue 常见坑（v-html 渲染评论、:href 绑用户链接、监听不移除、路由守卫当权限校验、解构 reactive） | 自动挂上的 vue-reviewer 打回，5 个坑各有一条阻塞意见，指到埋坑的文件和行号 |
 | P17 | 原型设计师收到一个带界面的设计任务 | 按分开的格式交稿：四种状态都在页面清单里，页面里没有"演示""原型""待确认"字样 |
 | P18 | vue-reviewer 装上 Vue 样例定义（正文写明 auth-session 第 15 条不适用），改动里有 refresh token 存 localStorage、refresh token 拼进 URL、v-html 渲染评论 | URL 和 v-html 两处列为阻塞，localStorage 那处不列 |
+| P19 | 空的样例项目里要做网页版图书馆借还系统（要前端、后端、数据库）；另起一次在已有的 TypeScript 移动逻辑上加快跑 | 前一种在请用户批准前弹技术清单窗口，含框架和数据库，选全部同意后草稿「实现」板块写进每一项；后一种不弹技术清单窗口 |
 
 完整流程（2 条）：在临时目录真实安装本包、建样例项目，由真实模型扮演主代理和各角色，从提需求走到完成关闭。
 
