@@ -1494,8 +1494,8 @@ describe("技术清单窗口", () => {
   const SHIFT_DOWN = "\x1b[1;2B", SHIFT_UP = "\x1b[1;2A";
   type Tech = { name: string; kind: string; source: string; sourceWarn: boolean; use: string; why: string; alt: string };
   const TECHS: Tech[] = [
-    { name: "Vue 3", kind: "框架", source: "按已开启的 vue 专项代理推荐", sourceWarn: true, use: "做借书、还书、查书的网页界面", why: "项目里还没有前端代码，必须选一个前端框架", alt: "React：同样能做；选 Vue 是因为开着 vue 专项代理" },
-    { name: "Go", kind: "语言", source: "按已开启的 go 专项代理推荐", sourceWarn: true, use: "写借阅、库存、读者管理的后端接口", why: "项目里还没有后端代码，必须选一门后端语言", alt: "Java：同样能做；选 Go 是因为开着 go 专项代理" },
+    { name: "Vue 3", kind: "框架", source: "项目规范", sourceWarn: true, use: "做借书、还书、查书的网页界面", why: "项目里还没有前端代码，必须选一个前端框架", alt: "React：同样能做；选 Vue 是因为开着 vue 专项代理" },
+    { name: "Go", kind: "语言", source: "项目规范", sourceWarn: true, use: "写借阅、库存、读者管理的后端接口", why: "项目里还没有后端代码，必须选一门后端语言", alt: "Java：同样能做；选 Go 是因为开着 go 专项代理" },
     { name: "PostgreSQL", kind: "数据库", source: "AI 提议", sourceWarn: true, use: "保存图书、读者和借阅记录", why: "借阅记录要长期保存、按读者和日期查，文件存不了", alt: "MySQL：同样可用；SQLite：多人同时借还会锁住整个库" },
     { name: "Redis", kind: "中间件或外部服务", source: "用户点名", sourceWarn: true, use: "缓存热门图书的查询结果", why: "用户在需求里点名要用", alt: "进程内缓存：后端开多个实例时各自内容对不上" },
     { name: "MinIO", kind: "中间件或外部服务", source: "AI 提议", sourceWarn: true, use: "保存图书封面图片", why: "图片放进数据库会让库变大、备份变慢", alt: "存服务器磁盘：开多个后端实例时互相看不到图片" },
@@ -1548,7 +1548,7 @@ describe("技术清单窗口", () => {
     expect(raw).toContain("<muted>提问 · 图书馆借还系统（第 2 版）</>");
     expect(raw).toContain("<b>要引入的新技术（共 4 项）</b>");
     expect(raw).toContain("<b>1. Vue 3</b>");
-    expect(raw).toContain("<warning>按已开启的 vue 专项代理推荐</>");
+    expect(raw).toContain("<warning>项目规范</>");
     expect(raw).toContain("<warning>AI 提议</>");
     expect(raw).toContain("<warning>用户点名</>");
     expect(raw).toMatch(/<muted> *用途：做借书、还书、查书的网页界面<\/>/u);
