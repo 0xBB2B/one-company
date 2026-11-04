@@ -77,6 +77,7 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   manifest_mismatch: { why: "批准清单与待确认版本不一致", next: REREAD },
   question_scope_mismatch: { why: "问题引用了待确认版本里不存在的章节", next: "只引用待确认版本里的章节编号" },
   question_limit: { why: "待回答的问题已达上限", next: "先请用户回答已有的问题" },
+  task_missing: { why: "找不到这个事项对应的任务", next: "重新读取待处理事项，按当前事项再提问" },
   question_display_unavailable: { why: "向用户提问要在交互界面里显示，当前会话没有界面", next: "请用户在有界面的主窗口里继续" },
   cursor_expired: { why: "翻页游标不是上一页结果给出的 nextCursor，或已用过", next: "用 read 或 diff 从第一页重新读取" },
   invalid_approval_unit_id: { why: "需求正文的标题编号不合规：编号须以字母开头、只含字母数字和 . _ -、不超过 96 个字符、互不重复，且不能用 metadata、preamble、whole-body", next: "改正正文里的标题编号后重新保存" },
