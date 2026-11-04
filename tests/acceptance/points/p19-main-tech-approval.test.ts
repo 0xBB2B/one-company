@@ -16,6 +16,8 @@ const SOURCES = ["用户点名", "项目规范", "AI 提议"];
 type Point = Awaited<ReturnType<typeof startMainPoint>>;
 const techWindows = (point: Point) => point.host.dialogs.filter((dialog) => dialog.message?.includes(TECH_TITLE));
 type Tech = { name: string; kind: string; source: string };
+/** 名称里括号写的版本等说明，主代理写进草稿时可能挪到别处，比对时只看括号前的名字。 */
+const coreName = (name: string) => name.replace(/[（(][^）)]*[）)]/gu, "").trim();
 /** 窗口放不下时清单会滚动，记录下来的窗口文字不全，所以从主代理调用 ask-tech 时填的参数里取全部条目。 */
 const listed = (point: Point): Tech[] => point.calls(0).filter((call) => call.name === "one_company_user_interact"
   && (call.args.request as { action?: string } | undefined)?.action === "ask-tech").map((call) => (call.args.request as { technologies: Tech[] }).technologies).at(-1) ?? [];
@@ -35,7 +37,7 @@ test.skipIf(!config || process.platform !== "darwin")("P19：要做一个需要�
   await point.say(LIBRARY + DRAFT_ONLY);
   const written = async () => {
     const implementation = await implementationSection(point), items = listed(point);
-    return techWindows(point).length > 0 && items.length > 0 && items.every((item) => implementation.includes(item.name));
+    return techWindows(point).length > 0 && items.length > 0 && items.every((item) => implementation.includes(coreName(item.name)));
   };
   // 主代理答完还没弹清单或还没写进草稿时，像真人一样催一次，最多两次
   for (let n = 0; n < 2 && !(await written()); n++) await point.say("请接着整理需求草稿。");
@@ -48,7 +50,7 @@ test.skipIf(!config || process.platform !== "darwin")("P19：要做一个需要�
   // 样例项目里没有数据库，一定是新技术；前端用不用框架、后端用不用新语言，模型怎么选都对
   expect(items.some((item) => item.kind === "数据库"), JSON.stringify(judgement)).toBe(true);
   for (const item of items) expect(SOURCES, JSON.stringify(item)).toContain(item.source);
-  for (const item of items) expect(implementation, `${item.name}：${JSON.stringify(judgement)}`).toContain(item.name);
+  for (const item of items) expect(implementation, `${item.name}：${JSON.stringify(judgement)}`).toContain(coreName(item.name));
 }, 30 * 60_000);
 
 test.skipIf(!config || process.platform !== "darwin")("P19：需求只用项目里已有的技术时（样例项目已有的 TypeScript 移动逻辑上加快跑），不弹技术清单窗口", async () => {
