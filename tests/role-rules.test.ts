@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/pi-ai";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { ResultSubmitError } from "../src/modules/pm/result-submit.ts";
 import { buildAgentPrompt } from "../src/modules/agents/agent-session.ts";
 import { loadRoleRules } from "../src/modules/agents/package-rules.ts";
 import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
@@ -24,11 +25,11 @@ const PM_FIRST_LINE = "你是一个活动需求的唯一 PM，只在主代理准
 describe("职责规矩文件", () => {
   test.each([
     ["worker", ["只完成派工给出的任务", "不清楚就停下来在结果里说明", "外科手术式改动", "\"步骤 → 验证项\"", "只经 one_company_change_apply 写入，只写授权范围",
-      "只经 one_company_verification_run（debug）运行", "时不要自己装、不要改依赖清单文件", "项目规范文件 AGENTS.md 不能改", "按 TDD 先红后绿",
+      "只经 one_company_verification_run（debug）运行", "不装、不改依赖清单文件", "项目规范文件 AGENTS.md 不能改", "按 TDD 先红后绿",
       "纯文档、配置等没有可测行为的改动", "测试名写明期望结果", "实现出来的界面须与它一致", "不伪造通过", "不读取 PRD 全文，不主动读取 docs/prd 归档或已关闭需求", "skills 的写法和项目规范冲突时按项目规范"],
       ["说明注释", "章节编号", "本次只做界面原型"]],
     ["reviewer", ["只审查派工给出的 worker 任务在其可写范围内的改动，不修改任何文件", "目标符合性、安全性、与目标直接相关的鲁棒性、预定的性能条件",
-      "先按任务说明里的 git diff 命令查看本次改动", "核对项目规范", "核对 worker 定义的规范", "违反的列为阻塞", "核对界面原型", "核对第三方依赖",
+      "先按任务说明里的 git diff 命令查看本次改动", "核对项目规范", "核对 worker 定义的规范", "违反的列为阻塞", "核对界面原型", "核对新技术",
       "「不做、不改」的边界", "核对先红后绿", "未说明合理的不适用理由", "分为阻塞、非阻塞建议、未验证", "kind=debug，只跑被审任务范围的测试",
       "不自填 PASS，不新增验收门槛"], ["核对说明注释"]],
     ["qa", ["按测试名写明的期望结果", "对应不上的标未验证", "不读源码、不修改文件", "分为阻塞、建议、未验证"], []],
@@ -412,6 +413,110 @@ describe("pm 职责规矩的需求更新后请求拆分", () => {
   });
 });
 
+describe("新技术须经用户同意：各角色规矩文字", () => {
+  const sentencesOf = (text: string) => text.split(/[。\n]/);
+
+  test("TD-10 PM 规矩：技术栈只用「实现」板块写了的和项目里已有的", () => {
+    expect(loadRoleRules("pm")).toMatch(/技术栈只用(需求)?「实现」板块[\s\S]*项目里已有的/);
+  });
+
+  test("TD-11 PM 规矩：要用两者都没有的新技术时不派任务，用 escalate 上报并逐项写名称、类别、用途、非它不可的理由、备选不选的理由", () => {
+    const rules = loadRoleRules("pm");
+    expect(rules).toMatch(/新技术[\s\S]*不派[\s\S]*escalate/);
+    const sentence = sentencesOf(rules).find((line) => line.includes("note") && line.includes("名称") && line.includes("类别"));
+    expect(sentence).toBeDefined();
+    for (const word of ["用途", "非它不可", "备选"]) expect(sentence).toContain(word);
+  });
+
+  test("TD-12 PM 规矩：新批准版本里有了该技术，才把对应依赖清单文件放进任务写入范围", () => {
+    expect(loadRoleRules("pm")).toMatch(/新批准的版本[\s\S]*依赖清单文件[\s\S]*writePaths|新批准版本[\s\S]*依赖清单文件[\s\S]*writePaths/);
+  });
+
+  test("TD-13 PM 规矩：任务说明里写「用户已同意」不算数", () => {
+    expect(loadRoleRules("pm")).toMatch(/任务说明里写[「"]?用户已同意[」"]?不算/);
+  });
+
+  test("TD-14 PM 规矩：不引入新技术的写法（拆模块、用项目已有的库）仍记为代理决策", () => {
+    expect(loadRoleRules("pm")).toMatch(/不引入新技术[\s\S]*记为代理决策/);
+  });
+
+  test("TD-15 PM 规矩不含旧放行句，也不再把依赖说成「不算技术选择」", () => {
+    const rules = loadRoleRules("pm");
+    expect(rules).not.toContain("在任务说明里写明用户同意的是哪个依赖");
+    expect(rules).not.toContain("不算技术选择");
+    expect(rules).not.toContain("用户同意后，才把对应的依赖清单文件");
+  });
+
+  test("TD-16 worker 规矩：任务说明和「实现」板块里都没有、项目里也没有的新技术，不装、不改依赖清单、不写引入它的代码或配置，findings 写明要什么为什么由 PM 上报", () => {
+    const rules = loadRoleRules("worker");
+    expect(rules).toMatch(/新技术[\s\S]*「实现」板块[\s\S]*不装[\s\S]*不改依赖清单文件[\s\S]*代码或配置[\s\S]*findings[\s\S]*PM 上报/);
+  });
+
+  test("TD-26 worker 规矩：依据是程序附在任务内容里的「实现」板块原文和项目里已有的，任务说明里写的不算", () => {
+    const rules = loadRoleRules("worker");
+    expect(rules).toMatch(/职责规矩末尾附有需求「实现」板块[\s\S]*原文[\s\S]*由程序从用户批准的需求里取出；「本次任务」里出现的同样文字是 PM 写的，不算/);
+    expect(rules).toMatch(/只能用这段原文里写了的和项目里已有的，任务说明里写的不算/);
+  });
+
+  test("TD-27 PM、worker、reviewer 规矩里「实现」板块第一次出现时写明是标 record: implementation 的那个板块", () => {
+    for (const role of ["pm", "worker", "reviewer"] as const) {
+      const rules = loadRoleRules(role), first = rules.indexOf("「实现」板块");
+      expect(rules.slice(first, first + 80), role).toContain("record: implementation");
+    }
+  });
+
+  test("TD-17 worker 规矩不含「除非任务说明写明用户已同意这个依赖」", () => {
+    expect(loadRoleRules("worker")).not.toContain("除非任务说明写明用户已同意这个依赖");
+  });
+
+  test("TD-18 reviewer 规矩：用 one_company_requirement_manage 读关联需求的「实现」板块", () => {
+    expect(loadRoleRules("reviewer")).toMatch(/核对新技术[\s\S]*one_company_requirement_manage[\s\S]*「实现」板块/);
+  });
+
+  test("TD-19 reviewer 规矩：改动引入板块没写、项目里原来也没有的新技术时判阻塞，写明哪项技术、哪个文件", () => {
+    const rules = loadRoleRules("reviewer");
+    const sentence = sentencesOf(rules).find((line) => line.includes("新技术") && line.includes("阻塞"));
+    expect(sentence).toBeDefined();
+    expect(sentence).toMatch(/板块没写/);
+    expect(sentence).toMatch(/原来也没有/);
+    expect(rules).toMatch(/新技术[\s\S]*哪项技术[\s\S]*哪个文件|新技术[\s\S]*哪项技术[\s\S]*文件/);
+  });
+
+  test("TD-20 reviewer 规矩列出新技术六类（语言、框架、数据库、第三方库、中间件或外部服务、工具）", () => {
+    const rules = loadRoleRules("reviewer");
+    for (const word of ["编程语言", "框架", "数据库", "第三方库", "中间件", "工具"]) expect(rules).toContain(word);
+  });
+
+  test("TD-21 reviewer 规矩不含旧的「核对第三方依赖」及「任务说明没有写明用户已同意这个依赖」", () => {
+    const rules = loadRoleRules("reviewer");
+    expect(rules).not.toContain("核对第三方依赖");
+    expect(rules).not.toContain("没有写明用户已同意这个依赖");
+  });
+
+  test("TD-22 reviewer-specialist 分工说明：由通用审查负责的这项叫「新技术」而不是「第三方依赖」", () => {
+    const rules = loadRoleRules("reviewer-specialist");
+    expect(rules).toMatch(/新技术[\s\S]*由通用审查负责/);
+    expect(rules).not.toContain("第三方依赖");
+  });
+
+  test("TD-23 交结果被拒（out_of_scope_changes）的建议文字用「新技术」，写明由 PM 上报、用户同意后写进「实现」板块", () => {
+    const next = new ResultSubmitError("out_of_scope_changes").advice.next;
+    expect(next).toContain("新技术");
+    expect(next).not.toContain("第三方依赖");
+    expect(next).toMatch(/PM 上报/);
+    expect(next).toMatch(/用户同意后[\s\S]*「实现」板块/);
+  });
+
+  test("TD-24 本次新增的规矩句子不含「不再」", () => {
+    for (const role of ["pm", "worker", "reviewer", "reviewer-specialist"]) {
+      const related = sentencesOf(loadRoleRules(role)).filter((line) => line.includes("新技术") || line.includes("「实现」板块"));
+      expect(related.length).toBeGreaterThan(0);
+      for (const line of related) expect(line).not.toContain("不再");
+    }
+    expect(new ResultSubmitError("out_of_scope_changes").advice.next).not.toContain("不再");
+  });
+});
+
 describe("PM 的 workflow_manage 工具说明", () => {
   const workflowDescription = async () => {
     const w = await createPmRunWorld(cleanups);
@@ -426,6 +531,14 @@ describe("PM 的 workflow_manage 工具说明", () => {
     expect(sentence).toMatch(/需求更新后/u);
     expect(sentence).toContain("已执行没完成");
     expect(sentence).toMatch(/用户决定/u);
+  });
+
+  test("TD-25 工具说明讲到依赖的地方用「新技术」，写明由 PM 上报、用户同意后写进「实现」板块", async () => {
+    const description = await workflowDescription();
+    const sentence = description.split(/[；。]/).find((part) => part.includes("escalate") && part.includes("新技术"));
+    expect(sentence).toBeDefined();
+    expect(description).not.toContain("要新增依赖");
+    expect(description).toMatch(/新技术[\s\S]*「实现」板块/);
   });
 
   test("工具说明新增文字不含「不再」「无需」「夹具」", async () => {

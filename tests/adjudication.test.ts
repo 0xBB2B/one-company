@@ -15,6 +15,7 @@ import { RequirementCloseService } from "../src/modules/delivery/workflow-close.
 import { mainAdjudication } from "./helpers/main-adjudication.ts";
 import { notePlanRejection } from "../src/modules/pm/pm-attention.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
+import { TECHS } from "./helpers/tech-sample.ts";
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 60_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -57,7 +58,7 @@ async function world() {
     main.adjudicate(text, entries, target, itemVersion ?? (target === itemId ? version() : `${target}:${w.fixture.state.read(w.fixture.requirementId).version}`), opened);
   const { interaction, ctx } = main;
   const decisions = () => w.db((db) => db.list("short_decisions")).length;
-  return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx, windows: main.windows, answerWindows: main.answerWindows, panelAsk: main.panelAsk, register: main.register, beforeAnswer: main.beforeAnswer };
+  return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx, windows: main.windows, answerWindows: main.answerWindows, panelAsk: main.panelAsk, panelAskTech: main.panelAskTech, register: main.register, beforeAnswer: main.beforeAnswer };
 }
 
 test("M7-AC35：用户原话选择再给一次机会时登记用户决定，任务回到可派出，事项从概览消失，PM 收到固定告知，按用户上限派出且不能带 retry", async () => {
@@ -2230,5 +2231,156 @@ describe("面板事项提问的窗口开着时发生撤销之后登记裁决", (
     expect(w.windows).toHaveLength(2);
     expect(w.decisions()).toBe(before);
     expect(w.task("login").status).toBe("awaiting_user");
+  });
+});
+
+describe("ask-tech 面板事项用法", () => {
+  const afterEscalate = async () => {
+    const w = await pendingWorld();
+    const failure = w.task("failure").taskId, itemId = `task:${failure}`;
+    await w.escalate(failure, "设置页引入新技术才能做");
+    const main = mainAdjudication(w, cleanups);
+    const version = () => `task:${failure}:${w.db((db) => db.read<TaskRecord>(TASKS, failure)!.version)}`;
+    main.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId });
+    return { w, main, failure, itemId, version };
+  };
+
+  test("TC-10：对 PM 派出前上报的任务打开，窗口标题以“提问 · ”开头，文字含卡住的任务，“全部同意”的说明写明批准新版本后 PM 接着做该任务", async () => {
+    const { main, itemId, version } = await afterEscalate();
+    main.answerWindows(false);
+    await main.panelAskTech({ itemId, itemVersion: version(), technologies: TECHS });
+    const shown = main.windows.at(-1)!;
+    expect(shown.title.startsWith("提问 · ")).toBe(true);
+    expect(shown.text).toContain("PM 拆计划时发现需要 · 卡住的任务：failure ");
+    expect(shown.text).toContain("你批准新版本后 PM 接着做 failure");
+    expect(shown.choices).toEqual(["全部同意", "写修改意见"]);
+  });
+
+  test("TC-11：选“全部同意”返回 answered 与 decision，回答以“调整目标或范围”开头，next 写明先 adjudicate 登记再写进需求「实现」板块", async () => {
+    const { main, itemId, version } = await afterEscalate();
+    main.answerWindows("全部同意");
+    const result = await main.panelAskTech({ itemId, itemVersion: version(), technologies: TECHS });
+    expect(result).toMatchObject({ status: "answered", decision: { itemId, itemVersion: version() } });
+    expect((result.answer as { text: string }).text.startsWith("调整目标或范围\n全部同意引入以下新技术：")).toBe(true);
+    expect(String(result.next)).toContain("purpose=adjudicate");
+    expect(String(result.next)).toContain("「实现」");
+  });
+
+  test("TC-12：用“全部同意”的回答登记 adjust 裁决后，任务状态变为待更新且 userDecision.techApproval 为 true", async () => {
+    const { w, main, failure, itemId, version } = await afterEscalate();
+    main.answerWindows("全部同意");
+    await main.panelAskTech({ itemId, itemVersion: version(), technologies: TECHS });
+    const result = await main.register(itemId, version(), [main.entry([`item:${itemId}`, `version:${version()}`, "choice:adjust"], { conclusion: "用户对任务 failure 的裁决", scope: "任务 failure" })]);
+    expect(result).toMatchObject({ status: "recorded", choice: "adjust" });
+    expect(w.task("failure")).toMatchObject({ taskId: failure, status: "needs_update", userDecision: { choice: "adjust", techApproval: true } });
+  });
+
+  test("TC-23：用“全部同意”的回答登记成再给一次机会或终止任务时被拒，原因写明只能登记为调整目标或范围，任务仍待用户裁决", async () => {
+    for (const references of [["choice:retry", "max-turns:1000"], ["choice:terminate"]]) {
+      const { w, main, itemId, version } = await afterEscalate();
+      main.answerWindows("全部同意");
+      await main.panelAskTech({ itemId, itemVersion: version(), technologies: TECHS });
+      const error = await main.register(itemId, version(), [main.entry([`item:${itemId}`, `version:${version()}`, ...references], { conclusion: "用户对任务 failure 的裁决", scope: "任务 failure" })])
+        .then(() => undefined, (caught: unknown) => caught as Error);
+      expect(error?.message, references.join(" ")).toContain("只能登记为调整目标或范围");
+      expect(w.task("failure").status).toBe("awaiting_user");
+    }
+  });
+
+  test("TC-24：选“写修改意见”后拿这次回答去登记裁决被拒（window_answer_not_decision），任务仍待用户裁决", async () => {
+    const { w, main, itemId, version } = await afterEscalate();
+    main.answerWindows({ other: "后端换成 Java" });
+    const asked = await main.panelAskTech({ itemId, itemVersion: version(), technologies: TECHS });
+    expect(asked).toMatchObject({ status: "answered", answer: { other: true } });
+    const error = await main.register(itemId, version(), [main.entry([`item:${itemId}`, `version:${version()}`, "choice:adjust"], { conclusion: "用户对任务 failure 的裁决", scope: "任务 failure" })])
+      .then(() => undefined, (caught: unknown) => caught as Error);
+    expect(String((error as { code?: string } | undefined)?.code ?? error?.message)).toContain("window_answer_not_decision");
+    expect(w.task("failure").status).toBe("awaiting_user");
+  });
+
+  test("TC-13：带技术批准的调整决定，PM 收到的通知要求等批准新的 PRD 版本，不含“不需要等新的批准版本”", async () => {
+    const { w, main, itemId, version } = await afterEscalate();
+    main.answerWindows("全部同意");
+    await main.panelAskTech({ itemId, itemVersion: version(), technologies: TECHS });
+    await main.register(itemId, version(), [main.entry([`item:${itemId}`, `version:${version()}`, "choice:adjust"], { conclusion: "用户对任务 failure 的裁决", scope: "任务 failure" })]);
+    w.provider.queue.push({ type: "text", text: "PM 收到调整决定" });
+    await until(() => w.provider.requests.some((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("用户决定：任务 failure")));
+    const notice = JSON.stringify(w.provider.requests.findLast((request) => JSON.stringify(request.messages.at(-1) ?? "").includes("用户决定：任务 failure"))!.messages.at(-1));
+    expect(notice).toContain("用户决定：任务 failure 调整目标或范围。等用户批准新的 PRD 版本后，复核并按新范围修改该任务，修改后可再派出一次。");
+    expect(notice).not.toContain("不需要等新的批准版本");
+  });
+
+  test("TC-14：带技术批准的派出前上报任务，同一批准版本下 PM 修改被拒，批准新版本并复核后可以修改", async () => {
+    const { w, main, failure, itemId, version } = await afterEscalate();
+    main.answerWindows("全部同意");
+    await main.panelAskTech({ itemId, itemVersion: version(), technologies: TECHS });
+    await main.register(itemId, version(), [main.entry([`item:${itemId}`, `version:${version()}`, "choice:adjust"], { conclusion: "用户对任务 failure 的裁决", scope: "任务 failure" })]);
+    w.provider.queue.push({ type: "text", text: "PM 收到调整决定" }, { type: "text", text: "PM 收到新版本差异" });
+    await until(() => w.provider.queue.length === 1);
+    const modify = () => w.plan.execute({ action: "update", planVersion: planVersionOf(w), modify: [{ taskId: failure, version: w.task("failure").version,
+      spec: spec("failure", "scenario.failure", { objective: "按引入的新技术实现失败提示" }) }] });
+    await expect(modify()).rejects.toMatchObject({ code: "task_not_ready" });
+
+    await w.fixture.approveRevision({ body: "# 手机号正常登录 {#goal.login}\n输入正确验证码后成功。\n# 验证码失败 {#scenario.failure}\n错误验证码显示失败，后端用 PostgreSQL。\n" });
+    await until(() => w.owner().context.baseline?.revision === 2);
+    await w.readDiffs(["revision 1 → 2"]);
+    await w.plan.execute({ action: "assess-update", revision: 2, tasks: [
+      { taskId: w.task("login").taskId, version: w.task("login").version, assessment: "unaffected", rationale: "登录不变" },
+      { taskId: failure, version: w.task("failure").version, assessment: "affected", rationale: "失败提示用到新技术" }],
+      global: { assessment: "unaffected", rationale: "无全局变化" } });
+    await modify();
+    expect(w.task("failure").status).toBe("pending");
+  });
+
+  test("TC-15：选“写修改意见”返回 answered 且 other 为 true，任务仍待用户裁决，next 写明按意见改清单再弹或修改需求", async () => {
+    const { w, main, itemId, version } = await afterEscalate();
+    main.answerWindows({ other: "数据库换成 MongoDB" });
+    const result = await main.panelAskTech({ itemId, itemVersion: version(), technologies: TECHS });
+    expect(result).toMatchObject({ status: "answered", answer: { text: "数据库换成 MongoDB", other: true } });
+    expect(w.task("failure").status).toBe("awaiting_user");
+    expect(String(result.next)).toContain("清单");
+    expect(String(result.next)).toContain("修改需求");
+  });
+
+  test("TC-16：两次未完成的待裁决任务也能弹技术清单窗口，全部同意后登记 adjust 同样带 techApproval", async () => {
+    const w = await world();
+    w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
+    w.answerWindows("全部同意");
+    const result = await w.panelAskTech({ itemId: w.itemId, itemVersion: w.version(), technologies: TECHS });
+    expect(result).toMatchObject({ status: "answered", decision: { itemId: w.itemId, itemVersion: w.version() } });
+    expect(await w.register(w.itemId, w.version(), [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:adjust"])])).toMatchObject({ status: "recorded", choice: "adjust" });
+    expect(w.task("login")).toMatchObject({ userDecision: { choice: "adjust", techApproval: true } });
+  });
+
+  test("TC-17：需求本身和计划多次被拒的事项用 ask-tech 失败，原因写明这类事项用 ask，窗口不弹", async () => {
+    const w = await world();
+    for (const reason of ["原因一", "原因二"]) notePlanRejection({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, w.pm.runId, { action: "propose", reason, detail: "", at: Date.now() });
+    const requirementItem = `requirement:${w.fixture.requirementId}`, planItem = `plan:${w.fixture.requirementId}`;
+    w.answerWindows("全部同意");
+    for (const [itemId, itemVersion] of [[requirementItem, `${requirementItem}:1`], [planItem, `${planItem}:2`]] as const) {
+      w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId });
+      const error = await w.panelAskTech({ itemId, itemVersion, technologies: TECHS }).then(() => undefined, (caught: unknown) => caught as Error);
+      expect(error, itemId).toBeInstanceOf(Error);
+      expect(error!.message, itemId).toContain("用 ask");
+    }
+    expect(w.windows).toHaveLength(0);
+  });
+
+  test("TC-18：任务拆分请求和超出上限的事项用 ask-tech 失败，原因写明这类事项用 ask，窗口不弹", async () => {
+    const w = await createPmRunWorld(cleanups);
+    const nine = Array.from({ length: 9 }, (_, index) => `条件 ${index + 1}`);
+    await w.plan.execute({ action: "propose", tasks: [spec("login", "goal.login", { passCriteria: nine }), spec("failure", "scenario.failure", { maxTurns: 150 })] });
+    await w.plan.execute({ action: "confirm", planVersion: 1 });
+    const main = mainAdjudication(w, cleanups);
+    main.answerWindows("全部同意");
+    for (const key of ["login", "failure"]) {
+      const row = w.db((db) => db.list<TaskRecord>(TASKS).find((entry) => entry.data.key === key)!);
+      const itemId = `task:${row.data.taskId}`;
+      main.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId });
+      const error = await main.panelAskTech({ itemId, itemVersion: `${itemId}:${row.version}`, technologies: TECHS }).then(() => undefined, (caught: unknown) => caught as Error);
+      expect(error, key).toBeInstanceOf(Error);
+      expect(error!.message, key).toContain("用 ask");
+    }
+    expect(main.windows).toHaveLength(0);
   });
 });

@@ -7,6 +7,7 @@ import { uuidv7 } from "../src/core/storage/database.ts";
 import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../src/modules/interaction/main-intake-interaction.ts";
 import { askQuestionIssues } from "../src/modules/interaction/ask-question.ts";
 import { createUserInteractTool, USER_INTERACT_PARAMETERS } from "../src/modules/interaction/user-interact-tool.ts";
+import { TECHS } from "./helpers/tech-sample.ts";
 const base = { action: "reply", repoId: "a".repeat(64), requirementId: uuidv7(), savedOperationId: uuidv7(), version: 2 };
 test("user_interact不接受转述、请求选择、角色或回执", async () => {
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: base })).toBe(true);
@@ -21,7 +22,9 @@ test("user_interact不接受转述、请求选择、角色或回执", async () =
   expect(Value.Check(USER_INTERACT_PARAMETERS, base)).toBe(false);
   await expect(tool.execute("call", base as never, undefined, undefined, {} as never)).rejects.toMatchObject({ code: "invalid_shape" });
   const unknown = await tool.execute("call", { request: { ...base, purpose: "approve" } } as never, undefined, undefined, {} as never).catch((error: unknown) => error);
-  expect((unknown as Error).message).toContain("可用 purpose:action：user-confirmation:ask、user-confirmation:reply、adjudicate:reply、panel-item:ask、pm-intake:ask、pm-intake:forward、pm-intake:reply");
+  for (const key of ["user-confirmation:ask", "user-confirmation:ask-tech", "user-confirmation:reply", "adjudicate:reply", "panel-item:ask", "panel-item:ask-tech", "pm-intake:ask", "pm-intake:forward", "pm-intake:reply"]) {
+    expect((unknown as Error).message).toContain(key);
+  }
   const extra = await tool.execute("call", { request: { ...base, sectionId: "x" } } as never, undefined, undefined, {} as never).catch((error: unknown) => error);
   expect((extra as Error).message).toContain("多余字段：sectionId");
 });
@@ -242,4 +245,80 @@ test("提问记录块在 pi 的工具显示组件里只画一份问题和回答�
   expect(text.split("起跳时机怎么定？").length - 1).toBe(1);
   expect(text.split("你的回答").length - 1).toBe(1);
   expect(text).toContain(caption);
+});
+
+const TECH_CAPTION = "图书馆借还系统（第 2 版）";
+const TECH_QUESTION = "上面 4 项新技术，同意引入吗？";
+const TECH_AGREE = "全部同意引入以下新技术：\n1. Vue 3（框架）\n2. Go（语言）\n3. PostgreSQL（数据库）\n4. Redis（中间件或外部服务）";
+function renderedTech(result: { details?: unknown; content?: Array<{ type: "text"; text: string }> } | undefined, isError = false) {
+  const tool = createUserInteractTool({ interaction: {} as never });
+  const technologies = [["Vue 3", "框架"], ["Go", "语言"], ["PostgreSQL", "数据库"], ["Redis", "中间件或外部服务"]].map(([name, kind]) => ({
+    name, kind, source: "AI 提议", purpose: "用途", necessity: "必须", alternatives: "别的不行" }));
+  const args = { request: { ...base, action: "ask-tech", technologies } };
+  const context = { args, state: {} as Record<string, unknown>, isError, invalidate: () => {} } as never;
+  const lines = () => [
+    ...tool.renderCall!(args as never, renderTheme as never, context).render(80),
+    ...(result ? tool.renderResult!({ content: result.content ?? [], details: result.details } as never, { expanded: false, isPartial: false }, renderTheme as never, context).render(80) : []),
+  ].map((line) => line.trimEnd());
+  lines();
+  return lines();
+}
+
+test("TB-28：技术清单提问结果出来前，标题行显示确认问题", () => {
+  expect(renderedTech(undefined)).toEqual([`<b>提问</b>  <muted>${TECH_QUESTION}</>`]);
+});
+
+test("TB-29：技术清单回答“全部同意”时，显示需求名、确认问题和 1. 全部同意", () => {
+  expect(renderedTech({ details: { caption: TECH_CAPTION, question: TECH_QUESTION, status: "answered", answer: { text: TECH_AGREE, choice: 1 } } })).toEqual([
+    `<b>提问</b>  <muted>${TECH_CAPTION}</>`, "", TECH_QUESTION, "<muted>你的回答  </>1. 全部同意"]);
+});
+
+test("TB-30：技术清单回答“写修改意见”时，回答行写明选项和用户写的内容", () => {
+  expect(renderedTech({ details: { caption: TECH_CAPTION, question: TECH_QUESTION, status: "answered", answer: { text: "后端换成 Java，数据库换成 MongoDB", other: true } } }).at(-1))
+    .toBe("<muted>你的回答  </>2. 写修改意见：后端换成 Java，数据库换成 MongoDB");
+});
+
+test("TB-31：技术清单暂不回答时，写明清单保留", () => {
+  expect(renderedTech({ details: { caption: TECH_CAPTION, question: TECH_QUESTION, status: "pending", answer: null } }).at(-1)).toBe("<muted>你暂不回答，清单保留。</>");
+});
+
+test("TB-32：技术清单登记出错时照旧显示没有登记和原因", () => {
+  expect(renderedTech({ content: [{ type: "text", text: "one_company_user_interact 的 ask-tech 动作失败。\n原因：第 2 项缺少备选为什么不选\n建议：补全后重新登记" }] }, true).at(-1))
+    .toBe("<error>没有登记：第 2 项缺少备选为什么不选</>");
+});
+
+const askTechBase = { action: "ask-tech", repoId: "a".repeat(64), requirementId: uuidv7(), savedOperationId: uuidv7(), version: 2, technologies: TECHS, scope: "仅技术选型", unitIds: ["A"], actions: ["analyze"] };
+const panelTechBase = { purpose: "panel-item", action: "ask-tech", repoId: "a".repeat(64), requirementId: uuidv7(), itemId: `task:${uuidv7()}`, itemVersion: "3", technologies: TECHS };
+
+test("TC-19：参数形状接受需求澄清用法和面板事项用法的 ask-tech 请求，purpose 省略与显式 user-confirmation 等价", () => {
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: askTechBase })).toBe(true);
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...askTechBase, purpose: "user-confirmation" } })).toBe(true);
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: panelTechBase })).toBe(true);
+});
+
+test("TC-20：ask-tech 请求里 technologies 项多余字段、类别或来源取值之外的值、缺 technologies 都被拒", () => {
+  for (const base of [askTechBase, panelTechBase]) {
+    const withTech = (tech: Record<string, unknown>) => ({ request: { ...base, technologies: [{ ...TECHS[0]!, ...tech }] } });
+    expect(Value.Check(USER_INTERACT_PARAMETERS, withTech({ extra: "多余" }))).toBe(false);
+    expect(Value.Check(USER_INTERACT_PARAMETERS, withTech({ kind: "操作系统" }))).toBe(false);
+    expect(Value.Check(USER_INTERACT_PARAMETERS, withTech({ source: "网上看到" }))).toBe(false);
+    const { technologies: _omitted, ...without } = base;
+    expect(Value.Check(USER_INTERACT_PARAMETERS, { request: without })).toBe(false);
+  }
+});
+
+test("TC-21：ask-tech 请求不接受 question、operationId 等调用方自填字段", () => {
+  for (const base of [askTechBase, panelTechBase]) {
+    for (const patch of [{ question: "同意吗？" }, { operationId: uuidv7() }, { choices: CHOICES }]) {
+      expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...base, ...patch } })).toBe(false);
+    }
+  }
+});
+
+test("TC-22：工具把两种 ask-tech 请求分别交给 askTech 和 askPanelItemTech", async () => {
+  const calls: string[] = [];
+  const stub = { execute: (_id: string, _ctx: unknown, _repo: string, _params: unknown, run: () => Promise<unknown>) => run(), askTech: async () => { calls.push("askTech"); throw new Error("stop"); }, askPanelItemTech: async () => { calls.push("askPanelItemTech"); throw new Error("stop"); } };
+  const tool = createUserInteractTool({ interaction: stub as never });
+  for (const request of [askTechBase, panelTechBase]) await tool.execute("call", { request } as never, undefined, undefined, {} as never).catch(() => undefined);
+  expect(calls).toEqual(["askTech", "askPanelItemTech"]);
 });

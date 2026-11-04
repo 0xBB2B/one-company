@@ -1489,3 +1489,281 @@ describe("窗口超过屏幕高度", () => {
     expect([...sweep(window, plain, SHIFT_DOWN)].sort((a, b) => a - b)).toEqual(everyRow(20));
   });
 });
+
+describe("技术清单窗口", () => {
+  const SHIFT_DOWN = "\x1b[1;2B", SHIFT_UP = "\x1b[1;2A";
+  type Tech = { name: string; kind: string; source: string; sourceWarn: boolean; use: string; why: string; alt: string };
+  const TECHS: Tech[] = [
+    { name: "Vue 3", kind: "框架", source: "项目规范", sourceWarn: true, use: "做借书、还书、查书的网页界面", why: "项目里还没有前端代码，必须选一个前端框架", alt: "React：同样能做；选 Vue 是因为开着 vue 专项代理" },
+    { name: "Go", kind: "语言", source: "项目规范", sourceWarn: true, use: "写借阅、库存、读者管理的后端接口", why: "项目里还没有后端代码，必须选一门后端语言", alt: "Java：同样能做；选 Go 是因为开着 go 专项代理" },
+    { name: "PostgreSQL", kind: "数据库", source: "AI 提议", sourceWarn: true, use: "保存图书、读者和借阅记录", why: "借阅记录要长期保存、按读者和日期查，文件存不了", alt: "MySQL：同样可用；SQLite：多人同时借还会锁住整个库" },
+    { name: "Redis", kind: "中间件或外部服务", source: "用户点名", sourceWarn: true, use: "缓存热门图书的查询结果", why: "用户在需求里点名要用", alt: "进程内缓存：后端开多个实例时各自内容对不上" },
+    { name: "MinIO", kind: "中间件或外部服务", source: "AI 提议", sourceWarn: true, use: "保存图书封面图片", why: "图片放进数据库会让库变大、备份变慢", alt: "存服务器磁盘：开多个后端实例时互相看不到图片" },
+    { name: "Docker", kind: "工具", source: "AI 提议", sourceWarn: true, use: "在本机一条命令启动数据库、缓存和图片存储", why: "三个服务手工装步骤多，各人版本难统一", alt: "手工安装：每台开发机都要各装一遍" },
+  ];
+  const itemLines = (techs: Tech[]) => techs.flatMap((tech, index) => [
+    ...(index > 0 ? [{ text: "" }] : []),
+    { text: "", spans: [{ text: `${index + 1}. ${tech.name}`, bold: true }, { text: `  ${tech.kind} · ` }, { text: tech.source, tone: "warning" as const }] },
+    { text: `   用途：${tech.use}`, tone: "muted" as const, indent: 3 },
+    { text: `   为什么非它不可：${tech.why}`, tone: "muted" as const, indent: 3 },
+    { text: `   备选为什么不选：${tech.alt}`, tone: "muted" as const, indent: 3 },
+  ]);
+  const techQuestion = (techs: Tech[]) => ({
+    caption: "提问 · 图书馆借还系统（第 2 版）", question: `要引入的新技术（共 ${techs.length} 项）`, lines: itemLines(techs),
+    prompt: `上面 ${techs.length} 项新技术，同意引入吗？`,
+    choices: [{ label: "全部同意", description: "按这份清单写进需求的「实现」板块；清单外的新技术仍要另外问" }],
+    allowOther: true, otherLabel: "写修改意见", otherDescription: "写哪项要改、改成什么；AI 改好后再给你看整份清单",
+    escapeHint: "Esc 暂不回答（清单保留，之后在对话里回答也行）", escapeOnOwnLine: true,
+  });
+  function open(techs: Tech[], rows: number, override: Record<string, unknown> = {}) {
+    const done: Array<WindowAnswer[] | undefined> = [];
+    const window = new QuestionWindowView({ tone: "standard", questions: [{ ...techQuestion(techs), ...override }], theme,
+      onDone: (answers) => done.push(answers), tui: { requestRender() {}, terminal: { rows, columns: 80 } } } as never);
+    return { window, done, raw: () => window.render(80), plain: () => window.render(80).map(bare), text: () => window.render(80).join("\n") };
+  }
+  const RULE = "─".repeat(80);
+  const itemText = (tech: Tech, index: number) => [
+    ` ${index}. ${tech.name}  ${tech.kind} · ${tech.source}`,
+    `    用途：${tech.use}`,
+    `    为什么非它不可：${tech.why}`,
+    `    备选为什么不选：${tech.alt}`,
+  ];
+  const FOUR = TECHS.slice(0, 4);
+  const HINT_ESC = " Esc 暂不回答（清单保留，之后在对话里回答也行）";
+
+  test("TA-01：4 项清单在 80 列下去掉颜色标记后逐行和确认过的原型一致", () => {
+    const expected = [
+      RULE, " 提问 · 图书馆借还系统（第 2 版）", "", " 要引入的新技术（共 4 项）", "",
+      ...FOUR.flatMap((tech, n) => [...(n > 0 ? [""] : []), ...itemText(tech, n + 1)]),
+      "", " 上面 4 项新技术，同意引入吗？", "",
+      " → 1. 全部同意", "      按这份清单写进需求的「实现」板块；清单外的新技术仍要另外问",
+      "   2. 写修改意见", "      写哪项要改、改成什么；AI 改好后再给你看整份清单",
+      "", " ↑↓ 选择 · 回车确认", HINT_ESC, RULE,
+    ];
+    expect(open(FOUR, 60).plain().map((line) => line.trimEnd())).toEqual(expected);
+  });
+
+  test("TA-02：颜色——标题行灰色，问题和确认问题加粗，项名加粗，来源 warning 色，三行说明灰色，光标选项 accent 色，选项说明和底部两行灰色", () => {
+    const raw = open(FOUR, 60).text();
+    expect(raw).toContain("<muted>提问 · 图书馆借还系统（第 2 版）</>");
+    expect(raw).toContain("<b>要引入的新技术（共 4 项）</b>");
+    expect(raw).toContain("<b>1. Vue 3</b>");
+    expect(raw).toContain("<warning>项目规范</>");
+    expect(raw).toContain("<warning>AI 提议</>");
+    expect(raw).toContain("<warning>用户点名</>");
+    expect(raw).toMatch(/<muted> *用途：做借书、还书、查书的网页界面<\/>/u);
+    expect(raw).toMatch(/<muted> *为什么非它不可：项目里还没有前端代码，必须选一个前端框架<\/>/u);
+    expect(raw).toMatch(/<muted> *备选为什么不选：React：同样能做；选 Vue 是因为开着 vue 专项代理<\/>/u);
+    expect(raw).toContain("<b>上面 4 项新技术，同意引入吗？</b>");
+    expect(raw).toContain("<accent>→ 1. 全部同意</>");
+    expect(raw).toMatch(/<muted>按这份清单写进需求的「实现」板块；清单外的新技术仍要另外问<\/>/u);
+    expect(raw).toContain("<muted>↑↓ 选择 · 回车确认</>");
+    expect(raw).toContain("<muted>Esc 暂不回答（清单保留，之后在对话里回答也行）</>");
+  });
+
+  test("TA-03：两个选项后面都没有推荐字样", () => {
+    expect(open(FOUR, 60).text()).not.toContain("推荐</b>");
+    const choiceRows = open(FOUR, 60).plain().filter((line) => /^( →|  ) [12]\. /u.test(line));
+    expect(choiceRows).toEqual([" → 1. 全部同意", "   2. 写修改意见"]);
+  });
+
+  test("TA-04：光标默认在全部同意，回车收到 choices 为全部同意", () => {
+    const { window, done } = open(FOUR, 60);
+    window.handleInput(ENTER);
+    expect(done).toEqual([[{ choices: ["全部同意"] }]]);
+  });
+
+  test("TA-05：按 Esc 时 onDone 收到 undefined", () => {
+    const { window, done } = open(FOUR, 60);
+    window.handleInput(ESC);
+    expect(done).toEqual([undefined]);
+  });
+
+  test("TA-06：↓ 移到写修改意见出现输入框，底部第一行换成直接输入提示，第二行仍是 Esc 那句", () => {
+    const { window, plain, text } = open(FOUR, 60);
+    window.handleInput(DOWN);
+    const lines = plain();
+    expect(lines).toContain(" → 2. 写修改意见");
+    expect(lines.some((line) => line.startsWith("      › "))).toBe(true);
+    expect(text()).toContain("<accent>→ 2. 写修改意见</>");
+    expect(text()).toContain("\x1b_pi:fc\x07");
+    const hint = lines.findIndex((line) => line.includes("直接输入"));
+    expect(lines[hint]!.trimEnd()).toBe(" 直接输入 · 回车确认 · Shift+Enter 换行 · ↑↓ 选择");
+    expect(lines[hint + 1]!.trimEnd()).toBe(HINT_ESC);
+    expect(lines[hint + 2]).toBe(RULE);
+  });
+
+  test("TA-07：写修改意见输入内容回车，onDone 收到 other 文本且 choices 为空", () => {
+    const { window, done } = open(FOUR, 60);
+    window.handleInput(DOWN);
+    for (const char of "后端换成 Java，数据库换成 MongoDB") window.handleInput(char);
+    window.handleInput(ENTER);
+    expect(done).toEqual([[{ choices: [], other: "后端换成 Java，数据库换成 MongoDB" }]]);
+  });
+
+  test("TA-08：写修改意见输入框为空时回车不提交，Shift+Enter 换行后能继续输入", () => {
+    const { window, done, plain } = open(FOUR, 60);
+    window.handleInput(DOWN);
+    window.handleInput(ENTER);
+    expect(done).toEqual([]);
+    for (const char of "甲") window.handleInput(char);
+    window.handleInput(SHIFT_ENTER);
+    for (const char of "乙") window.handleInput(char);
+    expect(plain().filter((line) => /^ {6}› 甲|^ {8}乙/u.test(line)).length).toBe(2);
+    window.handleInput(ENTER);
+    expect(done).toEqual([[{ choices: [], other: "甲\n乙" }]]);
+  });
+
+  test("TA-09：能滚动时底部第一行末尾多出 Shift+↑↓ 滚动内容，Esc 句仍单独占第二行", () => {
+    const lines = open(TECHS, 40).plain().map((line) => line.trimEnd());
+    const hint = lines.indexOf(" ↑↓ 选择 · 回车确认 · Shift+↑↓ 滚动内容");
+    expect(hint).toBeGreaterThan(0);
+    expect(lines[hint + 1]).toBe(HINT_ESC);
+  });
+
+  test("TA-10：6 项清单在 rows=40 时总共 24 行，上半部分顶部显示下面还有 22 行，确认问题、选项和底部提示完整显示", () => {
+    const lines = open(TECHS, 40).plain().map((line) => line.trimEnd());
+    expect(lines).toHaveLength(24);
+    const expected = [
+      RULE, " 提问 · 图书馆借还系统（第 2 版）", "", " 要引入的新技术（共 6 项）", "",
+      ...itemText(TECHS[0]!, 1), "", ...itemText(TECHS[1]!, 2).slice(0, 2),
+      " ↓ 下面还有 22 行",
+      "", " 上面 6 项新技术，同意引入吗？", "",
+      " → 1. 全部同意", "      按这份清单写进需求的「实现」板块；清单外的新技术仍要另外问",
+      "   2. 写修改意见", "      写哪项要改、改成什么；AI 改好后再给你看整份清单",
+      "", " ↑↓ 选择 · 回车确认 · Shift+↑↓ 滚动内容", HINT_ESC, RULE,
+    ];
+    expect(lines).toEqual(expected);
+  });
+
+  test("TA-11：6 项清单 Shift+↓ 滚到底后第二行是上面还有 22 行，接着第 4 项最后一行到第 6 项末尾共 11 行，确认问题和选项仍在", () => {
+    const { window, plain } = open(TECHS, 40);
+    plain();
+    for (let n = 0; n < 40; n++) window.handleInput(SHIFT_DOWN);
+    const lines = plain().map((line) => line.trimEnd());
+    expect(lines).toHaveLength(24);
+    expect(lines.slice(0, 2)).toEqual([RULE, " ↑ 上面还有 22 行"]);
+    expect(lines.slice(2, 13)).toEqual([
+      itemText(TECHS[3]!, 4)[3]!, "", ...itemText(TECHS[4]!, 5), "", ...itemText(TECHS[5]!, 6),
+    ]);
+    expect(lines).not.toContain(" ↓ 下面还有 0 行");
+    expect(lines.some((line) => /^ ↓ 下面还有/u.test(line))).toBe(false);
+    expect(lines).toContain(" 上面 6 项新技术，同意引入吗？");
+    expect(lines).toContain(" → 1. 全部同意");
+    expect(lines).toContain("   2. 写修改意见");
+    expect(lines.slice(-3)).toEqual([" ↑↓ 选择 · 回车确认 · Shift+↑↓ 滚动内容", HINT_ESC, RULE]);
+  });
+
+  test("TA-12：Shift+↑ 能从底部滚回顶部，回到下面还有 22 行", () => {
+    const { window, plain } = open(TECHS, 40);
+    plain();
+    for (let n = 0; n < 40; n++) window.handleInput(SHIFT_DOWN);
+    for (let n = 0; n < 40; n++) window.handleInput(SHIFT_UP);
+    expect(plain().map((line) => line.trimEnd())).toContain(" ↓ 下面还有 22 行");
+  });
+
+  test("TA-13：一项说明长到一行放不下时，续行从第 5 列开始（4 个空格后），不回到第 1 列", () => {
+    const longUse = "很".repeat(70);
+    const techs = [{ ...FOUR[0]!, use: longUse }, ...FOUR.slice(1)];
+    const lines = open(techs, 80).plain().map((line) => line.trimEnd());
+    const start = lines.findIndex((line) => line.startsWith("    用途：很"));
+    expect(start).toBeGreaterThan(0);
+    const wrapped = lines.slice(start, lines.findIndex((line, n) => n > start && line.includes("为什么非它不可")));
+    expect(wrapped.length).toBeGreaterThanOrEqual(2);
+    for (const line of wrapped) expect(line).toMatch(/^ {4}\S/u);
+    expect(wrapped.join("").replace(/ /gu, "")).toContain("用途：" + longUse);
+    for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(80);
+  });
+
+  test("TA-15：有固定问题时鼠标点“写修改意见”收起的输入行，光标回到输入框，接着输入的字写进去", () => {
+    for (const rows of [60, 40]) {
+      const { window, done, plain, text } = open(TECHS.slice(0, rows === 60 ? 4 : 6), rows);
+      plain();
+      window.handleInput(DOWN); typeText(window, "甲乙"); window.handleInput(UP);
+      expect(text()).not.toContain("直接输入");
+      const row = plain().findIndex((line) => line.startsWith("      › 甲乙"));
+      expect(row).toBeGreaterThan(-1);
+      window.handleMouse(click(8 + visibleWidth("甲乙"), row));
+      expect(text()).toContain("直接输入");
+      typeText(window, "丙"); window.handleInput(ENTER);
+      expect(done).toEqual([[{ choices: [], other: "甲乙丙" }]]);
+    }
+  });
+
+  test("TA-16：分段着色的行放不下时，续行按缩进对齐，各段文字和颜色都保留", () => {
+    const lines = [{ text: "", indent: 3, spans: [{ text: `1. ${"长".repeat(30)}`, bold: true }, { text: "  框架 · " }, { text: "AI 提议", tone: "warning" as const }] }];
+    const window = new QuestionWindowView({ tone: "standard", questions: [{ ...techQuestion(TECHS.slice(0, 1)), lines }], theme,
+      onDone: () => undefined, tui: { requestRender() {}, terminal: { rows: 60, columns: 80 } } } as never);
+    const raw = window.render(40), plain = raw.map(bare);
+    const start = plain.findIndex((line) => line.startsWith(" 1. 长"));
+    const end = plain.findIndex((line, n) => n > start && line.trim() === "");
+    expect(end - start).toBeGreaterThanOrEqual(2);
+    for (const line of plain.slice(start + 1, end)) expect(line).toMatch(/^ {4}\S/u);
+    expect(plain.slice(start, end).join("").replace(/ /gu, "")).toBe(`1.${"长".repeat(30)}框架·AI提议`);
+    expect(raw.slice(start, end).join("")).toContain("<warning>AI 提议</>");
+  });
+
+  test("TA-14：技术清单经 askWindow 打开，Esc 返回 undefined，回车返回全部同意，写修改意见返回 other", async () => {
+    const { askWindow } = await import("../src/core/host/question-window.ts");
+    const question = { ...techQuestion(FOUR) };
+    const dialogs = (script: (component: { handleInput(data: string): void }) => void) => fakeUi(script as never);
+    expect(await askWindow(dialogs((c) => c.handleInput(ESC)), question)).toBeUndefined();
+    expect(await askWindow(dialogs((c) => c.handleInput(ENTER)), question)).toEqual({ choices: ["全部同意"] });
+    expect(await askWindow(dialogs((c) => { c.handleInput(DOWN); typeText(c as never, "换成 Java"); c.handleInput(ENTER); }), question))
+      .toEqual({ choices: [], other: "换成 Java" });
+  });
+
+  const TWO = TECHS.slice(0, 2);
+  const noMarker = (lines: string[]) => lines.map((line) => line.replace(/\x1b_pi:fc\x07/gu, "").trimEnd());
+  const PROMPT2 = " 上面 2 项新技术，同意引入吗？";
+
+  test("TA-20：rows=14 光标在全部同意时，超出高度上限就去掉空行，文字一个不少，总行数不超过 11", () => {
+    const lines = noMarker(open(TWO, 14).plain());
+    expect(lines).toEqual([
+      RULE, " 提问 · 图书馆借还系统（第 2 版）", PROMPT2, "",
+      " → 1. 全部同意", "      按这份清单写进需求的「实现」板块；清单外的新技术仍要另外问",
+      " ↓ 下面还有 1 项", " ↑↓ 选择 · 回车确认 · Shift+↑↓ 滚动内容", HINT_ESC, RULE,
+    ]);
+    expect(lines.length).toBeLessThanOrEqual(11);
+  });
+
+  test("TA-21：rows=14 光标在写修改意见并输入内容时，逐行和确认过的原型一致，总行数不超过 11", () => {
+    const { window, plain } = open(TWO, 14);
+    plain();
+    window.handleInput(DOWN);
+    typeText(window, "后端换成 Java");
+    const lines = noMarker(plain());
+    expect(lines).toEqual([
+      RULE, " 提问 · 图书馆借还系统（第 2 版）", PROMPT2, "",
+      " ↑ 上面还有 1 项", " → 2. 写修改意见", "      写哪项要改、改成什么；AI 改好后再给你看整份清单", "      › 后端换成 Java",
+      " 直接输入 · 回车确认 · Shift+Enter 换行 · ↑↓ 选择 · Shift+↑↓ 滚动内容", HINT_ESC, RULE,
+    ]);
+    expect(lines.length).toBeLessThanOrEqual(11);
+  });
+
+  test("TA-23：rows=14 去掉空行后，在“写修改意见”的输入行开头点鼠标，接着输入的字落在行首", () => {
+    const { window, done, plain } = open(TWO, 14);
+    plain();
+    window.handleInput(DOWN); typeText(window, "甲乙");
+    const lines = noMarker(plain()), row = lines.findIndex((line) => line.startsWith("      › 甲乙"));
+    expect(lines.length).toBeLessThanOrEqual(11);
+    expect(row).toBeGreaterThan(-1);
+    window.handleMouse(click(8, row));
+    typeText(window, "X"); window.handleInput(ENTER);
+    expect(done).toEqual([[{ choices: [], other: "X甲乙" }]]);
+  });
+
+  test("TA-22：rows=20 光标在写修改意见时超出上限，确认问题上面和按键提示上面的空行都去掉，总行数不超过 12", () => {
+    const { window, plain } = open(TWO, 20);
+    plain();
+    window.handleInput(DOWN);
+    const lines = noMarker(plain());
+    expect(lines.length).toBeLessThanOrEqual(12);
+    const prompt = lines.indexOf(PROMPT2);
+    expect(prompt).toBeGreaterThan(0);
+    expect(lines[prompt - 1]).not.toBe("");
+    const hint = lines.findIndex((line) => line.includes("直接输入"));
+    expect(lines[hint - 1]).not.toBe("");
+    expect(lines[hint + 1]).toBe(HINT_ESC);
+  });
+});

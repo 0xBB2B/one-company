@@ -23,6 +23,7 @@ const ADJUDICATION_ADVICE = {
   decision_not_current: { why: "这个决定不是用户对本需求当前版本确认过的有效决定", next: "按用户最新原话重新登记决定" },
   item_changed: { why: "事项在用户做决定后已变化，或选项与事项不符", next: "重新读取待裁决事项，请用户按当前情况重新决定" },
   task_missing: { why: "找不到决定所指的任务", next: "重新读取待裁决事项" },
+  tech_not_adjust: { why: "用户在技术清单窗口里选的是全部同意，只能登记为调整目标或范围", next: "按调整目标或范围登记；用户想要别的处理时，请用户在对话里直接说" },
 } as const satisfies Record<string, FailureAdvice>;
 type AdjudicationErrorCode = keyof typeof ADJUDICATION_ADVICE;
 export class AdjudicationError extends Error {
@@ -115,7 +116,7 @@ export type AdjudicationEffect = { kind: "task"; task: TaskRecord } | { kind: "r
  * 按已登记的用户短决定生效。调用方给出的只是决定 ID，选项与轮数一律从持久记录读取，且须绑定当前需求版本与事项版本。
  * 任务决定改写任务状态；取消/拒绝需求只核对，由主代理随后以该决定关闭需求；报告决定改写报告状态，通过后由主代理以该决定完成关闭。
  */
-export function applyAdjudication(ref: Ref, input: { requirementId: string; decisionId: string; now?: number }): AdjudicationEffect {
+export function applyAdjudication(ref: Ref, input: { requirementId: string; decisionId: string; now?: number; techApproval?: true }): AdjudicationEffect {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => {
     const { record, version } = current(db, input.requirementId);
     const { decision, parsed } = userDecisionIn(db, ref, input.requirementId, input.decisionId);
@@ -136,6 +137,7 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     const task = row.data;
     if (task.requirementId !== input.requirementId || task.status !== "awaiting_user" || parsed.version !== `task:${taskId}:${row.version}` ||
       !(task.splitRequest ? ["adjust", "keep", "terminate"] : ["retry", "adjust", "terminate"]).includes(parsed.choice)) deny("item_changed");
+    if (input.techApproval && parsed.choice !== "adjust") deny("tech_not_adjust");
     const base = stalledStage(task);
     const stage = base !== "execute" && reviewRoundOpen(task) ? "review" : base;
     const round = latestRound(task);
@@ -147,6 +149,7 @@ export function applyAdjudication(ref: Ref, input: { requirementId: string; deci
     const userDecision: UserDecision = { decisionId: input.decisionId, choice: parsed.choice as UserDecision["choice"], maxTurns: parsed.maxTurns,
       revision: record.revision, taskVersion: task.version, usedByRunId: null, notified: false,
       ...(task.splitRequest && parsed.choice === "adjust" ? { split: true as const } : {}),
+      ...(input.techApproval ? { techApproval: true as const } : {}),
       confirmedPlan: confirmedPlanKey(readPlanIn(db, input.requirementId)?.plan), ...(escalation ? { escalation } : {}),
       ...(parsed.choice === "retry" && stage === "review" ? { agents: [...exhausted, ...waiting], baseline: Object.fromEntries(exhausted.map((agent) => [agent, reviewFailures(task.reviews, agent)])), round: round.round } : {}) };
     // 再给一次机会回到用完机会的那一环
@@ -212,7 +215,7 @@ export function takeUnnotifiedDecisions(ref: Ref, requirementId: string): string
           ? `用户决定：任务 ${task.key} 不拆，由你原地改写。用 plan_manage update 修改该任务本身，目标不能减少；本批准版本内不能再为它请求拆分。`
         : decision.choice === "adjust" && task.sizeHold && sizeHoldPending(task)
           ? `用户决定：任务 ${task.key} 由你拆分或精简（${task.sizeHold.join("；")}）。用 plan_manage update 修改该任务，或取消后另加任务，不需要等新的批准版本；改完仍超出上限会再次交用户裁决。`
-        : decision.choice === "adjust" && task.holdNote && unsentTask(task)
+        : decision.choice === "adjust" && task.holdNote && unsentTask(task) && !decision.techApproval
           ? `用户决定：任务 ${task.key} 按你上报的问题调整（${task.holdNote}）。用 plan_manage update 修改该任务，或取消后另加任务，不需要等新的批准版本。`
         : decision.choice === "adjust"
           ? `用户决定：任务 ${task.key} 调整目标或范围。等用户批准新的 PRD 版本后，复核并按新范围修改该任务，修改后可再派出一次。`

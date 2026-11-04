@@ -26,7 +26,7 @@ description: React 安全与鲁棒性常见坑：dangerouslySetInnerHTML 与用�
 ### 4. 服务端渲染时把状态序列化进 script 标签
 - 问题：用 `JSON.stringify` 把初始状态写进 `<script>`，数据里含 `</script><script>...` 时，会提前结束标签并执行后面的脚本。
 - 怎么认出：服务端 `<script>window.__STATE__ = ${JSON.stringify(state)}</script>` 的写法，state 里有用户数据。
-- 修法：不引入新依赖的写法：`JSON.stringify(state).replace(/</g, '\\u003c')`，把 `<` 转成转义序列；也可以用 `serialize-javascript` 库（新增依赖要先经团队同意）。
+- 修法：不引入新依赖的写法：`JSON.stringify(state).replace(/</g, '\\u003c')`，把 `<` 转成转义序列；也可以用 `serialize-javascript` 库（项目里还没有它时，要等用户同意、写进需求「实现」板块后才能用）。
 - 出处：https://redux.js.org/usage/server-rendering#security-considerations
 
 ### 5. Server Function 的参数当成可信输入

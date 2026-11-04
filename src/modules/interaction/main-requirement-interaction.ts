@@ -2,6 +2,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { resolveInternalModel } from "../settings/internal-model.ts";
 import { askRecordText } from "./ask-question.ts";
+import { readPlanIn, readTaskDetail } from "../pm/plan-manage.ts";
+import { techAgreeText, techQuestionText, techRecordText, techWindowQuestion } from "./tech-list.ts";
+import type { TechItem } from "./tech-list.ts";
 import type { AskQuestion } from "./ask-question.ts";
 import { randomBytes } from "node:crypto";
 import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
@@ -37,6 +40,7 @@ import { approvalManifestReference, confirmed } from "../requirement/approval-ma
 import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from "../panel/adjudication.ts";
 import { requirementSummary, saveRequirementSummary } from "../requirement/requirement-summary.ts";
 import { askWindow, confirmWindow, mutedLines } from "../../core/host/question-window.ts";
+import type { WindowAnswer } from "../../core/host/question-window.ts";
 import type { WindowLine } from "../../core/host/question-window.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { draftPrototypes, inFlightBlock, inFlightSummary, pickedOptionText, PrototypeBoardError, verifyDraftFiles } from "../requirement/requirement-prototypes.ts";
@@ -60,13 +64,14 @@ export interface MainRequirementInteractionOptions {
   openService?: OpenRequirementService;
   now?: () => number;
 }
+type PanelDecision = { itemId: string; itemVersion: string; techApproval?: true };
 interface CapturedInput {
   event: { source: "interactive"; text: string };
   sessionId: string; abort: AbortController;
   /** 用户在主代理的提问窗口里作答：只算回答，不能当作批准或裁决。 */
   fromQuestionWindow?: true;
   /** 针对面板事项、选项文字由程序固定的窗口回答：只能登记为这一个决定。 */
-  panelDecision?: { itemId: string; itemVersion: string };
+  panelDecision?: PanelDecision;
 }
 interface PendingResave { permit: CandidateResavePermit; origin: object; operationId: string; requirementId: string; complete: boolean }
 interface ConfirmationRequest extends LoadConfirmationInput { repoId: string; version: number }
@@ -573,7 +578,8 @@ export class MainRequirementInteraction {
       if (index < 0) return this.#prove(ctx, request.repoId, { ...base, status: "unclear", next: "用户未明确选择处理方式或未给出轮数，请向用户确认后重试" });
       const saved = core.save(capability);
       const decisionId = saved.decisionIds[index]!;
-      const effect = applyAdjudication({ dataRoot: this.#options.dataRoot, repoId: request.repoId }, { requirementId: request.requirementId, decisionId });
+      const effect = applyAdjudication({ dataRoot: this.#options.dataRoot, repoId: request.repoId },
+        { requirementId: request.requirementId, decisionId, ...(windowInput.panelDecision?.techApproval ? { techApproval: true as const } : {}) });
       const proofs = this.#decisionProofs(request.repoId, saved.decisionIds, saved.operationId);
       if (effect.kind === "requirement") {
         return this.#prove(ctx, request.repoId, { ...base, status: "recorded", decisionId, choice: effect.choice,
@@ -699,6 +705,23 @@ export class MainRequirementInteraction {
     return [body || "正文没有差异。", ...(changes ? [changes] : [])].join("\n");
   }
   async ask(ctx: ExtensionContext, request: ConfirmationRequest & AskQuestion & { scope: string; unitIds: string[]; actions: InteractionAction[] }, signal?: AbortSignal) {
+    return this.#askRegistered(ctx, request, askRecordText(request), request.question, (caption) => askWindow(ctx, { caption: `提问 · ${caption}`, question: request.question, rootCheck: request.rootCheck,
+      allowOther: true, escapeHint: "Esc 暂不回答（问题保留，之后在对话里回答也行）",
+      choices: request.choices.map((choice) => ({ label: choice.label, description: choice.reason, recommended: choice.recommended === true,
+        ...(choice.recommendedReason ? { recommendedReason: choice.recommendedReason } : {}) })) }, signal),
+    (picked) => {
+      const index = picked ? request.choices.findIndex((choice) => choice.label === picked.choices[0]) : -1;
+      return picked?.other ? { text: picked.other, other: true }
+        : index >= 0 ? { text: `${request.choices[index]!.label}\n${request.choices[index]!.reason}`, choice: index + 1 } : null;
+    });
+  }
+  async askTech(ctx: ExtensionContext, request: ConfirmationRequest & { technologies: TechItem[]; scope: string; unitIds: string[]; actions: InteractionAction[] }, signal?: AbortSignal) {
+    return this.#askRegistered(ctx, request, techRecordText(request.technologies), techQuestionText(request.technologies.length),
+      (caption) => askWindow(ctx, techWindowQuestion(request.technologies, { caption: `提问 · ${caption}` }), signal),
+      (picked) => picked?.other ? { text: picked.other, other: true } : picked ? { text: techAgreeText(request.technologies), choice: 1 } : null);
+  }
+  async #askRegistered(ctx: ExtensionContext, request: ConfirmationRequest & { scope: string; unitIds: string[]; actions: InteractionAction[] }, conclusion: string, questionText: string,
+    open: (caption: string) => Promise<WindowAnswer | undefined>, toAnswer: (picked: WindowAnswer | undefined) => { text: string; choice?: number; other?: boolean } | null) {
     const loaded = await this.#load(ctx, request);
     if (!request.unitIds.length || request.unitIds.some((id) => !loaded.partition.units.some((u) => u.id === id))) denied("question_scope_mismatch");
     const records = this.#authorization.interactionRecords(request.repoId, request.requirementId, this.#host(ctx).sessionId,
@@ -707,21 +730,15 @@ export class MainRequirementInteraction {
     const core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
     if (!ctx.hasUI) denied("question_display_unavailable");
     const question = core.ask(JSON.stringify({ basis: loaded.basis, candidate: loaded.candidate,
-      proposal: { conclusion: askRecordText(request), scope: request.scope, references: [], supersedes: [] }, unitIds: request.unitIds, actions: request.actions, partition: loaded.partition }));
+      proposal: { conclusion, scope: request.scope, references: [], supersedes: [] }, unitIds: request.unitIds, actions: request.actions, partition: loaded.partition }));
     // 新问题改变解释范围；只能由之后真实收到的输入回答，不能沿用提问前能力。
     core.revoke(); this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined;
     const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);
     const caption = `${loaded.title}（第 ${record.data.revision + 1} 版）`;
-    const picked = await askWindow(ctx, { caption: `提问 · ${caption}`, question: request.question, rootCheck: request.rootCheck,
-      allowOther: true, escapeHint: "Esc 暂不回答（问题保留，之后在对话里回答也行）",
-      choices: request.choices.map((choice) => ({ label: choice.label, description: choice.reason, recommended: choice.recommended === true,
-        ...(choice.recommendedReason ? { recommendedReason: choice.recommendedReason } : {}) })) }, signal);
-    const index = picked ? request.choices.findIndex((choice) => choice.label === picked.choices[0]) : -1;
-    const answer = picked?.other ? { text: picked.other, other: true }
-      : index >= 0 ? { text: `${request.choices[index]!.label}\n${request.choices[index]!.reason}`, choice: index + 1 } : null;
+    const answer = toAnswer(await open(caption));
     if (answer) this.#adoptQuestionAnswer(answer.text, host, ctx);
     return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: loaded.version, epoch: loaded.epoch, requestId: question.requestId,
-      caption, question: request.question, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false });
+      caption, question: questionText, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false });
   }
   /** 整份草稿没能确认时，由程序按记录写明挡住的段落：以前登记的决定对不上的，和这次解读仍待定的；待定段落附上解读模型写的理由，供主代理决定问用户什么。 */
   #blockedReason(request: ConfirmationRequest, loaded: ConfirmationContext, interpretation: InteractionInterpretation, sessionId: string, justSaved: string[]): string {
@@ -782,8 +799,35 @@ export class MainRequirementInteraction {
         : decision ? `按这个回答以 one_company_user_interact purpose=adjudicate itemId=${decision.itemId} itemVersion=${decision.itemVersion} 登记；回答不是登记选项时按其内容处理`
         : "这个回答只作为给你的指示，不能登记为批准或裁决；按回答处理，需要转给 PM 时用 agent_manage message" });
   }
+  async askPanelItemTech(ctx: ExtensionContext, request: { repoId: string; requirementId: string; itemId: string; itemVersion: string; technologies: TechItem[] }, signal?: AbortSignal) {
+    const host = this.#host(ctx);
+    if (!host.repositories.has(request.repoId)) denied("foreign_repo");
+    if (!ctx.hasUI) denied("question_display_unavailable");
+    const ref = { dataRoot: this.#options.dataRoot, repoId: request.repoId };
+    const notTask = new HostAuthorizationError("question_format", "这类事项用 ask 提问，ask-tech 只用于 PM 上报要用新技术的待裁决任务");
+    if (!request.itemId.startsWith("task:")) throw notTask;
+    let target: ReturnType<typeof panelItemTarget>;
+    try { target = panelItemTarget(ref, request.requirementId, request.itemId, request.itemVersion); }
+    catch (error) { if (error instanceof PanelItemAskError) throw new HostAuthorizationError(error.code, error.detail || undefined); throw error; }
+    if (target.fixed !== FIXED_CHOICES.retry || !target.decision) throw notTask;
+    const task = withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => readPlanIn(db, request.requirementId)?.tasks.find((candidate) => `task:${candidate.taskId}` === request.itemId));
+    if (!task) denied("task_missing");
+    const pmTask = { key: task!.key, title: (await readTaskDetail(task!)).objective };
+    const title = await this.#requirementTitle(host, request.repoId, request.requirementId);
+    const caption = `提问 · ${title ?? request.requirementId}（第 ${this.#snapshot(host, request.repoId, request.requirementId).data.revision + 1} 版）`;
+    const picked = await askWindow(ctx, techWindowQuestion(request.technologies, { caption, pmTask }), signal);
+    const answer = picked?.other ? { text: picked.other, other: true } : picked ? { text: `${FIXED_CHOICES.retry[1]}\n${techAgreeText(request.technologies)}`, choice: 1 } : null;
+    if (answer) this.#adoptQuestionAnswer(answer.text, host, ctx, picked?.other ? undefined : { ...target.decision, techApproval: true });
+    const record = this.#snapshot(host, request.repoId, request.requirementId);
+    const decision = answer && !answer.other ? target.decision : null;
+    return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: record.version, epoch: record.data.epoch, itemId: request.itemId,
+      caption, question: techQuestionText(request.technologies.length), status: answer ? "answered" : "pending", answer, decision,
+      next: !answer ? "用户暂不回答，事项保留"
+        : decision ? `先以 one_company_user_interact purpose=adjudicate itemId=${decision.itemId} itemVersion=${decision.itemVersion} 登记用户决定；再用 updateDraft 把这些技术写进需求的「实现」板块，请用户批准新版本，批准后 PM 接着做该任务`
+        : "用户写了修改意见：按意见改清单后再用 ask-tech 弹一次，或按意见修改需求；任务继续等用户决定" });
+  }
   /** 窗口里的回答记成用户这一轮的原话；不走 captureInput，免得本次工具调用的代次失效、结果被当成过期。 */
-  #adoptQuestionAnswer(text: string, host: RequirementManageHostContext, ctx: ExtensionContext, panelDecision?: { itemId: string; itemVersion: string }): void {
+  #adoptQuestionAnswer(text: string, host: RequirementManageHostContext, ctx: ExtensionContext, panelDecision?: PanelDecision): void {
     const previous = this.#input;
     if (previous) { previous.event.text = ""; previous.abort.abort(); }
     // 和用户新说一句话一样换掉解释核心，下次用到时按这句回答重新签发输入凭据

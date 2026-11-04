@@ -46,7 +46,7 @@ const RESULT_SUBMIT_ADVICE = {
   invalid_shape: { why: "提交内容的字段不符合格式", next: "按原因改正字段后重交" },
   invalid_binding: { why: "提交内容与派工绑定不一致", next: "按派工给定的任务、检查轮和验证编号提交" },
   out_of_scope: { why: "提交内容超出了本运行允许的范围", next: "按原因改正后重交" },
-  out_of_scope_changes: { why: "工作区里有本任务写入范围以外的文件被改动", next: "先用命令把这些文件恢复成最新提交里的样子：已跟踪的文件用 git show HEAD:<路径> > <路径> 取回，新建的文件删掉（沙箱里 git checkout 与 git restore 用不了）；需要新增或升级第三方依赖时不要自己装，恢复后在 findings 里写明要什么、为什么，由 PM 交用户裁决；然后重交" },
+  out_of_scope_changes: { why: "工作区里有本任务写入范围以外的文件被改动", next: "先用命令把这些文件恢复成最新提交里的样子：已跟踪的文件用 git show HEAD:<路径> > <路径> 取回，新建的文件删掉（沙箱里 git checkout 与 git restore 用不了）；需要用新技术（项目里还没有的语言、框架、数据库、库、服务或工具，含升级已有的库）时不要自己装，恢复后在 findings 里写明要什么、为什么，由 PM 上报，用户同意后写进需求「实现」板块才能用；然后重交" },
   resource_limit: { why: "提交内容超出了允许的数量或长度", next: "精简内容后重交" },
   verdict_unavailable: { why: "本运行没有可提交裁决的任务绑定", next: "检索运行改用 research 提交" },
   prototype_unavailable: { why: "本次运行没有可提交原型的设计任务", next: "不要再提交原型；在回复里说明，由上级处理" },

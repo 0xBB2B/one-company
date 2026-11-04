@@ -3,13 +3,25 @@ import type { EditorTheme, KeybindingsManager, TUI, TuiMouseEvent, TuiMouseEvent
 import { Editor, matchesKey, sliceByColumn, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 export type LineTone = "normal" | "muted" | "added" | "removed" | "warning";
-export interface WindowLine { text: string; tone?: LineTone }
+export interface WindowSpan { text: string; tone?: LineTone; bold?: boolean }
+export interface WindowLine {
+  text: string;
+  tone?: LineTone;
+  /** 有 spans 时按段着色，忽略 text。 */
+  spans?: WindowSpan[];
+  /** 折行时续行在行首 1 个空格之后再补的空格数。 */
+  indent?: number;
+}
 export interface WindowChoice { label: string; description?: string; recommended?: boolean; recommendedReason?: string; /** 不可选时写原因：整行变暗，光标跳过。 */ disabled?: string }
 export interface WindowQuestion {
   header?: string;
   /** 问题上方的灰色一行，例如"提问 · 需求名（第 2 版）"。 */
   caption?: string;
   question: string;
+  /** 问题下面紧跟的一行普通颜色文字。 */
+  subtitle?: string;
+  /** 选项上方固定显示的加粗问题，不随内容滚动。 */
+  prompt?: string;
   rootCheck?: string;
   lines?: WindowLine[];
   choices: WindowChoice[];
@@ -19,12 +31,16 @@ export interface WindowQuestion {
   otherLabel?: string;
   /** "其他"输入的最长字数；超出时回车不起作用，并在输入行下提示超出多少字。 */
   otherMaxLength?: number;
+  /** "其他"行名称下面的灰色说明。 */
+  otherDescription?: string;
   /** 按 Esc 取消时实际发生什么，写在提示行末尾的括号里。 */
   cancelNote?: string;
   /** 整个替换提示行里 Esc 那一段。 */
   escapeHint?: string;
   /** 按 Esc 时窗口按"选了这个名称"作答。 */
   escapeChoice?: string;
+  /** 提示行里 Esc 那一段单独占第二行。 */
+  escapeOnOwnLine?: boolean;
 }
 export interface WindowAnswer { choices: string[]; other?: string }
 export interface WindowTheme { fg(kind: string, text: string): string; bold(text: string): string }
@@ -274,20 +290,29 @@ export class QuestionWindowView {
         const hint = ["↑↓ 选择", "回车确认", ...(scrollable ? [SCROLL_HINT] : []), "←→ 回去修改", "Esc 取消"].join(" · ");
         return ["", ...wrapPlain(hint, width - 1).map((piece) => ` ${muted(piece)}`), border];
       };
-      return this.compose(head, content, groups, pending, this.reviewCursor, bottomFor, muted);
+      return this.compose(head, content, [], groups, pending, this.reviewCursor, bottomFor, muted);
     }
 
     const index = this.tab, question = this.options.questions[index]!, state = this.states[index]!;
     if (question.caption) content.push(...wrapPlain(question.caption, width - 1).map((piece) => ` ${muted(piece)}`), "");
     if (warning) content.push(...wrap(theme.fg("warning", theme.bold(question.question)), 1), "");
-    else content.push(...wrapPlain(question.question, width - 1).map((piece) => ` ${theme.bold(piece)}`), "");
+    else content.push(...wrapPlain(question.question, width - 1).map((piece) => ` ${theme.bold(piece)}`), ...(question.subtitle ? wrapPlain(question.subtitle, width - 1).map((piece) => ` ${piece}`) : []), "");
     if (!warning && question.rootCheck) {
       const label = "根源自检  ", indent = " ".repeat(visibleWidth(label));
       content.push(...wrapPlain(question.rootCheck, width - 1 - indent.length).map((piece, i) => ` ${muted(`${i ? indent : label}${piece}`)}`), "");
     }
     for (const line of question.lines ?? []) {
-      const color = TONE_COLOR[line.tone ?? "normal"];
-      for (const piece of wrapTextWithAnsi(line.text, Math.max(8, width - 1))) content.push(` ${color ? theme.fg(color, piece) : piece}`);
+      const indent = line.indent ?? 0;
+      const paint = (text: string, tone?: LineTone, bold?: boolean) => {
+        const color = TONE_COLOR[tone ?? "normal"];
+        return bold ? theme.bold(color ? theme.fg(color, text) : text) : color ? theme.fg(color, text) : text;
+      };
+      if (line.spans) {
+        const joined = line.spans.map((span) => paint(span.text, span.tone, span.bold)).join("");
+        wrapTextWithAnsi(joined, Math.max(8, width - 1 - indent)).forEach((piece, n) => content.push(` ${" ".repeat(n ? indent : 0)}${piece}`));
+        continue;
+      }
+      wrapTextWithAnsi(line.text, Math.max(8, width - 1 - indent)).forEach((piece, n) => content.push(` ${" ".repeat(n ? indent : 0)}${paint(piece, line.tone)}`));
     }
     if (question.lines?.length) content.push("");
     content.pop();
@@ -299,7 +324,7 @@ export class QuestionWindowView {
       groups.push(group);
       const selected = i === state.cursor;
       const box = question.multiSelect ? `[${state.picked.has(i) || (this.isOther(index, i) && this.otherText(index)) ? "x" : " "}] ` : "";
-      const description = question.choices[i]?.description, disabled = question.choices[i]?.disabled;
+      const description = question.choices[i]?.description ?? (this.isOther(index, i) ? question.otherDescription : undefined), disabled = question.choices[i]?.disabled;
       if (disabled) {
         const lead = `${label}${" ".repeat(labelWidth - visibleWidth(label) + 3)}`;
         wrapPlain(disabled, Math.max(8, width - 3 - visibleWidth(lead))).forEach((piece, n) => group.push(`   ${muted(`${n ? " ".repeat(visibleWidth(lead)) : lead}${piece}`)}`));
@@ -335,20 +360,23 @@ export class QuestionWindowView {
       if (excess > 0) group.push(`      ${muted(`超出 ${excess} 字，最多 ${question.otherMaxLength} 字`)}`);
     });
 
+    const fixed = question.prompt ? ["", ...wrapPlain(question.prompt, width - 1).map((piece) => ` ${theme.bold(piece)}`)] : [];
     const enter = question.multiSelect && this.multi ? "回车下一题" : "回车确认";
+    const escapeText = question.escapeHint ?? `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`;
     const bottomFor = (scrollable: boolean) => {
       const hint = [
         ...(this.isOther(index, state.cursor) ? ["直接输入", enter, "Shift+Enter 换行", "↑↓ 选择"] : ["↑↓ 选择", ...(question.multiSelect ? ["空格勾选"] : []), enter]),
         ...(scrollable ? [SCROLL_HINT] : []),
         ...(this.multi ? ["←→ 切换问题"] : []),
-        question.escapeHint ?? `Esc 取消${question.cancelNote ? `（${question.cancelNote}）` : ""}`,
+        ...(question.escapeOnOwnLine ? [] : [escapeText]),
       ].join(" · ");
-      return ["", ...wrapPlain(hint, width - 1).map((piece) => ` ${muted(piece)}`), border];
+      const escape = question.escapeOnOwnLine ? wrapPlain(escapeText, width - 1).map((piece) => ` ${muted(piece)}`) : [];
+      return ["", ...wrapPlain(hint, width - 1).map((piece) => ` ${muted(piece)}`), ...escape, border];
     };
-    return this.compose(head, content, groups, pending, state.cursor, bottomFor, muted);
+    return this.compose(head, content, fixed, groups, pending, state.cursor, bottomFor, muted);
   }
 
-  private compose(head: string[], content: string[], groups: string[][], pending: PendingBar[], cursor: number,
+  private compose(head: string[], content: string[], fixed: string[], groups: string[][], pending: PendingBar[], cursor: number,
     bottomFor: (scrollable: boolean) => string[], muted: (text: string) => string): string[] {
     const rows = this.options.tui.terminal?.rows;
     const cap = rows === undefined ? undefined : Math.max(MIN_HEIGHT, Math.floor(rows * HEIGHT_RATIO));
@@ -358,9 +386,9 @@ export class QuestionWindowView {
     let offset = 0;
     groups.forEach((group, i) => { entries.push({ group: i, offset }); offset += group.length; });
     this.maxScroll = 0;
-    if (cap !== undefined && head.length + content.length + 1 + optionLines + bottom.length > cap) {
+    if (cap !== undefined && head.length + content.length + fixed.length + 1 + optionLines + bottom.length > cap) {
       bottom = bottomFor(true);
-      const avail = cap - head.length - 1 - bottom.length;
+      const avail = cap - head.length - fixed.length - 1 - bottom.length;
       const minContent = Math.min(content.length, 3);
       if (optionLines > avail - minContent) ({ lines: optionOut, entries } = this.optionWindow(groups, cursor, Math.max(3, avail - minContent), muted));
       const room = Math.max(1, avail - optionOut.length);
@@ -374,13 +402,18 @@ export class QuestionWindowView {
       }
     }
     this.scroll = Math.min(this.scroll, this.maxScroll);
-    const base = head.length + contentOut.length + 1;
+    // 选项窗口至少 3 行、内容至少 1 行，加上固定问题后矮终端会超过上限
+    if (fixed.length && cap !== undefined && head.length + contentOut.length + fixed.length + 1 + optionOut.length + bottom.length > cap) {
+      fixed = fixed.slice(1);
+      bottom = bottom.slice(1);
+    }
+    const base = head.length + contentOut.length + fixed.length + 1;
     this.bars = pending.flatMap(({ bar, group }) => {
       const entry = entries.find((item) => item.group === group);
       if (!entry) return [];
       return [{ ...bar, start: base + entry.offset + bar.start, end: base + entry.offset + bar.end }];
     });
-    return [...head, ...contentOut, "", ...optionOut, ...bottom];
+    return [...head, ...contentOut, ...fixed, "", ...optionOut, ...bottom];
   }
 
   private contentWindow(content: string[], room: number, hints: number, muted: (text: string) => string): string[] {
