@@ -53,7 +53,7 @@ description: one_company_user_interact 新增 ask-tech：主代理提问和面�
 | `resized` | 带这个标记的决定不算“派出前上报可直接改”，只走 `readjusted` 的新版本放行 |
 
 ## 协作关系
-- 工具 `run` → `MainRequirementInteraction.execute`（已有的会话与结果证明包装）→ `askTech` / `askPanelItemTech` → `techWindowQuestion`（02）→ `techListWindow`（01）。
+- 工具 `run` → `MainRequirementInteraction.execute`（已有的会话与结果证明包装）→ `askTech` / `askPanelItemTech` → `techWindowQuestion`（02）→ `askWindow`。
 - `askTech` 复用 ask 已有的 `#load`、`#authorization.interactionRecords`、`core.ask`、`#snapshot`、`#prove`；`askPanelItemTech` 复用 `panelItemTarget`、`#requirementTitle`、`readPlanIn`（取任务编号与标题）。
 - `adjudicate` → `applyAdjudication` → 任务记录；守护进程把 `takeUnnotifiedDecisions` 的通知转给 PM（已有）。
 

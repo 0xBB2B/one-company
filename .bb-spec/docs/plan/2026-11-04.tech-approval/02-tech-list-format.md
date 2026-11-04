@@ -40,7 +40,7 @@ description: 技术清单的参数格式、逐条检查、问题记录文字、�
 | `askRequest` / `renderAskCall` / `renderAskResult` | 除 ask 外也认 ask-tech 动作：标题行同 ask；结果块按上面“对话问答块”三种写法显示；出错时仍显示“没有登记：<原因>” |
 
 ## 协作关系
-- `techWindowQuestion` 产出的对象交给 `src/core/host/question-window.ts` 的 `techListWindow`（本主题 01）。
+- `techWindowQuestion` 产出的对象交给 `src/core/host/question-window.ts` 的 现有的 `askWindow`。
 - `techListIssues`、`techRecordText`、`techAgreeText` 由本主题 03 的工具入口和 `MainRequirementInteraction` 调用。
 - 人称检查复用 `src/modules/interaction/ask-question.ts` 里已有的规则文字，不另写一套。
 

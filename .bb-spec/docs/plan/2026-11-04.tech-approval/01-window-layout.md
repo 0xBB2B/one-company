@@ -28,10 +28,9 @@ description: 通用问答窗口支持一行分段着色、选项上方固定问�
 | `WindowQuestion`（类型） | 增加三个可选字段：选项上方固定显示、不随内容滚动的加粗问题；“其他”行下面的灰色说明；Esc 提示单独占一行的开关 |
 | `QuestionWindowView.render` | 按新字段排版：分段行着色、续行缩进；有固定问题时放在内容与选项之间；“其他”行在名称下显示说明；开关打开时底部提示把 Esc 段单独放第二行 |
 | `QuestionWindowView.compose` | 计算高度时把固定问题算进不滚动的部分，只让内容部分滚动 |
-| `techListWindow` | 新增导出：标准颜色、单个问题的窗口入口，供技术清单使用，返回 WindowAnswer 或 undefined；和 askWindow 一样经 showWindow 排队打开 |
 
 ## 协作关系
-- `techListWindow` → `showWindow` → `openProgramWindow`（已有，窗口排队、上报“在等用户”状态）。
+- 技术清单直接用已有的 `askWindow` 打开（标准颜色、单个问题），经 `showWindow` → `openProgramWindow` 排队。
 - 技术清单的内容由 interaction 模块拼成 WindowQuestion 后调用（见本主题 02、03），本文件不认识“技术”这个业务概念。
 - 现有 askWindow、confirmWindow、chooseWindow、chooseOrWriteWindow 的渲染结果不变：已有测试 `tests/question-window.test.ts` 全部照常通过。
 
