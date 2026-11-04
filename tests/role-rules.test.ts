@@ -157,7 +157,7 @@ describe("下游职责规矩的原型要求", () => {
     for (const phrase of phrases) expect(rules).toContain(phrase);
   });
 
-  test("pm 的职责规矩不再让 PM 写 ui 标记或带 prototype 派工", () => {
+  test("pm 的职责规矩不让 PM 写 ui 标记或带 prototype 派工", () => {
     const rules = loadRoleRules("pm");
     for (const phrase of ["ui 写成 true", "带 prototype 派"]) expect(rules).not.toContain(phrase);
   });
