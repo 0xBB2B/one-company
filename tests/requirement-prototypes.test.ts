@@ -1,7 +1,8 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import { VALID_DESIGN } from "./helpers/design-sample.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import type { RequirementRecord } from "../src/modules/requirement/requirement-contracts.ts";
 import { pickedOptionText } from "../src/modules/requirement/requirement-prototypes.ts";
@@ -64,11 +65,11 @@ async function failure(run: () => unknown): Promise<PrototypeBoardError> {
   throw new Error("预期抛错，但调用成功了");
 }
 
-const begin = (name: string, runId = uuidv7(), id = requirementId) => beginDesign(ref, { requirementId: id, name, runId, agent: "designer" });
+const begin = (name: string, runId = uuidv7(), id = requirementId) => beginDesign(ref, { requirementId: id, name, runId, agent: "designer", designBase: null });
 async function designed(name: string, html = HTML, note = "三项状态横排", options?: string[]) {
   const runId = uuidv7();
   const started = await begin(name, runId);
-  await submitDesign(ref, { pages: PAGES, requirementId, name, runId, html, note, ...(options ? { options } : {}) });
+  await submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name, runId, html, note, ...(options ? { options } : {}) });
   return { runId, version: started.version };
 }
 async function accepted(name: string, html = HTML) {
@@ -77,6 +78,7 @@ async function accepted(name: string, html = HTML) {
   await decidePrototype(ref, { requirementId, name, version, hash: pending.hash, choice: "accept", option: null, opinion: null });
   return pending;
 }
+const designFile = (name: string, version: number, letter?: string) => join(dirname(prototypeFilePath(ref, { requirementId, name, version })), `${name}.v${version}.design${letter ? `-${letter}` : ""}.md`);
 const board = () => readPrototypeBoard(ref, requirementId);
 const entryOf = async (name: string) => (await board()).entries.find((entry) => entry.name === name);
 
@@ -175,7 +177,7 @@ test("交稿超过 1 MiB 被拒且看板仍是设计中", async () => {
   const runId = uuidv7();
   await begin("登录页", runId);
   const html = `<!doctype html>${"x".repeat(MIB)}`;
-  await failure(() => submitDesign(ref, { pages: PAGES, requirementId, name: "登录页", runId, html, note: "n" }));
+  await failure(() => submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name: "登录页", runId, html, note: "n" }));
   expect(await inFlightSummary(ref, requirementId)).toEqual([{ name: "登录页", version: 1, status: "designing" }]);
 });
 
@@ -187,7 +189,7 @@ test("拼好的文件恰好 1 MiB 时被接收", async () => {
   const runId = uuidv7();
   await begin("登录页", runId);
   const html = head + "x".repeat(MIB - overhead - Buffer.byteLength(head));
-  await submitDesign(ref, { pages: PAGES, requirementId, name: "登录页", runId, html, note: "n" });
+  await submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name: "登录页", runId, html, note: "n" });
   const written = readFileSync(prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }));
   expect(written.length).toBe(MIB);
   expect((await inFlightSummary(ref, requirementId)).find((entry) => entry.name === "登录页")?.status).toBe("awaiting");
@@ -196,7 +198,7 @@ test("拼好的文件恰好 1 MiB 时被接收", async () => {
 test("交稿不是 HTML 时被拒且看板仍是设计中", async () => {
   const runId = uuidv7();
   await begin("登录页", runId);
-  await failure(() => submitDesign(ref, { pages: PAGES, requirementId, name: "登录页", runId, html: "这只是一段纯文本", note: "n" }));
+  await failure(() => submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name: "登录页", runId, html: "这只是一段纯文本", note: "n" }));
   expect((await inFlightSummary(ref, requirementId))[0]?.status).toBe("designing");
 });
 
@@ -204,19 +206,19 @@ test("交稿以 html 标签开头或前面有空白和大写时算 HTML", async 
   for (const [index, html] of ["<html><body>x</body></html>", "  \n\t<!DOCTYPE HTML><html></html>", "<HTML>x</HTML>"].entries()) {
     const name = `页${index}`, runId = uuidv7();
     await begin(name, runId);
-    await submitDesign(ref, { pages: PAGES, requirementId, name, runId, html, note: "n" });
+    await submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name, runId, html, note: "n" });
     expect((await inFlightSummary(ref, requirementId)).find((entry) => entry.name === name)?.status).toBe("awaiting");
   }
 });
 
 test("交稿的 runId 不是当前设计运行时被拒", async () => {
   await begin("登录页");
-  await failure(() => submitDesign(ref, { pages: PAGES, requirementId, name: "登录页", runId: uuidv7(), html: HTML, note: "n" }));
+  await failure(() => submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name: "登录页", runId: uuidv7(), html: HTML, note: "n" }));
   expect((await inFlightSummary(ref, requirementId))[0]?.status).toBe("designing");
 });
 
 test("没有在途设计时交稿被拒", async () => {
-  await failure(() => submitDesign(ref, { pages: PAGES, requirementId, name: "登录页", runId: uuidv7(), html: HTML, note: "n" }));
+  await failure(() => submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name: "登录页", runId: uuidv7(), html: HTML, note: "n" }));
 });
 
 test("交稿后看板为等确认，文件写在推出的路径里", async () => {
@@ -316,7 +318,7 @@ const BAD_OPTIONS: Array<[string, string[], string]> = [
 test.each(BAD_OPTIONS)("方案清单%s时交稿被退回并写明原因，这一版仍是设计中", async (_label, options, why) => {
   const runId = uuidv7();
   await begin("登录页", runId);
-  const error = await failure(() => submitDesign(ref, { pages: PAGES, requirementId, name: "登录页", runId, html: HTML, note: "n", options }));
+  const error = await failure(() => submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name: "登录页", runId, html: HTML, note: "n", options }));
   expect(error.advice.why).toBe(why);
   expect(error.advice.next).toBe("改好方案清单后重交");
   expect(await inFlightSummary(ref, requirementId)).toEqual([{ name: "登录页", version: 1, status: "designing" }]);
@@ -335,7 +337,7 @@ test("方案名按码点数字数，20 个增补平面字符可以交稿", async
 test("多个问题同时存在时按先少于 2 个、再多于 6 个、再空名、超长、重名的顺序报第一个", async () => {
   const runId = uuidv7();
   await begin("登录页", runId);
-  const error = await failure(() => submitDesign(ref, { pages: PAGES, requirementId, name: "登录页", runId, html: HTML, note: "n", options: ["长".repeat(21), "长".repeat(21), " "] }));
+  const error = await failure(() => submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name: "登录页", runId, html: HTML, note: "n", options: ["长".repeat(21), "长".repeat(21), " "] }));
   expect(error.advice.why).toBe("第 3 个方案名是空的");
 });
 
@@ -448,7 +450,7 @@ test("提过意见后重派，旧版作废、版本加一，交回上一版位�
   await designed("登录页");
   await opine("改成横向滚动");
   const next = await begin("登录页");
-  expect(next).toEqual({ version: 2, previous: { path: prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }), opinion: "改成横向滚动" } });
+  expect(next).toEqual({ version: 2, previous: { path: prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }), opinion: "改成横向滚动", designPaths: [designFile("登录页", 1)] } });
   const entry = await entryOf("登录页");
   expect(entry?.inFlight).toMatchObject({ version: 2, status: "designing" });
   expect(entry?.draft ?? null).toBeNull();
@@ -661,7 +663,7 @@ test("v1 通过后 v2 提意见，再把 v1 从草稿移除，v2 的意见还在
 
 test("没有意见时再派，上一版位置指向草稿里通过的那一版，意见为空", async () => {
   await accepted("登录页");
-  expect((await begin("登录页")).previous).toEqual({ path: prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }), opinion: null });
+  expect((await begin("登录页")).previous).toEqual({ path: prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }), opinion: null, designPaths: [] });
 });
 
 test("读文件出错但文件还在时不作废这一版，恢复后可照常确认", async () => {
@@ -708,7 +710,7 @@ test("同一运行并发交两次稿恰好一次成功，磁盘文件就是成�
   const runId = uuidv7();
   await begin("登录页", runId);
   const htmls = [HTML, HTML2];
-  const results = await Promise.allSettled(htmls.map((html) => submitDesign(ref, { pages: PAGES, requirementId, name: "登录页", runId, html, note: "n" })));
+  const results = await Promise.allSettled(htmls.map((html) => submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name: "登录页", runId, html, note: "n" })));
   expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
   const winner = htmls[results.findIndex((result) => result.status === "fulfilled")];
   const pending = await pendingConfirmation(ref, { requirementId, name: "登录页" });
@@ -750,7 +752,7 @@ test("两份原型以不同先后通过，集合相同则指纹相同", async ()
   for (const name of ["设置页", "登录页"]) {
     const runId = uuidv7();
     const { version } = await begin(name, runId, other);
-    await submitDesign(ref, { pages: PAGES, requirementId: other, name, runId, html: HTML, note: "三项状态横排" });
+    await submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId: other, name, runId, html: HTML, note: "三项状态横排" });
     const { hash } = await pendingConfirmation(ref, { requirementId: other, name });
     await decidePrototype(ref, { requirementId: other, name, version, hash, choice: "accept", option: null, opinion: null });
   }
@@ -769,7 +771,7 @@ test("看板已有 50 份原型时再派新名称被拒，已有名称仍可再�
 test("交稿说明超过 2000 字被拒且看板仍是设计中", async () => {
   const runId = uuidv7();
   await begin("登录页", runId);
-  await failure(() => submitDesign(ref, { pages: PAGES, requirementId, name: "登录页", runId, html: HTML, note: "说".repeat(2001) }));
+  await failure(() => submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name: "登录页", runId, html: HTML, note: "说".repeat(2001) }));
   expect((await inFlightSummary(ref, requirementId))[0]?.status).toBe("designing");
 });
 
@@ -797,7 +799,7 @@ test("需求已关闭、正在关闭或待恢复时设计师交稿被拒，原�
     putRequirement(id);
     await begin("登录页", runId, id);
     patchRequirement(id, patch);
-    const error = await failure(() => submitDesign(ref, { pages: PAGES, requirementId: id, name: "登录页", runId, html: HTML, note: "n" }));
+    const error = await failure(() => submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId: id, name: "登录页", runId, html: HTML, note: "n" }));
     expect(error.advice.why).toContain(state);
     expect(await inFlightSummary(ref, id)).toEqual([{ name: "登录页", version: 1, status: "designing" }]);
   }
@@ -808,7 +810,7 @@ test("需求已关闭、正在关闭或待恢复时打开确认窗口被拒，�
     const id = uuidv7(), runId = uuidv7();
     putRequirement(id);
     await begin("登录页", runId, id);
-    await submitDesign(ref, { pages: PAGES, requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
+    await submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
     patchRequirement(id, patch);
     const error = await failure(() => pendingConfirmation(ref, { requirementId: id, name: "登录页" }));
     expect(error.advice.why).toContain(state);
@@ -822,7 +824,7 @@ test("需求已关闭、正在关闭或待恢复时登记通过、提意见、�
       const id = uuidv7(), runId = uuidv7();
       putRequirement(id);
       await begin("登录页", runId, id);
-      await submitDesign(ref, { pages: PAGES, requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
+      await submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
       const { hash } = await pendingConfirmation(ref, { requirementId: id, name: "登录页" });
       patchRequirement(id, patch);
       const before = await readPrototypeBoard(ref, id);
@@ -838,7 +840,7 @@ test("需求已关闭、正在关闭或待恢复时移除被拒，原因写明�
     const id = uuidv7(), runId = uuidv7();
     putRequirement(id);
     await begin("登录页", runId, id);
-    await submitDesign(ref, { pages: PAGES, requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
+    await submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
     const { hash } = await pendingConfirmation(ref, { requirementId: id, name: "登录页" });
     await decidePrototype(ref, { requirementId: id, name: "登录页", version: 1, hash, choice: "accept", option: null, opinion: null });
     patchRequirement(id, patch);
@@ -853,7 +855,7 @@ test("需求已取消且文件已被改过时登记决定先因需求状态被�
   const id = uuidv7(), runId = uuidv7();
   putRequirement(id);
   await begin("登录页", runId, id);
-  await submitDesign(ref, { pages: PAGES, requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
+  await submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId: id, name: "登录页", runId, html: HTML, note: "n" });
   const { hash } = await pendingConfirmation(ref, { requirementId: id, name: "登录页" });
   writeFileSync(prototypeFilePath(ref, { requirementId: id, name: "登录页", version: 1 }), `${HTML} `);
   patchRequirement(id, closedState("closed", "cancelled"));
@@ -954,14 +956,14 @@ const frameData = (name: string, version = 1) =>
 test.each(BAD_PAGES)("页面清单%s时交稿被退回并写明原因，这一版仍是设计中", async (_label, pages, why) => {
   const runId = uuidv7();
   await begin("登录页", runId);
-  const error = await failure(() => submitDesign(ref, { requirementId, name: "登录页", runId, html: HTML, note: "n", pages: pages as typeof PAGES }));
+  const error = await failure(() => submitDesign(ref, { design: VALID_DESIGN, requirementId, name: "登录页", runId, html: HTML, note: "n", pages: pages as typeof PAGES }));
   expect(error.code).toBe("invalid_pages");
   expect(error.advice.why).toBe(why);
   expect(error.advice.next).toBe("改好页面清单后重交");
   expect(await inFlightSummary(ref, requirementId)).toEqual([{ name: "登录页", version: 1, status: "designing" }]);
   const path = prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 });
   expect(existsSync(path)).toBe(false);
-  await submitDesign(ref, { requirementId, name: "登录页", runId, html: HTML, note: "n", pages: PAGES });
+  await submitDesign(ref, { design: VALID_DESIGN, requirementId, name: "登录页", runId, html: HTML, note: "n", pages: PAGES });
   expect(await inFlightSummary(ref, requirementId)).toEqual([{ name: "登录页", version: 1, status: "awaiting" }]);
 });
 
@@ -969,7 +971,7 @@ test("页面名中间的换行和连续空白合并成一个空格后判重", as
   const runId = uuidv7();
   await begin("登录页", runId);
   const pages = [{ name: "管理\n  页", views: [view("正常")] }, { name: "管理 页", views: [view("正常")] }];
-  const error = await failure(() => submitDesign(ref, { requirementId, name: "登录页", runId, html: HTML, note: "n", pages }));
+  const error = await failure(() => submitDesign(ref, { design: VALID_DESIGN, requirementId, name: "登录页", runId, html: HTML, note: "n", pages }));
   expect(error.code).toBe("invalid_pages");
   expect(error.advice.why).toBe("页面「管理 页」重名");
 });
@@ -978,7 +980,7 @@ test("画面名里的控制字符与零宽字符去掉后判重", async () => {
   const runId = uuidv7();
   await begin("登录页", runId);
   const pages = [{ name: "设置", views: [view("正\u202e常"), view("正常")] }];
-  const error = await failure(() => submitDesign(ref, { requirementId, name: "登录页", runId, html: HTML, note: "n", pages }));
+  const error = await failure(() => submitDesign(ref, { design: VALID_DESIGN, requirementId, name: "登录页", runId, html: HTML, note: "n", pages }));
   expect(error.advice.why).toBe("页面「设置」的画面「正常」重名");
 });
 
@@ -986,7 +988,7 @@ test("带全部字段交稿被收下", async () => {
   const runId = uuidv7();
   await begin("登录页", runId);
   const pages = [{ name: "设置", group: "状态", views: [{ name: "正常", notes: ["三项横排"] }, view("空数据")] }, { name: "列表", views: [view("正常")] }];
-  await submitDesign(ref, { requirementId, name: "登录页", runId, html: HTML, note: "n", pages, options: OPTIONS, prototypeOnly: ["假数据：三条提醒"], openQuestions: ["要不要支持重复？"] });
+  await submitDesign(ref, { design: VALID_DESIGN, requirementId, name: "登录页", runId, html: HTML, note: "n", pages, options: OPTIONS, prototypeOnly: ["假数据：三条提醒"], openQuestions: ["要不要支持重复？"] });
   expect(await inFlightSummary(ref, requirementId)).toEqual([{ name: "登录页", version: 1, status: "awaiting" }]);
   expect((await pendingConfirmation(ref, { requirementId, name: "登录页" })).options).toEqual(OPTIONS);
   expect(frameData("登录页")).toMatchObject({ options: OPTIONS, prototypeOnly: ["假数据：三条提醒"], openQuestions: ["要不要支持重复？"],
@@ -997,7 +999,7 @@ test("页面名和画面名原样写进文件，组名清洗后默认状态，�
   const runId = uuidv7();
   await begin("登录页", runId);
   const pages = [{ name: "设置 页", group: "  ", views: [{ name: "正常 态", notes: ["  保留 <b>标签</b>  ", "   ", ""] }] }, { name: "终端", group: " 步骤 ", views: [view("第 1 步")] }];
-  await submitDesign(ref, { requirementId, name: "登录页", runId, html: HTML, note: "n", pages, prototypeOnly: ["  假数据  ", " "], openQuestions: ["", " 问题 "] });
+  await submitDesign(ref, { design: VALID_DESIGN, requirementId, name: "登录页", runId, html: HTML, note: "n", pages, prototypeOnly: ["  假数据  ", " "], openQuestions: ["", " 问题 "] });
   expect(frameData("登录页")).toMatchObject({ prototypeOnly: ["假数据"], openQuestions: ["问题"],
     pages: [{ name: "设置 页", group: "状态", views: [{ name: "正常 态", notes: ["保留 <b>标签</b>"] }] }, { name: "终端", group: "步骤", views: [{ name: "第 1 步", notes: [] }] }] });
 });
@@ -1005,7 +1007,7 @@ test("页面名和画面名原样写进文件，组名清洗后默认状态，�
 test("只带 html、note、pages 交稿被收下", async () => {
   const runId = uuidv7();
   await begin("登录页", runId);
-  await submitDesign(ref, { requirementId, name: "登录页", runId, html: HTML, note: "n", pages: PAGES });
+  await submitDesign(ref, { design: VALID_DESIGN, requirementId, name: "登录页", runId, html: HTML, note: "n", pages: PAGES });
   expect(await inFlightSummary(ref, requirementId)).toEqual([{ name: "登录页", version: 1, status: "awaiting" }]);
 });
 
@@ -1034,18 +1036,138 @@ test("页面本身不到 1 MiB、拼好后超过时被退回，原因写明实�
   await begin("登录页", runId);
   const html = head + "x".repeat(MIB - Buffer.byteLength(head) - 1);
   expect(Buffer.byteLength(html)).toBeLessThan(MIB);
-  const error = await failure(() => submitDesign(ref, { requirementId, name: "登录页", runId, html, note: "n", pages: PAGES }));
+  const error = await failure(() => submitDesign(ref, { design: VALID_DESIGN, requirementId, name: "登录页", runId, html, note: "n", pages: PAGES }));
   expect(error.code).toBe("too_large");
   expect(error.advice.why).toBe(`原型 ${Buffer.byteLength(html) + overhead} 字节，超过 ${MIB} 字节上限`);
   expect(existsSync(prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }))).toBe(false);
   expect((await inFlightSummary(ref, requirementId)).find((entry) => entry.name === "登录页")?.status).toBe("designing");
-  await submitDesign(ref, { requirementId, name: "登录页", runId, html: HTML, note: "n", pages: PAGES });
+  await submitDesign(ref, { design: VALID_DESIGN, requirementId, name: "登录页", runId, html: HTML, note: "n", pages: PAGES });
   expect((await inFlightSummary(ref, requirementId)).find((entry) => entry.name === "登录页")?.status).toBe("awaiting");
 });
 
 test("页面不是 HTML 时仍退回交稿内容不是 HTML 页面", async () => {
   const runId = uuidv7();
   await begin("登录页", runId);
-  const error = await failure(() => submitDesign(ref, { requirementId, name: "登录页", runId, html: "这只是一段纯文本", note: "n", pages: PAGES }));
+  const error = await failure(() => submitDesign(ref, { design: VALID_DESIGN, requirementId, name: "登录页", runId, html: "这只是一段纯文本", note: "n", pages: PAGES }));
   expect(error.advice.why).toContain("交稿内容不是 HTML 页面");
+});
+
+const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+const THREE_OPTIONS = ["紧凑", "宽松", "留白"];
+const NO_COLOR = VALID_DESIGN.replace("## 颜色\n", "## 色彩\n");
+const submitWith = async (design: string | string[] | undefined, options?: string[], name = "登录页") => {
+  const runId = uuidv7();
+  await begin(name, runId);
+  return submitDesign(ref, { ...(design === undefined ? {} : { design }), pages: PAGES, requirementId, name, runId, html: HTML, note: "n", ...(options ? { options } : {}) });
+};
+const rejected = async (design: string | string[] | undefined, options?: string[]) => {
+  const error = await failure(() => submitWith(design, options));
+  expect(error.code).toBe("invalid_design");
+  expect(error.advice.next).toBe("按原因改好 DESIGN.md 后重交");
+  expect((await entryOf("登录页"))?.inFlight).toMatchObject({ status: "designing", file: null });
+  return error;
+};
+
+test("交稿没带 design 时被退回，原因写没带 DESIGN.md 全文，下一步写在 design 里带上全文", async () => {
+  const error = await failure(() => submitWith(undefined));
+  expect(error.code).toBe("invalid_design");
+  expect(error.advice.why).toBe("交稿没带 DESIGN.md 全文");
+  expect(error.advice.next).toBe("在 design 里带上 DESIGN.md 全文后重交");
+  expect((await entryOf("登录页"))?.inFlight).toMatchObject({ status: "designing", file: null });
+});
+
+test("design 是数组但没有方案清单时被退回，原因写只画了一种方案", async () => {
+  expect((await rejected([VALID_DESIGN])).advice.why).toBe("只画了一种方案，DESIGN.md 交一份就行");
+});
+
+test("design 数组份数和方案数不同时被退回，原因写方案数、份数和交法", async () => {
+  const error = await rejected([VALID_DESIGN, VALID_DESIGN], THREE_OPTIONS);
+  expect(error.advice.why).toBe("画了 3 个方案，DESIGN.md 交了 2 份；各方案风格不同时每个方案各交一份，按方案顺序，相同时交一份");
+});
+
+test("design 数组里某一项是空字符串时被退回，原因写哪个方案没交", async () => {
+  expect((await rejected([VALID_DESIGN, "", VALID_DESIGN], THREE_OPTIONS)).advice.why).toBe("方案 B 的 DESIGN.md 没交");
+});
+
+test("一份 DESIGN.md 不合格时被退回，原因是检查函数给的原文", async () => {
+  expect((await rejected(NO_COLOR)).advice.why).toBe("DESIGN.md 缺少「颜色」章");
+});
+
+test("多方案每方案一份时方案 B 那份缺章，原因以方案 B 的开头", async () => {
+  const error = await rejected([VALID_DESIGN, NO_COLOR, VALID_DESIGN], THREE_OPTIONS);
+  expect(error.advice.why.startsWith("方案 B 的")).toBe(true);
+  expect(error.advice.why).toContain("缺少「颜色」章");
+});
+
+test("DESIGN.md 不合格时不弹确认：看板没有等确认的版本，也没有写原型文件", async () => {
+  await failure(() => submitWith(NO_COLOR));
+  expect(existsSync(prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 }))).toBe(false);
+});
+
+test("设计规范不合格和原型不是 HTML 同时存在时，先按设计规范退回", async () => {
+  const runId = uuidv7();
+  await begin("登录页", runId);
+  const error = await failure(() => submitDesign(ref, { design: NO_COLOR, pages: PAGES, requirementId, name: "登录页", runId, html: "纯文本", note: "n" }));
+  expect(error.code).toBe("invalid_design");
+});
+
+test("一份 DESIGN.md 对应所有方案：写成 .design.md，内容与交的一致，designs 记字母 null、指纹和字节数", async () => {
+  await submitWith(VALID_DESIGN, THREE_OPTIONS);
+  const path = designFile("登录页", 1);
+  expect(readFileSync(path, "utf8")).toBe(VALID_DESIGN);
+  expect(existsSync(designFile("登录页", 1, "A"))).toBe(false);
+  expect((await entryOf("登录页"))?.inFlight?.designs).toEqual([{ letter: null, hash: sha(VALID_DESIGN), bytes: Buffer.byteLength(VALID_DESIGN) }]);
+});
+
+test("每方案一份：写成 .design-<字母>.md，内容与各自交的一致，designs 按方案顺序记字母、指纹和字节数", async () => {
+  const second = VALID_DESIGN.replace("- 主色：#0f766e", "- 主色：#0e7490");
+  await submitWith([VALID_DESIGN, second, VALID_DESIGN], THREE_OPTIONS);
+  expect(readFileSync(designFile("登录页", 1, "A"), "utf8")).toBe(VALID_DESIGN);
+  expect(readFileSync(designFile("登录页", 1, "B"), "utf8")).toBe(second);
+  expect(readFileSync(designFile("登录页", 1, "C"), "utf8")).toBe(VALID_DESIGN);
+  expect(existsSync(designFile("登录页", 1))).toBe(false);
+  expect((await entryOf("登录页"))?.inFlight?.designs).toEqual([
+    { letter: "A", hash: sha(VALID_DESIGN), bytes: Buffer.byteLength(VALID_DESIGN) },
+    { letter: "B", hash: sha(second), bytes: Buffer.byteLength(second) },
+    { letter: "C", hash: sha(VALID_DESIGN), bytes: Buffer.byteLength(VALID_DESIGN) },
+  ]);
+});
+
+test("没有方案清单时 design 交一份字符串被收下", async () => {
+  await submitWith(VALID_DESIGN);
+  expect((await entryOf("登录页"))?.inFlight).toMatchObject({ status: "awaiting" });
+  expect(readFileSync(designFile("登录页", 1), "utf8")).toBe(VALID_DESIGN);
+});
+
+test("候选文件和原型 html 在同一个目录", async () => {
+  await submitWith(VALID_DESIGN);
+  expect(dirname(designFile("登录页", 1))).toBe(dirname(prototypeFilePath(ref, { requirementId, name: "登录页", version: 1 })));
+});
+
+test("交稿前 designs 为 null", async () => {
+  await begin("登录页");
+  expect((await entryOf("登录页"))?.inFlight?.designs).toBeNull();
+});
+
+test("beginDesign 存下传入的 designBase 指纹", async () => {
+  const designBase = sha(VALID_DESIGN);
+  await beginDesign(ref, { requirementId, name: "登录页", runId: uuidv7(), agent: "designer", designBase });
+  expect((await entryOf("登录页"))?.inFlight?.designBase).toBe(designBase);
+});
+
+test("beginDesign 存下传入的 designBase 为 null", async () => {
+  await begin("登录页");
+  expect((await entryOf("登录页"))?.inFlight?.designBase).toBeNull();
+});
+
+test("有意见重派时 previous.designPaths 是上一版交的候选文件路径", async () => {
+  await submitWith(VALID_DESIGN, THREE_OPTIONS);
+  await opine("改大");
+  expect((await begin("登录页")).previous?.designPaths).toEqual([designFile("登录页", 1)]);
+});
+
+test("上一版每方案一份时 previous.designPaths 按方案顺序列出各份路径", async () => {
+  await submitWith([VALID_DESIGN, VALID_DESIGN, VALID_DESIGN], THREE_OPTIONS);
+  await opine("改大");
+  expect((await begin("登录页")).previous?.designPaths).toEqual([designFile("登录页", 1, "A"), designFile("登录页", 1, "B"), designFile("登录页", 1, "C")]);
 });

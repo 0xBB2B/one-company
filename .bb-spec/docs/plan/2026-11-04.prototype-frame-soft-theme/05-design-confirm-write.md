@@ -8,7 +8,7 @@ description: "确认原型"窗口显示 DESIGN.md 会怎么变，交稿后被改
 "确认原型"窗口告诉用户通过后 DESIGN.md 会新建、改哪几章或不变；设计师读过之后仓库里的 DESIGN.md 被改了就拦住通过；用户通过时程序把对应那份写到仓库根目录，不提交。
 
 ## 业务规则（来源：PRD design-spec-file C-11、C-12、C-13）
-- 守护进程算"DESIGN.md 状态"（给窗口用）：读仓库根目录 `DESIGN.md` 当前内容（没有为 `null`），算指纹；
+- 守护进程算"DESIGN.md 状态"（给窗口用）：读仓库根目录 `DESIGN.md` 当前内容（没有为 `null`），算指纹。指纹算法必须和派工时算 `designBase` 的一样：按 UTF-8 读成字符串后算 sha256（`run-manager.ts` 派设计师那段的写法），否则含非法 UTF-8 字节的文件两边永远对不上；
   - 当前指纹和 `inFlight.designBase` 不同（含一边是 `null`）→ `conflict`；
   - 否则根目录没有文件 → `created`；
   - 否则逐份读候选文件（指纹不符按"文件在交稿后被改过"作废这一版，和原型文件同样处理），用 `changedChapters` 比较（它已把十章、新加或删掉的章、"开头的说明"都算上，只调换章的顺序算不变）：所有份都返回空 → `same`；否则 `changed`，附每份的方案字母（一份时 `null`）和变化的章名。

@@ -32,13 +32,16 @@ export function approvedPrototypeListLines(items: ReadonlyArray<{ name: string; 
 }
 
 export function prototypeContext(input: { title: string; name: string; version: number; brief: string; maxTurns: number;
-  previous: { path: string; opinion: string | null } | null }): string {
+  previous: { path: string; opinion: string | null } | null; design: { content: string | null; previousPaths: string[] } }): string {
   return [
     `需求：${input.title}`,
     `原型名称：${input.name}（第 ${input.version} 版）`,
     `要求：\n${input.brief}`,
+    input.design.content === null ? "仓库根目录还没有 DESIGN.md，这次交稿要新建一份，在 design 里带全文。"
+      : `仓库根目录的 DESIGN.md（原型照它画；交稿时在 design 里带全文，没改的章原样照抄）：\n${input.design.content}`,
     ...(input.previous ? [`上一版文件：${input.previous.path}`,
       ...(input.previous.opinion ? [`用户对上一版的意见原话：${input.previous.opinion}`] : [])] : []),
+    ...(input.design.previousPaths.length ? [`上一版交的 DESIGN.md：${input.design.previousPaths.join("、")}`] : []),
     `对话轮次上限：${input.maxTurns}。用满后运行时会停止，请在额度内提交原型。`,
   ].join("\n");
 }

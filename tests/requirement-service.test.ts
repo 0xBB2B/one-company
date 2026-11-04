@@ -21,6 +21,7 @@ import { adviceOf } from "../src/core/exec/tool-failure.ts";
 import { readdir } from "node:fs/promises";
 import { beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, readPrototypeBoard, submitDesign } from "../src/modules/requirement/requirement-prototypes.ts";
 import { prototypesAtRevision } from "../src/modules/requirement/requirement-prototype-revisions.ts";
+import { VALID_DESIGN } from "./helpers/design-sample.ts";
 
 
 const exec = promisify(execFile);
@@ -604,8 +605,8 @@ const boardRef = (w: Awaited<ReturnType<typeof world>>) => ({ dataRoot: w.option
 
 async function acceptedPrototype(w: Awaited<ReturnType<typeof world>>, requirementId: string, name: string, options?: string[]) {
   const runId = uuidv7();
-  await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer" });
-  await submitDesign(boardRef(w), { pages: PAGES, requirementId, name, runId, html: PROTOTYPE_HTML, note: "说明", ...(options ? { options } : {}) });
+  await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer", designBase: null });
+  await submitDesign(boardRef(w), { design: VALID_DESIGN, pages: PAGES, requirementId, name, runId, html: PROTOTYPE_HTML, note: "说明", ...(options ? { options } : {}) });
   const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
   await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash, choice: "accept", option: options ? "B" : null, opinion: null });
 }
@@ -659,7 +660,7 @@ test("批准带的原型指纹和草稿不一致时被拒且不留未完成的�
 test("草稿里还有在途原型时，批准被拒且不留未完成的批准记录，改草稿照常成功", async () => {
   const w = await world();
   const { created, input } = await prototypeApproval(w);
-  await beginDesign(boardRef(w), { requirementId: created.requirementId, name: "命令行输出", runId: uuidv7(), agent: "designer" });
+  await beginDesign(boardRef(w), { requirementId: created.requirementId, name: "命令行输出", runId: uuidv7(), agent: "designer", designBase: null });
   await expect(w.service.confirmUpdate(input)).rejects.toThrow();
   const updated = await w.service.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(), version: (await w.service.metadata(created.requirementId)).version,
     title: "需求标题", body: "批准被拒后改过的正文" });

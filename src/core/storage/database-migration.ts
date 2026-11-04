@@ -31,7 +31,7 @@ export interface MigrationPlan { data: DatabaseVersionState; index: DatabaseVers
 
 export interface MigrationReceipt { backupPath: string | null; migratedData: boolean; removedIndex: boolean }
 
-export const MIGRATABLE_VERSIONS: Readonly<Record<"data" | "index", readonly number[]>> = Object.freeze({ data: [8], index: [1] });
+export const MIGRATABLE_VERSIONS: Readonly<Record<"data" | "index", readonly number[]>> = Object.freeze({ data: [8, 9], index: [1] });
 
 export class DatabaseMigrationError extends Error {
   readonly code: "migration_failed" | "migration_busy" | "missing_step";

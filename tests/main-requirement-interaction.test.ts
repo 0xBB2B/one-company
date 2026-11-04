@@ -36,6 +36,7 @@ import { answeringUi } from "./helpers/window-host.ts";
 import type { ShownWindow, WindowDecision } from "./helpers/window-host.ts";
 import { techAgreeText, techRecordText } from "../src/modules/interaction/tech-list.ts";
 import { TECHS } from "./helpers/tech-sample.ts";
+import { VALID_DESIGN } from "./helpers/design-sample.ts";
 
 
 const exec = promisify(execFile), cleanup: Array<() => Promise<void>> = [];
@@ -1114,8 +1115,8 @@ const boardRef = (w: World) => ({ dataRoot: w.dataRoot, repoId: w.repoId });
 async function designed(w: World, requirementId: string, name: string, reworks = 0, pick: { options: string[]; option: string } | null = null) {
   for (let round = 0; round <= reworks; round++) {
     const runId = uuidv7(), accept = round === reworks;
-    await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer" });
-    await submitDesign(boardRef(w), { pages: PAGES, requirementId, name, runId, html: PROTOTYPE_HTML, note: "三项状态横排", options: pick?.options });
+    await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer", designBase: null });
+    await submitDesign(boardRef(w), { design: VALID_DESIGN, pages: PAGES, requirementId, name, runId, html: PROTOTYPE_HTML, note: "三项状态横排", options: pick?.options });
     const pending = await pendingConfirmation(boardRef(w), { requirementId, name });
     await decidePrototype(boardRef(w), { requirementId, name, version: pending.version, hash: pending.hash,
       choice: accept ? "accept" : "opinion", opinion: accept ? null : "再改一版", option: accept ? pick?.option ?? null : null });
@@ -1151,9 +1152,9 @@ describe("批准时连同草稿里的原型一起批准", () => {
   test("草稿里有等确认和设计中的原型时，带 @ 和不带 @ 的批准都被拒，不弹窗，原因逐个写出名称和状态", async () => {
     const w = await world(), created = await w.create(), id = String(created.requirementId);
     const runId = uuidv7();
-    await beginDesign(boardRef(w), { requirementId: id, name: "设置页", runId, agent: "designer" });
-    await submitDesign(boardRef(w), { pages: PAGES, requirementId: id, name: "设置页", runId, html: PROTOTYPE_HTML, note: "说明" });
-    await beginDesign(boardRef(w), { requirementId: id, name: "命令行输出", runId: uuidv7(), agent: "designer" });
+    await beginDesign(boardRef(w), { requirementId: id, name: "设置页", runId, agent: "designer", designBase: null });
+    await submitDesign(boardRef(w), { design: VALID_DESIGN, pages: PAGES, requirementId: id, name: "设置页", runId, html: PROTOTYPE_HTML, note: "说明" });
+    await beginDesign(boardRef(w), { requirementId: id, name: "命令行输出", runId: uuidv7(), agent: "designer", designBase: null });
     const before = await readPrototypeBoard(boardRef(w), id);
     for (const mention of [true, false]) {
       w.capture("同意", "interactive", mention);
@@ -1169,7 +1170,7 @@ describe("批准时连同草稿里的原型一起批准", () => {
 
   test("草稿里只有一份在途原型时，建议写先把它处理完", async () => {
     const w = await world(), created = await w.create(), id = String(created.requirementId);
-    await beginDesign(boardRef(w), { requirementId: id, name: "设置页", runId: uuidv7(), agent: "designer" });
+    await beginDesign(boardRef(w), { requirementId: id, name: "设置页", runId: uuidv7(), agent: "designer", designBase: null });
     w.capture("同意");
     const error = await w.call({ action: "confirmUpdate", ...(await w.request(created)).input }).then(() => { throw new Error("批准没有被拒"); }, (caught: unknown) => caught as Error);
     expect(error.message).toContain("原因：还不能批准：原型「设置页」设计师还在做");
@@ -1424,7 +1425,7 @@ describe("批准时核对原型文件和在途原型", () => {
   test("窗口显示后又有一版设计中，写入被拒，原因写出名称和设计师还在做，不说原型变了", async () => {
     const w = await world(), created = await w.create(), id = String(created.requirementId);
     await designed(w, id, "设置页");
-    w.beforeAnswer(async () => { await beginDesign(boardRef(w), { requirementId: id, name: "另一份", runId: uuidv7(), agent: "designer" }); });
+    w.beforeAnswer(async () => { await beginDesign(boardRef(w), { requirementId: id, name: "另一份", runId: uuidv7(), agent: "designer", designBase: null }); });
     const { input } = await w.request(created);
     w.capture("同意"); scriptReview(w.provider, phoneReview);
     const error = await rejected(w.call({ action: "confirmUpdate", ...input }));
@@ -1439,8 +1440,8 @@ describe("批准时核对原型文件和在途原型", () => {
     await designed(w, id, "设置页");
     w.beforeAnswer(async () => {
       const runId = uuidv7();
-      await beginDesign(boardRef(w), { requirementId: id, name: "另一份", runId, agent: "designer" });
-      await submitDesign(boardRef(w), { pages: PAGES, requirementId: id, name: "另一份", runId, html: PROTOTYPE_HTML, note: "说明" });
+      await beginDesign(boardRef(w), { requirementId: id, name: "另一份", runId, agent: "designer", designBase: null });
+      await submitDesign(boardRef(w), { design: VALID_DESIGN, pages: PAGES, requirementId: id, name: "另一份", runId, html: PROTOTYPE_HTML, note: "说明" });
     });
     const { input } = await w.request(created);
     w.capture("同意"); scriptReview(w.provider, phoneReview);

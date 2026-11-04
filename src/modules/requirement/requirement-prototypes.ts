@@ -11,6 +11,7 @@ import type { LocalDatabase } from "../../core/storage/database.ts";
 import { hash as sha256Hex, id, object, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { unsafeFilenameKind } from "./requirement-identity.ts";
+import { DesignSpecError, checkDesignSpec } from "./design-spec.ts";
 import { buildPrototypeFrame } from "./prototype-frame.ts";
 import type { PrototypePage } from "./prototype-frame.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
@@ -36,7 +37,9 @@ const PrototypeEntry = object({
   approved: Type.Union([PrototypeFile, Type.Null()]),
   removed: Type.Boolean(),
   inFlight: Type.Union([object({ version: positive, runId: id, agent: Type.String(), status: Type.Union([Type.Literal("designing"), Type.Literal("awaiting")]),
-    file: Type.Union([PrototypeFile, Type.Null()]) }), Type.Null()]),
+    file: Type.Union([PrototypeFile, Type.Null()]),
+    designBase: Type.Union([sha256Hex, Type.Null()]),
+    designs: Type.Union([Type.Array(object({ letter: Type.Union([Type.Enum(OPTION_LETTERS), Type.Null()]), hash: sha256Hex, bytes: Type.Integer({ minimum: 1, maximum: 16384 }) }), { minItems: 1, maxItems: 6 }), Type.Null()]) }), Type.Null()]),
   lastOpinion: Type.Union([object({ version: positive, opinion: Type.String({ minLength: 1, maxLength: 4000 }) }), Type.Null()]),
   lastEnded: Type.Union([object({ version: positive, reason: Type.String({ maxLength: 500 }) }), Type.Null()]),
 });
@@ -73,6 +76,10 @@ export async function assertRequirementOpenForPrototypes(ref: Ref, requirementId
 
 export function prototypeFilePath(ref: Ref, input: { requirementId: string; name: string; version: number }): string {
   return join(dirname(databaseOf(ref)), "prototypes", input.requirementId, `${input.name}.v${input.version}.html`);
+}
+
+export function designFilePath(ref: Ref, input: { requirementId: string; name: string; version: number; letter: string | null }): string {
+  return join(dirname(databaseOf(ref)), "prototypes", input.requirementId, `${input.name}.v${input.version}.design${input.letter ? `-${input.letter}` : ""}.md`);
 }
 
 export function checkPrototypeName(name: string): void {
@@ -117,12 +124,14 @@ function requireInFlight(board: PrototypeBoard, name: string, status: "designing
   return { entry, inFlight: entry.inFlight };
 }
 
-export async function beginDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; agent: string }): Promise<{ version: number; previous: { path: string; opinion: string | null } | null }> {
+export async function beginDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; agent: string; designBase: string | null }):
+  Promise<{ version: number; previous: { path: string; opinion: string | null; designPaths: string[] } | null }> {
   checkPrototypeName(input.name);
   return withDatabase(databaseOf(ref), (db) => {
     return mutate(db, input.requirementId, (board) => {
       assertRequirementEditable(db, input.requirementId);
       let entry = entryNamed(board, input.name);
+      const replacedDesigns = entry?.inFlight?.designs ?? [];
       if (entry?.inFlight) {
         const { inFlight } = entry;
         if (inFlight.status === "designing") deny("in_flight", `原型「${input.name}」还在做`, "等设计师交稿后再处理");
@@ -142,9 +151,12 @@ export async function beginDesign(ref: Ref, input: { requirementId: string; name
       const version = entry.lastVersion + 1;
       const source = entry.lastOpinion ? { version: entry.lastOpinion.version, opinion: entry.lastOpinion.opinion as string | null }
         : (entry.draft ?? entry.approved) ? { version: (entry.draft ?? entry.approved)!.version, opinion: null } : null;
-      const previous = source && { path: prototypeFilePath(ref, { requirementId: input.requirementId, name: input.name, version: source.version }), opinion: source.opinion };
+      const previous = source && {
+        path: prototypeFilePath(ref, { requirementId: input.requirementId, name: input.name, version: source.version }), opinion: source.opinion,
+        designPaths: replacedDesigns.map((design) => designFilePath(ref, { requirementId: input.requirementId, name: input.name, version: source.version, letter: design.letter })),
+      };
       entry.lastVersion = version;
-      entry.inFlight = { version, runId: input.runId, agent: input.agent, status: "designing", file: null };
+      entry.inFlight = { version, runId: input.runId, agent: input.agent, status: "designing", file: null, designBase: input.designBase, designs: null };
       return { version, previous };
     });
   });
@@ -198,12 +210,34 @@ function checkPageList(raw: readonly SubmittedPage[]): PrototypePage[] {
   });
 }
 
+function checkSubmittedDesigns(design: string | string[] | undefined, options: readonly string[]): { letter: PickedOption["letter"] | null; text: string }[] {
+  const next = "按原因改好 DESIGN.md 后重交";
+  if (design === undefined) deny("invalid_design", "交稿没带 DESIGN.md 全文", "在 design 里带上 DESIGN.md 全文后重交");
+  const texts = typeof design === "string" ? [design] : design!;
+  if (typeof design !== "string") {
+    if (!options.length) deny("invalid_design", "只画了一种方案，DESIGN.md 交一份就行", next);
+    if (texts.length !== options.length) deny("invalid_design", `画了 ${options.length} 个方案，DESIGN.md 交了 ${texts.length} 份；各方案风格不同时每个方案各交一份，按方案顺序，相同时交一份`, next);
+  }
+  return texts.map((text, index) => {
+    const letter = typeof design === "string" ? null : optionLetter(index);
+    const prefix = letter ? `方案 ${letter} 的 ` : "";
+    if (text === "") deny("invalid_design", `${prefix}DESIGN.md 没交`, next);
+    try { checkDesignSpec(text); }
+    catch (error) {
+      if (error instanceof DesignSpecError) deny("invalid_design", `${prefix}${error.message}`, next);
+      throw error;
+    }
+    return { letter, text };
+  });
+}
+
 const HTML_START = /^\s*<(?:!doctype\s+html|html)[\s>]/i;
 
-export async function submitDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; html: string; note: string; pages: SubmittedPage[]; options?: string[]; prototypeOnly?: string[]; openQuestions?: string[] }): Promise<void> {
+export async function submitDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; design?: string | string[]; html: string; note: string; pages: SubmittedPage[]; options?: string[]; prototypeOnly?: string[]; openQuestions?: string[] }): Promise<void> {
+  const options = checkOptionList(input.options);
+  const designs = checkSubmittedDesigns(input.design, options);
   if (!HTML_START.test(input.html)) deny("not_html", "交稿内容不是 HTML 页面", "交一份以 <!doctype html> 或 <html> 开头的完整页面");
   if (input.note.length > NOTE_MAX_LENGTH) deny("note_too_long", `交稿说明超过 ${NOTE_MAX_LENGTH} 字`, "缩短说明后重交");
-  const options = checkOptionList(input.options);
   const pages = checkPageList(input.pages);
   const prototypeOnly = cleanLines(input.prototypeOnly);
   const openQuestions = cleanLines(input.openQuestions);
@@ -215,7 +249,9 @@ export async function submitDesign(ref: Ref, input: { requirementId: string; nam
     const content = buildPrototypeFrame({ html: input.html, name: input.name, version: inFlight.version, pages, options, prototypeOnly, openQuestions });
     const bytes = Buffer.byteLength(content, "utf8");
     if (bytes > PROTOTYPE_MAX_BYTES) deny("too_large", `原型 ${bytes} 字节，超过 ${PROTOTYPE_MAX_BYTES} 字节上限`, "精简原型后重交");
+    for (const { letter, text } of designs) writeFileAtomicSync(designFilePath(ref, { requirementId: input.requirementId, name: input.name, version: inFlight.version, letter }), text);
     writeFileAtomicSync(path, content);
+    inFlight.designs = designs.map(({ letter, text }) => ({ letter, hash: sha256(text), bytes: Buffer.byteLength(text, "utf8") }));
     inFlight.status = "awaiting";
     inFlight.file = { version: inFlight.version, hash: sha256(content), bytes, note: input.note, options, picked: null };
   }));

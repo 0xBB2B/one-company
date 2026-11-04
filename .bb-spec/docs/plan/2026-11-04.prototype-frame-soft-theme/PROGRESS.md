@@ -4,11 +4,11 @@
 | 01 | frame-soft-theme | done | 2026-11-04 |
 | 02 | designer-project-ui | done | 2026-11-04 |
 | 03 | design-spec-check | done | 2026-11-04 |
-| 04 | design-submit-dispatch | pending | — |
+| 04 | design-submit-dispatch | done | 2026-11-04 |
 | 05 | design-confirm-write | pending | — |
 | 06 | design-follow-guard | pending | — |
 | 07 | acceptance-design-judgement | pending | — |
 ## 当前
-03 审查发现：同名章、十章以外的章能绕过窗口提示；\r\n 和 BOM 会误报。用户 2026-11-04 决定：十章必须有、可以加章、同名章同节重项退回；设计师先读 DESIGN.md 不够再读代码；DESIGN.md 只放全项目通用规范。已就地改 PRD 02 C-1、03 C-3/C-4/C-10/C-11，同步计划 02/03/05/06。02 已重做规矩那一行并通过；03 按新规则补测试、改实现，215 条全过，探针复核追加同名章被退回、加章能报出改动、换行和 BOM 不误报。下一步：04 design-submit-dispatch。
+04 完成：审查 10/10 合规；测试工程师漏改的 database-migration-prompt、database-storage 两个测试里写死的库版本 9 由主 Agent 改成 10。计划 05 已补"指纹算法要和派工时一致"的提醒。下一步：05 design-confirm-write。
 ## 阻塞
 （无）

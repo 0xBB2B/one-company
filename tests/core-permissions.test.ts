@@ -180,13 +180,25 @@ test("worker 不能提交原型：授权为假，工具层以动作不允许拒�
 });
 
 test.each([
-  ["缺 pages", { action: "prototype", html: "<html></html>", note: "说明" }],
-  ["pages 不是数组", { action: "prototype", html: "<html></html>", note: "说明", pages: "页面" }],
-  ["pages 里的画面缺名字", { action: "prototype", html: "<html></html>", note: "说明", pages: [{ name: "页面", views: [{}] }] }],
+  ["缺 pages", { action: "prototype", design: "# 规范", html: "<html></html>", note: "说明" }],
+  ["pages 不是数组", { action: "prototype", design: "# 规范", html: "<html></html>", note: "说明", pages: "页面" }],
+  ["pages 里的画面缺名字", { action: "prototype", design: "# 规范", html: "<html></html>", note: "说明", pages: [{ name: "页面", views: [{}] }] }],
 ])("prototype 交稿工具：%s 时以 invalid_shape 退回并写到 pages", async (_label, input) => {
   const tool = createResultSubmitTool({ grant: { role: "prototype", callerId: uuidv7(), runId: uuidv7(), parentRunId: uuidv7() }, authorize: () => true });
   const error = await Promise.resolve().then(() => tool.execute(input)).then(() => null, (caught: unknown) => caught as { code: string; advice: { why: string } });
   expect(error?.code).toBe("invalid_shape");
   expect(error?.advice.why).toContain("pages");
+  tool.dispose();
+});
+
+test.each([
+  ["design 是数字", 5],
+  ["design 数组里有非字符串", ["# 规范", 1]],
+  ["design 是对象", { text: "# 规范" }],
+])("prototype 交稿工具：%s 时以 invalid_shape 退回并写到 design", async (_label, design) => {
+  const tool = createResultSubmitTool({ grant: { role: "prototype", callerId: uuidv7(), runId: uuidv7(), parentRunId: uuidv7() }, authorize: () => true });
+  const error = await Promise.resolve().then(() => tool.execute({ action: "prototype", design, html: "<html></html>", note: "说明", pages: PAGES })).then(() => null, (caught: unknown) => caught as { code: string; advice: { why: string } });
+  expect(error?.code).toBe("invalid_shape");
+  expect(error?.advice.why).toContain("design");
   tool.dispose();
 });

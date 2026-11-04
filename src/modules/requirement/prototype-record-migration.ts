@@ -29,6 +29,17 @@ function migrateBoard(data: unknown): unknown {
       inFlight: inFlight && { ...inFlight, file: migratePrototypeFile(inFlight.file) },
     };
   });
+  return { ...source, entries };
+}
+
+const V9_ENDED_REASON = "升级后交原型要带 DESIGN.md，这一版作废，请重派";
+
+function voidInFlight(data: unknown): unknown {
+  const source = data as { requirementId: string; entries: JsonObject[] };
+  const entries = source.entries.map((entry) => {
+    const inFlight = entry.inFlight as { version: number } | null;
+    return inFlight ? { ...entry, inFlight: null, lastEnded: { version: inFlight.version, reason: V9_ENDED_REASON } } : entry;
+  });
   const board = { ...source, entries };
   if (!Value.Check(PrototypeBoard, board)) {
     const { path, reason } = firstError(PrototypeBoard, board);
@@ -58,5 +69,13 @@ export const prototypeRecordsV8Step: DataMigrationStep = {
   migrate(records) {
     for (const { key, data } of records.list("requirement_prototypes")) records.replace("requirement_prototypes", key, migrateBoard(data));
     for (const { key, data } of records.list("requirement_prototype_revisions")) records.replace("requirement_prototype_revisions", key, migrateRevision(data));
+  },
+};
+
+export const prototypeRecordsV9Step: DataMigrationStep = {
+  from: 9,
+  losses: ["升级前还在做、或还在等你确认的原型会作废，需要重派（它们交稿时没带 DESIGN.md）"],
+  migrate(records) {
+    for (const { key, data } of records.list("requirement_prototypes")) records.replace("requirement_prototypes", key, voidInFlight(data));
   },
 };
