@@ -7,6 +7,7 @@ import { uuidv7 } from "../src/core/storage/database.ts";
 import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../src/modules/interaction/main-intake-interaction.ts";
 import { askQuestionIssues } from "../src/modules/interaction/ask-question.ts";
 import { createUserInteractTool, USER_INTERACT_PARAMETERS } from "../src/modules/interaction/user-interact-tool.ts";
+import { TECHS } from "./helpers/tech-sample.ts";
 const base = { action: "reply", repoId: "a".repeat(64), requirementId: uuidv7(), savedOperationId: uuidv7(), version: 2 };
 test("user_interact不接受转述、请求选择、角色或回执", async () => {
   expect(Value.Check(USER_INTERACT_PARAMETERS, { request: base })).toBe(true);
@@ -21,7 +22,9 @@ test("user_interact不接受转述、请求选择、角色或回执", async () =
   expect(Value.Check(USER_INTERACT_PARAMETERS, base)).toBe(false);
   await expect(tool.execute("call", base as never, undefined, undefined, {} as never)).rejects.toMatchObject({ code: "invalid_shape" });
   const unknown = await tool.execute("call", { request: { ...base, purpose: "approve" } } as never, undefined, undefined, {} as never).catch((error: unknown) => error);
-  expect((unknown as Error).message).toContain("可用 purpose:action：user-confirmation:ask、user-confirmation:reply、adjudicate:reply、panel-item:ask、pm-intake:ask、pm-intake:forward、pm-intake:reply");
+  for (const key of ["user-confirmation:ask", "user-confirmation:ask-tech", "user-confirmation:reply", "adjudicate:reply", "panel-item:ask", "panel-item:ask-tech", "pm-intake:ask", "pm-intake:forward", "pm-intake:reply"]) {
+    expect((unknown as Error).message).toContain(key);
+  }
   const extra = await tool.execute("call", { request: { ...base, sectionId: "x" } } as never, undefined, undefined, {} as never).catch((error: unknown) => error);
   expect((extra as Error).message).toContain("多余字段：sectionId");
 });
@@ -282,4 +285,40 @@ test("TB-31：技术清单暂不回答时，写明清单保留", () => {
 test("TB-32：技术清单登记出错时照旧显示没有登记和原因", () => {
   expect(renderedTech({ content: [{ type: "text", text: "one_company_user_interact 的 ask-tech 动作失败。\n原因：第 2 项缺少备选为什么不选\n建议：补全后重新登记" }] }, true).at(-1))
     .toBe("<error>没有登记：第 2 项缺少备选为什么不选</>");
+});
+
+const askTechBase = { action: "ask-tech", repoId: "a".repeat(64), requirementId: uuidv7(), savedOperationId: uuidv7(), version: 2, technologies: TECHS, scope: "仅技术选型", unitIds: ["A"], actions: ["analyze"] };
+const panelTechBase = { purpose: "panel-item", action: "ask-tech", repoId: "a".repeat(64), requirementId: uuidv7(), itemId: `task:${uuidv7()}`, itemVersion: "3", technologies: TECHS };
+
+test("TC-19：参数形状接受需求澄清用法和面板事项用法的 ask-tech 请求，purpose 省略与显式 user-confirmation 等价", () => {
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: askTechBase })).toBe(true);
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...askTechBase, purpose: "user-confirmation" } })).toBe(true);
+  expect(Value.Check(USER_INTERACT_PARAMETERS, { request: panelTechBase })).toBe(true);
+});
+
+test("TC-20：ask-tech 请求里 technologies 项多余字段、类别或来源取值之外的值、缺 technologies 都被拒", () => {
+  for (const base of [askTechBase, panelTechBase]) {
+    const withTech = (tech: Record<string, unknown>) => ({ request: { ...base, technologies: [{ ...TECHS[0]!, ...tech }] } });
+    expect(Value.Check(USER_INTERACT_PARAMETERS, withTech({ extra: "多余" }))).toBe(false);
+    expect(Value.Check(USER_INTERACT_PARAMETERS, withTech({ kind: "操作系统" }))).toBe(false);
+    expect(Value.Check(USER_INTERACT_PARAMETERS, withTech({ source: "网上看到" }))).toBe(false);
+    const { technologies: _omitted, ...without } = base;
+    expect(Value.Check(USER_INTERACT_PARAMETERS, { request: without })).toBe(false);
+  }
+});
+
+test("TC-21：ask-tech 请求不接受 question、operationId 等调用方自填字段", () => {
+  for (const base of [askTechBase, panelTechBase]) {
+    for (const patch of [{ question: "同意吗？" }, { operationId: uuidv7() }, { choices: CHOICES }]) {
+      expect(Value.Check(USER_INTERACT_PARAMETERS, { request: { ...base, ...patch } })).toBe(false);
+    }
+  }
+});
+
+test("TC-22：工具把两种 ask-tech 请求分别交给 askTech 和 askPanelItemTech", async () => {
+  const calls: string[] = [];
+  const stub = { execute: (_id: string, _ctx: unknown, _repo: string, _params: unknown, run: () => Promise<unknown>) => run(), askTech: async () => { calls.push("askTech"); throw new Error("stop"); }, askPanelItemTech: async () => { calls.push("askPanelItemTech"); throw new Error("stop"); } };
+  const tool = createUserInteractTool({ interaction: stub as never });
+  for (const request of [askTechBase, panelTechBase]) await tool.execute("call", { request } as never, undefined, undefined, {} as never).catch(() => undefined);
+  expect(calls).toEqual(["askTech", "askPanelItemTech"]);
 });

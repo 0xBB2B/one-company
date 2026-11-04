@@ -49,6 +49,14 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
     interaction.assertDelivery(toolCallId, ctx);
     return result.details as Record<string, unknown>;
   }
+  /** 主代理针对面板事项弹技术清单窗口：窗口按 answerWindows 设定作答，回答成为当前输入。 */
+  async function panelAskTech(request: Record<string, unknown>) {
+    const toolCallId = uuidv7();
+    const result = await tool.execute(toolCallId, { request: { purpose: "panel-item", action: "ask-tech", repoId: w.fixture.repoId, requirementId: w.fixture.requirementId,
+      ...request } } as never, undefined, undefined, ctx);
+    interaction.assertDelivery(toolCallId, ctx);
+    return result.details as Record<string, unknown>;
+  }
   /** 不截获新原话，直接以当前输入（例如窗口里的回答）登记裁决。 */
   async function register(itemId: string, itemVersion: string, entries: unknown[]) {
     interpret(JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries }));
@@ -58,6 +66,6 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
     interaction.assertDelivery(toolCallId, ctx);
     return result.details as Record<string, unknown>;
   }
-  return { entry, adjudicate, panelAsk, register, interaction, ctx, windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; },
+  return { entry, adjudicate, panelAsk, panelAskTech, register, interaction, ctx, windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; },
     beforeAnswer: (hook: () => Promise<void> | void) => { beforeAnswer = hook; } };
 }

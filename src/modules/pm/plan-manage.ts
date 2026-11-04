@@ -170,6 +170,7 @@ const UserDecision = object({
   confirmedPlan: Type.Optional(Type.String({ pattern: "^[0-9a-f]{64}$" })),
   /** 用户答复的是 PM 的拆分请求：选 adjust 时据此不等新的批准版本就放开目标。 */
   split: Type.Optional(Type.Literal(true)),
+  techApproval: Type.Optional(Type.Literal(true)),
 });
 export type UserDecision = Static<typeof UserDecision>;
 const TaskRecord = object({
@@ -310,8 +311,9 @@ const adjustPending = (task: TaskRecord) => task.userDecision?.choice === "adjus
 // 用户选择调整目标或范围后，须等新的批准版本才能按新范围修改该任务本身；用户对拆分请求选调整的（决定带 split），同一批准版本内即放开。只放开该任务修改时保留原目标的要求，且决定用过即失效
 const readjusted = (task: TaskRecord, revision: number) => adjustPending(task)
   && (revision > task.userDecision!.revision || task.userDecision!.split === true);
-// 因超出拆分上限（当前版本还没派出过）或 PM 在派出前上报（任务还没派出过）而被用户要求调整的任务，PM 直接拆分或精简，不等新的批准版本
-const resized = (task: TaskRecord) => (task.sizeHold !== undefined && sizeHoldPending(task)) || (task.holdNote !== undefined && unsentTask(task));
+// 因超出拆分上限（当前版本还没派出过）或 PM 在派出前上报（任务还没派出过）而被用户要求调整的任务，PM 直接拆分或精简，不等新的批准版本；
+// 用户在技术清单里同意的除外：同意的技术要先写进新批准版本的「实现」板块，PM 才能按它改任务
+const resized = (task: TaskRecord) => (task.sizeHold !== undefined && sizeHoldPending(task)) || (task.holdNote !== undefined && unsentTask(task) && task.userDecision?.techApproval !== true);
 /** 任务按当前批准版本号是否占住目标：有过尝试且未完成的任务占住，复核判受影响后用户选了调整并放开、或已做完审查通过的除外；已取消的任务只在终止仍待处理时才占住。 */
 export function goalHeld(task: TaskRecord, revision: number): boolean {
   return countedAttempts(task) > 0 && task.status !== "completed" &&

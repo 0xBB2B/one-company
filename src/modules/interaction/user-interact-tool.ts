@@ -13,7 +13,8 @@ import { MainRequirementInteraction } from "./main-requirement-interaction.ts";
 import { ApprovalUnitIds } from "../requirement/user-interaction-format.ts";
 import { ASK_CHOICES, ASK_ROOT_CHECK, askQuestionIssues } from "./ask-question.ts";
 import type { AskChoice } from "./ask-question.ts";
-import { techQuestionText } from "./tech-list.ts";
+import { TECH_ITEMS, techListIssues, techQuestionText } from "./tech-list.ts";
+import type { TechItem } from "./tech-list.ts";
 
 const id = Type.String({ pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", minLength: 36, maxLength: 36 });
 const base = { repoId: Type.String({ pattern: "^[0-9a-f]{64}$", minLength: 64, maxLength: 64 }), requirementId: id,
@@ -23,6 +24,7 @@ const question = Type.String({ minLength: 1, maxLength: 400 });
 const confirmationPurpose = Type.Optional(Type.Literal("user-confirmation"));
 const schemas = {
   ask: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("ask"), ...base, question, rootCheck: ASK_ROOT_CHECK, choices: ASK_CHOICES, scope: question, unitIds: ApprovalUnitIds, actions }, { additionalProperties: false }),
+  askTech: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("ask-tech"), ...base, technologies: TECH_ITEMS, scope: question, unitIds: ApprovalUnitIds, actions }, { additionalProperties: false }),
   reply: Type.Object({ purpose: confirmationPurpose, action: Type.Literal("reply"), ...base }, { additionalProperties: false }),
 } satisfies Record<string, TSchema>;
 const ADJUDICATE_PARAMETERS = Type.Object({ purpose: Type.Literal("adjudicate"), action: Type.Literal("reply"), repoId: base.repoId,
@@ -33,10 +35,13 @@ const PANEL_ITEM_ASK_PARAMETERS = Type.Object({ purpose: Type.Literal("panel-ite
   itemId: Type.String({ pattern: "^(task|report|requirement|halt|plan|stall|question|intake):[0-9a-f-]{36}$" }),
   itemVersion: Type.String({ minLength: 1, maxLength: 200 }), question, rootCheck: ASK_ROOT_CHECK, choices: ASK_CHOICES }, { additionalProperties: false });
 
+const PANEL_ITEM_ASK_TECH_PARAMETERS = Type.Object({ purpose: Type.Literal("panel-item"), action: Type.Literal("ask-tech"), repoId: base.repoId, requirementId: base.requirementId,
+  itemId: PANEL_ITEM_ASK_PARAMETERS.properties.itemId, itemVersion: PANEL_ITEM_ASK_PARAMETERS.properties.itemVersion, technologies: TECH_ITEMS }, { additionalProperties: false });
+
 const variants = {
-  "user-confirmation:ask": schemas.ask, "user-confirmation:reply": schemas.reply,
+  "user-confirmation:ask": schemas.ask, "user-confirmation:ask-tech": schemas.askTech, "user-confirmation:reply": schemas.reply,
   "adjudicate:reply": ADJUDICATE_PARAMETERS,
-  "panel-item:ask": PANEL_ITEM_ASK_PARAMETERS,
+  "panel-item:ask": PANEL_ITEM_ASK_PARAMETERS, "panel-item:ask-tech": PANEL_ITEM_ASK_TECH_PARAMETERS,
   "pm-intake:ask": PM_INTAKE_ASK_PARAMETERS, "pm-intake:forward": PM_INTAKE_FORWARD_PARAMETERS, "pm-intake:reply": PM_INTAKE_REPLY_PARAMETERS,
 } satisfies Record<string, TObject>;
 export const USER_INTERACT_PARAMETERS = requestParameters(Object.values(variants));
@@ -89,7 +94,7 @@ export function createUserInteractTool(options: {
   intake?: MainIntakeInteraction;
 }): ToolDefinition<typeof USER_INTERACT_PARAMETERS, unknown> {
   return { name: "one_company_user_interact", label: "需求澄清、决定与接手复核",
-    description: "参数写成 {request:{purpose,action,...}}，只填该 purpose 与 action 格式里的字段；ID、版本取自此前工具结果或决策包，不要自编；默认或purpose=user-confirmation时，ask向用户提问：写明问题本身（question）、根源自检（rootCheck，一两句话说明这个问题针对的根源，以及为什么这些选项是从根源解决而不是临时修补）、2 到 4 个选项（choices，每个写 label 选什么与 reason 一句理由），并恰好把一个选项标为 recommended 且写 recommendedReason；开放式问题也要给出至少 2 个候选答案；scope 用一句话写这个问题涉及的范围，unitIds 填问题涉及的草稿段落编号（标题末尾写的编号，至少一个），actions 只列这个问题真正涉及的动作（analyze、plan、implement、commit、push），没有就填空数组；reply只消费当前真实输入。purpose=pm-intake时，ask创建接手复核请求，forward重取当前请求，reply由真实Main登记四类核对结果；purpose=panel-item时，ask针对面板事项（itemId、itemVersion取自决策包）用同样的问答窗口给出建议：要登记用户决定的事项，选项文字须为决策包写明的固定文字，用户在窗口里的回答可再以purpose=adjudicate登记；其余事项的回答只作为给你的指示；purpose=adjudicate时，reply按用户当前原话登记用户决定（itemVersion取决策包上的版本，事项已变化时被拒）：itemId=task:<任务ID>时为待裁决任务的再给一次机会（须有轮数）、调整目标或范围、终止任务；itemId=requirement:<需求ID>时为取消或拒绝整个需求；itemId=report:<报告ID>时为验收通过或返工PM的完成报告；取消、拒绝或通过登记后以返回的decisionId作为workflow_manage close的receiptId；原话不清楚时不登记；不接受主体、角色、回执、理解正文或绑定字段。",
+    description: "参数写成 {request:{purpose,action,...}}，只填该 purpose 与 action 格式里的字段；ID、版本取自此前工具结果或决策包，不要自编；默认或purpose=user-confirmation时，ask向用户提问：写明问题本身（question）、根源自检（rootCheck，一两句话说明这个问题针对的根源，以及为什么这些选项是从根源解决而不是临时修补）、2 到 4 个选项（choices，每个写 label 选什么与 reason 一句理由），并恰好把一个选项标为 recommended 且写 recommendedReason；开放式问题也要给出至少 2 个候选答案；scope 用一句话写这个问题涉及的范围，unitIds 填问题涉及的草稿段落编号（标题末尾写的编号，至少一个），actions 只列这个问题真正涉及的动作（analyze、plan、implement、commit、push），没有就填空数组；reply只消费当前真实输入。purpose=pm-intake时，ask创建接手复核请求，forward重取当前请求，reply由真实Main登记四类核对结果；purpose=panel-item时，ask针对面板事项（itemId、itemVersion取自决策包）用同样的问答窗口给出建议：要登记用户决定的事项，选项文字须为决策包写明的固定文字，用户在窗口里的回答可再以purpose=adjudicate登记；其余事项的回答只作为给你的指示；purpose=adjudicate时，reply按用户当前原话登记用户决定（itemVersion取决策包上的版本，事项已变化时被拒）：itemId=task:<任务ID>时为待裁决任务的再给一次机会（须有轮数）、调整目标或范围、终止任务；itemId=requirement:<需求ID>时为取消或拒绝整个需求；itemId=report:<报告ID>时为验收通过或返工PM的完成报告；取消、拒绝或通过登记后以返回的decisionId作为workflow_manage close的receiptId；原话不清楚时不登记；要用项目里没有的新技术（语言、框架、数据库、第三方库、中间件或外部服务、工具，含升级已有库）时，用ask-tech一次列全，每项填name、kind、source、purpose、necessity、alternatives；purpose=panel-item时ask-tech用于PM上报要用新技术的待裁决任务；不接受主体、角色、回执、理解正文或绑定字段。",
     promptSnippet: "按明确purpose处理用户确认或PM接手复核", parameters: USER_INTERACT_PARAMETERS, executionMode: "sequential",
     renderCall: (args, theme, context) => renderAskCall(args, theme, context),
     renderResult: (result, _options, theme, context) => renderAskResult(result, theme, context),
@@ -108,12 +113,23 @@ export function createUserInteractTool(options: {
       const issues = askQuestionIssues(raw as { question?: unknown; rootCheck?: unknown; choices?: unknown });
       if (issues.length) throw new HostAuthorizationError("question_format", issues.join("；"));
     }
+    if (key.endsWith(":ask-tech")) {
+      const issues = techListIssues((raw as { technologies?: unknown }).technologies);
+      if (issues.length) throw new HostAuthorizationError("question_format", issues.join("；"));
+    }
     if (!Value.Check(variant, raw)) throw new HostAuthorizationError("invalid_shape", shapeIssue(variant, raw));
     if (raw.purpose === "pm-intake") {
       if (!options.intake) throw new HostAuthorizationError("pm_intake_unavailable");
       // 没有原因说明的下层错误不回传原始消息，免得带出接手理解正文
     try { return await options.intake.execute(toolCallId, raw, ctx, signal); }
     catch (error) { throw adviceOf(error) ? error : new HostAuthorizationError("interaction_denied"); }
+    }
+    if (key === "panel-item:ask-tech") {
+      const p = raw as Static<typeof PANEL_ITEM_ASK_TECH_PARAMETERS>;
+      return options.interaction.execute(toolCallId, ctx, p.repoId, { ...p }, async () => {
+        signal?.throwIfAborted();
+        return options.interaction.askPanelItemTech(ctx, p, signal ?? ctx.signal);
+      }, signal ?? ctx.signal);
     }
     if (raw.purpose === "panel-item") {
       const p = raw as Static<typeof PANEL_ITEM_ASK_PARAMETERS>;
@@ -131,11 +147,12 @@ export function createUserInteractTool(options: {
     }
     const normalized = structuredClone(raw) as Record<string, unknown>;
     delete normalized.purpose;
-    const p = normalized as Record<string, unknown> & { action: "ask" | "reply"; repoId: string; requirementId: string;
-      operationId: string; savedOperationId: string; version: number; question?: string; rootCheck?: string; choices?: AskChoice[]; scope?: string; unitIds?: string[]; actions?: never[] };
+    const p = normalized as Record<string, unknown> & { action: "ask" | "ask-tech" | "reply"; repoId: string; requirementId: string;
+      operationId: string; savedOperationId: string; version: number; question?: string; rootCheck?: string; choices?: AskChoice[]; technologies?: TechItem[]; scope?: string; unitIds?: string[]; actions?: never[] };
     p.operationId = uuidv7();
     return options.interaction.execute(toolCallId, ctx, p.repoId, p, async () => {
       signal?.throwIfAborted();
+      if (p.action === "ask-tech") return options.interaction.askTech(ctx, { ...p, technologies: p.technologies!, scope: p.scope!, unitIds: p.unitIds!, actions: p.actions! }, signal ?? ctx.signal);
       return p.action === "ask" ? options.interaction.ask(ctx, { ...p, question: p.question!, rootCheck: p.rootCheck!, choices: p.choices!, scope: p.scope!, unitIds: p.unitIds!, actions: p.actions! }, signal ?? ctx.signal)
         : options.interaction.confirm(ctx, p);
     }, signal ?? ctx.signal);

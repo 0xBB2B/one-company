@@ -34,6 +34,8 @@ import { beginDesign, decidePrototype, pendingConfirmation, prototypeFilePath, r
 import { prototypesAtRevision } from "../src/modules/requirement/requirement-prototype-revisions.ts";
 import { answeringUi } from "./helpers/window-host.ts";
 import type { ShownWindow, WindowDecision } from "./helpers/window-host.ts";
+import { techAgreeText, techRecordText } from "../src/modules/interaction/tech-list.ts";
+import { TECHS } from "./helpers/tech-sample.ts";
 
 
 const exec = promisify(execFile), cleanup: Array<() => Promise<void>> = [];
@@ -1820,5 +1822,100 @@ describe("后台消息到达（原话作废）时正在进行的工具调用", (
     const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
     expect(state.read(input.requirementId).data.lifecycle).not.toBe("active");
     expect(state.events(input.requirementId).filter((e) => e.data.kind === "prd.approved")).toHaveLength(0);
+  });
+});
+
+describe("ask-tech 需求澄清用法", () => {
+  const techAsk = async (options: Parameters<typeof askedWorld>[0] = {}) => {
+    const { w, input } = await askedWorld(options);
+    const ask = (answer: WindowDecision, extra: Record<string, unknown> = {}) => {
+      w.capture(); w.answerWindows(answer);
+      return w.call({ action: "ask-tech", ...input, technologies: TECHS, scope: "仅技术选型", unitIds: ["background"], actions: ["analyze"], ...extra }, true);
+    };
+    return { w, input, ask };
+  };
+
+  test("TC-01：清单某项缺备选说明时 ask-tech 失败，错误码 question_format，原因写明第几项，窗口不弹", async () => {
+    const { w, ask } = await techAsk();
+    const broken = [TECHS[0]!, { ...TECHS[1]!, alternatives: "" }];
+    const error = await ask(true, { technologies: broken }).then(() => undefined, (caught: unknown) => caught as Error);
+    expect(error).toMatchObject({ code: "question_format" });
+    expect(error!.message).toContain("第 2 项");
+    expect(w.windows).toHaveLength(0);
+  });
+
+  test("TC-02：unitIds 不属于当前草稿时 ask-tech 被拒，错误码 question_scope_mismatch", async () => {
+    const { w, ask } = await techAsk();
+    await expect(ask(true, { unitIds: ["missing.unit"] })).rejects.toMatchObject({ code: "question_scope_mismatch" });
+    expect(w.windows).toHaveLength(0);
+  });
+
+  test("TC-03：已有 20 个待回答问题时 ask-tech 报待回答的问题已达上限", async () => {
+    const { w, ask } = await techAsk();
+    for (let n = 0; n < 20; n++) await ask(false, { technologies: [{ ...TECHS[0]!, name: `库${n}` }] });
+    const before = w.windows.length;
+    const error = await ask(false).then(() => undefined, (caught: unknown) => caught as Error);
+    expect(error).toMatchObject({ code: "question_limit" });
+    expect(error!.message).toContain("待回答的问题已达上限");
+    expect(w.windows.length).toBe(before);
+  });
+
+  test("TC-04：弹窗标题是“提问 · 需求名（第 N 版）”，文字含“要引入的新技术（共 2 项）”，选项是“全部同意”和“写修改意见”", async () => {
+    const { w, ask } = await techAsk();
+    await ask("全部同意");
+    const shown = w.windows.at(-1)!;
+    expect(shown.title).toBe("提问 · 登录（第 1 版）");
+    expect(shown.text).toContain("要引入的新技术（共 2 项）");
+    expect(shown.choices).toEqual(["全部同意", "写修改意见"]);
+  });
+
+  test("TC-05：ask-tech 登记一条问题记录，记录文字等于 techRecordText(清单)", async () => {
+    const { w, ask } = await techAsk();
+    await ask(false);
+    const rows = withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("interaction_questions_v1"));
+    expect(rows).toHaveLength(1);
+    expect(JSON.stringify(rows[0]!.data)).toContain(JSON.stringify(techRecordText(TECHS)).slice(1, -1));
+  });
+
+  test("TC-06：选“全部同意”返回 answered，回答文字是 techAgreeText(清单)、choice 为 1、authorized 为 false，核验器拿到的原话就是这段文字", async () => {
+    const { w, input, ask } = await techAsk();
+    const result = await ask("全部同意");
+    expect(result).toMatchObject({ status: "answered", answer: { text: techAgreeText(TECHS), choice: 1 }, authorized: false,
+      requestId: expect.any(String), caption: "登录（第 1 版）", question: "上面 2 项新技术，同意引入吗？" });
+    scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "后端用 PostgreSQL。\n" });
+    expect(verifierText(w)).toBe(techAgreeText(TECHS));
+  });
+
+  test("TC-07：选“写修改意见”并输入文字，回答是 other 且原样当作用户原话交给核验器", async () => {
+    const { w, input, ask } = await techAsk();
+    const opinion = "后端换成 Java，数据库换成 MongoDB";
+    expect(await ask({ other: opinion })).toMatchObject({ status: "answered", answer: { text: opinion, other: true } });
+    scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call({ action: "updateDraft", requirementId: input.requirementId, version: input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "后端用 Java。\n" });
+    expect(verifierText(w)).toBe(opinion);
+  });
+
+  test("TC-08：按 Esc 返回 pending、answer 为 null，问题记录仍在", async () => {
+    const { w, ask } = await techAsk();
+    expect(await ask(false)).toMatchObject({ status: "pending", answer: null });
+    expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("interaction_questions_v1"))).toHaveLength(1);
+  });
+
+  test("TC-09：拿技术清单窗口的回答去批准需求被拒，blockedBy 为 window_answer_not_decision，不弹批准窗口，草稿仍是 draft", async () => {
+    const { w, input, ask } = await techAsk();
+    const asked = await ask("全部同意", { unitIds: ["SMS"] });
+    const before = w.windows.length;
+    scriptReview(w.provider, (c) => {
+      const review = phoneReview(c);
+      review.referenceResolution = "explicit";
+      Object.assign(review.entries.find((entry) => entry.kind === "unresolved")!, { requestId: asked.requestId, resolution: "defer" });
+      return review;
+    });
+    const outcome = await w.call({ action: "reply", ...input }, true).then((r) => r, (e: unknown) => e);
+    expect(outcome).toMatchObject({ prdActivated: false, blockedBy: "window_answer_not_decision" });
+    expect(w.windows.length).toBe(before);
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
   });
 });
