@@ -35,9 +35,8 @@ async function packageSkillNames(): Promise<string[]> {
 }
 
 describe.each(STACKS)("$dir 样例目录结构", ({ dir, prefix, skills }) => {
-  test("有 AGENTS.md", async () => {
-    const content = await readFile(join(exampleDir(dir), "AGENTS.md"), "utf8");
-    expect(content.trim().length).toBeGreaterThan(0);
+  test("目录下只有 skills 和 agents，没有 AGENTS.md", async () => {
+    expect((await readdir(exampleDir(dir))).sort()).toEqual(["agents", "skills"]);
   });
 
   test("skills/ 下恰好是约定的目录，每个目录只有一份 SKILL.md", async () => {

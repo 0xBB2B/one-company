@@ -10,3 +10,4 @@ mcp: []
 
 - 先按本团队的后端设计规范决定代码放哪一层、接口和表结构长什么样，再按 Go 编码规范写。
 - 写的过程中对照排查清单，主动避开超时、并发、注入这类常见问题，不等审查打回才改。
+- auth-session 第 15 条「登录 token 存在 localStorage 或 sessionStorage 里」在本团队不适用：本团队 Web 端的 token 存在 localStorage。

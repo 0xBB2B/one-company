@@ -31,8 +31,9 @@ const BODY = "## 背景 {#background}\n用户未说明。\n## 需求 {#requireme
   "## 实现 {#implementation}\n由 PM 规划。\n## 验收 {#acceptance}\n新增的代码可读、可用。\n";
 
 export async function runSpecialistReview(workerAgent: string, reviewerAgent: string, pits: SeededPit[],
-  options: { cleanups: Array<() => unknown | Promise<unknown>>; config: AcceptanceConfig; evidence: string; support?: Record<string, string> }) {
-  const w = await createPmRunWorld(options.cleanups, { body: BODY });
+  options: { cleanups: Array<() => unknown | Promise<unknown>>; config: AcceptanceConfig; evidence: string; support?: Record<string, string>;
+    userDir?: string; skillDirs?: string[] }) {
+  const w = await createPmRunWorld(options.cleanups, { body: BODY, userDir: options.userDir, skillDirs: options.skillDirs });
   const real = await createRealModel(w.fixture.root, options.config);
   options.cleanups.push(() => real.close(options.evidence));
   const workspace = w.fixture.state.read(w.fixture.requirementId).data.workspace!.path;
@@ -95,10 +96,11 @@ export function specialistVerdict(result: ReviewWorld): Verdict | undefined {
 }
 
 /** 阻塞意见的 targetRef 去掉首尾反引号和行号后，文件是坑的文件之一（只写文件名时按末段匹配），且 trigger、impact 里含坑的任一关键词（大小写不敏感）即命中该坑。 */
+export const fileOf = (ref: string) => /^(.+?)(?:[:#]L?\d+.*)?$/u.exec(ref.replace(/^`+|`+$/g, "").trim())?.[1]?.replace(/^\.\//, "") ?? "";
+export const sameFile = (file: string, path: string) => file.includes("/") ? file === path || file.endsWith(`/${path}`) : file === path.split("/").at(-1);
+
 export function pitCoverage(verdict: Verdict, pits: readonly SeededPit[]): Array<{ pit: SeededPit; hit: boolean; refs: string[] }> {
   const blocking = verdict.findings.filter((finding) => finding.kind === "blocking");
-  const fileOf = (ref: string) => /^(.+?)(?:[:#]L?\d+.*)?$/u.exec(ref.replace(/^`+|`+$/g, "").trim())?.[1]?.replace(/^\.\//, "") ?? "";
-  const sameFile = (file: string, path: string) => file.includes("/") ? file === path || file.endsWith(`/${path}`) : file === path.split("/").at(-1);
   return pits.map((entry) => {
     const files = [entry.path, ...(entry.alsoIn ?? [])], words = entry.keywords.map((word) => word.toLowerCase());
     const refs = blocking.filter((finding) => {

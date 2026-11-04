@@ -10,3 +10,4 @@ mcp: []
 
 - 先查改动是否符合本团队的后端设计规范：分层、接口契约、表结构、认证授权、配置、日志。
 - 再按 Go 编码规范和排查清单，逐项查本次 diff 里的写法、安全和鲁棒性问题。
+- auth-session 第 15 条「登录 token 存在 localStorage 或 sessionStorage 里」在本团队不适用：本团队 Web 端的 token 存在 localStorage。

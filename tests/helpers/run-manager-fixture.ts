@@ -28,7 +28,7 @@ export async function until(check: () => boolean | Promise<boolean>, limit = 600
  * 真实 RunManager 派出的 PM：测试环境原有的租约已交还、工作区登记为 ready，PM 以脚本化模型提交接手理解。
  * review 为 false 时不做主代理核对，由用例自行调用 review()。
  */
-export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<unknown>>, options: { review?: boolean; web?: RunManagerOptions["web"]; index?: boolean; body?: string; userDir?: string; reloadCatalog?: boolean;
+export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<unknown>>, options: { review?: boolean; web?: RunManagerOptions["web"]; index?: boolean; body?: string; userDir?: string; skillDirs?: string[]; reloadCatalog?: boolean;
   loadAgentSettings?: RunManagerOptions["loadAgentSettings"]; thinking?: string; loadDisabledAgents?: () => Set<string> } = {}) {
   const fixture = await createPmIntakeFixture(options.body === undefined ? {} : { body: options.body }); cleanups.push(() => fixture.cleanup());
   const record = fixture.state.read(fixture.requirementId).data;
@@ -56,7 +56,7 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
     shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(fixture.dataRoot, fixture.repoId) }), networkGate: new NetworkPauseGate(),
     loadAgentSettings: options.loadAgentSettings ?? (() => readAgentSettings({ agentDir: join(fixture.root, "none-a"), repositoryRoot: join(fixture.root, "none-r"), projectTrusted: false })),
     roleCatalog: catalog.roles, ...(options.reloadCatalog ? { loadRoleCatalog: async () => (await loadCatalog()).roles } : {}),
-    skillDirs: [join(defaultRoleDir(), "..", "skills")],
+    skillDirs: [join(defaultRoleDir(), "..", "skills"), ...(options.skillDirs ?? [])],
     runtime, clock, workspaceRepoIds: [fixture.repoId], emit, web: options.web, index,
     loadDisabledAgents });
   manager.markStarted();

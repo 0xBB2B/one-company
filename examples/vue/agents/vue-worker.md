@@ -10,3 +10,4 @@ mcp: []
 
 - 先按本团队的前端约定决定用什么技术栈、请求和错误怎么处理、状态放哪里，再按 Vue 和 TypeScript 编码规范写。
 - 写的过程中对照排查清单，主动避开 XSS、URL 注入、监听泄漏这类常见问题，不等审查打回才改。
+- auth-session 第 15 条「登录 token 存在 localStorage 或 sessionStorage 里」在本团队不适用：本团队 access token 放在运行时内存里，refresh token 存在 localStorage。

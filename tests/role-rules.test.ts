@@ -72,6 +72,17 @@ describe("reviewer-specialist 职责规矩", () => {
   });
 });
 
+describe("skill 某一条不适用的职责规矩", () => {
+  test.each([
+    ["worker", ["定义正文写明某份 skill 的某一条在本团队不适用时，按定义正文写，不按那一条", "同一份 skill 的其他条目照常遵守"]],
+    ["reviewer-specialist", ["你的定义正文写明某份 skill 的某一条在本团队不适用时，违反那一条但符合定义正文的不算问题", "同一份 skill 的其他条目照常核对"]],
+    ["reviewer", ["被审任务所用 worker 定义的正文写明其中某一条在本团队不适用时，违反那一条但符合定义正文的不算问题", "其他条目照常核对"]],
+  ] as const)("%s 的职责规矩写明定义正文声明不适用的条目按定义正文处理", (role, phrases) => {
+    const rules = loadRoleRules(role);
+    for (const phrase of phrases) expect(rules).toContain(phrase);
+  });
+});
+
 describe("pm 职责规矩的审查重试", () => {
   test("写明审查没交结论时看原因单独重派、必要时调大轮数上限或补条件，需要额外角度时可临时加专项审查并写理由", () => {
     const rules = loadRoleRules("pm");

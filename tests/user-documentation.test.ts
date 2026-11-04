@@ -105,7 +105,6 @@ describe("README 必需句", () => {
     ".pi/agents/",
     "/one:examples",
     "| `/one:examples` | 把 Go、Vue 设计规范样例复制到用户层或项目层 |",
-    "你的个人规范；`/one:examples` 经你确认后会在末尾追加样例那一段",
   ];
   for (const phrase of REQUIRED) {
     test(`含: ${phrase}`, async () => {
@@ -259,14 +258,42 @@ describe("旧命令与旧页面已清除", () => {
 });
 
 describe("验收单点数量", () => {
-  test("AGENTS.md 和 CONTRIBUTING.md 里搜不到旧的单点数量，CONTRIBUTING.md 的编号表有 P14", async () => {
+  test("AGENTS.md 和 CONTRIBUTING.md 里搜不到旧的单点数量，CONTRIBUTING.md 的编号表有 P18", async () => {
     const agents = await readText(join(PACKAGE_ROOT, "AGENTS.md"));
     const contributing = await readText(CONTRIBUTING);
     for (const text of [agents, contributing]) {
-      expect(text).not.toContain("P1–P13");
-      expect(text).not.toContain("13 个单点");
+      expect(text).not.toContain("P1–P17");
+      expect(text).not.toContain("17 个单点");
     }
-    expect(contributing).toMatch(/^\| P14 \|/m);
+    expect(contributing).toMatch(/^\| P18 \|/m);
+    expect(contributing).toContain("18 个单点");
+    expect(contributing).toContain("P1–P18");
+  });
+});
+
+describe("README 设计规范样例不碰 AGENTS.md，按定义正文处理不适用条目", () => {
+  test("规范从哪来表里个人 AGENTS.md 那一行只写你的个人规范", async () => {
+    const section = extractSection(await readText(README), "规范从哪来", 3);
+    const row = section.split("\n").find((line) => line.startsWith("| `~/.pi/agent/AGENTS.md`"));
+    expect(row).toBeDefined();
+    expect(row).not.toContain("/one:examples");
+    expect(row).toContain("| 你的个人规范 |");
+  });
+
+  test("规范从哪来表里包内 skills 那一行写了定义正文", async () => {
+    const section = extractSection(await readText(README), "规范从哪来", 3);
+    const row = section.split("\n").find((line) => line.startsWith("| 包内 `skills/`"));
+    expect(row).toBeDefined();
+    expect(row).toContain("定义正文");
+  });
+
+  test("设计规范样例一节写两类文件、定义正文和 auth-session，不提 AGENTS.md 和 16 KB", async () => {
+    const section = extractSection(await readText(README), "设计规范样例");
+    expect(section).toContain("两类文件");
+    expect(section).toContain("定义正文");
+    expect(section).toContain("auth-session");
+    expect(section).not.toContain("AGENTS.md");
+    expect(section).not.toContain("16 KB");
   });
 });
 
