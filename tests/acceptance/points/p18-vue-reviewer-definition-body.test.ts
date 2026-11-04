@@ -81,7 +81,11 @@ test.skipIf(!config || process.platform !== "darwin")("P18：定义正文写明 
   const verdict = specialistVerdict(result);
   const coverage = verdict ? pitCoverage(verdict, PITS) : [];
   const tokenStoreRefs = (verdict?.findings ?? []).filter((finding) => finding.kind === "blocking")
-    .filter((finding) => sameFile(fileOf(finding.targetRef), TOKEN_STORE_PATH) || /localStorage|sessionStorage/iu.test(finding.trigger))
+    .filter((finding) => {
+      const file = fileOf(finding.targetRef), text = `${finding.trigger}\n${finding.impact}`.toLowerCase();
+      const seeded = PITS.some((entry) => sameFile(file, entry.path) && entry.keywords.some((word) => text.includes(word.toLowerCase())));
+      return sameFile(file, TOKEN_STORE_PATH) || (!seeded && /localstorage|sessionstorage/u.test(text) && /xss|脚本|httponly/u.test(text));
+    })
     .map((finding) => finding.targetRef);
   await writeFile(join(evidence, "judgement.json"), `${JSON.stringify({ realTurns: result.turns(), reviewers: result.reviewerAgents, conclusion: verdict?.conclusion ?? null, summary: verdict?.summary ?? null,
     findings: verdict?.findings ?? [], coverage: coverage.map(({ pit, hit, refs }) => ({ path: pit.path, description: pit.description, hit, refs })),
