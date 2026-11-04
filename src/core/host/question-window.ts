@@ -402,6 +402,11 @@ export class QuestionWindowView {
       }
     }
     this.scroll = Math.min(this.scroll, this.maxScroll);
+    // 选项窗口至少 3 行、内容至少 1 行，加上固定问题后矮终端会超过上限
+    if (fixed.length && cap !== undefined && head.length + contentOut.length + fixed.length + 1 + optionOut.length + bottom.length > cap) {
+      fixed = fixed.slice(1);
+      bottom = bottom.slice(1);
+    }
     const base = head.length + contentOut.length + fixed.length + 1;
     this.bars = pending.flatMap(({ bar, group }) => {
       const entry = entries.find((item) => item.group === group);

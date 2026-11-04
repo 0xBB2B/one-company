@@ -1712,4 +1712,58 @@ describe("技术清单窗口", () => {
     expect(await askWindow(dialogs((c) => { c.handleInput(DOWN); typeText(c as never, "换成 Java"); c.handleInput(ENTER); }), question))
       .toEqual({ choices: [], other: "换成 Java" });
   });
+
+  const TWO = TECHS.slice(0, 2);
+  const noMarker = (lines: string[]) => lines.map((line) => line.replace(/\x1b_pi:fc\x07/gu, "").trimEnd());
+  const PROMPT2 = " 上面 2 项新技术，同意引入吗？";
+
+  test("TA-20：rows=14 光标在全部同意时，超出高度上限就去掉空行，文字一个不少，总行数不超过 11", () => {
+    const lines = noMarker(open(TWO, 14).plain());
+    expect(lines).toEqual([
+      RULE, " 提问 · 图书馆借还系统（第 2 版）", PROMPT2, "",
+      " → 1. 全部同意", "      按这份清单写进需求的「实现」板块；清单外的新技术仍要另外问",
+      " ↓ 下面还有 1 项", " ↑↓ 选择 · 回车确认 · Shift+↑↓ 滚动内容", HINT_ESC, RULE,
+    ]);
+    expect(lines.length).toBeLessThanOrEqual(11);
+  });
+
+  test("TA-21：rows=14 光标在写修改意见并输入内容时，逐行和确认过的原型一致，总行数不超过 11", () => {
+    const { window, plain } = open(TWO, 14);
+    plain();
+    window.handleInput(DOWN);
+    typeText(window, "后端换成 Java");
+    const lines = noMarker(plain());
+    expect(lines).toEqual([
+      RULE, " 提问 · 图书馆借还系统（第 2 版）", PROMPT2, "",
+      " ↑ 上面还有 1 项", " → 2. 写修改意见", "      写哪项要改、改成什么；AI 改好后再给你看整份清单", "      › 后端换成 Java",
+      " 直接输入 · 回车确认 · Shift+Enter 换行 · ↑↓ 选择 · Shift+↑↓ 滚动内容", HINT_ESC, RULE,
+    ]);
+    expect(lines.length).toBeLessThanOrEqual(11);
+  });
+
+  test("TA-23：rows=14 去掉空行后，在“写修改意见”的输入行开头点鼠标，接着输入的字落在行首", () => {
+    const { window, done, plain } = open(TWO, 14);
+    plain();
+    window.handleInput(DOWN); typeText(window, "甲乙");
+    const lines = noMarker(plain()), row = lines.findIndex((line) => line.startsWith("      › 甲乙"));
+    expect(lines.length).toBeLessThanOrEqual(11);
+    expect(row).toBeGreaterThan(-1);
+    window.handleMouse(click(8, row));
+    typeText(window, "X"); window.handleInput(ENTER);
+    expect(done).toEqual([[{ choices: [], other: "X甲乙" }]]);
+  });
+
+  test("TA-22：rows=20 光标在写修改意见时超出上限，确认问题上面和按键提示上面的空行都去掉，总行数不超过 12", () => {
+    const { window, plain } = open(TWO, 20);
+    plain();
+    window.handleInput(DOWN);
+    const lines = noMarker(plain());
+    expect(lines.length).toBeLessThanOrEqual(12);
+    const prompt = lines.indexOf(PROMPT2);
+    expect(prompt).toBeGreaterThan(0);
+    expect(lines[prompt - 1]).not.toBe("");
+    const hint = lines.findIndex((line) => line.includes("直接输入"));
+    expect(lines[hint - 1]).not.toBe("");
+    expect(lines[hint + 1]).toBe(HINT_ESC);
+  });
 });
