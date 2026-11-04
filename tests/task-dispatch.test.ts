@@ -226,6 +226,73 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
     .toMatchObject({ deliverable: false, blockers: expect.arrayContaining(["有任务还没经过审查"]) });
 });
 
+async function reviewPromptAfterWriting(files: Record<string, string>, writePaths = ["src/a/"]): Promise<string> {
+  const w = await world();
+  await w.plan.execute({ action: "propose", tasks: [spec("a", { writePaths }), spec("c", { writePaths: ["lib/"], goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push(submit("完成 a"), pmAck);
+  await w.dispatch("a");
+  await until(() => w.task("a").status === "awaiting_review");
+  const root = w.fixture.state.read(w.fixture.requirementId).data.workspace!.path;
+  for (const [path, content] of Object.entries(files)) {
+    await mkdir(dirname(join(root, path)), { recursive: true });
+    await writeFile(join(root, path), content);
+  }
+  w.provider.queue.push(submit("a 符合目标"), pmAck);
+  await w.review("a");
+  await until(() => w.task("a").status === "completed");
+  return w.provider.requests.find((request) => request.systemPrompt?.includes("审查任务：a（"))!.systemPrompt!;
+}
+
+test("派审查时可写范围内有 git 未跟踪的新文件，任务说明列出它们，原有的查看改动命令保持不变", async () => {
+  const prompt = await reviewPromptAfterWriting({ "src/a/new.ts": "export const n = 1;\n" });
+  expect(prompt).toContain("本次新建的文件（git diff 看不到，用 read 读全文）：src/a/new.ts");
+  expect(prompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff [0-9a-f]{40} -- src\/a\//);
+});
+
+test("派审查时多个未跟踪新文件用顿号连接，路径相对工作区根目录并用 / 分隔", async () => {
+  const prompt = await reviewPromptAfterWriting({ "src/a/new.ts": "1\n", "src/a/deep/more.ts": "2\n" });
+  expect(prompt).toContain("本次新建的文件（git diff 看不到，用 read 读全文）：src/a/deep/more.ts、src/a/new.ts");
+});
+
+test("派审查时可写范围外的未跟踪文件和被 .gitignore 忽略的文件都不列出", async () => {
+  const prompt = await reviewPromptAfterWriting({ ".gitignore": "*.log\n", "src/a/new.ts": "1\n", "src/a/debug.log": "x\n", "lib/x.ts": "2\n" });
+  const line = prompt.split("\n").find((text) => text.includes("本次新建的文件"));
+  expect(line).toContain("：src/a/new.ts");
+  expect(line).not.toContain("lib/x.ts");
+  expect(line).not.toContain("debug.log");
+});
+
+test("派审查时未跟踪新文件的文件名含中文，路径原样列出，不是 git 转义后的八进制写法", async () => {
+  const prompt = await reviewPromptAfterWriting({ "src/a/评论.ts": "1\n" });
+  expect(prompt).toContain("本次新建的文件（git diff 看不到，用 read 读全文）：src/a/评论.ts");
+});
+
+test("派审查时可写范围按字面前缀理解：写成 git 排除规则的范围不会让范围外的未跟踪文件被列出", async () => {
+  const prompt = await reviewPromptAfterWriting({ "lib/x.ts": "1\n", "src/y.ts": "2\n" }, [":(exclude)nothing/"]);
+  expect(prompt).not.toContain("本次新建的文件");
+});
+
+const numberedFiles = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`src/a/f${String(index).padStart(3, "0")}.ts`, "1\n"]));
+
+test("派审查时未跟踪新文件超过 100 个，只列前 100 个，并写明另有几个没列出和怎么查看", async () => {
+  const prompt = await reviewPromptAfterWriting(numberedFiles(101));
+  const listed = Object.keys(numberedFiles(100)).join("、");
+  expect(prompt).toContain(`本次新建的文件（git diff 看不到，用 read 读全文）：${listed}；另有 1 个没列出，用 verification_run kind=debug 运行 git ls-files --others --exclude-standard -- src/a/ 查看`);
+  expect(prompt).not.toContain("src/a/f100.ts");
+});
+
+test("派审查时未跟踪新文件恰好 100 个，全部列出，不出现另有没列出的说明", async () => {
+  const prompt = await reviewPromptAfterWriting(numberedFiles(100));
+  expect(prompt).toContain(`本次新建的文件（git diff 看不到，用 read 读全文）：${Object.keys(numberedFiles(100)).join("、")}\n`);
+  expect(prompt).not.toContain("另有");
+});
+
+test("派审查时可写范围内没有未跟踪新文件，任务说明不出现本次新建的文件这一行", async () => {
+  const prompt = await reviewPromptAfterWriting({ "lib/x.ts": "2\n" });
+  expect(prompt).not.toContain("本次新建的文件");
+});
+
 test("M8D2-AC2：worker 与 reviewer 的上下文含各自启动那一刻项目 AGENTS.md 的磁盘内容，文件改动后新派出的子代理读到新内容", async () => {
   const w = await world();
   const file = join(w.fixture.repositoryRoot, "AGENTS.md");
