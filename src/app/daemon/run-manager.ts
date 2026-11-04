@@ -53,6 +53,7 @@ import type { PickedOption } from "../../modules/requirement/requirement-prototy
 import { PrototypeBoardError, assertRequirementOpenForPrototypes, prototypeFilePath, beginDesign, clearStaleDesigns, decidePrototype, endDesign, pendingConfirmation, readPrototypeBoard, removeFromDraft } from "../../modules/requirement/requirement-prototypes.ts";
 import { createResultSubmitTool, PROTOTYPE_SUBMIT_PARAMETERS, RESULT_SUBMIT_PARAMETERS } from "../../modules/pm/result-submit.ts";
 import { toPiTool } from "../../modules/agents/role-tools.ts";
+import { readGit } from "../../core/exec/git-read.ts";
 import { AdvisedError, adviceOf, failureText, toolFailure } from "../../core/exec/tool-failure.ts";
 import { RunStepBook } from "../../modules/agents/run-steps.ts";
 import type { RunStepsView } from "../../modules/agents/run-steps.ts";
@@ -150,11 +151,14 @@ async function taskContext(task: PlanTask, maxTurns: number, prototypes: string,
   ].join("\n");
 }
 
+const REVIEW_NEW_FILES_LIMIT = 100;
+
 interface WorkerDefinition { name: string; body: string; skillDivision: string[] }
 
-async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: string, reportOf: (runId: string) => Pick<Verdict, "summary" | "verificationIds"> | undefined,
+async function reviewContext(task: PlanTask, attemptRunId: string, workspacePath: string, baseCommit: string, reportOf: (runId: string) => Pick<Verdict, "summary" | "verificationIds"> | undefined,
   maxTurns: number, worker: WorkerDefinition, prototypes: string): Promise<string> {
   const detail = await readTaskDetail(task);
+  const newFiles = (await readGit(workspacePath, ["--literal-pathspecs", "ls-files", "-z", "--others", "--exclude-standard", "--", ...task.writePaths])).stdout.split("\0").filter(Boolean);
   return [
     `审查任务：${task.key}（${task.taskId}，版本 ${task.version}）的 worker 尝试 ${attemptRunId}`,
     `被审目标：${detail.objective}`,
@@ -167,6 +171,8 @@ async function reviewContext(task: PlanTask, attemptRunId: string, baseCommit: s
     ...(worker.body.trim() ? [`被审任务所用 worker 定义（${worker.name}）的正文：\n${worker.body.trim()}`] : []),
     ...worker.skillDivision,
     `查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff ${baseCommit} -- ${task.writePaths.join(" ")}（${baseCommit} 是本需求工作区的基线提交）`,
+    ...(newFiles.length ? [`本次新建的文件（git diff 看不到，用 read 读全文）：${newFiles.slice(0, REVIEW_NEW_FILES_LIMIT).join("、")}` +
+      (newFiles.length > REVIEW_NEW_FILES_LIMIT ? `；另有 ${newFiles.length - REVIEW_NEW_FILES_LIMIT} 个没列出，用 verification_run kind=debug 运行 git ls-files --others --exclude-standard -- ${task.writePaths.join(" ")} 查看` : "")] : []),
     "worker 各次尝试（先红后绿可以出现在任意一次尝试里；返修改动了可测行为时，这次返修须有新的红；引用的验证记录用 verification_run action=status 逐条查看）：",
     ...task.attempts.slice(task.attemptBase).map((attempt, index) => {
       const report = reportOf(attempt.runId);
@@ -583,7 +589,7 @@ export class RunManager {
       const pathOf = (item: { name: string; version: number }) => prototypeFilePath(ref, { requirementId: task.requirementId, name: item.name, version: item.version });
       const prototypePaths = prototypeItems.map(pathOf);
       const prototypes = requirementPrototypeLines(promptRevision, prototypeItems, pathOf);
-      const context = review ? await reviewContext(task, attemptRunId!, workspace.baseCommit, (runId) => this.workerReport(runId), maxTurns, workerDefinition, prototypes)
+      const context = review ? await reviewContext(task, attemptRunId!, workspace.path, workspace.baseCommit, (runId) => this.workerReport(runId), maxTurns, workerDefinition, prototypes)
         : await taskContext(task, maxTurns, prototypes, this.rejectedFindings(task), task.role === "qa" ? this.reviewConclusions(task.requirementId) : []);
       // 原文接在职责规矩末尾：PM 写的任务说明都在「本次任务」之后，假冒不到这里
       const workerRules = role === "worker" && !review
