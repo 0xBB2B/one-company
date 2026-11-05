@@ -260,10 +260,17 @@ export function normalizeDesignSpec(text: string): string {
   return text.replace(/^\uFEFF/, "").replaceAll("\r\n", "\n");
 }
 
+function trimBlankEnd(text: string): string {
+  const lines = text.split("\n");
+  let end = lines.length;
+  while (end > 1 && /^[ \t]*$/.test(lines[end - 1]!)) end--;
+  return lines.slice(0, end).join("\n");
+}
+
 function splitChapters(text: string): { head: string; chapters: [string, string][] } {
   const parts = normalizeDesignSpec(text).split(/^(?=## )/m);
-  const head = parts[0]!.startsWith("## ") ? "" : parts.shift()!;
-  return { head, chapters: parts.map((part) => [part.split("\n", 1)[0]!.slice(3).trim(), part]) };
+  const head = parts[0]!.startsWith("## ") ? "" : trimBlankEnd(parts.shift()!);
+  return { head, chapters: parts.map((part) => [part.split("\n", 1)[0]!.slice(3).trim(), trimBlankEnd(part)]) };
 }
 
 export function designChapters(text: string): Map<string, string> {
@@ -325,11 +332,8 @@ export function checkDesignSpec(text: string): void {
     if (chapter === "颜色") {
       const sections = splitSections(lines);
       const themes = parsed.get("风格")!.get("主题")!.split("、");
-      for (const theme of themes) {
-        if (sections.filter(([name]) => name === theme).length > 1) {
-          throw new DesignSpecError(`DESIGN.md「颜色」的「${theme}」一节出现了两次，合成一节`);
-        }
-      }
+      const repeated = sections.find(([name], index) => sections.findIndex(([other]) => other === name) !== index);
+      if (repeated) throw new DesignSpecError(`DESIGN.md「颜色」的「${repeated[0]}」一节出现了两次，合成一节`);
       for (const theme of themes) {
         const sectionLines = sections.find(([name]) => name === theme)?.[1];
         if (sectionLines === undefined) throw new DesignSpecError(`DESIGN.md「颜色」缺少「${theme}」一节`);

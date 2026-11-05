@@ -1084,9 +1084,22 @@ test("design 是数组但没有方案清单时被退回，原因写只画了一�
   expect((await rejected([VALID_DESIGN])).advice.why).toBe("只画了一种方案，DESIGN.md 交一份就行");
 });
 
-test("design 数组份数和方案数不同时被退回，原因写方案数、份数和交法", async () => {
-  const error = await rejected([VALID_DESIGN, VALID_DESIGN], THREE_OPTIONS);
-  expect(error.advice.why).toBe("画了 3 个方案，DESIGN.md 交了 2 份；各方案风格不同时每个方案各交一份，按方案顺序，相同时交一份");
+test("design 数组份数少于方案数时被退回，原因写缺的是方案 C", async () => {
+  const why = (await rejected([VALID_DESIGN, VALID_DESIGN], THREE_OPTIONS)).advice.why;
+  expect(why).toContain("方案 C");
+  expect(why).toContain("DESIGN.md");
+});
+
+test("3 个方案只交 1 份时被退回，原因里同时写缺方案 B 和方案 C", async () => {
+  const why = (await rejected([VALID_DESIGN], THREE_OPTIONS)).advice.why;
+  expect(why).toContain("方案 B");
+  expect(why).toContain("方案 C");
+});
+
+test("design 数组份数多于方案数时被退回，原因写份数不对", async () => {
+  const why = (await rejected([VALID_DESIGN, VALID_DESIGN, VALID_DESIGN, VALID_DESIGN], THREE_OPTIONS)).advice.why;
+  expect(why).toContain("DESIGN.md");
+  expect(why).toContain("4 份");
 });
 
 test("design 数组里某一项是空字符串时被退回，原因写哪个方案没交", async () => {
@@ -1301,6 +1314,21 @@ test("same 时通过不写文件：内容和修改时间都不变", async () => 
   const before = statSync(rootDesignPath()).mtimeMs;
   await decideDesign(version, "accept");
   expect(readFileSync(rootDesignPath(), "utf8")).toBe(crlf);
+  expect(statSync(rootDesignPath()).mtimeMs).toBe(before);
+});
+
+test("根目录每章前多一个空行、交的只调换两章顺序时状态是 same，通过后内容和修改时间都不变", async () => {
+  const spaced = VALID_DESIGN.replaceAll("\n## ", "\n\n## ");
+  const parts = VALID_DESIGN.split(/(?=^## )/m);
+  const i = parts.findIndex((part) => part.startsWith("## 组件\n"));
+  const j = parts.findIndex((part) => part.startsWith("## 状态\n"));
+  [parts[i], parts[j]] = [parts[j], parts[i]];
+  const version = await awaitingDesign(parts.join(""), spaced);
+  expect((await pendingDesign()).design).toEqual({ state: "same" });
+  utimesSync(rootDesignPath(), 1_000_000, 1_000_000);
+  const before = statSync(rootDesignPath()).mtimeMs;
+  await decideDesign(version, "accept");
+  expect(readFileSync(rootDesignPath(), "utf8")).toBe(spaced);
   expect(statSync(rootDesignPath()).mtimeMs).toBe(before);
 });
 

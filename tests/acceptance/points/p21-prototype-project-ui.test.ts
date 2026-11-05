@@ -25,7 +25,7 @@ type Handler = (params: Record<string, unknown>, client: unknown) => Promise<Rec
 interface Submitted { html?: string; design?: string | string[] }
 
 test.skipIf(!config || process.platform !== "darwin")("P21：样例项目已有整体布局和样式，原型设计师交的稿带着现有导航、已有页面内容和主题色", async () => {
-  const evidence = await pointEvidence(config!, "p20");
+  const evidence = await pointEvidence(config!, "p21");
   const w = await createPmRunWorld(cleanups);
   for (const [path, content] of Object.entries(PROJECT_FILES)) {
     await mkdir(dirname(join(w.fixture.repositoryRoot, path)), { recursive: true });

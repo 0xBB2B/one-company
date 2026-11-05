@@ -217,7 +217,10 @@ function checkSubmittedDesigns(design: string | string[] | undefined, options: r
   const texts = typeof design === "string" ? [design] : design!;
   if (typeof design !== "string") {
     if (!options.length) deny("invalid_design", "只画了一种方案，DESIGN.md 交一份就行", next);
-    if (texts.length !== options.length) deny("invalid_design", `画了 ${options.length} 个方案，DESIGN.md 交了 ${texts.length} 份；各方案风格不同时每个方案各交一份，按方案顺序，相同时交一份`, next);
+    if (texts.length !== options.length) {
+      const missing = texts.length < options.length ? `，缺${options.slice(texts.length).map((_, i) => `方案 ${optionLetter(texts.length + i)} 的 DESIGN.md`).join("、")}` : "";
+      deny("invalid_design", `画了 ${options.length} 个方案，DESIGN.md 交了 ${texts.length} 份${missing}；各方案风格不同时每个方案各交一份，按方案顺序，相同时交一份`, next);
+    }
   }
   return texts.map((text, index) => {
     const letter = typeof design === "string" ? null : optionLetter(index);

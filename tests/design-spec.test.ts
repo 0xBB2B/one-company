@@ -360,6 +360,11 @@ describe("重复的颜色节", () => {
     expect(failure(text)).toBe("DESIGN.md「颜色」的「明亮」一节出现了两次，合成一节");
   });
 
+  test("主题只写明亮时颜色章里别的三级标题出现两次也抛错", () => {
+    const text = removeSection(replaceLine(VALID, "- 主题：明亮、暗黑", "- 主题：明亮"), "暗黑").replace("## 字体\n", "### 备注\n### 备注\n## 字体\n");
+    expect(failure(text)).toBe("DESIGN.md「颜色」的「备注」一节出现了两次，合成一节");
+  });
+
   test("暗黑一节出现两次抛错", () => {
     const text = VALID.replace("## 字体\n", "### 暗黑\n## 字体\n");
     expect(failure(text)).toBe("DESIGN.md「颜色」的「暗黑」一节出现了两次，合成一节");
@@ -732,8 +737,35 @@ describe("changedChapters", () => {
     expect(changedChapters(VALID, after)).toEqual(["组件"]);
   });
 
-  test("整份全文末尾多出空行算最后一章变了", () => {
-    expect(changedChapters(VALID, VALID + "\n\n")).toEqual(["终端界面"]);
+  test("整份全文末尾多出空行算不变", () => {
+    expect(changedChapters(VALID, VALID + "\n\n")).toEqual([]);
+  });
+
+  test("章与章之间空一行、只调换两章顺序返回空数组", () => {
+    expect(changedChapters("# t\n\n## 风格\nA\n\n## 颜色\nB\n", "# t\n\n## 颜色\nB\n\n## 风格\nA\n")).toEqual([]);
+  });
+
+  test("有效样例每章前插空行后调换两章返回空数组", () => {
+    const spaced = VALID.replaceAll("\n## ", "\n\n## ");
+    expect(changedChapters(spaced, swapChapters(spaced, "组件", "状态"))).toEqual([]);
+  });
+
+  test("章末一行只有空格也算空行，结果算不变", () => {
+    expect(changedChapters(VALID, VALID + "   \n")).toEqual([]);
+    expect(changedChapters("# t\n\n## 风格\nA\n", "# t\n\n## 风格\nA\n   \n")).toEqual([]);
+  });
+
+  test("一章里有 32000 行只含一个空格的行时 500ms 内返回", () => {
+    const body = "## 风格\n" + " \n".repeat(32000) + "x\n";
+    const start = performance.now();
+    const result = changedChapters(body, body);
+    expect(performance.now() - start).toBeLessThan(500);
+    expect(result).toEqual([]);
+  }, 30000);
+
+  test("章中间多一个空行算这章变了", () => {
+    const after = replaceLine(VALID, "- 图标尺寸：16px\n", "\n- 图标尺寸：16px\n");
+    expect(changedChapters(VALID, after)).toEqual(["组件"]);
   });
 
   test("新加图表章返回图表", () => {
