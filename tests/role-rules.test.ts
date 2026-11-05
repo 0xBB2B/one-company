@@ -440,7 +440,7 @@ describe("新技术须经用户同意：各角色规矩文字", () => {
     expect(loadRoleRules("pm")).toMatch(/不引入新技术[\s\S]*记为代理决策/);
   });
 
-  test("TD-15 PM 规矩不含旧放行句，也不再把依赖说成「不算技术选择」", () => {
+  test("TD-15 PM 规矩不含旧放行句，也不把依赖说成「不算技术选择」", () => {
     const rules = loadRoleRules("pm");
     expect(rules).not.toContain("在任务说明里写明用户同意的是哪个依赖");
     expect(rules).not.toContain("不算技术选择");
