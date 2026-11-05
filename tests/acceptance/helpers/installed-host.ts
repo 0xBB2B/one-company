@@ -1,8 +1,9 @@
 import { execFile } from "node:child_process";
+import { resolveAcceptanceModel } from "./acceptance-model.ts";
+import type { Thinking } from "./acceptance-model.ts";
 import { answeringUi } from "../../helpers/window-host.ts";
 import type { ShownWindow, WindowDecision } from "../../helpers/window-host.ts";
 import { chmod, copyFile, mkdir, realpath, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -17,8 +18,6 @@ import type { ExtensionUIContext, TerminalInputHandler } from "@earendil-works/p
 
 const exec = promisify(execFile);
 const productRoot = fileURLToPath(new URL("../../../", import.meta.url));
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-type Thinking = (typeof THINKING_LEVELS)[number];
 
 export interface AcceptanceConfig {
   provider: string;
@@ -28,19 +27,12 @@ export interface AcceptanceConfig {
   output: string;
 }
 
-/** 只有显式给出模型与证据目录时才跑真实模型验收；缺任一项返回 null，由用例跳过。 */
+/** 只有给出证据目录时才跑真实模型验收；缺证据目录返回 null，由用例跳过。 */
 export function acceptanceConfig(): AcceptanceConfig | null {
-  const model = process.env.ONE_COMPANY_ACCEPTANCE_MODEL, output = process.env.ONE_COMPANY_ACCEPTANCE_OUTPUT;
-  if (!model || !output) return null;
-  const slash = model.indexOf("/");
-  if (slash <= 0 || slash === model.length - 1) throw new Error("ONE_COMPANY_ACCEPTANCE_MODEL 须写成 <provider>/<model>");
+  const output = process.env.ONE_COMPANY_ACCEPTANCE_OUTPUT;
+  if (!output) return null;
   if (!isAbsolute(output)) throw new Error("ONE_COMPANY_ACCEPTANCE_OUTPUT 须是绝对路径");
-  const thinking = (process.env.ONE_COMPANY_ACCEPTANCE_THINKING ?? "high") as Thinking;
-  if (!THINKING_LEVELS.includes(thinking)) throw new Error(`不支持的思考等级：${thinking}`);
-  return {
-    provider: model.slice(0, slash), modelId: model.slice(slash + 1), thinking, output,
-    credentialsDir: process.env.ONE_COMPANY_ACCEPTANCE_CREDENTIALS ?? join(homedir(), ".pi", "agent"),
-  };
+  return { ...resolveAcceptanceModel(), output };
 }
 
 function installedPackageRoot(specifier: string): string {
