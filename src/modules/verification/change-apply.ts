@@ -75,6 +75,7 @@ const CHANGE_APPLY_ADVICE = {
   invalid_shape: COMMON_ADVICE.invalid_shape,
   forbidden_path: { why: "这个路径不允许写入", next: "只写授权范围内的普通文件" },
   host_settings: { why: "这是 pi 的项目设置文件，只能由用户修改", next: "不要改它；确实需要改设置时在结果里说明，由用户处理" },
+  design_spec: { why: "DESIGN.md 只能随原型通过写入，不能用工具直接改", next: "派原型设计师出一版原型，用户通过后由程序写入；需要改设计规范时在结果里说明" },
   path_escape: { why: "路径经过链接或 .. 指到了工作区以外", next: "改用工作区内的真实路径" },
   out_of_scope: { why: "路径不在本任务的授权写入范围内", next: "只改授权范围内的文件；确实需要时在结果里说明，由 PM 调整任务" },
   stale_base: { why: "文件或分支在预检后已被改动", next: "重新 prepare 取得最新 baseHash 后再写入" },
@@ -164,7 +165,7 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
     return { root: await realpath(workspace.path), workspace };
   }
   async function locate(root: string, path: string): Promise<string> {
-    if (!writePathAllowed(path)) throw new ChangeApplyError(classifyManagedWritePath(path) === "host_settings" ? "host_settings" : "forbidden_path", path);
+    if (!writePathAllowed(path)) throw new ChangeApplyError(({ host_settings: "host_settings", design_spec: "design_spec" } as const)[classifyManagedWritePath(path) as "host_settings" | "design_spec"] ?? "forbidden_path", path);
     const normalized = posix.normalize(path);
     if (!grant.writePaths.some((allowed) => overlaps(allowed, normalized))) throw new ChangeApplyError("out_of_scope", path);
     let real: string;

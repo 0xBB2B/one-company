@@ -21,6 +21,7 @@ const ID_CONSTRAINT = `length(id) = 36 AND substr(id,15,1) = '7' AND substr(id,2
 const LOSS = "迁移会丢掉原型记录里的「补充说明」（这个功能已经去掉了）";
 const lossStep: DataMigrationStep = { from: 8, losses: [LOSS], migrate() {} };
 const failingStep: DataMigrationStep = { from: 8, losses: [], migrate() { throw new Error("磁盘写满了"); } };
+const keepV9: DataMigrationStep = { from: 9, losses: [], migrate() {} };
 
 async function createDatabase(path: string, kind: "data" | "index", version: number) {
   const db = new DatabaseSync(path);
@@ -61,7 +62,7 @@ async function addRepo(dataRoot: string, options: { data?: number; index?: numbe
 
 type World = Awaited<ReturnType<typeof world>>;
 
-function setup(w: World, answer: (shown: ShownWindow) => WindowDecision | Promise<WindowDecision>, steps: DataMigrationStep[] = [lossStep], hasUI?: boolean) {
+function setup(w: World, answer: (shown: ShownWindow) => WindowDecision | Promise<WindowDecision>, steps: DataMigrationStep[] = [lossStep, keepV9], hasUI?: boolean) {
   const notices: Array<{ text: string; level?: string }> = [];
   const shown: ShownWindow[] = [];
   const ui = answeringUi((window) => { shown.push(window); return answer(window); });
@@ -76,13 +77,13 @@ const backupPattern = (w: World) =>
 
 test("migrationWindowContent：data 8 与 index 1 时标题和内容逐行一致", () => {
   const plan: MigrationPlan = {
-    data: { kind: "data", status: "migratable", version: 8, target: 9 },
+    data: { kind: "data", status: "migratable", version: 8, target: 10 },
     index: { kind: "index", status: "migratable", version: 1, target: 2 },
   };
   const content = migrationWindowContent("企微BOT", plan, [LOSS]);
   expect(content.title).toBe("仓库 企微BOT 的本机数据库是旧版本，要迁移吗？");
   expect(content.lines.map((line) => line.text)).toEqual([
-    "data.db（需求、运行记录）：版本 8 → 9",
+    "data.db（需求、运行记录）：版本 8 → 10",
     `  ${LOSS}`,
     "  迁移前先把 data.db 备份到本机数据目录的 backups/ 下",
     "index.db（项目索引）：版本 1 → 2，删掉旧索引后重新建",
@@ -117,7 +118,7 @@ test("选「迁移」：迁移框内容正确，通知依次为开始和成功�
   expect(notices.map((n) => n.level)).toEqual(["info", "info"]);
   expect(notices[0]!.text).toBe("正在迁移仓库 企微BOT 的本机数据库，先备份 data.db…");
   expect(notices[1]!.text).toMatch(new RegExp(`^仓库 企微BOT 的本机数据库已迁移到当前版本。旧 data.db 备份在 ${backupPattern(w).source}。索引会在第一次查询时重新建。$`));
-  expect(versionOf(w.dataPath)).toBe(9);
+  expect(versionOf(w.dataPath)).toBe(10);
   expect(existsSync(w.indexPath)).toBe(false);
 });
 
@@ -132,13 +133,13 @@ test("只迁 index.db：开始通知不提备份，成功通知不带备份路�
 });
 
 test.each([
-  ["两个库都是当前版本", { data: 9, index: 2 }, undefined],
+  ["两个库都是当前版本", { data: 10, index: 2 }, undefined],
   ["两个库都不存在", {}, undefined],
   ["data.db 版本 5 太旧", { data: 5, index: 1 }, undefined],
   ["没有 pi 界面", { data: 8, index: 1 }, false],
 ] as const)("%s：不弹框，直接 proceed", async (_name, options, hasUI) => {
   const w = await world(options);
-  const { beforeSpawn, custom } = setup(w, () => "迁移", [lossStep], hasUI);
+  const { beforeSpawn, custom } = setup(w, () => "迁移", [lossStep, keepV9], hasUI);
   expect(await beforeSpawn({ repoId: w.repoId, commonDir: w.commonDir })).toEqual({ proceed: true });
   expect(custom).not.toHaveBeenCalled();
 });
@@ -159,7 +160,7 @@ test.each([["选「暂不迁移」", "暂不迁移" as WindowDecision], ["按 Es
 
 test("迁移步骤抛错：error 通知写明步骤、原因、备份路径，结果 failed，库仍是旧版本", async () => {
   const w = await world();
-  const { beforeSpawn, notices } = setup(w, () => "迁移", [failingStep]);
+  const { beforeSpawn, notices } = setup(w, () => "迁移", [failingStep, keepV9]);
   const result = await beforeSpawn({ repoId: w.repoId, commonDir: w.commonDir });
   expect(result.proceed).toBe(false);
   if (result.proceed) return;
@@ -194,7 +195,7 @@ test("备份 data.db 失败：通知和 why 写明备份这一步，原因是白
 });
 
 test("迁移中出了意料之外的错：发 error 通知，结果 failed，通知不说数据库没有改动", async () => {
-  const w = await world({ data: 9, index: 1 });
+  const w = await world({ data: 10, index: 1 });
   await mkdir(`${w.indexPath}-shm`, { mode: 0o700 });
   await writeFile(join(`${w.indexPath}-shm`, "occupied"), "", { mode: 0o600 });
   const { beforeSpawn, notices } = setup(w, () => "迁移");
@@ -216,7 +217,7 @@ test("数据目录经过软链接：照常加锁、弹框并迁移", async () =>
   const { beforeSpawn, notices } = setup({ ...w, dataRoot: linked }, () => "迁移");
   expect(await beforeSpawn({ repoId: w.repoId, commonDir: w.commonDir })).toEqual({ proceed: true });
   expect(notices.map((n) => n.level)).toEqual(["info", "info"]);
-  expect(versionOf(w.dataPath)).toBe(9);
+  expect(versionOf(w.dataPath)).toBe(10);
 });
 
 test("维护标记被占：不弹框，释放后弹框", async () => {
@@ -242,7 +243,7 @@ test("维护标记被占期间库已被别处迁到当前版本：释放后不�
     const pending = beforeSpawn({ repoId: w.repoId, commonDir: w.commonDir });
     await new Promise((resolve) => setTimeout(resolve, 500));
     await rm(w.dataPath); await rm(w.indexPath);
-    await createDatabase(w.dataPath, "data", 9);
+    await createDatabase(w.dataPath, "data", 10);
     await rm(marker);
     expect(await pending).toEqual({ proceed: true });
     expect(custom).not.toHaveBeenCalled();
@@ -262,7 +263,7 @@ test("两个仓库同时调用：一次只显示一个窗口，各自标题带�
     return "迁移";
   });
   const host = { ui: { ...ui, notify: (text: string, level?: string) => { notices.push({ text, level }); } } } as unknown as WindowHost;
-  const beforeSpawn = createBeforeSpawn({ host, dataRoot: w.dataRoot, steps: [lossStep], worktreeRoots: [w.workspace] });
+  const beforeSpawn = createBeforeSpawn({ host, dataRoot: w.dataRoot, steps: [lossStep, keepV9], worktreeRoots: [w.workspace] });
   const first = beforeSpawn({ repoId: w.repoId, commonDir: w.commonDir });
   await vi.waitFor(() => expect(shown).toHaveLength(1));
   const second = beforeSpawn({ repoId: other.repoId, commonDir: other.commonDir });
@@ -275,5 +276,5 @@ test("两个仓库同时调用：一次只显示一个窗口，各自标题带�
   expect(firstResult).toMatchObject({ proceed: false, code: "database_migration_declined" });
   expect(secondResult).toEqual({ proceed: true });
   expect(versionOf(w.dataPath)).toBe(8);
-  expect(versionOf(other.dataPath)).toBe(9);
+  expect(versionOf(other.dataPath)).toBe(10);
 }, 15000);

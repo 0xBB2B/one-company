@@ -4,6 +4,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { writeFileAtomic } from "../../core/storage/store.ts";
+import { DESIGN_SPEC_FILE } from "../requirement/design-spec.ts";
 
 export const CONVENTIONS_FILE = "AGENTS.md";
 /** 规范全文上限：项目规范随每次派工进入子代理的上下文，须保持简短。 */
@@ -34,12 +35,19 @@ export async function agentConventionsContext(input: { agentDir: string; reposit
   return blocks.length ? blocks.join("\n\n") : null;
 }
 
+export async function designSpecContext(input: { repositoryRoot: string }): Promise<string | null> {
+  const design = await readOptional(join(input.repositoryRoot, DESIGN_SPEC_FILE));
+  return design?.trim() ? `界面设计规范（来源：仓库根目录 ${DESIGN_SPEC_FILE}；界面改动必须遵守）：\n${design.trimEnd()}` : null;
+}
+
+// 文件存在时取磁盘上的真实名字：macOS 把 ſ 和 s 当成同一个文件名，只做小写比较会放过 deſign.md
 async function canonical(path: string): Promise<string> {
+  try { return (await realpath(path)).toLowerCase(); } catch { /* 文件还不存在时按目录真实路径加文件名比较 */ }
   try { return join(await realpath(dirname(path)), basename(path)).toLowerCase(); }
   catch { return path.toLowerCase(); }
 }
 
-/** 主窗口的 edit、write 指向某个已接入仓库根目录的 AGENTS.md 时拦下：项目规范只经 conventions-update 的窗口写入。 */
+/** 主窗口的 edit、write 指向某个已接入仓库根目录的 AGENTS.md 或 DESIGN.md 时拦下：项目规范只经 conventions-update 的窗口写入，DESIGN.md 只随原型通过写入。 */
 export async function checkConventionsWrite(event: { toolName: string; input: unknown }, cwd: string, repositoryRoots: string[]): Promise<{ block: true; reason: string } | undefined> {
   if (event.toolName !== "edit" && event.toolName !== "write") return undefined;
   const raw = (event.input as { path?: unknown } | null)?.path;
@@ -50,6 +58,9 @@ export async function checkConventionsWrite(event: { toolName: string; input: un
   for (const root of repositoryRoots) {
     if (target === await canonical(join(root, CONVENTIONS_FILE))) {
       return { block: true, reason: `项目规范 ${CONVENTIONS_FILE} 不能用 edit 或 write 直接改；改用 one_company_project_manage conventions-update 提交完整新内容，由用户在窗口里选择后写入` };
+    }
+    if (target === await canonical(join(root, DESIGN_SPEC_FILE))) {
+      return { block: true, reason: `${DESIGN_SPEC_FILE} 只能随原型通过写入：派原型设计师出一版原型，用户通过后由程序写入` };
     }
   }
   return undefined;

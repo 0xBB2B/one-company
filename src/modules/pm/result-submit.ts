@@ -26,8 +26,9 @@ export type ResultSubmitGrant = Static<typeof Grant>;
 export const VERDICT_SUBMIT_PARAMETERS = object({ action: Type.Literal("verdict"), result: VERDICT_PAYLOAD });
 const PROTOTYPE_VIEW = object({ name: Type.String(), notes: Type.Optional(Type.Array(Type.String())) });
 const PROTOTYPE_PAGE = object({ name: Type.String(), group: Type.Optional(Type.String()), views: Type.Array(PROTOTYPE_VIEW) });
-/** 原型设计师看到的参数：html 是被设计的页面，pages 列出页面和画面，note 用一句话说明画了什么，options 是画了多个方案时按顺序列出的方案名称，prototypeOnly 和 openQuestions 分别是只在原型里成立的事和还没确认的问题。 */
+/** 原型设计师看到的参数：html 是被设计的页面，pages 列出页面和画面，note 用一句话说明画了什么，options 是画了多个方案时按顺序列出的方案名称，prototypeOnly 和 openQuestions 分别是只在原型里成立的事和还没确认的问题，design 是 DESIGN.md 全文；画了多个方案且风格不同时写成数组，按 options 顺序每个方案一份。 */
 export const PROTOTYPE_SUBMIT_PARAMETERS = object({ action: Type.Literal("prototype"), html: Type.String({ minLength: 1 }), note: Type.String({ minLength: 1, maxLength: 1024 }),
+  design: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String(), { maxItems: 6 })])),
   pages: Type.Array(PROTOTYPE_PAGE), options: Type.Optional(Type.Array(Type.String())),
   prototypeOnly: Type.Optional(Type.Array(Type.String())), openQuestions: Type.Optional(Type.Array(Type.String())) });
 export const RESULT_SUBMIT_PARAMETERS = Type.Union([
@@ -118,7 +119,7 @@ export function createResultSubmitTool(options: ResultSubmitToolOptions) {
     if (params.action === "prototype") {
       const binding = options.prototypeBinding;
       if (!binding || grant.role !== "prototype") throw new ResultSubmitError("prototype_unavailable");
-      return submitDesign(binding.ref, { requirementId: binding.requirementId, name: binding.name, runId: grant.runId, html: params.html, note: params.note, pages: params.pages, options: params.options, prototypeOnly: params.prototypeOnly, openQuestions: params.openQuestions }).then(() => {
+      return submitDesign(binding.ref, { requirementId: binding.requirementId, name: binding.name, runId: grant.runId, design: params.design, html: params.html, note: params.note, pages: params.pages, options: params.options, prototypeOnly: params.prototypeOnly, openQuestions: params.openQuestions }).then(() => {
         binding.onSubmitted();
         return freeze({ kind: "prototype" as const, accepted: true, runId: grant.runId });
       });

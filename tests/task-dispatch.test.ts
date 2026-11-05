@@ -343,6 +343,32 @@ test("M8D2-AC2：worker 与 reviewer 的上下文含各自启动那一刻项目 
   expect(prompt("审查任务：a（")).toContain("- 不使用泛型。\n- 文件名用小写。");
 });
 
+test("仓库根目录有 DESIGN.md 时 worker 与 reviewer 的任务说明开头一行写明来源并接全文；没有文件或内容为空时不含", async () => {
+  const header = "界面设计规范（来源：仓库根目录 DESIGN.md；界面改动必须遵守）：\n";
+  const w = await world();
+  await writeFile(join(w.fixture.repositoryRoot, "DESIGN.md"), "# 风格\n- 主题：明亮\n");
+  await w.plan.execute({ action: "propose", tasks: [spec("a", { writePaths: ["src/a/"] }), spec("b", { writePaths: ["lib/"], goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push(submit("完成 a"), pmAck);
+  await w.dispatch("a");
+  await until(() => w.task("a").status === "awaiting_review");
+  w.provider.queue.push(submit("a 符合目标"), pmAck);
+  await w.review("a");
+  await until(() => w.task("a").status === "completed");
+  const prompt = (marker: string) => w.provider.requests.find((request) => request.systemPrompt?.includes(marker))!.systemPrompt!;
+  expect(prompt("任务：a（")).toContain(`${header}# 风格\n- 主题：明亮`);
+  expect(prompt("审查任务：a（")).toContain(`${header}# 风格\n- 主题：明亮`);
+
+  const empty = await world();
+  await writeFile(join(empty.fixture.repositoryRoot, "DESIGN.md"), "  \n");
+  await empty.plan.execute({ action: "propose", tasks: [spec("a", { writePaths: ["src/a/"] }), spec("b", { writePaths: ["lib/"], goalUnitIds: ["scenario.failure"] })] });
+  await empty.plan.execute({ action: "confirm", planVersion: 1 });
+  empty.provider.queue.push(submit("完成 a"), pmAck);
+  await empty.dispatch("a");
+  await until(() => empty.task("a").status === "awaiting_review");
+  expect(empty.provider.requests.find((request) => request.systemPrompt?.includes("任务：a（"))!.systemPrompt).not.toContain("界面设计规范（来源");
+});
+
 test("M7A-AC4：审查打回时 reviewer 任务仍算完成；返修须带原因且不占执行重试；再次打回进入待用户裁决，拆分或改名不能重置", async () => {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("login"), spec("failure", { goalUnitIds: ["scenario.failure"], writePaths: ["lib/"] })] });

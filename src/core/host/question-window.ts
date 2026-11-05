@@ -143,8 +143,8 @@ export class QuestionWindowView {
 
   constructor(options: QuestionWindowView["options"]) {
     this.options = options;
-    this.states = options.questions.map((question) => ({ cursor: Math.max(0, question.choices.findIndex((choice) => choice.recommended && !choice.disabled),
-      question.choices.findIndex((choice) => !choice.disabled)),
+    const firstEnabled = (question: WindowQuestion) => { const index = question.choices.findIndex((choice) => !choice.disabled); return index < 0 && question.allowOther ? question.choices.length : index; };
+    this.states = options.questions.map((question) => ({ cursor: Math.max(0, question.choices.findIndex((choice) => choice.recommended && !choice.disabled), firstEnabled(question)),
       picked: new Set<number>(), editors: new Map<number, Editor>(), answered: false }));
     this.states.forEach((state, index) => {
       for (let cursor = 0; cursor < this.choiceCount(index); cursor++) {

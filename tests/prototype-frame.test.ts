@@ -58,7 +58,7 @@ test("返回值以 doctype 开头并含全部固定文字", () => {
     "这个画面的说明",
     "只在原型里成立",
     "还没确认的问题",
-    "个方案，点这里切换对比",
+    "当前：",
     "最后选哪个，在“确认原型”窗口里定",
     "这一栏上线后不存在",
   ]) {
@@ -142,13 +142,14 @@ test("相同输入两次调用结果相同", () => {
   expect(buildPrototypeFrame(baseInput)).toBe(buildPrototypeFrame(baseInput));
 });
 
-test("隔离框是普通 iframe，外框是蓝图风格，说明区条目收紧", () => {
+test("隔离框是普通 iframe，外框是明暗两套柔和配色，说明区条目收紧", () => {
   const output = buildPrototypeFrame({ html: "<!doctype html><html><body></body></html>", name: "设置页", version: 1, pages: [{ name: "页", group: "状态", views: [{ name: "正常", notes: [] }] }], options: [], prototypeOnly: [], openQuestions: [] });
   expect(output).toContain('<iframe id="page" title="被设计的页面"></iframe>');
   expect(output).not.toContain("sandbox");
-  expect(output).toContain("--rail:#0a2744");
-  expect(output).toContain("--accent:#6fd6ff");
+  expect(output).toContain(":root{--bg:#d5dae1;--line:#b7bfca;--text:#1d2633;--muted:#4f5b6b;--accent:#47607f;--pick-bg:#c2cad5;--pick-text:#1d2633;--grid:rgba(71,96,127,.06)}");
+  expect(output).toContain(":root[data-theme=dark]{--bg:#26282c;--line:#3a3d43;--text:#d4d4d4;--muted:#8f949b;--accent:#8e9aa8;--pick-bg:#33363c;--pick-text:#e6e6e6;--grid:rgba(255,255,255,.03)}");
   expect(output).toContain("background-size:20px 20px");
+  expect(output).toContain(".seg button[aria-pressed=true]{border:1px solid var(--accent);background:var(--pick-bg);color:var(--pick-text);font-weight:600}");
   expect(output).toContain("border-right:1px dashed var(--accent)");
   expect(output).toContain("outline:1px dashed var(--accent)");
   expect(output).toContain(".notes{font-size:13px;line-height:1.45;");
@@ -162,4 +163,27 @@ test("页面里的链接留在隔离框里，说明区上限是窗口的三分�
   expect(output).toContain("max-height:calc(100vh / 3)");
   expect(output).not.toContain("white-space:nowrap");
   expect(output).toContain("flex-wrap:wrap");
+});
+
+test("外框有明暗两个按钮，打开时按系统主题选，主题写在 data-theme 上且不存进浏览器", () => {
+  const out = buildPrototypeFrame(baseInput);
+  for (const text of ["☀ 明亮", "☾ 暗黑", "prefers-color-scheme", "data-theme"]) {
+    expect(out).toContain(text);
+  }
+  expect(out).not.toContain("localStorage");
+});
+
+test("旧配色和旧方案提示框的样式与文字都已去掉", () => {
+  for (const options of [baseInput.options, []]) {
+    const out = buildPrototypeFrame({ ...baseInput, options });
+    for (const banned of ["#0a2744", "#6fd6ff", "option-box", "option-pill", "这份原型有", "点这里切换对比"]) {
+      expect(out).not.toContain(banned);
+    }
+  }
+});
+
+test("切换栏顶部写当前方案和最终选择的说明", () => {
+  const out = buildPrototypeFrame(baseInput);
+  expect(out).toContain("当前：");
+  expect(out).toContain("最后选哪个，在“确认原型”窗口里定");
 });

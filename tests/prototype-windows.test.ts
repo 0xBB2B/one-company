@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { afterEach, expect, test, vi } from "vitest";
 import prototypeExtension from "../src/modules/prototype/prototype-extension.ts";
+import { chapterCountText, confirmWindowContent } from "../src/modules/prototype/prototype-windows.ts";
+import type { PendingPrototype } from "../src/modules/prototype/prototype-windows.ts";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { askWindow } from "../src/core/host/question-window.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
@@ -16,10 +18,11 @@ const PATH_V1 = "/Users/bb/.pi/agent/one-company/repos/3c9e/prototypes/0192f3a4-
 const HASH_V2 = "4be1c09d7a2f" + "0".repeat(52);
 const HASH_V1 = "a01f77c3e9b2" + "0".repeat(52);
 
+type DesignState = PendingPrototype["design"];
 const pendingV2 = { requirementTitle: "设置页支持深色模式", draftVersion: 2, name: "设置页", version: 2, path: PATH, bytes: 18_841, hash: HASH_V2,
-  note: "新增外观一栏", previousOpinion: "开关放到标题右边", options: [] as string[] };
+  note: "新增外观一栏", previousOpinion: "开关放到标题右边", options: [] as string[], design: { state: "same" } as DesignState };
 const pendingV1 = { requirementTitle: "设置页支持深色模式", draftVersion: 2, name: "设置页", version: 1, path: PATH_V1, bytes: 16_384, hash: HASH_V1,
-  note: "新增外观一栏", previousOpinion: null, options: [] as string[] };
+  note: "新增外观一栏", previousOpinion: null, options: [] as string[], design: { state: "same" } as DesignState };
 const THREE_OPTIONS = ["顶部分栏", "左侧导航", "卡片网格"];
 const withOptions = (options: string[]) => ({ ...pendingV2, options });
 
@@ -657,4 +660,127 @@ test("confirm 重开的窗口和自动弹出的窗口选项一样，选方案 B 
 test("原型设计师职责规矩要求画了多个方案时交稿附方案清单", () => {
   const rules = readFileSync(new URL("../role-rules/prototype.md", import.meta.url), "utf8");
   expect(rules).toContain("- 一份原型里画了多个方案时，交稿必须附方案清单（options），最少 2 个、最多 6 个，每个名称最多 20 字。页面按 data-option 的字母显示对应方案，字母和清单顺序一致。只画了一种方案时不附清单。");
+});
+
+const NOTE_LINE = "设计师的说明（模型写的，仅供参考）：「新增外观一栏」";
+const withDesign = (design: DesignState, options: string[] = []): PendingPrototype => ({ ...pendingV2, options, design });
+const designLines = (pending: PendingPrototype) => {
+  const lines = confirmWindowContent(pending, true).lines;
+  return lines.slice(lines.findIndex((line) => line.text === NOTE_LINE) + 1);
+};
+const DESIGN_DISABLED = "设计师交稿后 DESIGN.md 被改过，这一版不能通过";
+
+test("chapterCountText 超过 10 也写成中文数字", () => {
+  expect([11, 12, 20, 21, 35].map(chapterCountText)).toEqual(["十一", "十二", "二十", "二十一", "三十五"]);
+});
+
+test("chapterCountText 把 1 到 10 写成中文数字，2 写成两", () => {
+  expect([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(chapterCountText)).toEqual(["一", "两", "三", "四", "五", "六", "七", "八", "九", "十"]);
+});
+
+test("design 是 created 时，在设计师的说明之后加一行普通颜色的新建提示", () => {
+  expect(designLines(withDesign({ state: "created" }))).toEqual([{ text: "通过后在仓库根目录新建 DESIGN.md，之后的原型、实现和审查都照它做。" }]);
+});
+
+test("design 是 changed 且一份时，写改了哪几章，章名用顿号连接并带章数", () => {
+  expect(designLines(withDesign({ state: "changed", changes: [{ letter: null, chapters: ["颜色", "组件"] }] })))
+    .toEqual([{ text: "通过后同时更新仓库根目录的 DESIGN.md：改了颜色、组件两章。" }]);
+});
+
+test("design 是 changed 且只改一章或只加了图表章、只改开头时，章数写一", () => {
+  expect(designLines(withDesign({ state: "changed", changes: [{ letter: null, chapters: ["图表"] }] }))[0]!.text).toBe("通过后同时更新仓库根目录的 DESIGN.md：改了图表一章。");
+  expect(designLines(withDesign({ state: "changed", changes: [{ letter: null, chapters: ["开头的说明"] }] }))[0]!.text).toBe("通过后同时更新仓库根目录的 DESIGN.md：改了开头的说明一章。");
+});
+
+test("design 是 changed 且每方案一份时，先一行总说明，下一行缩进两格逐个方案写改了几章或不变", () => {
+  const lines = designLines(withDesign({ state: "changed", changes: [
+    { letter: "A", chapters: ["颜色", "组件"] }, { letter: "B", chapters: ["颜色"] }, { letter: "C", chapters: [] },
+  ] }, THREE_OPTIONS));
+  expect(lines).toEqual([
+    { text: "通过后同时更新仓库根目录的 DESIGN.md：" },
+    { text: "  方案 A 改了颜色、组件两章；方案 B 改了颜色一章；方案 C 不变。" },
+  ]);
+});
+
+test("design 是 same 时不加行，行数和 design 之外的内容与加之前相同", () => {
+  expect(designLines(withDesign({ state: "same" }))).toEqual([]);
+});
+
+test("design 是 conflict 时加一行被改过的提示，通过选项带 disabled 原因", () => {
+  const content = confirmWindowContent(withDesign({ state: "conflict" }), true);
+  expect(designLines(withDesign({ state: "conflict" }))).toEqual([{ text: "设计师交稿后，仓库根目录的 DESIGN.md 被改过。要通过，请在「其他」里写意见，让主代理按最新的 DESIGN.md 重派一版。" }]);
+  expect(content.choices).toEqual([{ label: "通过（写进需求草稿）", disabled: DESIGN_DISABLED }]);
+  expect(content.escapeChoice).toBe("放弃这一版");
+});
+
+test("design 是 conflict 且有方案清单时，每个方案选项都带 disabled 原因", () => {
+  const content = confirmWindowContent(withDesign({ state: "conflict" }, THREE_OPTIONS), true);
+  expect(content.choices).toEqual(THREE_OPTIONS.map((name, index) => ({ label: `方案 ${"ABC"[index]}：${name}`, disabled: DESIGN_DISABLED })));
+});
+
+test("design 不是 conflict 时选项不带 disabled", () => {
+  for (const state of ["created", "same"] as const) {
+    expect(confirmWindowContent(withDesign({ state }, THREE_OPTIONS), true).choices.some((choice) => "disabled" in choice)).toBe(false);
+  }
+});
+
+test("窗口里 design 的提示行不是灰色，紧跟在设计师的说明那行之后", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withDesign({ state: "created" }), "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  const lines = (await h.nextView()).render(80);
+  const noteAt = lines.findIndex((line) => line.includes("设计师的说明"));
+  expect(lines[noteAt + 1]).toBe(" 通过后在仓库根目录新建 DESIGN.md，之后的原型、实现和审查都照它做。");
+});
+
+test("design 是 same 时窗口和改动前逐行一致", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  expect((await h.nextView()).render(80)).toEqual(CONFIRM_FRAME(true, 2));
+});
+
+test("design 是 conflict 时窗口里通过选项不能选：回车不调用 decide，光标落在其他", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withDesign({ state: "conflict" }), "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  const view = await h.nextView();
+  const text = view.render(80).join("\n");
+  expect(text).toContain(DESIGN_DISABLED);
+  view.handleInput("\r");
+  expect(h.called("prototypes.decide")).toEqual([]);
+});
+
+test("design 是 conflict 时窗口打开光标就在其他：直接输入意见回车，按意见登记", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withDesign({ state: "conflict" }), "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  const view = await h.nextView();
+  view.handleInput("按最新规范重画");
+  view.handleInput("\r");
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toHaveLength(1));
+  expect(h.called("prototypes.decide")[0]).toMatchObject({ choice: "opinion", opinion: "按最新规范重画" });
+});
+
+const designChanged = () => Object.assign(new Error("design_changed：DESIGN.md 在你确认时被改过，这一版没有通过"),
+  { code: "design_changed", data: { advice: { why: "DESIGN.md 在你确认时被改过，这一版没有通过", next: "在窗口里选「其他」写意见，让主代理按最新的 DESIGN.md 重派一版" } } });
+
+test("通过时守护进程返回 design_changed：提示用户这一版没有通过，并发对话消息让主代理知道", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": () => { throw designChanged(); } } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  (await h.nextView()).handleInput("\r");
+  const notify = h.ctx.ui.notify as ReturnType<typeof vi.fn>;
+  await vi.waitFor(() => expect(notify).toHaveBeenCalled());
+  expect(notify).toHaveBeenCalledWith("DESIGN.md 在你确认时被改过，这一版没有通过", "warning");
+  await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
+  const [message, options] = h.sendMessage.mock.calls[0]!;
+  expect(message.customType).toBe("one-company.prototype-design-changed");
+  expect(message.content).toBe("原型「设置页」第 2 版没有通过：DESIGN.md 在你确认时被改过。在窗口里选「其他」写意见，让主代理按最新的 DESIGN.md 重派一版；可以用 one_company_prototype confirm 重开确认窗口。");
+  expect(options).toEqual({ triggerTurn: true });
+  expect(h.appendEntry).not.toHaveBeenCalled();
+});
+
+test("选方案时守护进程返回 design_changed：同样提示并发对话消息，不记绿字", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => withDesign({ state: "changed", changes: [{ letter: "A", chapters: ["颜色"] }, { letter: "B", chapters: [] }, { letter: "C", chapters: [] }] }, THREE_OPTIONS), "prototypes.decide": () => { throw designChanged(); } } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  (await h.nextView()).handleInput("\r");
+  await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
+  expect(h.sendMessage.mock.calls[0]![0].customType).toBe("one-company.prototype-design-changed");
+  expect(h.appendEntry).not.toHaveBeenCalled();
 });

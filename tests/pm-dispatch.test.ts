@@ -140,6 +140,16 @@ test("M8D2-AC2：派 PM 时上下文含用户级与项目 AGENTS.md 此刻的磁
   expect(prompt.indexOf("用户规范（来源")).toBeLessThan(prompt.indexOf("项目规范（来源"));
 }, 60000);
 
+test("仓库根目录有 DESIGN.md 时派出的 PM 任务说明不含界面设计规范", async () => {
+  const w = await world();
+  await writeFile(join(w.repositoryRoot, "DESIGN.md"), "# 风格\n- 主题：明亮\n");
+  scriptReplies(w.provider, [{ type: "text", text: "等待" }]);
+  await w.dispatch();
+  await until(() => w.provider.requests.length === 1);
+  expect(w.provider.requests[0]!.systemPrompt).not.toContain("界面设计规范（来源");
+  expect(w.provider.requests[0]!.systemPrompt).not.toContain("主题：明亮");
+}, 60000);
+
 test("M7-AC5：同一需求只有一个有效 PM；停止后再派出取得更高 fence，旧运行的工具失效", async () => {
   const w = await world();
   scriptReplies(w.provider, [{ type: "text", text: "一" }, { type: "text", text: "二" }]);

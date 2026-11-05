@@ -1,6 +1,7 @@
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "node:fs";
-import { realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import type { Clock } from "../../core/policy/clock.ts";
@@ -48,6 +49,7 @@ import type { ExploreInput, ExploreResult } from "../../modules/explore/explore-
 import { endExploreSession, registerExploreSession } from "../../modules/explore/explore-session.ts";
 import { approvedPrototypeListLines, prototypeContext, requirementPrototypeLines } from "../../modules/prototype/prototype-dispatch.ts";
 import type { MainPrototypeOverview, PrototypeDispatchInput } from "../../modules/prototype/prototype-dispatch.ts";
+import { DESIGN_SPEC_FILE } from "../../modules/requirement/design-spec.ts";
 import { prototypesAtRevision } from "../../modules/requirement/requirement-prototype-revisions.ts";
 import type { PickedOption } from "../../modules/requirement/requirement-prototypes.ts";
 import { PrototypeBoardError, assertRequirementOpenForPrototypes, prototypeFilePath, beginDesign, clearStaleDesigns, decidePrototype, endDesign, pendingConfirmation, readPrototypeBoard, removeFromDraft } from "../../modules/requirement/requirement-prototypes.ts";
@@ -73,7 +75,7 @@ import type { AgentRole } from "../../modules/agents/roles.ts";
 import { activeCheckRoundIn, assertWritersQuiescentIn } from "../../modules/verification/check-round.ts";
 import type { ProjectIndexHost } from "./project-index-host.ts";
 import type { ClientInfo, DaemonServer } from "./server.ts";
-import { agentConventionsContext } from "../../modules/verification/project-conventions.ts";
+import { agentConventionsContext, designSpecContext } from "../../modules/verification/project-conventions.ts";
 
 export interface SelectedModel { provider: string; id: string }
 export type EmitFn = (event: string, data: Record<string, unknown>, filter?: (windowId: string) => boolean) => void;
@@ -598,7 +600,7 @@ export class RunManager {
         ? [loadRoleRules("worker"), "", ...implementationLines(implementationSectionText(record, await this.approvedBody(task.requirementId)))].join("\n") : null;
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
         roleRules: review ? reviewRulesFor(definition.name) : workerRules ?? loadRoleRules(role as "worker" | "qa"),
-        context: withSkills(await this.withConventions(context), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
+        context: withSkills(await this.withConventions(context, role === "worker" || role === "reviewer"), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
         ...(role === "qa" && prototypePaths.length ? { hostTools: [...QA_PROTOTYPE_HOST_TOOLS], readRoots: prototypePaths } : {}),
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
@@ -679,9 +681,10 @@ export class RunManager {
     }
   }
 
-  private async withConventions(context: string): Promise<string> {
+  private async withConventions(context: string, withDesignSpec = false): Promise<string> {
     const conventions = await agentConventionsContext({ agentDir: dirname(this.options.dataRoot), repositoryRoot: this.options.repositoryRoot });
-    return conventions ? `${context}\n\n${conventions}` : context;
+    const design = withDesignSpec ? await designSpecContext({ repositoryRoot: this.options.repositoryRoot }) : null;
+    return [context, conventions, design].filter((part) => part !== null).join("\n\n");
   }
 
   private workerReport(attemptRunId: string): Verdict | undefined {
@@ -924,7 +927,8 @@ export class RunManager {
     const ref = { dataRoot: this.options.dataRoot, repoId: this.repoId };
     const runId = uuidv7();
     const agent = request.agent ?? "prototype";
-    const { version, previous } = await beginDesign(ref, { requirementId: request.requirementId, name: request.name, runId, agent });
+    const rootDesign = await readFile(join(this.options.repositoryRoot, DESIGN_SPEC_FILE), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+    const { version, previous } = await beginDesign(ref, { requirementId: request.requirementId, name: request.name, runId, agent, designBase: rootDesign === null ? null : createHash("sha256").update(rootDesign).digest("hex") });
     let registered = false;
     const alive = () => {
       const current = this.mainPrototypes.get(runId)?.handle;
@@ -945,10 +949,10 @@ export class RunManager {
         authorize: () => alive() });
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: this.options.repositoryRoot, definition: resolved.definition,
         roleRules: loadRoleRules("prototype"),
-        context: withSkills(await this.withConventions(prototypeContext({ title, name: request.name, version, brief: request.brief, maxTurns: request.maxTurns, previous })), resolved.skillsContext),
-        coreTools: [toPiTool("result_submit", "提交原型（action=prototype）：html 是被设计的页面，只含正式上线后用户能看到的内容；pages 列出要看的页面，每个页面的 views 列出它的画面，notes 写这个画面的说明，group 是这组切换的名字，不写时显示\"状态\"；note 用一句话说明画了什么；prototypeOnly 写只在原型里成立的事；openQuestions 写还没确认的问题；一份原型里画了多个方案时，options 按方案 A、B、C……的顺序列出方案名称（2 到 6 个，每个最多 20 字），只画一种时不填。", PROTOTYPE_SUBMIT_PARAMETERS, result),
+        context: withSkills(await this.withConventions(prototypeContext({ title, name: request.name, version, brief: request.brief, maxTurns: request.maxTurns, previous, design: { content: rootDesign, previousPaths: previous?.designPaths ?? [] } })), resolved.skillsContext),
+        coreTools: [toPiTool("result_submit", "提交原型（action=prototype）：html 是被设计的页面，只含正式上线后用户能看到的内容；pages 列出要看的页面，每个页面的 views 列出它的画面，notes 写这个画面的说明，group 是这组切换的名字，不写时显示\"状态\"；note 用一句话说明画了什么；prototypeOnly 写只在原型里成立的事；openQuestions 写还没确认的问题；一份原型里画了多个方案时，options 按方案 A、B、C……的顺序列出方案名称（2 到 6 个，每个最多 20 字），只画一种时不填；design 是 DESIGN.md 全文；画了多个方案且风格不同时写成数组，按 options 顺序每个方案一份。", PROTOTYPE_SUBMIT_PARAMETERS, result),
           ...this.knowledgeTool(runId)],
-        readRoots: [this.options.repositoryRoot, ...(previous ? [previous.path] : [])],
+        readRoots: [this.options.repositoryRoot, ...(previous ? [previous.path, ...previous.designPaths] : [])],
         runtime: this.options.runtime, modelRef: resolved.model, thinking: resolved.thinking, maxTurns: request.maxTurns,
         completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
@@ -1087,7 +1091,7 @@ export class RunManager {
   async prototypePending(input: { requirementId: string; name: string }) {
     const ref = { dataRoot: this.options.dataRoot, repoId: this.repoId };
     try {
-      return { ...await this.draftContext(input.requirementId), ...await pendingConfirmation(ref, input) };
+      return { ...await this.draftContext(input.requirementId), ...await pendingConfirmation(ref, { ...input, repositoryRoot: this.options.repositoryRoot }) };
     } catch (error) {
       if (!(error instanceof PrototypeBoardError) || error.code !== "not_in_flight") throw error;
       const entry = (await readPrototypeBoard(ref, input.requirementId)).entries.find((candidate) => candidate.name === input.name);
@@ -1098,7 +1102,7 @@ export class RunManager {
     }
   }
 
-  prototypeDecide(input: Parameters<typeof decidePrototype>[1]) { return decidePrototype({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input); }
+  prototypeDecide(input: Omit<Parameters<typeof decidePrototype>[1], "repositoryRoot">) { return decidePrototype({ dataRoot: this.options.dataRoot, repoId: this.repoId }, { ...input, repositoryRoot: this.options.repositoryRoot }); }
 
   prototypeRemove(input: { requirementId: string; name: string; version: number }) { return removeFromDraft({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input); }
 
@@ -1812,7 +1816,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
     return await manager.prototypeBoard(params.requirementId as string) as unknown as Record<string, unknown>;
   });
   register("prototypes.pending", async (params) => await manager.prototypePending(params as { requirementId: string; name: string }) as unknown as Record<string, unknown>);
-  register("prototypes.decide", async (params) => { await manager.prototypeDecide(params as Parameters<typeof decidePrototype>[1]); return {}; });
+  register("prototypes.decide", async (params) => { await manager.prototypeDecide(params as Parameters<typeof manager.prototypeDecide>[0]); return {}; });
   register("prototypes.remove", async (params) => { await manager.prototypeRemove(params as { requirementId: string; name: string; version: number }); return {}; });
   register("prototypes.removal", async (params) => await manager.prototypeRemoval(params as { requirementId: string; name: string }) as unknown as Record<string, unknown>);
   register("agents.dispatchPm", async (params) => {

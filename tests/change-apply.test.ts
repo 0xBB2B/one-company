@@ -283,6 +283,22 @@ test("写项目设置文件被拒并写明是哪个文件、为什么不能改�
   await expect(w.read(".pi/other.json")).resolves.toBe("{}\n");
 });
 
+test("写仓库根目录的 DESIGN.md 被拒并报 design_spec，写入范围里列了它也一样，文件内容不变；docs/DESIGN.md 不受影响", async () => {
+  const w = await world();
+  await writeFile(join(w.worktree.root, "DESIGN.md"), "旧\n");
+  const tool = await w.tool(w.grant({ writePaths: ["src/", "docs/", "DESIGN.md", "design.md"] }));
+  for (const path of ["DESIGN.md", "design.md"]) {
+    const failure = await tool.execute({ action: "apply", files: [{ path, baseHash: sha("旧\n"), content: "新\n" }] }).then(() => null, (error: Error & { code?: string; advice?: { why: string; next: string } }) => error);
+    expect(failure, path).toMatchObject({ code: "design_spec" });
+    expect(failure!.advice!.why).toContain("DESIGN.md 只能随原型通过写入");
+    expect(failure!.advice!.next).toContain("派原型设计师出一版原型，用户通过后由程序写入；需要改设计规范时在结果里说明");
+  }
+  await expect(readFile(join(w.worktree.root, "DESIGN.md"), "utf8")).resolves.toBe("旧\n");
+  const nested = await tool.execute({ action: "apply", files: [{ path: "docs/DESIGN.md", baseHash: "absent", content: "x\n" }] }) as Result;
+  expect(nested.files[0]!.status).not.toBe("failed");
+  await expect(w.read("docs/DESIGN.md")).resolves.toBe("x\n");
+});
+
 const UUID_V7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 test("apply、import 不带 operationId 成功，结果带本次操作编号且每次不同", async () => {

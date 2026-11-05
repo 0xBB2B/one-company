@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { approvedPrototypeListLines, prototypeContext, requirementPrototypeLines } from "../src/modules/prototype/prototype-dispatch.ts";
 import { RunManager, registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
@@ -10,6 +10,7 @@ import {
   beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, promoteOnApprovalIn, prototypeFilePath, readPrototypeBoard, submitDesign,
 } from "../src/modules/requirement/requirement-prototypes.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
+import { VALID_DESIGN } from "./helpers/design-sample.ts";
 
 function promote(ref: { dataRoot: string; repoId: string }, input: { requirementId: string; digest: string }) {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => promoteOnApprovalIn(db, input)));
@@ -61,7 +62,7 @@ async function world(options: { index?: boolean; disabled?: Set<string> } = {}) 
   const requestsText = () => JSON.stringify(w.provider.requests);
   const started = () => until(() => w.provider.requests.some((request) => JSON.stringify(request).includes("手机号加验证码登录界面")));
   const slow = { type: "text" as const, text: "慢慢画", chunkDelayMs: 3_000 };
-  const submit = (html: string) => ({ type: "toolcall" as const, name: "one_company_result_submit", input: { action: "prototype", pages: PAGES, html, note: "手机号输入框加验证码按钮" } });
+  const submit = (html: string) => ({ type: "toolcall" as const, name: "one_company_result_submit", input: { action: "prototype", design: VALID_DESIGN, pages: PAGES, html, note: "手机号输入框加验证码按钮" } });
   await connect("connection-a");
   await connect("connection-b");
   return { ...w, repoRoot, insideFile, outsideFile, userDir, call, dispatch, dispatchParams, disconnect, ref, board, entry, events, requestsText, slow, submit, started };
@@ -186,13 +187,14 @@ test("提意见后重派时设计师能读上一版文件，任务说明带用�
   const opinion = "按钮放大一点，主色换成深蓝";
   const first = uuidv7();
   const params = { requirementId: w.fixture.requirementId, name: "登录页" };
-  await beginDesign(w.ref, { ...params, runId: first, agent: "prototype" });
-  await submitDesign(w.ref, { pages: PAGES, ...params, runId: first, html: HTML, note: "第一版" });
-  const pending = await pendingConfirmation(w.ref, params);
-  await decidePrototype(w.ref, { ...params, version: pending.version, hash: pending.hash, choice: "opinion", option: null, opinion });
+  await beginDesign(w.ref, { ...params, runId: first, agent: "prototype", designBase: null });
+  await submitDesign(w.ref, { design: VALID_DESIGN, pages: PAGES, ...params, runId: first, html: HTML, note: "第一版" });
+  const pending = await pendingConfirmation(w.ref, { ...params, repositoryRoot: w.fixture.repositoryRoot });
+  await decidePrototype(w.ref, { ...params, repositoryRoot: w.fixture.repositoryRoot, version: pending.version, hash: pending.hash, choice: "opinion", option: null, opinion });
   const previousPath = prototypeFilePath(w.ref, { ...params, version: 1 });
+  const previousDesign = join(dirname(previousPath), "登录页.v1.design.md");
 
-  w.provider.queue.push({ type: "toolcall", name: "read", input: { path: previousPath } }, w.slow);
+  w.provider.queue.push({ type: "toolcall", name: "read", input: { path: previousPath } }, { type: "toolcall", name: "read", input: { path: previousDesign } }, w.slow);
   const { runId, version } = await w.dispatch();
   expect(version).toBe(2);
   await until(() => w.requestsText().includes("登录页草图"));
@@ -200,6 +202,8 @@ test("提意见后重派时设计师能读上一版文件，任务说明带用�
   expect(all).toContain(opinion);
   expect(all).toContain(previousPath);
   expect(all).toContain("登录页草图");
+  expect(all).toContain(`上一版交的 DESIGN.md：${previousDesign}`);
+  await until(() => w.requestsText().includes("- 主色悬停：#115e59"));
   await w.call("runs.stop", { runId });
 });
 
@@ -226,14 +230,14 @@ test("设计师交不合格稿时收到原因，看板仍是 designing", async (
 });
 
 const submitWithOptions = (options: string[]) => ({ type: "toolcall" as const, name: "one_company_result_submit",
-  input: { action: "prototype", pages: PAGES, html: HTML, note: "手机号输入框加验证码按钮", options } });
+  input: { action: "prototype", design: VALID_DESIGN, pages: PAGES, html: HTML, note: "手机号输入框加验证码按钮", options } });
 
 test("设计师通过交稿工具附方案清单交稿后，待确认信息里读到这份清单", async () => {
   const w = await world();
   w.provider.queue.push(submitWithOptions(["顶部分栏", "左侧导航"]), { type: "text", text: "已交稿" });
   await w.dispatch();
   await until(() => w.events("prototype.submitted").length === 1);
-  expect((await pendingConfirmation(w.ref, { requirementId: w.fixture.requirementId, name: "登录页" })).options).toEqual(["顶部分栏", "左侧导航"]);
+  expect((await pendingConfirmation(w.ref, { repositoryRoot: w.fixture.repositoryRoot, requirementId: w.fixture.requirementId, name: "登录页" })).options).toEqual(["顶部分栏", "左侧导航"]);
 });
 
 test("设计师通过交稿工具只附 1 个方案时交稿被退回并看到原因，看板仍是 designing", async () => {
@@ -306,7 +310,7 @@ test("连接断开后看板在途清空，记下的原因是主窗口断开，�
 
 test("守护进程重启后所有 designing 状态的在途原型被清掉", async () => {
   const w = await world();
-  await beginDesign(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", runId: uuidv7(), agent: "prototype" });
+  await beginDesign(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", runId: uuidv7(), agent: "prototype", designBase: null });
   expect((await w.entry())?.inFlight).toMatchObject({ status: "designing" });
   const restarted = new RunManager((w.manager as unknown as { options: ConstructorParameters<typeof RunManager>[0] }).options);
   restarted.markStarted();
@@ -543,7 +547,7 @@ test("PM 看的原型清单里，带选定方案的写成括号，没有的和�
 });
 
 test("任务说明在有意见时写用户对上一版的意见原话，不出现返工字样", () => {
-  const text = prototypeContext({ title: "登录", name: "登录页", version: 2, brief: "要求", maxTurns: 12, previous: { path: "/p/v1.html", opinion: "改成横向滚动" } });
+  const text = prototypeContext({ title: "登录", name: "登录页", version: 2, brief: "要求", maxTurns: 12, previous: { path: "/p/v1.html", opinion: "改成横向滚动" }, design: { content: null, previousPaths: [] } });
   expect(text).toContain("用户对上一版的意见原话：改成横向滚动");
   expect(text).not.toContain("返工");
 });
@@ -551,7 +555,7 @@ test("任务说明在有意见时写用户对上一版的意见原话，不出�
 test("设计师交稿时页面清单有重名，收到原因，看板仍是 designing", async () => {
   const w = await world();
   const pages = [{ name: "登录", views: [{ name: "正常" }] }, { name: "登录", views: [{ name: "正常" }] }];
-  w.provider.queue.push({ type: "toolcall", name: "one_company_result_submit", input: { action: "prototype", pages, html: HTML, note: "手机号输入框加验证码按钮" } }, w.slow);
+  w.provider.queue.push({ type: "toolcall", name: "one_company_result_submit", input: { action: "prototype", design: VALID_DESIGN, pages, html: HTML, note: "手机号输入框加验证码按钮" } }, w.slow);
   const { runId } = await w.dispatch();
   await until(() => w.requestsText().includes("页面「登录」重名"));
   expect((await w.entry())?.inFlight).toMatchObject({ status: "designing", file: null });
@@ -572,10 +576,121 @@ test("设计师交稿后待确认信息里的大小与指纹是拼好的文件�
 test("交稿工具把两张说明清单和画面说明都写进拼好的文件", async () => {
   const w = await world();
   const pages = [{ name: "登录", views: [{ name: "正常", notes: ["验证码六位"] }] }];
-  w.provider.queue.push({ type: "toolcall", name: "one_company_result_submit", input: { action: "prototype", pages, html: HTML, note: "手机号输入框加验证码按钮", prototypeOnly: ["验证码是假的"], openQuestions: ["要不要记住手机号？"] } });
+  w.provider.queue.push({ type: "toolcall", name: "one_company_result_submit", input: { action: "prototype", design: VALID_DESIGN, pages, html: HTML, note: "手机号输入框加验证码按钮", prototypeOnly: ["验证码是假的"], openQuestions: ["要不要记住手机号？"] } });
   const { version } = await w.dispatch();
   await until(async () => (await w.entry())?.inFlight?.status === "awaiting");
   const text = await readFile(prototypeFilePath(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", version }), "utf8");
   const data = JSON.parse(/id="prototype-data">([\s\S]*?)<\/script>/.exec(text)![1]!);
   expect(data).toMatchObject({ prototypeOnly: ["验证码是假的"], openQuestions: ["要不要记住手机号？"], pages: [{ name: "登录", group: "状态", views: [{ name: "正常", notes: ["验证码六位"] }] }] });
+});
+
+const DESIGN_WITH_FULL_TEXT = "仓库根目录的 DESIGN.md（原型照它画；交稿时在 design 里带全文，没改的章原样照抄）：";
+const NO_DESIGN_YET = "仓库根目录还没有 DESIGN.md，这次交稿要新建一份，在 design 里带全文。";
+const contextInput = { title: "登录", name: "登录页", version: 1, brief: "要求", maxTurns: 12, previous: null };
+
+test("任务说明在要求之后写仓库根目录 DESIGN.md 的说明和全文", () => {
+  const text = prototypeContext({ ...contextInput, design: { content: VALID_DESIGN, previousPaths: [] } });
+  expect(text).toContain(`${DESIGN_WITH_FULL_TEXT}\n${VALID_DESIGN}`);
+  expect(text.indexOf("要求：\n要求")).toBeLessThan(text.indexOf(DESIGN_WITH_FULL_TEXT));
+  expect(text).not.toContain("还没有 DESIGN.md");
+});
+
+test("仓库里还没有 DESIGN.md 时任务说明写还没有并要求新建", () => {
+  const text = prototypeContext({ ...contextInput, design: { content: null, previousPaths: [] } });
+  expect(text).toContain(NO_DESIGN_YET);
+  expect(text).not.toContain(DESIGN_WITH_FULL_TEXT);
+});
+
+test("有上一版交的 DESIGN.md 时任务说明加一行路径，多份用顿号隔开；没有时不加这一行", () => {
+  const withPaths = prototypeContext({ ...contextInput, design: { content: null, previousPaths: ["/p/a.design-A.md", "/p/a.design-B.md"] } });
+  expect(withPaths).toContain("上一版交的 DESIGN.md：/p/a.design-A.md、/p/a.design-B.md");
+  expect(prototypeContext({ ...contextInput, design: { content: null, previousPaths: [] } })).not.toContain("上一版交的 DESIGN.md");
+});
+
+test("派设计师时仓库根目录有 DESIGN.md：算指纹存进 designBase，任务说明带全文", async () => {
+  const w = await world();
+  await writeFile(join(w.repoRoot, "DESIGN.md"), VALID_DESIGN);
+  w.provider.queue.push(w.slow);
+  const { runId } = await w.dispatch();
+  await w.started();
+  expect((await w.entry())?.inFlight?.designBase).toBe(createHash("sha256").update(VALID_DESIGN).digest("hex"));
+  const all = w.requestsText();
+  expect(all).toContain(DESIGN_WITH_FULL_TEXT);
+  expect(all).toContain("- 主色悬停：#115e59");
+  await w.call("runs.stop", { runId });
+});
+
+test("派设计师时仓库根目录没有 DESIGN.md：designBase 记 null，任务说明写还没有", async () => {
+  const w = await world();
+  w.provider.queue.push(w.slow);
+  const { runId } = await w.dispatch();
+  await w.started();
+  expect((await w.entry())?.inFlight?.designBase).toBeNull();
+  expect(w.requestsText()).toContain(NO_DESIGN_YET);
+  await w.call("runs.stop", { runId });
+});
+
+test("设计师交稿没带 design 时收到原因，看板仍是 designing", async () => {
+  const w = await world();
+  w.provider.queue.push({ type: "toolcall", name: "one_company_result_submit", input: { action: "prototype", pages: PAGES, html: HTML, note: "手机号输入框加验证码按钮" } }, w.slow);
+  const { runId } = await w.dispatch();
+  await until(() => w.requestsText().includes("交稿没带 DESIGN.md 全文"));
+  expect((await w.entry())?.inFlight).toMatchObject({ status: "designing", file: null });
+  expect(w.events("prototype.submitted")).toEqual([]);
+  await w.call("runs.stop", { runId });
+});
+
+test("设计师交的 DESIGN.md 合格时写成候选文件并记进 designs", async () => {
+  const w = await world();
+  w.provider.queue.push(w.submit(HTML), { type: "text", text: "已交稿" });
+  const { version } = await w.dispatch();
+  await until(async () => (await w.entry())?.inFlight?.status === "awaiting");
+  const path = join(dirname(prototypeFilePath(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", version })), `登录页.v${version}.design.md`);
+  expect(await readFile(path, "utf8")).toBe(VALID_DESIGN);
+  expect((await w.entry())?.inFlight?.designs).toEqual([{ letter: null, hash: createHash("sha256").update(VALID_DESIGN).digest("hex"), bytes: Buffer.byteLength(VALID_DESIGN) }]);
+});
+
+const rootDesign = (w: Awaited<ReturnType<typeof world>>) => join(w.repoRoot, "DESIGN.md");
+
+test("prototypes.pending 根目录没有 DESIGN.md 时 design 是 created，通过后根目录写入设计师交的那份", async () => {
+  const w = await world();
+  await awaitingPrototype(w);
+  expect((await w.call("prototypes.pending", pendingInput(w))).design).toEqual({ state: "created" });
+  await decideInput(w, "accept");
+  expect(await readFile(rootDesign(w), "utf8")).toBe(VALID_DESIGN);
+});
+
+test("prototypes.pending 根目录 DESIGN.md 和交的相同时 design 是 same", async () => {
+  const w = await world();
+  await writeFile(rootDesign(w), VALID_DESIGN);
+  await awaitingPrototype(w);
+  expect((await w.call("prototypes.pending", pendingInput(w))).design).toEqual({ state: "same" });
+});
+
+test("prototypes.pending 根目录 DESIGN.md 含非法 UTF-8 字节时，指纹算法和派工时一致，design 不是 conflict", async () => {
+  const w = await world();
+  await writeFile(rootDesign(w), Buffer.concat([Buffer.from(VALID_DESIGN), Buffer.from([0xff])]));
+  await awaitingPrototype(w);
+  expect(((await w.call("prototypes.pending", pendingInput(w))).design as { state: string }).state).not.toBe("conflict");
+});
+
+test("交稿后根目录 DESIGN.md 被改：pending 的 design 是 conflict，通过被 design_changed 退回，看板仍是 awaiting、文件保持被改后的内容", async () => {
+  const w = await world();
+  await writeFile(rootDesign(w), VALID_DESIGN);
+  await awaitingPrototype(w);
+  const edited = VALID_DESIGN.replace("- 按钮高度：32px", "- 按钮高度：36px");
+  await writeFile(rootDesign(w), edited);
+  expect((await w.call("prototypes.pending", pendingInput(w))).design).toEqual({ state: "conflict" });
+  await expect(decideInput(w, "accept")).rejects.toMatchObject({ message: expect.stringContaining("DESIGN.md 在你确认时被改过，这一版没有通过") });
+  expect((await w.entry())?.inFlight).toMatchObject({ status: "awaiting" });
+  expect(await readFile(rootDesign(w), "utf8")).toBe(edited);
+});
+
+test("交稿后根目录 DESIGN.md 被改，放弃仍然成功且不改 DESIGN.md", async () => {
+  const w = await world();
+  await writeFile(rootDesign(w), VALID_DESIGN);
+  await awaitingPrototype(w);
+  await writeFile(rootDesign(w), "别人改的");
+  await decideInput(w, "abandon");
+  expect(await readFile(rootDesign(w), "utf8")).toBe("别人改的");
 });

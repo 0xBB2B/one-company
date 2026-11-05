@@ -106,7 +106,7 @@ describe("upgrade.check", () => {
 
     const result = await raw.call("upgrade.check", { authToken: token, windowId: "any-window" });
 
-    expect(result).toEqual({ stale: false, protocolVersion: 7, requirements: [], otherWindows: 0, ownSessions: 0 });
+    expect(result).toEqual({ stale: false, protocolVersion: 8, requirements: [], otherWindows: 0, ownSessions: 0 });
   }, 60_000);
 
   test("握手后查询同样可用", async () => {
@@ -115,7 +115,7 @@ describe("upgrade.check", () => {
 
     const result = await client.call("upgrade.check", { authToken: token, windowId: "w-a" });
 
-    expect(result).toEqual({ stale: false, protocolVersion: 7, requirements: [], otherWindows: 0, ownSessions: 0 });
+    expect(result).toEqual({ stale: false, protocolVersion: 8, requirements: [], otherWindows: 0, ownSessions: 0 });
   }, 60_000);
 
   test("改了产品副本 src 下的文件后过旧", async () => {
@@ -286,14 +286,14 @@ describe("upgrade.yield", () => {
 });
 
 describe("协议版本", () => {
-  test("PROTOCOL_VERSION 为 7", () => {
-    expect(PROTOCOL_VERSION).toBe(7);
+  test("PROTOCOL_VERSION 为 8", () => {
+    expect(PROTOCOL_VERSION).toBe(8);
   });
 
-  test("hello 结果的 protocolVersion 为 7", async () => {
+  test("hello 结果的 protocolVersion 为 8", async () => {
     const { fixture } = await startDaemon();
     const client = await helloClient(fixture, "w-a");
 
-    expect(client.helloResult.protocolVersion).toBe(7);
+    expect(client.helloResult.protocolVersion).toBe(8);
   }, 60_000);
 });

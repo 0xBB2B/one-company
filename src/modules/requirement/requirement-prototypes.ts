@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Type } from "typebox";
@@ -7,10 +7,12 @@ import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { writeFileAtomicSync as writeFileAtomicFollowingSymlink } from "../../core/storage/store.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
 import { hash as sha256Hex, id, object, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { unsafeFilenameKind } from "./requirement-identity.ts";
+import { DESIGN_SPEC_FILE, DesignSpecError, changedChapters, checkDesignSpec } from "./design-spec.ts";
 import { buildPrototypeFrame } from "./prototype-frame.ts";
 import type { PrototypePage } from "./prototype-frame.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
@@ -36,7 +38,9 @@ const PrototypeEntry = object({
   approved: Type.Union([PrototypeFile, Type.Null()]),
   removed: Type.Boolean(),
   inFlight: Type.Union([object({ version: positive, runId: id, agent: Type.String(), status: Type.Union([Type.Literal("designing"), Type.Literal("awaiting")]),
-    file: Type.Union([PrototypeFile, Type.Null()]) }), Type.Null()]),
+    file: Type.Union([PrototypeFile, Type.Null()]),
+    designBase: Type.Union([sha256Hex, Type.Null()]),
+    designs: Type.Union([Type.Array(object({ letter: Type.Union([Type.Enum(OPTION_LETTERS), Type.Null()]), hash: sha256Hex, bytes: Type.Integer({ minimum: 1, maximum: 16384 }) }), { minItems: 1, maxItems: 6 }), Type.Null()]) }), Type.Null()]),
   lastOpinion: Type.Union([object({ version: positive, opinion: Type.String({ minLength: 1, maxLength: 4000 }) }), Type.Null()]),
   lastEnded: Type.Union([object({ version: positive, reason: Type.String({ maxLength: 500 }) }), Type.Null()]),
 });
@@ -73,6 +77,10 @@ export async function assertRequirementOpenForPrototypes(ref: Ref, requirementId
 
 export function prototypeFilePath(ref: Ref, input: { requirementId: string; name: string; version: number }): string {
   return join(dirname(databaseOf(ref)), "prototypes", input.requirementId, `${input.name}.v${input.version}.html`);
+}
+
+export function designFilePath(ref: Ref, input: { requirementId: string; name: string; version: number; letter: string | null }): string {
+  return join(dirname(databaseOf(ref)), "prototypes", input.requirementId, `${input.name}.v${input.version}.design${input.letter ? `-${input.letter}` : ""}.md`);
 }
 
 export function checkPrototypeName(name: string): void {
@@ -117,12 +125,14 @@ function requireInFlight(board: PrototypeBoard, name: string, status: "designing
   return { entry, inFlight: entry.inFlight };
 }
 
-export async function beginDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; agent: string }): Promise<{ version: number; previous: { path: string; opinion: string | null } | null }> {
+export async function beginDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; agent: string; designBase: string | null }):
+  Promise<{ version: number; previous: { path: string; opinion: string | null; designPaths: string[] } | null }> {
   checkPrototypeName(input.name);
   return withDatabase(databaseOf(ref), (db) => {
     return mutate(db, input.requirementId, (board) => {
       assertRequirementEditable(db, input.requirementId);
       let entry = entryNamed(board, input.name);
+      const replacedDesigns = entry?.inFlight?.designs ?? [];
       if (entry?.inFlight) {
         const { inFlight } = entry;
         if (inFlight.status === "designing") deny("in_flight", `原型「${input.name}」还在做`, "等设计师交稿后再处理");
@@ -142,9 +152,12 @@ export async function beginDesign(ref: Ref, input: { requirementId: string; name
       const version = entry.lastVersion + 1;
       const source = entry.lastOpinion ? { version: entry.lastOpinion.version, opinion: entry.lastOpinion.opinion as string | null }
         : (entry.draft ?? entry.approved) ? { version: (entry.draft ?? entry.approved)!.version, opinion: null } : null;
-      const previous = source && { path: prototypeFilePath(ref, { requirementId: input.requirementId, name: input.name, version: source.version }), opinion: source.opinion };
+      const previous = source && {
+        path: prototypeFilePath(ref, { requirementId: input.requirementId, name: input.name, version: source.version }), opinion: source.opinion,
+        designPaths: replacedDesigns.map((design) => designFilePath(ref, { requirementId: input.requirementId, name: input.name, version: source.version, letter: design.letter })),
+      };
       entry.lastVersion = version;
-      entry.inFlight = { version, runId: input.runId, agent: input.agent, status: "designing", file: null };
+      entry.inFlight = { version, runId: input.runId, agent: input.agent, status: "designing", file: null, designBase: input.designBase, designs: null };
       return { version, previous };
     });
   });
@@ -198,12 +211,37 @@ function checkPageList(raw: readonly SubmittedPage[]): PrototypePage[] {
   });
 }
 
+function checkSubmittedDesigns(design: string | string[] | undefined, options: readonly string[]): { letter: PickedOption["letter"] | null; text: string }[] {
+  const next = "按原因改好 DESIGN.md 后重交";
+  if (design === undefined) deny("invalid_design", "交稿没带 DESIGN.md 全文", "在 design 里带上 DESIGN.md 全文后重交");
+  const texts = typeof design === "string" ? [design] : design!;
+  if (typeof design !== "string") {
+    if (!options.length) deny("invalid_design", "只画了一种方案，DESIGN.md 交一份就行", next);
+    if (texts.length !== options.length) {
+      const missing = texts.length < options.length ? `，缺${options.slice(texts.length).map((_, i) => `方案 ${optionLetter(texts.length + i)} 的 DESIGN.md`).join("、")}` : "";
+      deny("invalid_design", `画了 ${options.length} 个方案，DESIGN.md 交了 ${texts.length} 份${missing}；各方案风格不同时每个方案各交一份，按方案顺序，相同时交一份`, next);
+    }
+  }
+  return texts.map((text, index) => {
+    const letter = typeof design === "string" ? null : optionLetter(index);
+    const prefix = letter ? `方案 ${letter} 的 ` : "";
+    if (text === "") deny("invalid_design", `${prefix}DESIGN.md 没交`, next);
+    try { checkDesignSpec(text); }
+    catch (error) {
+      if (error instanceof DesignSpecError) deny("invalid_design", `${prefix}${error.message}`, next);
+      throw error;
+    }
+    return { letter, text };
+  });
+}
+
 const HTML_START = /^\s*<(?:!doctype\s+html|html)[\s>]/i;
 
-export async function submitDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; html: string; note: string; pages: SubmittedPage[]; options?: string[]; prototypeOnly?: string[]; openQuestions?: string[] }): Promise<void> {
+export async function submitDesign(ref: Ref, input: { requirementId: string; name: string; runId: string; design?: string | string[]; html: string; note: string; pages: SubmittedPage[]; options?: string[]; prototypeOnly?: string[]; openQuestions?: string[] }): Promise<void> {
+  const options = checkOptionList(input.options);
+  const designs = checkSubmittedDesigns(input.design, options);
   if (!HTML_START.test(input.html)) deny("not_html", "交稿内容不是 HTML 页面", "交一份以 <!doctype html> 或 <html> 开头的完整页面");
   if (input.note.length > NOTE_MAX_LENGTH) deny("note_too_long", `交稿说明超过 ${NOTE_MAX_LENGTH} 字`, "缩短说明后重交");
-  const options = checkOptionList(input.options);
   const pages = checkPageList(input.pages);
   const prototypeOnly = cleanLines(input.prototypeOnly);
   const openQuestions = cleanLines(input.openQuestions);
@@ -215,7 +253,9 @@ export async function submitDesign(ref: Ref, input: { requirementId: string; nam
     const content = buildPrototypeFrame({ html: input.html, name: input.name, version: inFlight.version, pages, options, prototypeOnly, openQuestions });
     const bytes = Buffer.byteLength(content, "utf8");
     if (bytes > PROTOTYPE_MAX_BYTES) deny("too_large", `原型 ${bytes} 字节，超过 ${PROTOTYPE_MAX_BYTES} 字节上限`, "精简原型后重交");
+    for (const { letter, text } of designs) writeFileAtomicSync(designFilePath(ref, { requirementId: input.requirementId, name: input.name, version: inFlight.version, letter }), text);
     writeFileAtomicSync(path, content);
+    inFlight.designs = designs.map(({ letter, text }) => ({ letter, hash: sha256(text), bytes: Buffer.byteLength(text, "utf8") }));
     inFlight.status = "awaiting";
     inFlight.file = { version: inFlight.version, hash: sha256(content), bytes, note: input.note, options, picked: null };
   }));
@@ -266,32 +306,64 @@ export async function clearStaleDesigns(ref: Ref): Promise<void> {
   endRuns(ref, "守护进程重启，设计中断", () => true);
 }
 
+function voidVersion(ref: Ref, requirementId: string, name: string, version: number): never {
+  withDatabase(databaseOf(ref), (db) => mutate(db, requirementId, (board) => {
+    const entry = entryNamed(board, name);
+    if (entry?.inFlight?.status !== "awaiting" || entry.inFlight.version !== version) return;
+    entry.lastEnded = { version, reason: "文件在交稿后被改过，这一版已作废" };
+    entry.inFlight = null;
+  }));
+  return deny("file_changed", "文件在交稿后被改过，与登记的指纹不一致", "这一版已作废，请让主代理重新派原型设计师");
+}
+
+const readOrNull = (path: string) => readFile(path).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+
 async function verifiedFile(ref: Ref, requirementId: string, name: string, file: PrototypeFile): Promise<string> {
   const path = prototypeFilePath(ref, { requirementId, name, version: file.version });
-  const content = await readFile(path).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
-  if (!content || sha256(content) !== file.hash) {
-    withDatabase(databaseOf(ref), (db) => mutate(db, requirementId, (board) => {
-      const entry = entryNamed(board, name);
-      if (entry?.inFlight?.status !== "awaiting" || entry.inFlight.version !== file.version) return;
-      entry.lastEnded = { version: file.version, reason: "文件在交稿后被改过，这一版已作废" };
-      entry.inFlight = null;
-    }));
-    deny("file_changed", "文件在交稿后被改过，与登记的指纹不一致", "这一版已作废，请让主代理重新派原型设计师");
-  }
+  const content = await readOrNull(path);
+  if (!content || sha256(content) !== file.hash) voidVersion(ref, requirementId, name, file.version);
   return path;
 }
 
-export async function pendingConfirmation(ref: Ref, input: { requirementId: string; name: string }):
-  Promise<{ name: string; version: number; hash: string; bytes: number; note: string; options: string[]; path: string; previousOpinion: string | null }> {
+type DesignCandidate = { letter: PickedOption["letter"] | null; text: string };
+
+async function verifiedDesigns(ref: Ref, requirementId: string, name: string, inFlight: NonNullable<PrototypeEntry["inFlight"]>): Promise<DesignCandidate[]> {
+  const candidates: DesignCandidate[] = [];
+  for (const design of inFlight.designs ?? []) {
+    const content = await readOrNull(designFilePath(ref, { requirementId, name, version: inFlight.version, letter: design.letter }));
+    if (!content || sha256(content) !== design.hash) voidVersion(ref, requirementId, name, inFlight.version);
+    candidates.push({ letter: design.letter, text: content!.toString("utf8") });
+  }
+  return candidates;
+}
+
+const readRootDesign = (repositoryRoot: string) => readFile(join(repositoryRoot, DESIGN_SPEC_FILE), "utf8").catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+const rootFingerprint = (root: string | null) => root === null ? null : sha256(root);
+
+export type DesignState =
+  | { state: "created" | "same" | "conflict" }
+  | { state: "changed"; changes: Array<{ letter: PickedOption["letter"] | null; chapters: string[] }> };
+
+function designState(root: string | null, designBase: string | null, candidates: DesignCandidate[]): DesignState {
+  if (rootFingerprint(root) !== designBase) return { state: "conflict" };
+  if (root === null) return { state: "created" };
+  const changes = candidates.map(({ letter, text }) => ({ letter, chapters: changedChapters(root, text) }));
+  return changes.every((change) => change.chapters.length === 0) ? { state: "same" } : { state: "changed", changes };
+}
+
+export async function pendingConfirmation(ref: Ref, input: { repositoryRoot: string; requirementId: string; name: string }):
+  Promise<{ name: string; version: number; hash: string; bytes: number; note: string; options: string[]; path: string; previousOpinion: string | null; design: DesignState }> {
   withDatabase(databaseOf(ref), (db) => assertRequirementEditable(db, input.requirementId));
   const board = await readPrototypeBoard(ref, input.requirementId);
   const { entry, inFlight } = requireInFlight(board, input.name, "awaiting");
   const file = inFlight.file!;
   const path = await verifiedFile(ref, input.requirementId, input.name, file);
-  return { name: input.name, version: file.version, hash: file.hash, bytes: file.bytes, note: file.note, options: file.options, path, previousOpinion: entry.lastOpinion && entry.lastOpinion.version < file.version ? entry.lastOpinion.opinion : null };
+  const candidates = await verifiedDesigns(ref, input.requirementId, input.name, inFlight);
+  const design = designState(await readRootDesign(input.repositoryRoot), inFlight.designBase, candidates);
+  return { name: input.name, version: file.version, hash: file.hash, bytes: file.bytes, note: file.note, options: file.options, path, previousOpinion: entry.lastOpinion && entry.lastOpinion.version < file.version ? entry.lastOpinion.opinion : null, design };
 }
 
-export async function decidePrototype(ref: Ref, input: { requirementId: string; name: string; version: number; hash: string; choice: "accept" | "opinion" | "abandon"; opinion: string | null; option: string | null }): Promise<void> {
+export async function decidePrototype(ref: Ref, input: { repositoryRoot: string; requirementId: string; name: string; version: number; hash: string; choice: "accept" | "opinion" | "abandon"; opinion: string | null; option: string | null }): Promise<void> {
   withDatabase(databaseOf(ref), (db) => { assertRequirementEditable(db, input.requirementId); });
   const opinion = input.opinion?.trim() ?? "";
   if (input.choice === "opinion") {
@@ -306,7 +378,9 @@ export async function decidePrototype(ref: Ref, input: { requirementId: string; 
     }
     return found;
   };
-  await verifiedFile(ref, input.requirementId, input.name, matched(board).inFlight.file!);
+  const { inFlight } = matched(board);
+  await verifiedFile(ref, input.requirementId, input.name, inFlight.file!);
+  const candidates = input.choice === "accept" ? await verifiedDesigns(ref, input.requirementId, input.name, inFlight) : [];
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (current) => {
     assertRequirementEditable(db, input.requirementId);
     const { entry, inFlight } = matched(current);
@@ -319,11 +393,23 @@ export async function decidePrototype(ref: Ref, input: { requirementId: string; 
         picked = { letter: OPTION_LETTERS[index]!, name: options[index]! };
       } else if (input.option != null) deny("invalid_option", "这份原型没有方案清单，不能选方案", "不选方案直接通过");
       entry.draft = { ...inFlight.file!, picked }; entry.removed = false;
+      writeChosenDesign(input, inFlight, candidates);
     }
     if (input.choice === "opinion") { entry.lastOpinion = { version: inFlight.version, opinion }; return; }
     entry.lastOpinion = null;
     entry.inFlight = null;
   }));
+}
+
+// 在事务回调里同步写，让所有拒绝都发生在写文件之前，并发请求也不会在读和写之间交错
+function writeChosenDesign(input: { repositoryRoot: string; option: string | null }, inFlight: NonNullable<PrototypeEntry["inFlight"]>, candidates: DesignCandidate[]): void {
+  const path = join(input.repositoryRoot, DESIGN_SPEC_FILE);
+  let root: string | null = null;
+  try { root = readFileSync(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  if (rootFingerprint(root) !== inFlight.designBase) deny("design_changed", "DESIGN.md 在你确认时被改过，这一版没有通过", "在窗口里选「其他」写意见，让主代理按最新的 DESIGN.md 重派一版");
+  const chosen = candidates.length === 1 ? candidates[0] : candidates.find((candidate) => candidate.letter === input.option);
+  if (!chosen) return;
+  if (root === null || changedChapters(root, chosen.text).length > 0) writeFileAtomicFollowingSymlink(path, chosen.text, { followSymlink: true });
 }
 
 const inDraftSet = (entry: PrototypeEntry) => !entry.removed && (entry.draft ?? entry.approved);

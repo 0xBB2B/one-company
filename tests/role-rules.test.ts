@@ -131,6 +131,31 @@ describe("prototype 职责规矩", () => {
     expect(rules).toContain("&lt;/textarea 是 </textarea 的转义");
     expect(rules).not.toContain("返工");
   });
+
+  test("含先读懂整体布局和现有样式、改已有页面先整页还原、新页面套进整体布局、终端照现有命令输出还原、找不到代码自己定、读不懂写进 openQuestions", () => {
+    const rules = loadRoleRules("prototype");
+    for (const phrase of ["整体布局（顶栏、侧边导航、页脚、内容区宽度和边距）", "先把这个页面照现在的样子整页还原", "照现有命令的输出格式还原", "读不懂的地方写进 openQuestions", "现有样式（配色、字体、字号、间距、圆角）", "把它套进项目现有的整体布局，用现有样式和现有组件的样子画", "项目里没有的组件，按现有样式的配色、字号、间距画", "仓库里找不到界面代码时，按任务说明自己定布局和样式", "先读任务说明里的 DESIGN.md", "DESIGN.md 没写到的（比如这个页面现在的具体内容、DESIGN.md 里没有的组件），再去仓库里找对应的界面代码", "仓库里还没有 DESIGN.md 时，先在仓库里找这次涉及的界面代码"]) expect(rules).toContain(phrase);
+  });
+});
+
+describe("界面设计规范 DESIGN.md 的职责规矩", () => {
+  test("prototype 写明照 DESIGN.md 画、交稿带全文、多方案风格不同时写成数组、没有时先从代码读出来、十章结构与对比度校验", () => {
+    const rules = loadRoleRules("prototype");
+    for (const phrase of ["DESIGN.md 至少有下面十章", "每次交稿都在 design 里带 DESIGN.md 全文，没改的章原样照抄", "各方案风格不同时，design 写成数组，按 options 的顺序每个方案一份", "风格相同时只交一份",
+      "用户通过原型时，程序把它写进仓库根目录", "仓库里还没有 DESIGN.md 时，先从项目界面代码里读出现有的值写进去", "DESIGN.md 只写全项目通用、多个页面会重复用到的设计规范",
+      "## 风格、## 颜色、## 字体、## 间距、## 圆角与阴影、## 布局、## 组件、## 状态、## 无障碍、## 终端界面", "每个必填项写一行\"- 项名：值\"", "老页面会跟着变",
+      "程序会按颜色章的色值算对比度", "不合格的交稿会被退回并写明原因，按原因改好后重交"]) expect(rules).toContain(phrase);
+  });
+
+  test("worker 写明界面改动用 DESIGN.md 的值、DESIGN.md 不能改", () => {
+    const rules = loadRoleRules("worker");
+    for (const phrase of ["任务说明里有界面设计规范 DESIGN.md 时，改动涉及界面的，原型里画了的按原型；原型没画到的颜色、字号、间距、圆角、组件尺寸用 DESIGN.md 里的值", "DESIGN.md 不能改，它只随原型通过由程序写入；需要改时在结果里说明"]) expect(rules).toContain(phrase);
+  });
+
+  test("reviewer 写明核对 DESIGN.md，超出的值列为阻塞", () => {
+    const rules = loadRoleRules("reviewer");
+    for (const phrase of ["核对界面设计规范：任务说明里有 DESIGN.md 时", "用了既不在 DESIGN.md 里、也不在原型里的颜色、字号、间距、圆角或组件尺寸，列为阻塞", "结论 summary 写明核对结果"]) expect(rules).toContain(phrase);
+  });
 });
 
 describe("下游职责规矩的原型要求", () => {

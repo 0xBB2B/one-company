@@ -9,6 +9,7 @@ import type { TaskRecord, TaskSpec } from "../../../src/modules/pm/plan-manage.t
 import { prototypesAtRevision, writePrototypeRevision } from "../../../src/modules/requirement/requirement-prototype-revisions.ts";
 import { beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, promoteOnApprovalIn, readPrototypeBoard, submitDesign } from "../../../src/modules/requirement/requirement-prototypes.ts";
 import type { ScriptedReply } from "../../helpers/controlled-provider.ts";
+import { VALID_DESIGN } from "../../helpers/design-sample.ts";
 import { createPmRunWorld } from "../../helpers/run-manager-fixture.ts";
 import { acceptanceConfig } from "../helpers/installed-host.ts";
 import { call, messageText, NA, pointEvidence, taskKey } from "../helpers/point-pm.ts";
@@ -53,10 +54,10 @@ test.skipIf(!config || process.platform !== "darwin")("P10：需求第 1 版带�
 
   // 主窗口出原型、用户通过、随第 1 版需求批准，由脚本直接经看板与快照完成
   const designRun = uuidv7();
-  await beginDesign(ref, { requirementId, name: PROTOTYPE_NAME, runId: designRun, agent: "prototype" });
-  await submitDesign(ref, { pages: PAGES, requirementId, name: PROTOTYPE_NAME, runId: designRun, html: PROTOTYPE, note: "表单居中，失败提示红色" });
-  const pending = await pendingConfirmation(ref, { requirementId, name: PROTOTYPE_NAME });
-  await decidePrototype(ref, { requirementId, name: PROTOTYPE_NAME, version: pending.version, hash: pending.hash, choice: "accept", opinion: null, option: null });
+  await beginDesign(ref, { requirementId, name: PROTOTYPE_NAME, runId: designRun, agent: "prototype", designBase: null });
+  await submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name: PROTOTYPE_NAME, runId: designRun, html: PROTOTYPE, note: "表单居中，失败提示红色" });
+  const pending = await pendingConfirmation(ref, { repositoryRoot: w.fixture.repositoryRoot, requirementId, name: PROTOTYPE_NAME });
+  await decidePrototype(ref, { repositoryRoot: w.fixture.repositoryRoot, requirementId, name: PROTOTYPE_NAME, version: pending.version, hash: pending.hash, choice: "accept", opinion: null, option: null });
   const draft = await draftPrototypes(ref, requirementId);
   const promoted = promote(ref, { requirementId, digest: draft.digest });
   w.db((db) => writePrototypeRevision(db, { requirementId, revision: 1,

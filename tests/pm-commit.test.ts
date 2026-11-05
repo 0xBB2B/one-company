@@ -60,6 +60,7 @@ const PROTECTED_PATHS: Array<[string, string]> = [
   ["src/.GIT/x", "这是 Git 元数据，不能提交：src/.GIT/x"],
   ["docs/prd/x.md", "这是需求归档目录，由程序在关闭需求时写入，不能提交：docs/prd/x.md"],
   ["AGENTS.md", "这是项目规范文件 AGENTS.md，只能经用户确认后修改，不能提交：AGENTS.md"],
+  ["DESIGN.md", "这是界面设计规范文件 DESIGN.md，只能随原型通过写入，不能提交：DESIGN.md"],
   [".pi/settings.json", "这是 pi 的项目设置文件，只能由用户修改，不能提交：.pi/settings.json"],
   [".PI/Settings.json", "这是 pi 的项目设置文件，只能由用户修改，不能提交：.PI/Settings.json"],
   [".pi/agents/qa.md", "这是角色定义或 skills 目录，只能由用户修改，不能提交：.pi/agents/qa.md"],
@@ -72,9 +73,10 @@ const PROTECTED_PATHS: Array<[string, string]> = [
 test("路径本身是受保护的文件或越界路径时整次拒绝，错误按原因和建议写明路径，HEAD 不变", async () => {
   const r = await repo();
   const tool = createPmCommitTool({ requirementId: REQUIREMENT, worktree: r.root, branch: "refs/heads/req-branch", alive: () => true, checkPhaseActive: () => false,
-    writeScope: () => ["a.ts", ".git/", "src/", "docs/", "AGENTS.md", ".pi/", ".PI/"] });
+    writeScope: () => ["a.ts", ".git/", "src/", "docs/", "AGENTS.md", "DESIGN.md", ".pi/", ".PI/"] });
   const head = r.git("rev-parse", "HEAD");
   await writeFile(join(r.root, "a.ts"), "a2\n");
+  await writeFile(join(r.root, "DESIGN.md"), "design\n");
   for (const [path, why] of PROTECTED_PATHS) {
     expectFailure(await failureOf(run(tool, { paths: ["a.ts", path], message: "x" })), why, PROTECTED_ADVICE);
   }

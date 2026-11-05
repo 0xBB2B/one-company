@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "vitest";
 import { spawn } from "node:child_process";
+import { chmodSync, lstatSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { LocalDatabase, createRecord, readRecord, writeRecord, StaleVersionError } from "../src/core/storage/database.ts";
-import { writeFileAtomic } from "../src/core/storage/store.ts";
+import { writeFileAtomic, writeFileAtomicSync } from "../src/core/storage/store.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 const roots: string[] = [];
@@ -118,5 +119,40 @@ test("Git 定义文件原子替换失败清理临时文件，成功写入后读�
   const blocked = join(ref.root, "directory");
   await mkdir(blocked);
   await expect(writeFileAtomic(blocked, "不能写入")).rejects.toThrow();
+  expect((await readdir(ref.root)).some((name) => name.endsWith(".tmp"))).toBe(false);
+});
+
+test("同步原子写：原文件权限保留，内容更新", async () => {
+  const ref = await fixture();
+  const path = join(ref.root, "definition.md");
+  writeFileSync(path, "旧");
+  chmodSync(path, 0o644);
+  writeFileAtomicSync(path, "新");
+  expect(readFileSync(path, "utf8")).toBe("新");
+  expect(lstatSync(path).mode & 0o777).toBe(0o644);
+});
+
+test("同步原子写：没有原文件时新建，权限是 0o600", async () => {
+  const ref = await fixture();
+  const path = join(ref.root, "fresh.md");
+  writeFileAtomicSync(path, "正文");
+  expect(readFileSync(path, "utf8")).toBe("正文");
+  expect(lstatSync(path).mode & 0o777).toBe(0o600);
+});
+
+test("同步原子写：followSymlink 时写进链接指向的文件，链接保留", async () => {
+  const ref = await fixture();
+  const target = join(ref.root, "real.md");
+  const link = join(ref.root, "link.md");
+  writeFileSync(target, "旧");
+  symlinkSync(target, link);
+  writeFileAtomicSync(link, "新", { followSymlink: true });
+  expect(readFileSync(target, "utf8")).toBe("新");
+  expect(lstatSync(link).isSymbolicLink()).toBe(true);
+});
+
+test("同步原子写：写完后目录里没有 .tmp 临时文件", async () => {
+  const ref = await fixture();
+  writeFileAtomicSync(join(ref.root, "a.md"), "正文");
   expect((await readdir(ref.root)).some((name) => name.endsWith(".tmp"))).toBe(false);
 });
