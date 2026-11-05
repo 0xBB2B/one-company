@@ -1323,3 +1323,235 @@ test("子代理行：找不到该仓库的守护进程连接时提示错误，�
   expect(f.custom).not.toHaveBeenCalled();
   await f.fake.trigger("session_shutdown", {}, f.ctx);
 });
+
+describe("名字太长时保留尾部参数", () => {
+  const stripAnsi = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
+  const rowTexts = (instance: PmPanel, width: number) => instance.render(width).map(stripAnsi);
+  const expectTail = (lines: string[], needle: RegExp, tail: string, width: number) => {
+    const line = lines.find((text) => needle.test(text));
+    expect(line, `找不到 ${needle}`).toBeDefined();
+    expect(line!.endsWith(tail), line).toBe(true);
+    expect(line!.slice(0, -tail.length).trimEnd().endsWith("…"), line).toBe(true);
+    expect(visibleWidth(line!)).toBeLessThanOrEqual(width);
+    return line!;
+  };
+
+  const longQuestion = "为什么企业微信自建应用在没有公网回调地址的内网环境里仍然能够收到消息推送，以及这种情况下需要怎样配置可信域名和接收服务器才能正常工作".repeat(3).slice(0, 300);
+  const longProtoName = "桌面接入工具安装配置原型：模型提供方、接口地址和密钥分三步填写";
+  const protoEntry = (name: string, extra = {}): PrototypePanelEntry => ({ repoId: "r", fetchedAt: 1_000,
+    prototype: { runId: "run-long-proto", requirementId: "01900000-0000-7000-8000-000000000001", name, version: 1, agent: "prototype", turns: 5, maxTurns: 10, elapsedMs: 289_000, ...extra } });
+  const longAgent = "非常非常长的专项审查代理定义名称用来测试截断行为-reviewer";
+
+  test("AC-1：主窗口检索行问题 300 字时截短问题，保留完整的轮数与耗时", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.updateExplores([{ repoId: "r", fetchedAt: 1_000, explore: { runId: "run-long-explore", source: "web", question: longQuestion, turns: 5, maxTurns: 12, elapsedMs: 51_900 } }]);
+    const lines = rowTexts(instance, 80);
+    const line = expectTail(lines, /联网 ·/, "· ↻5/12 · 51.9s", 80);
+    expect(line.endsWith("… · ↻5/12 · 51.9s")).toBe(true);
+    expect(line.startsWith("└─ ⠋ 联网 · ")).toBe(true);
+  });
+
+  test("AC-1：本地检索行同样保留尾部", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.updateExplores([{ repoId: "r", fetchedAt: 1_000, explore: { runId: "run-long-explore", source: "local", question: longQuestion, turns: 5, maxTurns: 12, elapsedMs: 51_900 } }]);
+    expectTail(rowTexts(instance, 80), /本地 ·/, "· ↻5/12 · 51.9s", 80);
+  });
+
+  test("AC-2：原型设计行名字很长时，名字截短并去掉“（第 1 版）”，保留设计师定义名、轮数和耗时", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.updatePrototypes([protoEntry(longProtoName)]);
+    const line = expectTail(rowTexts(instance, 80), /桌面接入/, "· prototype · ↻5/10 · 4m49s", 80);
+    expect(line.endsWith("…· prototype · ↻5/10 · 4m49s")).toBe(true);
+    expect(line).not.toContain("（第 1 版）");
+  });
+
+  test("AC-3：需求行目标很长时保留完整尾部（任务进度、轮数、tool uses、token、耗时）", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    const goals = Array.from({ length: 6 }, (_, index) => `实现一个名字相当长的功能目标${index}`);
+    instance.update([{ repoId: "r", fetchedAt: 1_000, overview: overview({ goals, taskProgress: { completed: 2, total: 5 }, turns: 9, toolUses: 30, tokens: 1_200_000, cacheRate: 0.85, elapsedMs: 185_000 }) }]);
+    expectTail(rowTexts(instance, 80), /^└─ ⠋ 实现/, "· 任务 2/5 · ↻9 · 30 tool uses · 1.2M token (85%) · 3m5s", 80);
+  });
+
+  test("AC-3：需求行 cacheRate 为 null 时尾部不写括号", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    const goals = Array.from({ length: 6 }, (_, index) => `实现一个名字相当长的功能目标${index}`);
+    instance.update([{ repoId: "r", fetchedAt: 1_000, overview: overview({ goals, taskProgress: null, turns: 9, toolUses: 30, tokens: 1_200_000, cacheRate: null, elapsedMs: 185_000 }) }]);
+    expectTail(rowTexts(instance, 80), /^└─ ⠋ 实现/, "· ↻9 · 30 tool uses · 1.2M token · 3m5s", 80);
+  });
+
+  test("AC-3：执行行定义名很长时保留“↻a/b · 耗时”", () => {
+    const { instance } = taskPanel({ taskRows: [exec("T3", { agent: "非常非常长的执行代理定义名称用来测试截断行为-worker" })] });
+    expectTail(rowTexts(instance, 80), /T3 执行/, "· ↻8/20 · 3m2s", 80);
+  });
+
+  test("AC-3：审查代理行名字很长（exhausted、40/40、12m3s）时保留尾部", () => {
+    const { instance } = taskPanel({ taskRows: [review("T1", [{ agent: longAgent, state: "exhausted", attempt: 2, turns: 40, maxTurns: 40, elapsedMs: 723_000 }])] });
+    expectTail(rowTexts(instance, 80), /非常非常长的专项审查/, "· ↻40/40 · 12m3s", 80);
+  });
+
+  test("AC-3：在跑的审查代理行名字很长时保留尾部", () => {
+    const { instance } = taskPanel({ taskRows: [review("T1", [{ agent: longAgent.repeat(2), state: "running", turns: 2, maxTurns: 10, elapsedMs: 5_000 }])] });
+    expectTail(rowTexts(instance, 80), /非常非常长的专项审查/, "· ↻2/10 · 5.0s", 80);
+  });
+
+  test("AC-3：没有上限时轮数写“↻N”，尾部仍保留", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.updateExplores([{ repoId: "r", fetchedAt: 1_000, explore: { runId: "run-long-explore", source: "web", question: longQuestion, turns: 5, maxTurns: null, elapsedMs: 51_900 } as never }]);
+    expectTail(rowTexts(instance, 80), /联网 ·/, "· ↻5 · 51.9s", 80);
+  });
+
+  test("AC-2：PM 派出的检索行整行放得下时不加省略号", () => {
+    const { instance } = taskPanel({ taskRows: [{ kind: "explore", runId: "run-ex", turns: 1, maxTurns: 5, elapsedMs: 1_000 }] });
+    expect(rowTexts(instance, 80).find((text) => text.includes("explore 检索"))).toBe("     └ ⠋ explore 检索 · ↻1/5 · 1.0s");
+  });
+
+  test("AC-3：PM 派出的检索行放不下时截短名字、保留尾部", () => {
+    const { instance } = taskPanel({ taskRows: [{ kind: "explore", runId: "run-ex", turns: 1, maxTurns: 5, elapsedMs: 1_000 }] });
+    const lines = rowTexts(instance, 24);
+    expectTail(lines, /^ {5}└ ⠋ /, " · ↻1/5 · 1.0s", 24);
+  });
+
+  describe("已结束行", () => {
+    const ended = async (setup: (instance: PmPanel) => void, remove: (instance: PmPanel) => void, stepsPatch = {}) => {
+      const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn(), openSteps: vi.fn(), readSteps: async () => stepsView({ elapsedMs: 123_000, ...stepsPatch }) } as never);
+      setup(instance);
+      instance.setTheme({ fg: (_kind, text) => text, bg: (_kind, text) => `\x1b[44m${text}\x1b[49m` });
+      instance.focus();
+      instance.handleInput(DOWN);
+      remove(instance);
+      await flush();
+      return instance;
+    };
+
+    test("AC-3：名字很长的已结束行以“· ↻12/12 · 2m3s”结尾，名字末尾是“…”", async () => {
+      const instance = await ended(
+        (target) => target.updateExplores([{ repoId: "r", fetchedAt: 1_000, explore: { runId: "run-end", source: "local", question: longQuestion, turns: 5, maxTurns: 12, elapsedMs: 5_000 } }]),
+        (target) => target.updateExplores([]),
+      );
+      const lines = rowTexts(instance, 80);
+      expect(lines).toContain(ENDED_HEADER);
+      const line = expectTail(lines, /^└─ ✓ 已完成 · /, " · ↻12/12 · 2m3s", 80);
+      expect(line.startsWith("└─ ✓ 已完成 · 本地 · ")).toBe(true);
+    });
+
+    test("AC-3：原来是原型设计行的已结束行以“· prototype · ↻12/12 · 2m3s”结尾", async () => {
+      const instance = await ended(
+        (target) => target.updatePrototypes([protoEntry(longProtoName.repeat(2), { runId: "run-end-proto" })]),
+        (target) => target.updatePrototypes([]),
+      );
+      expect(expectTail(rowTexts(instance, 80), /^└─ ✓ 已完成 · /, "· prototype · ↻12/12 · 2m3s", 80).endsWith("…· prototype · ↻12/12 · 2m3s")).toBe(true);
+    });
+
+    test("AC-7：已结束行被选中时仍带选中背景", async () => {
+      const instance = await ended(
+        (target) => target.updateExplores([{ repoId: "r", fetchedAt: 1_000, explore: { runId: "run-end", source: "local", question: longQuestion, turns: 5, maxTurns: 12, elapsedMs: 5_000 } }]),
+        (target) => target.updateExplores([]),
+      );
+      const selected = instance.render(80).filter((line) => line.includes("\x1b[44m"));
+      expect(selected).toHaveLength(1);
+      expect(stripAnsi(selected[0]!).endsWith("… · ↻12/12 · 2m3s")).toBe(true);
+    });
+  });
+
+  test("AC-4：名字和尾部放得下时一字不改", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.updatePrototypes([protoEntry("设置页")]);
+    expect(rowTexts(instance, 80)[1]).toBe("└─ ⠋ 设置页（第 1 版）· prototype · ↻5/10 · 4m49s");
+  });
+
+  test("AC-5：40 列下需求行尾部本身超过 40 列，整行从行尾截断并以“…”结尾", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.update([{ repoId: "r", fetchedAt: 1_000, overview: overview({ goals: ["实现一个名字相当长的功能目标"], taskProgress: { completed: 2, total: 5 }, turns: 9, toolUses: 30, tokens: 1_200_000, cacheRate: 0.85, elapsedMs: 185_000 }) }]);
+    const line = rowTexts(instance, 40)[1]!;
+    expect(line.endsWith("…")).toBe(true);
+    expect(visibleWidth(line)).toBeLessThanOrEqual(40);
+    expect(line).not.toContain("3m5s");
+  });
+
+  test("AC-5：40 列下原型设计行名字截成“桌面接…”，尾部完整", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.updatePrototypes([protoEntry(longProtoName)]);
+    expect(rowTexts(instance, 40)[1]).toBe("└─ ⠋ 桌面接…· prototype · ↻5/10 · 4m49s");
+  });
+
+  test("AC-6：80 列下 100 字的 ⚑ 事项行以“…”结尾", () => {
+    const label = `待裁决：${"任务很长的说明文字".repeat(12)}`.slice(0, 100);
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.update([{ repoId: "r", fetchedAt: 1_000, overview: overview({ pendingItems: [{ itemId: "task:t1", kind: "adjudicate", label, version: "task:t1:3" }] }) }]);
+    const line = rowTexts(instance, 80).find((text) => text.includes("⚑"))!;
+    expect(line.endsWith("…")).toBe(true);
+    expect(visibleWidth(line)).toBeLessThanOrEqual(80);
+  });
+
+  test("AC-6：80 列下 100 字的“在做什么”行以“…”结尾", () => {
+    const doing = "正在处理一件说明文字非常非常长的事情".repeat(6).slice(0, 100);
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.update([{ repoId: "r", fetchedAt: 1_000, overview: overview({ doing }) }]);
+    const line = rowTexts(instance, 80).find((text) => text.includes("正在处理"))!;
+    expect(line.endsWith("…")).toBe(true);
+    expect(visibleWidth(line)).toBeLessThanOrEqual(80);
+  });
+
+  test("AC-7：80 和 40 列下每一行宽度都不超过终端宽度，光标所在的长行仍带选中背景且尾部保留", () => {
+    const { instance } = taskPanel({ taskRows: [exec("T3", { agent: "非常非常长的执行代理定义名称用来测试截断行为-worker" })] }, 1_000, true);
+    instance.updatePrototypes([protoEntry(longProtoName)]);
+    instance.updateExplores([{ repoId: "r", fetchedAt: 1_000, explore: { runId: "run-long-explore", source: "web", question: longQuestion, turns: 5, maxTurns: 12, elapsedMs: 51_900 } }]);
+    instance.focus();
+    instance.handleInput(DOWN);
+    for (const width of [80, 40]) for (const line of instance.render(width)) expect(visibleWidth(line), line).toBeLessThanOrEqual(width);
+    const selected = instance.render(80).filter((line) => line.includes("\x1b[44m"));
+    expect(selected).toHaveLength(1);
+    expect(stripAnsi(selected[0]!).endsWith("· ↻8/20 · 3m2s")).toBe(true);
+  });
+});
+
+describe("名字截短时只有一个省略号，尾部不丢颜色", () => {
+  const piTheme = {
+    fg: (kind: string, text: string) => `\x1b[3${kind === "warning" ? 3 : 2}m${text}\x1b[39m`,
+    bg: (_kind: string, text: string) => `\x1b[44m${text}\x1b[49m`,
+  };
+  const longGoal = "订单导出按月分文件并支持断点续传和失败重试的完整方案";
+  const goalPanel = () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.update([{ repoId: "r", fetchedAt: 1_000, overview: overview({ goals: [longGoal], taskProgress: { completed: 2, total: 5 } }) }]);
+    return instance;
+  };
+
+  test("整行截断时只有一个省略号：中文名字、奇数宽度", () => {
+    for (const width of [41, 43, 45, 47]) {
+      const line = goalPanel().render(width)[1]!;
+      expect(line.match(/…/g), line).toHaveLength(1);
+      expect(line.endsWith("…")).toBe(true);
+      expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+    }
+  });
+
+  test("宽度正好等于前缀时，整行仍以省略号结尾", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.updateExplores([{ repoId: "r", fetchedAt: 1_000, explore: { runId: "x", source: "web", question: "企业微信".repeat(40), turns: 5, maxTurns: 12, elapsedMs: 51_900 } }]);
+    const line = instance.render(5).at(-1)!;
+    expect(line.endsWith("…")).toBe(true);
+    expect(visibleWidth(line)).toBeLessThanOrEqual(5);
+  });
+
+  test("选中的长行：截短处不插清色码，尾部仍在蓝底里", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.setTheme(piTheme);
+    instance.updateExplores([{ repoId: "r", fetchedAt: 1_000, explore: { runId: "x", source: "web", question: "企业微信".repeat(40), turns: 5, maxTurns: 12, elapsedMs: 51_900 } }]);
+    instance.focus();
+    const line = instance.render(80).find((l) => l.includes("\x1b[44m"))!;
+    expect(line).not.toContain("\x1b[0m");
+    expect(line.endsWith("… · ↻5/12 · 51.9s\x1b[49m")).toBe(true);
+  });
+
+  test("带颜色的审查代理行：截短后尾部仍是同一种颜色", () => {
+    const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn() });
+    instance.setTheme(piTheme);
+    instance.update([{ repoId: "r", fetchedAt: 1_000, overview: overview({ taskRows: [{ kind: "review", taskKey: "T1", round: 1, reviewers: [
+      { agent: "非常非常长的专项审查代理定义名称用来测试截断行为-reviewer", state: "exhausted", attempt: 2, turns: 40, maxTurns: 40, elapsedMs: 723_000 },
+    ] }] }) }]);
+    const line = instance.render(80).find((l) => l.includes("12m3s"))!;
+    expect(line).not.toContain("\x1b[0m");
+    expect(line).toMatch(/\x1b\[33m[^\x1b]*… · ↻40\/40 · 12m3s\x1b\[39m$/);
+  });
+});

@@ -26,7 +26,7 @@ export interface PmPanelOptions {
 }
 
 type Row = { kind: "pm"; entry: PmPanelEntry } | { kind: "item"; entry: PmPanelEntry; item: PendingItem }
-  | { kind: "steps"; entry?: PmPanelEntry; repoId: string; runId: string; title: string; view?: RunStepsView };
+  | { kind: "steps"; entry?: PmPanelEntry; repoId: string; runId: string; title: string; titleTail?: string; view?: RunStepsView };
 type TaskRow = PmOverview["taskRows"][number];
 
 export const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -101,7 +101,7 @@ export class PmPanel {
     const rows = this.rows(), index = key ? rows.findIndex((row) => rowKey(row) === key) : -1;
     if (index >= 0) { this.cursor = index; return; }
     if (this.focused && selected?.kind === "steps") {
-      const row: Extract<Row, { kind: "steps" }> = { kind: "steps", repoId: selected.repoId, runId: selected.runId, title: selected.title };
+      const row: Extract<Row, { kind: "steps" }> = { kind: "steps", repoId: selected.repoId, runId: selected.runId, title: selected.title, titleTail: selected.titleTail };
       this.ended = { row, previous, reading: false, waited: 0 };
       this.cursor = this.rows().length - 1;
       this.readEnded(this.ended);
@@ -129,7 +129,7 @@ export class PmPanel {
   private rows(): Row[] { return this.ended ? [...this.liveRows(), this.ended.row] : this.liveRows(); }
 
   private liveRows(): Row[] {
-    const prototypes = this.prototypes.map(({ repoId, prototype }): Row => ({ kind: "steps", repoId, runId: prototype.runId, title: prototypeTitle(prototype) }));
+    const prototypes = this.prototypes.map(({ repoId, prototype }): Row => ({ kind: "steps", repoId, runId: prototype.runId, title: prototypeName(prototype) + prototypeTail(prototype), titleTail: prototypeTail(prototype) }));
     const explores = this.explores.map(({ repoId, explore }): Row => ({ kind: "steps", repoId, runId: explore.runId, title: mainExploreTitle(explore) }));
     return [...this.entries.flatMap((entry) => [{ kind: "pm" as const, entry }, ...entryRows(entry)]), ...prototypes, ...explores];
   }
@@ -143,40 +143,51 @@ export class PmPanel {
 
   private reviewerLine(prefix: string, row: PanelReviewerRow, entry: PmPanelEntry, width: number, selected: boolean): string {
     const suffix = this.runSuffix(row, row.state === "running", entry.fetchedAt);
-    const text: Record<PanelReviewerState, string> = {
-      running: `${SPINNER[this.frame]} ${row.agent}${row.attempt ? `（第 ${row.attempt} 次）${suffix.trimStart()}` : suffix}`,
-      clear: ` ${row.agent} 通过${suffix}`,
-      blocked: `✗ ${row.agent} 打回${suffix}`,
-      awaiting_retry: `– ${row.agent} ${row.reason ? RETRY_TEXT[row.reason] : ""}，等 PM 重派${suffix}`,
-      exhausted: `– ${row.agent} ${row.attempt} 次没交出结论，本轮结束后交你裁决${suffix}`,
-      skipped_disabled: `– ${row.agent} 已关闭，本轮未审`,
-      skipped_missing: `– ${row.agent} 已不存在，本轮未审`,
+    const text: Record<PanelReviewerState, [string, string]> = {
+      running: row.attempt ? [`${SPINNER[this.frame]} ${row.agent}（第 ${row.attempt} 次）`, suffix.trimStart()] : [`${SPINNER[this.frame]} ${row.agent}`, suffix],
+      clear: [` ${row.agent} 通过`, suffix],
+      blocked: [`✗ ${row.agent} 打回`, suffix],
+      awaiting_retry: [`– ${row.agent} ${row.reason ? RETRY_TEXT[row.reason] : ""}，等 PM 重派`, suffix],
+      exhausted: [`– ${row.agent} ${row.attempt} 次没交出结论，本轮结束后交你裁决`, suffix],
+      skipped_disabled: [`– ${row.agent} 已关闭，本轮未审`, ""],
+      skipped_missing: [`– ${row.agent} 已不存在，本轮未审`, ""],
     };
-    const body = text[row.state];
+    const [name, tail] = text[row.state];
     const kind = row.state === "awaiting_retry" ? "dim" : row.state === "exhausted" || row.state === "skipped_disabled" || row.state === "skipped_missing" ? "warning" : undefined;
-    if (selected) return this.mark(this.fit(prefix + body, width), true);
-    return this.segments(row.state === "clear" ? [["dim", prefix], ["success", "✓"], ["muted", body]] : [["dim", prefix], [kind, body]], width);
+    if (selected) return this.mark(this.fitTail(prefix, name, tail, width), true);
+    return this.segments(row.state === "clear" ? [["dim", prefix], ["success", "✓"], ["muted", name]] : [["dim", prefix], [kind, name]], width, [row.state === "clear" ? "muted" : kind, tail]);
   }
 
-  /** 各段分别按剩余宽度截断后再着色，着色码不会被截断切开。 */
-  private segments(parts: Array<[string | undefined, string]>, width: number): string {
-    let used = 0;
-    return parts.map(([kind, text]) => {
-      const fitted = width > used ? this.fit(text, width - used) : "";
-      used += visibleWidth(fitted);
-      return kind ? this.paint(kind, fitted) : fitted;
-    }).join("");
+  /** 先截断纯文字再按段着色，着色码不会被切开；截短自己拼"…"，pi-tui 的 truncateToWidth 会在"…"前后插清色码，接在后面的尾部会丢掉颜色和选中底色。 */
+  private segments(parts: Array<[string | undefined, string]>, width: number, tail?: [string | undefined, string]): string {
+    const pieces = (tail ? [...parts, tail] : parts).map(([kind, text]): [string | undefined, string] => [kind, this.clean(text)]);
+    const widths = pieces.map(([, text]) => visibleWidth(text));
+    const total = widths.reduce((sum, value) => sum + value, 0);
+    const nameAt = parts.length - 1, nameRoom = width - (total - widths[nameAt]!);
+    if (total > width && tail && nameRoom >= 2) pieces[nameAt]![1] = cut(pieces[nameAt]![1], nameRoom);
+    else if (total > width) {
+      const kept = cut(pieces.map(([, text]) => text).join(""), width).slice(0, -1);
+      let offset = 0, done = false;
+      for (const piece of pieces) {
+        const text = piece[1], start = offset;
+        offset += text.length;
+        if (done) { piece[1] = ""; continue; }
+        if (kept.length < offset) { piece[1] = `${text.slice(0, Math.max(0, kept.length - start))}…`; done = true; }
+      }
+    }
+    if (tail && pieces.length > 1 && pieces.at(-2)![0] === tail[0]) { const last = pieces.pop()!; pieces.at(-1)![1] += last[1]; }
+    return pieces.map(([kind, text]) => (kind ? this.paint(kind, text) : text)).join("");
   }
 
   private taskLines(entry: PmPanelEntry, rail: string, selected: Row | undefined, width: number): string[] {
     const { overview, fetchedAt } = entry;
     const byId = new Map(overview.pendingItems.map((item) => [item.itemId, item]));
     const itemKey = (item: PendingItem | undefined) => item && rowKey({ kind: "item", entry, item });
-    const nodes: Array<{ text: string; key?: string; reviewers?: PanelReviewerRow[] }> = overview.taskRows.map((row) => {
-      if (row.kind === "execute") return { text: `${SPINNER[this.frame]} ${executeTitle(row)}${this.runSuffix(row, true, fetchedAt).trimStart()}`, key: runKey(row.runId) };
+    const nodes: Array<{ text: string; tail?: string; key?: string; reviewers?: PanelReviewerRow[] }> = overview.taskRows.map((row) => {
+      if (row.kind === "execute") return { text: `${SPINNER[this.frame]} ${executeTitle(row)}`, tail: this.runSuffix(row, true, fetchedAt).trimStart(), key: runKey(row.runId) };
       if (row.kind === "review") return { text: `${row.taskKey} 第 ${row.round} 轮审查`, reviewers: row.reviewers };
       if (row.kind === "pending") return { text: `⚑ ${row.taskKey} ${row.text}`, key: itemKey(byId.get(row.itemId)) };
-      return { text: `${SPINNER[this.frame]} ${EXPLORE_TITLE}${this.runSuffix(row, true, fetchedAt)}`, key: runKey(row.runId) };
+      return { text: `${SPINNER[this.frame]} ${EXPLORE_TITLE}`, tail: this.runSuffix(row, true, fetchedAt), key: runKey(row.runId) };
     });
     for (const item of overview.pendingItems) if (item.taskKey === undefined) nodes.push({ text: `⚑ ${item.label}`, key: itemKey(item) });
     const selectedKey = selected && rowKey(selected);
@@ -184,7 +195,7 @@ export class PmPanel {
       const last = index === nodes.length - 1;
       const prefix = `${rail}   ${last ? "└" : "├"} `;
       const isSelected = node.key !== undefined && node.key === selectedKey;
-      const line = isSelected ? this.mark(this.fit(prefix + node.text, width), true) : this.segments([["dim", prefix], [undefined, node.text]], width);
+      const line = isSelected ? this.mark(this.fitTail(prefix, node.text, node.tail ?? "", width), true) : this.segments([["dim", prefix], [undefined, node.text]], width, [undefined, node.tail ?? ""]);
       const sub = `${rail}   ${last ? "  " : "│ "}`;
       return [line, ...(node.reviewers ?? []).map((reviewer, i) => this.reviewerLine(`${sub}${i === node.reviewers!.length - 1 ? "└" : "├"} `, reviewer, entry, width, reviewer.runId !== undefined && runKey(reviewer.runId) === selectedKey))];
     });
@@ -221,8 +232,8 @@ export class PmPanel {
       const elapsed = overview.elapsedMs + (running ? Math.max(0, this.options.now() - entry.fetchedAt) : 0);
       const goals = overview.goals.length ? overview.goals.join("、") : overview.requirementId.slice(-8);
       const cache = overview.cacheRate === null ? "" : ` (${Math.round(overview.cacheRate * 100)}%)`;
-      const head = `${branch} ${icon} ${goals}${overview.taskProgress ? ` · 任务 ${overview.taskProgress.completed}/${overview.taskProgress.total}` : ""} · ↻${overview.turns} · ${overview.toolUses} tool uses · ${formatTokens(overview.tokens)} token${cache} · ${formatElapsed(elapsed)}`;
-      lines.push(this.mark(this.fit(head, safeWidth), selected !== undefined && selected.kind === "pm" && selected.entry === entry));
+      const tail = `${overview.taskProgress ? ` · 任务 ${overview.taskProgress.completed}/${overview.taskProgress.total}` : ""} · ↻${overview.turns} · ${overview.toolUses} tool uses · ${formatTokens(overview.tokens)} token${cache} · ${formatElapsed(elapsed)}`;
+      lines.push(this.mark(this.fitTail(`${branch} ${icon} `, goals, tail, safeWidth), selected !== undefined && selected.kind === "pm" && selected.entry === entry));
       if (overview.taskRows.length) { lines.push(...this.taskLines(entry, rail, selected, safeWidth)); return; }
       lines.push(this.fit(`${rail}   └ ${overview.doing}`, safeWidth));
       overview.pendingItems.forEach((item, itemIndex) => {
@@ -235,26 +246,27 @@ export class PmPanel {
     if (this.prototypes.length) lines.push(this.fit(`● ${this.prototypes.length} 个原型设计运行中`, safeWidth));
     this.prototypes.forEach(({ prototype, fetchedAt }, index) => {
       const branch = index === this.prototypes.length - 1 ? "└─" : "├─";
-      const elapsed = prototype.elapsedMs + Math.max(0, this.options.now() - fetchedAt);
-      lines.push(this.mark(this.fit(`${branch} ${SPINNER[this.frame]} ${prototypeTitle(prototype)} · ↻${prototype.turns}/${prototype.maxTurns} · ${formatElapsed(elapsed)}`, safeWidth), runKey(prototype.runId) === selectedKey));
+      lines.push(this.mark(this.fitTail(`${branch} ${SPINNER[this.frame]} `, prototypeName(prototype), prototypeTail(prototype) + this.runSuffix(prototype, true, fetchedAt), safeWidth), runKey(prototype.runId) === selectedKey));
     });
     if (this.explores.length) lines.push(this.fit(`● ${this.explores.length} 个检索运行中`, safeWidth));
     this.explores.forEach(({ explore, fetchedAt }, index) => {
       const branch = index === this.explores.length - 1 ? "└─" : "├─";
-      const elapsed = explore.elapsedMs + Math.max(0, this.options.now() - fetchedAt);
-      lines.push(this.mark(this.fit(`${branch} ${SPINNER[this.frame]} ${mainExploreTitle(explore)} · ↻${explore.turns}/${explore.maxTurns} · ${formatElapsed(elapsed)}`, safeWidth), runKey(explore.runId) === selectedKey));
+      lines.push(this.mark(this.fitTail(`${branch} ${SPINNER[this.frame]} `, mainExploreTitle(explore), this.runSuffix(explore, true, fetchedAt), safeWidth), runKey(explore.runId) === selectedKey));
     });
     if (this.ended) {
-      const { view, title } = this.ended.row;
-      const body = view ? `${ENDED_RESULT[view.state]} · ${title}${this.runSuffix(view, false, 0)}` : `读取中… · ${title}`;
-      lines.push(this.fit(ENDED_HEADER, safeWidth), this.mark(this.fit(`└─ ${body}`, safeWidth), current === this.ended.row));
+      const { view, title, titleTail = "" } = this.ended.row;
+      const name = title.slice(0, title.length - titleTail.length);
+      const [head, tail] = view ? [`${ENDED_RESULT[view.state]} · ${name}`, titleTail + this.runSuffix(view, false, 0)] : [`读取中… · ${name}`, titleTail];
+      lines.push(this.fit(ENDED_HEADER, safeWidth), this.mark(this.fitTail("└─ ", head, tail, safeWidth), current === this.ended.row));
     }
     if (this.focused) lines.push(this.paint("dim", this.fit(HINT, safeWidth)));
     return lines;
   }
 
-  private fit(text: string, width: number): string {
-    return truncateToWidth(sanitizeText(text.replace(/[\x00-\x1f\x7f-\x9f]/g, ""), 4_096), width, "…", false);
+  private clean(text: string): string { return sanitizeText(text.replace(/[\x00-\x1f\x7f-\x9f]/g, ""), 4_096); }
+  private fit(text: string, width: number): string { return truncateToWidth(this.clean(text), width, "…", false); }
+  private fitTail(prefix: string, name: string, tail: string, width: number): string {
+    return this.segments([[undefined, prefix], [undefined, name]], width, [undefined, tail]);
   }
   private mark(line: string, selected: boolean): string {
     return selected && this.theme?.bg ? this.theme.bg("selectedBg", line) : selected ? `›${line.slice(1)}` : line;
@@ -262,10 +274,22 @@ export class PmPanel {
   private paint(kind: string, text: string): string { return text && this.theme?.fg ? this.theme.fg(kind, text) : text; }
 }
 
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const cut = (text: string, width: number): string => {
+  if (visibleWidth(text) <= width) return text;
+  let out = "", used = 0;
+  for (const { segment } of graphemes.segment(text)) {
+    const w = visibleWidth(segment);
+    if (used + w > width - 1) break;
+    out += segment; used += w;
+  }
+  return `${out}…`;
+};
 const EXPLORE_TITLE = "explore 检索";
 const runKey = (runId: string) => `run:${runId}`;
 const executeTitle = (row: Extract<TaskRow, { kind: "execute" }>) => `${row.taskKey} 执行 · ${row.agent}（第 ${row.attempt} 次尝试）`;
-const prototypeTitle = (prototype: MainPrototypeOverview) => `${prototype.name}（第 ${prototype.version} 版）· ${prototype.agent}`;
+const prototypeName = (prototype: MainPrototypeOverview) => `${prototype.name}（第 ${prototype.version} 版）`;
+const prototypeTail = (prototype: MainPrototypeOverview) => `· ${prototype.agent}`;
 const mainExploreTitle = (explore: MainExploreOverview) => `${explore.source === "web" ? "联网" : "本地"} · ${explore.question.replace(/\s+/g, " ")}`;
 
 /** 需求行下面按屏幕顺序能停的行：任务行里的事项、执行、在跑的审查代理、检索，然后是不属于任务的事项。 */
