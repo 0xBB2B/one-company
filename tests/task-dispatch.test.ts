@@ -217,7 +217,7 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
   const reviewerRequest = w.provider.requests.find((request) => request.systemPrompt?.includes("审查任务：a（"))!;
   expect(reviewerRequest.tools?.map((tool) => tool.name)).not.toContain("one_company_change_apply");
   expect(reviewerRequest.systemPrompt).toContain(`- 第 1 次尝试 ${a.runId}（本次被审）：提交说明：完成 a；引用的验证记录：${redGreen.join("、")}`);
-  expect(reviewerRequest.systemPrompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff [0-9a-f]{40} -- src\/a\//);
+  expect(reviewerRequest.systemPrompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks --literal-pathspecs diff [0-9a-f]{40} -- src\/a\//);
 
   w.provider.queue.push(submit("完成 d"), pmAck);
   await w.dispatch("d");
@@ -252,7 +252,7 @@ async function reviewAfterWriting(files: Record<string, string>, writePaths: str
 test("派审查时可写范围内有 git 未跟踪的新文件，任务说明列出它们，原有的查看改动命令保持不变", async () => {
   const prompt = await reviewPromptAfterWriting({ "src/a/new.ts": "export const n = 1;\n" });
   expect(prompt).toContain("本次新建的文件（git diff 看不到，用 read 读全文）：src/a/new.ts");
-  expect(prompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff [0-9a-f]{40} -- src\/a\//);
+  expect(prompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks --literal-pathspecs diff [0-9a-f]{40} -- src\/a\//);
 });
 
 test("派审查时多个未跟踪新文件用顿号连接，路径相对工作区根目录并用 / 分隔", async () => {
@@ -304,6 +304,13 @@ test("派审查时可写范围含括号、空格等 shell 特殊字符，两条�
   const listed = runInShell(commandIn(prompt, /另有 1 个没列出，用 verification_run kind=debug 运行 (.+) 查看/), root);
   expect(listed.split("\n").filter(Boolean).sort()).toEqual(Object.keys(special).sort());
   expect(() => runInShell(commandIn(prompt, /查看本次改动：用 verification_run kind=debug 运行 (.+)（[0-9a-f]{40} 是/), root)).not.toThrow();
+});
+
+test("派审查时可写范围写成 git 排除规则的样子，照查看本次改动命令运行，看不到范围外的改动", async () => {
+  const { prompt, root } = await reviewAfterWriting({ "lib/x.ts": "1\n" }, [":(exclude)nothing/"]);
+  await runGit(["add", "lib/x.ts"], root);
+  const diff = runInShell(commandIn(prompt, /查看本次改动：用 verification_run kind=debug 运行 (.+)（[0-9a-f]{40} 是/), root);
+  expect(diff).not.toContain("lib/x.ts");
 });
 
 test("派审查时未跟踪新文件恰好 100 个，全部列出，不出现另有没列出的说明", async () => {

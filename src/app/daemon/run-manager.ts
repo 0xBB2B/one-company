@@ -172,7 +172,7 @@ async function reviewContext(task: PlanTask, attemptRunId: string, workspacePath
     ...(prototypes ? [prototypes] : []),
     ...(worker.body.trim() ? [`被审任务所用 worker 定义（${worker.name}）的正文：\n${worker.body.trim()}`] : []),
     ...worker.skillDivision,
-    `查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff ${baseCommit} -- ${scope}（${baseCommit} 是本需求工作区的基线提交）`,
+    `查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks --literal-pathspecs diff ${baseCommit} -- ${scope}（${baseCommit} 是本需求工作区的基线提交）`,
     ...(newFiles.length ? [`本次新建的文件（git diff 看不到，用 read 读全文）：${newFiles.slice(0, REVIEW_NEW_FILES_LIMIT).join("、")}` +
       (newFiles.length > REVIEW_NEW_FILES_LIMIT ? `；另有 ${newFiles.length - REVIEW_NEW_FILES_LIMIT} 个没列出，用 verification_run kind=debug 运行 git --literal-pathspecs -c core.quotePath=false ls-files --others --exclude-standard -- ${scope} 查看` : "")] : []),
     "worker 各次尝试（先红后绿可以出现在任意一次尝试里；返修改动了可测行为时，这次返修须有新的红；引用的验证记录用 verification_run action=status 逐条查看）：",
