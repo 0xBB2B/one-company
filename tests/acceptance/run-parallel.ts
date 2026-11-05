@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { resolveAcceptanceModel } from "./helpers/acceptance-model.ts";
 
 const vitest = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "vitest");
 const STAGGER_MS = 20_000, IDLE_MS = 10 * 60_000;
@@ -12,7 +13,8 @@ for (let i = 0; i < args.length; i++) {
   else throw new Error(`不认识的参数：${args[i]}；可用 --only <编号…>`);
 }
 const output = process.env.ONE_COMPANY_ACCEPTANCE_OUTPUT;
-if (!process.env.ONE_COMPANY_ACCEPTANCE_MODEL || !output) throw new Error("须先设置 ONE_COMPANY_ACCEPTANCE_MODEL 与 ONE_COMPANY_ACCEPTANCE_OUTPUT");
+if (!output) throw new Error("须先设置 ONE_COMPANY_ACCEPTANCE_OUTPUT（证据目录的绝对路径）");
+const model = resolveAcceptanceModel();
 mkdirSync(output, { recursive: true });
 
 const listFile = join(output, "tests.json");
@@ -37,7 +39,7 @@ const newest = (dir: string) => Math.max(0, ...readdirSync(dir, { recursive: tru
 
 type Run = { id: string; n: number; dir: string; started: number; done: boolean };
 const runs: Run[] = [];
-log(`同时跑开始：${tests.length} 条，每条先跑 2 次；一次过一次不过的再跑第 3 次`);
+log(`同时跑开始：${tests.length} 条，每条先跑 2 次；一次过一次不过的再跑第 3 次；模型 ${model.provider}/${model.modelId}，思考等级 ${model.thinking}`);
 const watchdog = setInterval(() => {
   for (const run of runs.filter((r) => !r.done && existsSync(r.dir) && Date.now() - newest(r.dir) > IDLE_MS)) {
     for (const evidence of readdirSync(run.dir, { withFileTypes: true }).filter((e) => e.isDirectory() && !existsSync(join(run.dir, e.name, "STOP")))) {
@@ -53,7 +55,10 @@ function launch(name: string, n: number): Promise<boolean> {
   const run: Run = { id, n, dir, started: Date.now(), done: false };
   runs.push(run);
   const out = openSync(`${dir}.log`, "w");
-  const child = spawn(vitest, ["run", "tests/acceptance", "-t", `^${escape(name)}$`], { env: { ...process.env, ONE_COMPANY_ACCEPTANCE_OUTPUT: dir }, stdio: ["ignore", out, out] });
+  const child = spawn(vitest, ["run", "tests/acceptance", "-t", `^${escape(name)}$`], { env: {
+    ...process.env, ONE_COMPANY_ACCEPTANCE_OUTPUT: dir,
+    ONE_COMPANY_ACCEPTANCE_MODEL: `${model.provider}/${model.modelId}`, ONE_COMPANY_ACCEPTANCE_THINKING: model.thinking,
+  }, stdio: ["ignore", out, out] });
   return new Promise((resolve) => child.on("close", (code) => {
     run.done = true;
     closeSync(out);

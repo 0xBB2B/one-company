@@ -32,12 +32,12 @@ pi install /absolute/path/to/one-company
 ## 真实模型验收
 
 ```bash
-ONE_COMPANY_ACCEPTANCE_MODEL=<提供方>/<模型> \
 ONE_COMPANY_ACCEPTANCE_OUTPUT=<绝对路径> \
 pnpm run test:acceptance:parallel [--only <编号…>]
 ```
 
-- `ONE_COMPANY_ACCEPTANCE_MODEL`：主会话用的模型，如 `5x/gpt-6.1-sol`。各角色和内部调用默认跟随主会话的模型和思考等级，在 /one:setting 的「模型」和角色定义里可改。
+- `ONE_COMPANY_ACCEPTANCE_MODEL`：可选。默认用 pi 配置（凭据目录里的 `settings.json`，默认 `~/.pi/agent/settings.json`）的 `defaultProvider` 和 `defaultModel`；设了就临时覆盖，如 `5x/gpt-6.1-sol`。各角色和内部调用默认跟随主会话的模型和思考等级，在 /one:setting 的「模型」和角色定义里可改。
+- `ONE_COMPANY_ACCEPTANCE_THINKING`：可选。不设时用 pi 配置的 `defaultThinkingLevel`，pi 也没配时用 `medium`。
 - `ONE_COMPANY_ACCEPTANCE_OUTPUT`：证据目录。每条每次一个子目录，有会话记录、`data.db`、`report.json`；总进度在 `summary.txt`。
 - `--only`：只跑测试名冒号前编号匹配的几条，如 `--only P1 P2 M9-AC12`，所以测试名开头的编号不要删改。
 - 运行时把 `~/.pi/agent/` 下的 `models.json` 和 `auth.json` 复制进一个只有当前用户能读写的临时 agent 目录，跑完删除，不动你自己的 `~/.pi/agent/`。
@@ -47,7 +47,7 @@ pnpm run test:acceptance:parallel [--only <编号…>]
 
 **两类测试**，都在临时目录里跑。程序自己保证的步骤（有原型没定下来时不能批准、@ 指向哪个需求、关闭时生成归档等）已有纯代码测试，这里只测靠模型判断的地方和能不能走完流程。
 
-单点测试（`tests/acceptance/points/`）：判断点之前的步骤由按脚本回答的假模型走完，到需要模型判断的那一步，把程序当时发出的请求原样交给真实模型，再由程序按工具调用和记录判对错。每个几十秒到几分钟。交给真实模型的 PM、worker、reviewer、QA、原型设计师用 `ONE_COMPANY_ACCEPTANCE_MODEL`；P1、P6–P8、P11、P13、P14 起一个真实主会话，解释器等内部调用默认跟随这个主会话的模型和思考等级。遇到过载、限流时和宿主一样自动重试 3 次。
+单点测试（`tests/acceptance/points/`）：判断点之前的步骤由按脚本回答的假模型走完，到需要模型判断的那一步，把程序当时发出的请求原样交给真实模型，再由程序按工具调用和记录判对错。每个几十秒到几分钟。交给真实模型的 PM、worker、reviewer、QA、原型设计师用验收选定的模型：默认是 pi 配置的模型，设了 `ONE_COMPANY_ACCEPTANCE_MODEL` 就用它；P1、P6–P8、P11、P13、P14 起一个真实主会话，解释器等内部调用默认跟随这个主会话的模型和思考等级。遇到过载、限流时和宿主一样自动重试 3 次。
 
 | 编号 | 判断点 | 判对的标准 |
 |---|---|---|

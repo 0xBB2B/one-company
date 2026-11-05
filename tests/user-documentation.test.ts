@@ -471,3 +471,19 @@ describe("README 开头", () => {
     expect(headings.indexOf("为什么用 OneCompany")).toBeLessThan(headings.indexOf("前置条件"));
   });
 });
+
+describe("验收跑法文档", () => {
+  const AGENTS = join(PACKAGE_ROOT, "AGENTS.md");
+
+  test.each([["AGENTS.md", AGENTS], ["CONTRIBUTING.md", CONTRIBUTING]])("%s 的跑法命令不带模型变量赋值", async (_name, file) => {
+    expect(await readText(file)).not.toContain("ONE_COMPANY_ACCEPTANCE_MODEL=");
+  });
+
+  test.each([["AGENTS.md", AGENTS], ["CONTRIBUTING.md", CONTRIBUTING]])("%s 说明模型和思考等级变量可临时覆盖，默认用 pi 配置", async (_name, file) => {
+    const body = await readText(file);
+    expect(body).toContain("ONE_COMPANY_ACCEPTANCE_MODEL");
+    expect(body).toContain("ONE_COMPANY_ACCEPTANCE_THINKING");
+    expect(body).toMatch(/默认用 pi 配置/u);
+    expect(body).toContain("settings.json");
+  });
+});
