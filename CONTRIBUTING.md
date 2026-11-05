@@ -38,7 +38,7 @@ pnpm run test:acceptance:parallel [--only <编号…>]
 
 - `ONE_COMPANY_ACCEPTANCE_MODEL`：可选。默认用 pi 配置（凭据目录里的 `settings.json`，默认 `~/.pi/agent/settings.json`）的 `defaultProvider` 和 `defaultModel`；设了就临时覆盖，如 `5x/gpt-6.1-sol`。各角色和内部调用默认跟随主会话的模型和思考等级，在 /one:setting 的「模型」和角色定义里可改。
 - `ONE_COMPANY_ACCEPTANCE_THINKING`：可选。不设时用 pi 配置的 `defaultThinkingLevel`，pi 也没配时用 `medium`。
-- `ONE_COMPANY_ACCEPTANCE_OUTPUT`：证据目录。每条每次一个子目录，有会话记录、`data.db`、`report.json`；总进度在 `summary.txt`。
+- `ONE_COMPANY_ACCEPTANCE_OUTPUT`：证据目录。每条每次一个子目录，有会话记录、`data.db`、`report.json`；总进度在 `summary.txt`，开头一行写着这次实际用的模型和思考等级。
 - `--only`：只跑测试名冒号前编号匹配的几条，如 `--only P1 P2 M9-AC12`，所以测试名开头的编号不要删改。
 - 运行时把 `~/.pi/agent/` 下的 `models.json` 和 `auth.json` 复制进一个只有当前用户能读写的临时 agent 目录，跑完删除，不动你自己的 `~/.pi/agent/`。
 - 用 gpt-6.1-sol 时，`models.json` 里它的思考等级 `off` 要写成 `null`，这个模型不接受关闭思考。

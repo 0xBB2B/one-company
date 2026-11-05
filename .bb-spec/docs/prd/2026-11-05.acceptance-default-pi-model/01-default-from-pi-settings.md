@@ -30,7 +30,7 @@ date: 2026-11-05
 1. 写了 `ONE_COMPANY_ACCEPTANCE_OUTPUT`、没写 `ONE_COMPANY_ACCEPTANCE_MODEL` → 验收用 pi 配置里的 `defaultProvider` 和 `defaultModel`。
 2. 写了 `ONE_COMPANY_ACCEPTANCE_MODEL` → 用它，不看 pi 配置里的模型；格式不是 `<提供方>/<模型>` 时照现在一样报错。
 3. 思考等级按这个顺序取第一个有的：`ONE_COMPANY_ACCEPTANCE_THINKING` → pi 配置里的 `defaultThinkingLevel` → `medium`。取到的值不是 pi 认识的思考等级时报错，报错里写出这个值。
-4. 没写 `ONE_COMPANY_ACCEPTANCE_OUTPUT` → 所有真实模型验收跳过，不管写没写模型；直接跑 `pnpm run test:acceptance:parallel` 时报错，说明要设 `ONE_COMPANY_ACCEPTANCE_OUTPUT`，报错里不再要求设 `ONE_COMPANY_ACCEPTANCE_MODEL`。
+4. 没写 `ONE_COMPANY_ACCEPTANCE_OUTPUT` → 所有真实模型验收跳过，不管写没写模型；直接跑 `pnpm run test:acceptance:parallel` 时报错，报错里只要求设 `ONE_COMPANY_ACCEPTANCE_OUTPUT`。
 5. 写了 `ONE_COMPANY_ACCEPTANCE_OUTPUT`，没写 `ONE_COMPANY_ACCEPTANCE_MODEL`，pi 配置里 `defaultProvider` 或 `defaultModel` 缺一项、或者 pi 配置文件不存在 → 报错，报错里写出 pi 配置文件的完整路径、要配的两项名字，并说明也可以改用 `ONE_COMPANY_ACCEPTANCE_MODEL`。
 6. `pnpm run test:acceptance:parallel` 在 `summary.txt` 里写的"同时跑开始"那一行，写出这次实际用的 `<提供方>/<模型>` 和思考等级。
 7. 验收只读 pi 配置，不改它：跑完后 pi 配置文件内容和跑之前一样。
