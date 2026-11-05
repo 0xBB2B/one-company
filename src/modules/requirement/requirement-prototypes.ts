@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, fsyncSync, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Type } from "typebox";
@@ -7,7 +7,7 @@ import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
-import { writeFileAtomic } from "../../core/storage/store.ts";
+import { writeFileAtomicSync as writeFileAtomicFollowingSymlink } from "../../core/storage/store.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
 import { hash as sha256Hex, id, object, positive } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
@@ -377,7 +377,7 @@ export async function decidePrototype(ref: Ref, input: { repositoryRoot: string;
   };
   const { inFlight } = matched(board);
   await verifiedFile(ref, input.requirementId, input.name, inFlight.file!);
-  if (input.choice === "accept") await writeChosenDesign(ref, input, inFlight);
+  const candidates = input.choice === "accept" ? await verifiedDesigns(ref, input.requirementId, input.name, inFlight) : [];
   withDatabase(databaseOf(ref), (db) => mutate(db, input.requirementId, (current) => {
     assertRequirementEditable(db, input.requirementId);
     const { entry, inFlight } = matched(current);
@@ -390,6 +390,7 @@ export async function decidePrototype(ref: Ref, input: { repositoryRoot: string;
         picked = { letter: OPTION_LETTERS[index]!, name: options[index]! };
       } else if (input.option != null) deny("invalid_option", "这份原型没有方案清单，不能选方案", "不选方案直接通过");
       entry.draft = { ...inFlight.file!, picked }; entry.removed = false;
+      writeChosenDesign(input, inFlight, candidates);
     }
     if (input.choice === "opinion") { entry.lastOpinion = { version: inFlight.version, opinion }; return; }
     entry.lastOpinion = null;
@@ -397,13 +398,15 @@ export async function decidePrototype(ref: Ref, input: { repositoryRoot: string;
   }));
 }
 
-async function writeChosenDesign(ref: Ref, input: { repositoryRoot: string; requirementId: string; name: string; option: string | null }, inFlight: NonNullable<PrototypeEntry["inFlight"]>): Promise<void> {
-  const candidates = await verifiedDesigns(ref, input.requirementId, input.name, inFlight);
-  const root = await readRootDesign(input.repositoryRoot);
+// 在事务回调里同步写，让所有拒绝都发生在写文件之前，并发请求也不会在读和写之间交错
+function writeChosenDesign(input: { repositoryRoot: string; option: string | null }, inFlight: NonNullable<PrototypeEntry["inFlight"]>, candidates: DesignCandidate[]): void {
+  const path = join(input.repositoryRoot, DESIGN_SPEC_FILE);
+  let root: string | null = null;
+  try { root = readFileSync(path, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   if (rootFingerprint(root) !== inFlight.designBase) deny("design_changed", "DESIGN.md 在你确认时被改过，这一版没有通过", "在窗口里选「其他」写意见，让主代理按最新的 DESIGN.md 重派一版");
   const chosen = candidates.length === 1 ? candidates[0] : candidates.find((candidate) => candidate.letter === input.option);
   if (!chosen) return;
-  if (root === null || changedChapters(root, chosen.text).length > 0) await writeFileAtomic(join(input.repositoryRoot, DESIGN_SPEC_FILE), chosen.text, { followSymlink: true });
+  if (root === null || changedChapters(root, chosen.text).length > 0) writeFileAtomicFollowingSymlink(path, chosen.text, { followSymlink: true });
 }
 
 const inDraftSet = (entry: PrototypeEntry) => !entry.removed && (entry.draft ?? entry.approved);

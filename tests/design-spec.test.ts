@@ -515,6 +515,54 @@ describe("值的格式", () => {
     expect(reason!.startsWith(`DESIGN.md「${label}」的「${name}」要写成`)).toBe(true);
   });
 
+  const SHADOW_ITEMS = [
+    ["卡片阴影", "- 卡片阴影：0 1px 2px rgba(0,0,0,.08)"],
+    ["弹窗阴影", "- 弹窗阴影：0 8px 24px rgba(0,0,0,.16)"],
+  ] as const;
+
+  test.each(
+    SHADOW_ITEMS.flatMap(([name, from]) =>
+      [
+        "0 1px 2px rgba(0,0,0,.08)",
+        "0 8px 24px rgba(0, 0, 0, 0.16)",
+        "无",
+        "inset 0 1px 0 #fff",
+        "0 1px 2px #00000014, 0 4px 8px rgba(0,0,0,.1)",
+        "0 0 0 1px black",
+        "-1px .5px 2px 0 hsl(210 20% 30% / .2) inset",
+        "rgba(0,0,0,.1) 0 2px 4px",
+        "1px 1px",
+        "0 .25rem .5rem rgba(0,0,0,.1)",
+        "0 0.1em 0.3em #0003",
+        "+1px 0 2px #000",
+      ].map((good) => [name, good, from] as const),
+    ),
+  )("「%s」写成合法阴影值「%s」不抛错", (name, good, from) => {
+    expect(failure(replaceLine(VALID, from, `- ${name}：${good}`))).toBeUndefined();
+  });
+
+  test.each(
+    SHADOW_ITEMS.flatMap(([name, from]) =>
+      [
+        "轻微阴影",
+        "garbage",
+        "1px",
+        "0 1px 2px 3px 4px",
+        "0 1px 2px rgba(0,0,0,.08),",
+        "0 1px 2px red blue",
+        "0 1px 2px 10%",
+        "none",
+        "0 1px 2pt",
+        "0 1px 2vw",
+        "inset 0 1px 2px inset",
+      ].map((bad) => [name, bad, from] as const),
+    ),
+  )("「%s」写成非法阴影值「%s」抛错", (name, bad, from) => {
+    expect(failure(replaceLine(VALID, from, `- ${name}：${bad}`))).toBe(
+      `DESIGN.md「圆角与阴影」的「${name}」要写成CSS 阴影值或"无"，如0 1px 2px rgba(0,0,0,.08)`,
+    );
+  });
+
   test("按章顺序报第一个格式问题", () => {
     let text = replaceLine(VALID, "- 按钮高度：32px", "- 按钮高度：32");
     text = replaceLine(text, "- 小圆角：4px", "- 小圆角：4");

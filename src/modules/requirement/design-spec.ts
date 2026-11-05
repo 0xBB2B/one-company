@@ -46,7 +46,43 @@ const terminalColor: Format = {
   example: "绿",
   valid: (v) => TERMINAL_COLORS.includes(v),
 };
-const shadow = nonEmpty('CSS 阴影值或"无"', "0 1px 2px rgba(0,0,0,.08)");
+const splitOutsideParens = (value: string, separator: RegExp): string[] => {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of value) {
+    if (ch === "(") depth++;
+    if (ch === ")") depth--;
+    if (depth === 0 && separator.test(ch)) {
+      parts.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  parts.push(current);
+  return parts;
+};
+const SHADOW_LENGTH = /^[+-]?(\d+(\.\d+)?|\.\d+)(px|rem|em)$|^0$/;
+const SHADOW_COLOR = /^(#([0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|[a-zA-Z]+|(rgb|rgba|hsl|hsla)\([^()]*\))$/;
+const isShadowLayer = (layer: string): boolean => {
+  const tokens = splitOutsideParens(layer.trim(), /\s/).filter((t) => t !== "");
+  const lengths = tokens.filter((t) => SHADOW_LENGTH.test(t));
+  const inset = tokens.filter((t) => t === "inset");
+  const colors = tokens.filter((t) => !SHADOW_LENGTH.test(t) && t !== "inset");
+  return (
+    lengths.length >= 2 &&
+    lengths.length <= 4 &&
+    inset.length <= 1 &&
+    colors.length <= 1 &&
+    colors.every((c) => SHADOW_COLOR.test(c))
+  );
+};
+const shadow: Format = {
+  desc: 'CSS 阴影值或"无"',
+  example: "0 1px 2px rgba(0,0,0,.08)",
+  valid: (v) => v === "无" || splitOutsideParens(v, /,/).every(isShadowLayer),
+};
 const weight: Format = {
   desc: "100 到 900 之间的整百数",
   example: "400",

@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { closeSync, fchmodSync, fsyncSync, lstatSync, openSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { lstat, open, realpath, rename, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 
@@ -25,4 +26,30 @@ export async function writeFileAtomic(originalPath: string, content: string, opt
   try { await directory.sync(); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "EINVAL") throw error; }
   finally { await directory.close(); }
+}
+
+export function writeFileAtomicSync(originalPath: string, content: string, options?: { followSymlink?: boolean }): void {
+  let path = originalPath;
+  if (options?.followSymlink) { try { path = realpathSync(originalPath); } catch {} }
+  const dir = dirname(path);
+  const temporary = join(dir, `.${basename(path)}.${randomBytes(8).toString("hex")}.tmp`);
+  let mode = 0o600;
+  try { const stats = lstatSync(path); if (stats.isFile()) mode = stats.mode & 0o777; } catch {}
+  const fd = openSync(temporary, "wx", 0o600);
+  try {
+    writeFileSync(fd, content, "utf8");
+    fchmodSync(fd, mode);
+    fsyncSync(fd);
+  } catch (error) {
+    closeSync(fd);
+    rmSync(temporary, { force: true });
+    throw error;
+  }
+  closeSync(fd);
+  try { renameSync(temporary, path); }
+  catch (error) { rmSync(temporary, { force: true }); throw error; }
+  const directory = openSync(dir, "r");
+  try { fsyncSync(directory); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code !== "EINVAL") throw error; }
+  finally { closeSync(directory); }
 }

@@ -1389,3 +1389,78 @@ test("通过时候选文件被改过，作废这一版并报 file_changed，不�
   expect(error.code).toBe("file_changed");
   expect(readFileSync(rootDesignPath(), "utf8")).toBe(VALID_DESIGN);
 });
+
+test("有方案清单、通过没选方案被 invalid_option 退回：根目录没有 DESIGN.md 就仍然没有，原型仍在等确认", async () => {
+  const version = await awaitingDesign(VALID_DESIGN, null, ["紧凑", "宽松"]);
+  const error = await failure(() => decideDesign(version, "accept"));
+  expect(error.code).toBe("invalid_option");
+  expect(existsSync(rootDesignPath())).toBe(false);
+  expect((await entryOf("登录页"))?.inFlight).toMatchObject({ status: "awaiting" });
+  expect((await entryOf("登录页"))?.draft ?? null).toBeNull();
+});
+
+test("有方案清单、通过选了清单外的方案 C 被 invalid_option 退回：根目录 DESIGN.md 不变，原型仍在等确认", async () => {
+  const version = await awaitingDesign(withButton(VALID_DESIGN), VALID_DESIGN, ["紧凑", "宽松"]);
+  const error = await failure(() => decideDesign(version, "accept", "C"));
+  expect(error.code).toBe("invalid_option");
+  expect(readFileSync(rootDesignPath(), "utf8")).toBe(VALID_DESIGN);
+  expect((await entryOf("登录页"))?.inFlight).toMatchObject({ status: "awaiting" });
+  expect((await entryOf("登录页"))?.draft ?? null).toBeNull();
+});
+
+async function awaitingNamed(name: string, design: string, base: string) {
+  const runId = uuidv7();
+  const started = await beginDesign(ref, { requirementId, name, runId, agent: "designer", designBase: base });
+  await submitDesign(ref, { design, pages: PAGES, requirementId, name, runId, html: HTML, note: "n" });
+  return { name, version: started.version };
+}
+const decideNamed = async ({ name, version }: { name: string; version: number }) =>
+  decidePrototype(ref, { repositoryRoot, requirementId, name, version, hash: (await pendingConfirmation(ref, { repositoryRoot, requirementId, name })).hash, choice: "accept", option: null, opinion: null });
+
+test("两份基于同一份根目录 DESIGN.md 的原型同时通过：恰好一个成功，另一个 design_changed，DESIGN.md 等于成功那份", async () => {
+  writeFileSync(rootDesignPath(), VALID_DESIGN);
+  const designs: Record<string, string> = { 登录页: withButton(VALID_DESIGN), 设置页: withColor(VALID_DESIGN) };
+  const login = await awaitingNamed("登录页", designs["登录页"], sha(VALID_DESIGN));
+  const settings = await awaitingNamed("设置页", designs["设置页"], sha(VALID_DESIGN));
+  const items = [login, settings];
+  const results = await Promise.allSettled(items.map(decideNamed));
+  const won = items.filter((_, index) => results[index].status === "fulfilled");
+  const lost = items.filter((_, index) => results[index].status === "rejected");
+  expect(won).toHaveLength(1);
+  expect(lost).toHaveLength(1);
+  const rejection = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+  expect((rejection.reason as PrototypeBoardError).code).toBe("design_changed");
+  expect(readFileSync(rootDesignPath(), "utf8")).toBe(designs[won[0].name]);
+  expect((await entryOf(won[0].name))?.draft).toMatchObject({ version: won[0].version });
+  expect((await entryOf(lost[0].name))?.inFlight).toMatchObject({ status: "awaiting" });
+  expect((await entryOf(lost[0].name))?.draft ?? null).toBeNull();
+});
+
+test("同一份原型同时通过和放弃：DESIGN.md 被改、通过成功、有草稿三者同真同假", async () => {
+  const version = await awaitingDesign(VALID_DESIGN, null);
+  const hash = (await pendingDesign()).hash;
+  const decide = (choice: "accept" | "abandon") => decidePrototype(ref, { repositoryRoot, requirementId, name: "登录页", version, hash, choice, option: null, opinion: null });
+  const [accept] = await Promise.allSettled([decide("accept"), decide("abandon")]);
+  const drafted = ((await entryOf("登录页"))?.draft ?? null) !== null;
+  expect(existsSync(rootDesignPath())).toBe(accept.status === "fulfilled");
+  expect(drafted).toBe(accept.status === "fulfilled");
+  if (accept.status === "fulfilled") expect(readFileSync(rootDesignPath(), "utf8")).toBe(VALID_DESIGN);
+});
+
+test("通过请求的 hash 和当前等确认的版本对不上，被 item_changed 退回：根目录没有 DESIGN.md 就仍然没有，原型仍在等确认", async () => {
+  const version = await awaitingDesign(VALID_DESIGN, null);
+  const error = await failure(() => decidePrototype(ref, { repositoryRoot, requirementId, name: "登录页", version, hash: HASH, choice: "accept", option: null, opinion: null }));
+  expect(error.code).toBe("item_changed");
+  expect(existsSync(rootDesignPath())).toBe(false);
+  expect((await entryOf("登录页"))?.inFlight).toMatchObject({ status: "awaiting" });
+  expect((await entryOf("登录页"))?.draft ?? null).toBeNull();
+});
+
+test("需求已关闭时点通过被拒：根目录 DESIGN.md 不变，没有登记草稿", async () => {
+  const version = await awaitingDesign(withButton(VALID_DESIGN), VALID_DESIGN);
+  const { hash } = await pendingDesign();
+  patchRequirement(requirementId, closedState("closed", "cancelled"));
+  await failure(() => decidePrototype(ref, { repositoryRoot, requirementId, name: "登录页", version, hash, choice: "accept", option: null, opinion: null }));
+  expect(readFileSync(rootDesignPath(), "utf8")).toBe(VALID_DESIGN);
+  expect((await entryOf("登录页"))?.draft ?? null).toBeNull();
+});
