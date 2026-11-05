@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
@@ -216,7 +217,7 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
   const reviewerRequest = w.provider.requests.find((request) => request.systemPrompt?.includes("审查任务：a（"))!;
   expect(reviewerRequest.tools?.map((tool) => tool.name)).not.toContain("one_company_change_apply");
   expect(reviewerRequest.systemPrompt).toContain(`- 第 1 次尝试 ${a.runId}（本次被审）：提交说明：完成 a；引用的验证记录：${redGreen.join("、")}`);
-  expect(reviewerRequest.systemPrompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff [0-9a-f]{40} -- src\/a\//);
+  expect(reviewerRequest.systemPrompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks --literal-pathspecs diff [0-9a-f]{40} -- src\/a\//);
 
   w.provider.queue.push(submit("完成 d"), pmAck);
   await w.dispatch("d");
@@ -227,6 +228,10 @@ test("M7A-AC1/AC2/AC3/AC6：所在目录重叠的任务不能同时执行；审�
 });
 
 async function reviewPromptAfterWriting(files: Record<string, string>, writePaths = ["src/a/"]): Promise<string> {
+  return (await reviewAfterWriting(files, writePaths)).prompt;
+}
+
+async function reviewAfterWriting(files: Record<string, string>, writePaths: string[]): Promise<{ prompt: string; root: string }> {
   const w = await world();
   await w.plan.execute({ action: "propose", tasks: [spec("a", { writePaths }), spec("c", { writePaths: ["lib/"], goalUnitIds: ["scenario.failure"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
@@ -241,13 +246,13 @@ async function reviewPromptAfterWriting(files: Record<string, string>, writePath
   w.provider.queue.push(submit("a 符合目标"), pmAck);
   await w.review("a");
   await until(() => w.task("a").status === "completed");
-  return w.provider.requests.find((request) => request.systemPrompt?.includes("审查任务：a（"))!.systemPrompt!;
+  return { prompt: w.provider.requests.find((request) => request.systemPrompt?.includes("审查任务：a（"))!.systemPrompt!, root };
 }
 
 test("派审查时可写范围内有 git 未跟踪的新文件，任务说明列出它们，原有的查看改动命令保持不变", async () => {
   const prompt = await reviewPromptAfterWriting({ "src/a/new.ts": "export const n = 1;\n" });
   expect(prompt).toContain("本次新建的文件（git diff 看不到，用 read 读全文）：src/a/new.ts");
-  expect(prompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks diff [0-9a-f]{40} -- src\/a\//);
+  expect(prompt).toMatch(/查看本次改动：用 verification_run kind=debug 运行 git --no-optional-locks --literal-pathspecs diff [0-9a-f]{40} -- src\/a\//);
 });
 
 test("派审查时多个未跟踪新文件用顿号连接，路径相对工作区根目录并用 / 分隔", async () => {
@@ -278,8 +283,34 @@ const numberedFiles = (count: number) => Object.fromEntries(Array.from({ length:
 test("派审查时未跟踪新文件超过 100 个，只列前 100 个，并写明另有几个没列出和怎么查看", async () => {
   const prompt = await reviewPromptAfterWriting(numberedFiles(101));
   const listed = Object.keys(numberedFiles(100)).join("、");
-  expect(prompt).toContain(`本次新建的文件（git diff 看不到，用 read 读全文）：${listed}；另有 1 个没列出，用 verification_run kind=debug 运行 git ls-files --others --exclude-standard -- src/a/ 查看`);
+  expect(prompt).toContain(`本次新建的文件（git diff 看不到，用 read 读全文）：${listed}；另有 1 个没列出，用 verification_run kind=debug 运行 git --literal-pathspecs -c core.quotePath=false ls-files --others --exclude-standard -- src/a/ 查看`);
   expect(prompt).not.toContain("src/a/f100.ts");
+});
+
+const commandIn = (prompt: string, pattern: RegExp) => pattern.exec(prompt)![1]!;
+const runInShell = (command: string, cwd: string) => execFileSync("/bin/sh", ["-c", command], { cwd, encoding: "utf8" });
+
+test("派审查时未跟踪新文件超过 100 个且含中文文件名，照任务说明里的查看命令运行，输出的路径就是实际新建的文件", async () => {
+  const files = { ...numberedFiles(100), "src/a/评论.ts": "1\n" };
+  const { prompt, root } = await reviewAfterWriting(files, ["src/a/"]);
+  const output = runInShell(commandIn(prompt, /另有 1 个没列出，用 verification_run kind=debug 运行 (.+) 查看/), root);
+  expect(output.split("\n").filter(Boolean).sort()).toEqual(Object.keys(files).sort());
+});
+
+test("派审查时可写范围含括号、空格等 shell 特殊字符，两条查看命令都按字面路径执行", async () => {
+  const files = { ...numberedFiles(101) };
+  const special = Object.fromEntries(Object.keys(files).map((path) => [path.replace("src/a/", "src/(a) b/"), "1\n"]));
+  const { prompt, root } = await reviewAfterWriting({ ...special, "src/other.ts": "1\n" }, ["src/(a) b/"]);
+  const listed = runInShell(commandIn(prompt, /另有 1 个没列出，用 verification_run kind=debug 运行 (.+) 查看/), root);
+  expect(listed.split("\n").filter(Boolean).sort()).toEqual(Object.keys(special).sort());
+  expect(() => runInShell(commandIn(prompt, /查看本次改动：用 verification_run kind=debug 运行 (.+)（[0-9a-f]{40} 是/), root)).not.toThrow();
+});
+
+test("派审查时可写范围写成 git 排除规则的样子，照查看本次改动命令运行，看不到范围外的改动", async () => {
+  const { prompt, root } = await reviewAfterWriting({ "lib/x.ts": "1\n" }, [":(exclude)nothing/"]);
+  await runGit(["add", "lib/x.ts"], root);
+  const diff = runInShell(commandIn(prompt, /查看本次改动：用 verification_run kind=debug 运行 (.+)（[0-9a-f]{40} 是/), root);
+  expect(diff).not.toContain("lib/x.ts");
 });
 
 test("派审查时未跟踪新文件恰好 100 个，全部列出，不出现另有没列出的说明", async () => {
