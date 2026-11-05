@@ -263,7 +263,7 @@ export function normalizeDesignSpec(text: string): string {
 function trimBlankEnd(text: string): string {
   const lines = text.split("\n");
   let end = lines.length;
-  while (end > 1 && /^[ \t]*$/.test(lines[end - 1]!)) end--;
+  while (end > 0 && /^[ \t]*$/.test(lines[end - 1]!)) end--;
   return lines.slice(0, end).join("\n");
 }
 

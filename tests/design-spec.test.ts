@@ -755,6 +755,11 @@ describe("changedChapters", () => {
     expect(changedChapters("# t\n\n## 风格\nA\n", "# t\n\n## 风格\nA\n   \n")).toEqual([]);
   });
 
+  test("文件开头只有一行空格或制表符，结果算不变", () => {
+    expect(changedChapters("## 风格\nA\n", "  \n## 风格\nA\n")).toEqual([]);
+    expect(changedChapters("## 风格\nA\n", "\t\n\n## 风格\nA\n")).toEqual([]);
+  });
+
   test("一章里有 32000 行只含一个空格的行时 500ms 内返回", () => {
     const body = "## 风格\n" + " \n".repeat(32000) + "x\n";
     const start = performance.now();
