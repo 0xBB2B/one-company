@@ -88,6 +88,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
     intake.startSession(ctx, hostOf(window));
   });
   pi.on("input", (event, ctx) => {
+    if (currentWindow().workspace.repos.length === 0) return { action: "continue" };
     const { invalid } = interaction.captureInput(event, ctx);
     if (invalid.length) {
       const valid = interaction.inputTargets().length;

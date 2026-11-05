@@ -20,12 +20,14 @@ test("M9：窗口启动时守护进程还没连上（首连降级为后台重连
   expect(authorization.assertCurrentSession("session-1")).toMatchObject({ sessionId: "session-1" });
 });
 
-test("窗口没有接入仓库时会话照常启动，需求工具不登记本会话", async () => {
+test("窗口没有接入仓库时会话照常启动，需求工具不登记本会话，用户输入照常放行", async () => {
   const root = await mkdtemp(join(tmpdir(), "requirement-session-")); roots.push(root);
   const authorization = new HostAuthorizationManager({ dataRoot: root });
   const window = { windowId: "window-1", sessionId: "session-1", workspace: { repos: [] }, clients: { forRepo: () => undefined } };
   const fake = createFakePi();
   requirementManageExtension(fake.pi as never, { authorization, dataRoot: root, windowReady: async () => window as never, windowContext: () => window as never });
-  await fake.trigger("session_start", {}, { sessionManager: { getSessionId: () => "session-1" } });
+  const ctx = { sessionManager: { getSessionId: () => "session-1" } };
+  await fake.trigger("session_start", {}, ctx);
   expect(() => authorization.assertCurrentSession("session-1")).toThrow();
+  await expect(fake.trigger("input", { source: "interactive", text: "你好 @abcd" }, ctx)).resolves.toEqual([{ action: "continue" }]);
 });
