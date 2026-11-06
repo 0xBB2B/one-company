@@ -835,6 +835,13 @@ describe("步骤窗口：任何内容都不超出终端宽度", () => {
     for (let i = 0; i < 5; i++) w.handleInput(UP);
     for (const line of w.render(20)) expect(visibleWidth(line)).toBe(20);
   });
+
+  test.each([1, 2, 3, 4, 5, 9])("%i 列时每行都不超过终端宽度", (width) => {
+    const w = make();
+    w.resize(width, 24);
+    w.apply(view({ steps: [{ id: "a", text: "读文件甲乙", status: "done" }, { id: "b", parentId: "a", text: "子步丙丁", status: "running" }] }));
+    for (const line of w.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+  });
 });
 
 describe("步骤窗口：折行位置与跟随", () => {

@@ -1442,6 +1442,16 @@ describe("名字太长时保留尾部参数", () => {
       expect(expectTail(rowTexts(instance, 80), /^└─ ✓ 已完成 · /, "· prototype · ↻12/12 · 2m3s", 80).endsWith("…· prototype · ↻12/12 · 2m3s")).toBe(true);
     });
 
+    test("读取中、原来是原型设计行的已结束行以“…· prototype”结尾", async () => {
+      const instance = new PmPanel({ now: () => 1_000, openItem: vi.fn(), togglePause: vi.fn(), openSteps: vi.fn(), readSteps: () => new Promise(() => {}) } as never);
+      instance.updatePrototypes([protoEntry(longProtoName.repeat(2), { runId: "run-reading-proto" })]);
+      instance.focus();
+      instance.handleInput(DOWN);
+      instance.updatePrototypes([]);
+      await flush();
+      expectTail(rowTexts(instance, 80), /^.─ 读取中… · /, "· prototype", 80);
+    });
+
     test("AC-7：已结束行被选中时仍带选中背景", async () => {
       const instance = await ended(
         (target) => target.updateExplores([{ repoId: "r", fetchedAt: 1_000, explore: { runId: "run-end", source: "local", question: longQuestion, turns: 5, maxTurns: 12, elapsedMs: 5_000 } }]),

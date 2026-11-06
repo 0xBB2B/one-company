@@ -123,7 +123,8 @@ export class StepWindow {
       const fitted = visibleWidth(content) > cw ? truncateToWidth(content, cw, "", false) : content;
       return `${paint("border", "│")} ${fitted}${" ".repeat(Math.max(0, cw - visibleWidth(fitted)))} ${paint("border", "│")}`;
     };
-    return [rule("╭", "╮"), ...title.map(row), ...status.map(row), rule("├", "┤"), ...area.map(row), rule("├", "┤"), ...hint.map(row), rule("╰", "╯")];
+    const lines = [rule("╭", "╮"), ...title.map(row), ...status.map(row), rule("├", "┤"), ...area.map(row), rule("├", "┤"), ...hint.map(row), rule("╰", "╯")];
+    return lines.map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width, "", false) : line));
   }
 
   private layout(width: number, paint: Paint) {
