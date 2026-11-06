@@ -25,6 +25,36 @@ const PAUSED = new Set<RunStepsState>(["pausing", "paused"]);
 const DEFAULT_ROWS = 24;
 const clean = (text: string): string => sanitizeText(text.replace(/[\x00-\x1f\x7f-\x9f]/g, " "));
 
+const CJK = "\\u2E80-\\u9FFF\\uF900-\\uFAFF\\uFF00-\\uFFEF\\uAC00-\\uD7AF";
+const UNITS = new RegExp(`\\s+|[${CJK}]|[^\\s${CJK}]+`, "gu");
+const plain: Paint = (_kind, text) => text;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function wrap(text: string, width: number): string[] {
+  const max = Math.max(1, width);
+  const lines: string[] = [];
+  let line = "";
+  let used = 0;
+  const flush = () => { lines.push(line.trimEnd()); line = ""; used = 0; };
+  const add = (piece: string, w: number) => { line += piece; used += w; };
+  for (const unit of text.match(UNITS) ?? []) {
+    const w = visibleWidth(unit);
+    if (/^\s/.test(unit)) {
+      if (used === 0 && lines.length > 0) continue;
+      if (used + w <= max) add(unit, w); else flush();
+    } else if (used + w <= max) add(unit, w);
+    else if (w <= max) { flush(); add(unit, w); }
+    else for (const { segment: ch } of graphemes.segment(unit)) {
+      const cw = visibleWidth(ch);
+      if (used + cw > max && used > 0) flush();
+      add(ch, cw);
+    }
+  }
+  lines.push(line);
+  return lines;
+}
+
+interface StepLine { text: string; first: boolean; thinking: boolean }
 interface Item { text: string; icon: string; color: string; indent?: boolean; thinking?: boolean }
 
 function orderedSteps(steps: RunStep[]): Array<{ step: RunStep; indent: boolean }> {
@@ -46,7 +76,8 @@ export class StepWindow {
   private scroll = 0;
   private follow = true;
   private frame = 0;
-  private areaHeight = Math.max(3, DEFAULT_ROWS - 8);
+  private rows = DEFAULT_ROWS;
+  private width = 80;
 
   constructor(options: StepWindowOptions) { this.options = options; }
 
@@ -61,7 +92,7 @@ export class StepWindow {
 
   tick(): void { this.frame = (this.frame + 1) % SPINNER.length; }
 
-  resize(_width: number, rows: number): void { this.areaHeight = Math.max(3, rows - 8); }
+  resize(_width: number, rows: number): void { this.rows = rows; }
 
   handleInput(data: string): boolean {
     if (isKeyRelease(data)) return false;
@@ -69,7 +100,8 @@ export class StepWindow {
     if (this.error !== undefined) return false;
     const up = matchesKey(data, "up");
     if (!up && !matchesKey(data, "down")) return false;
-    const max = this.maxStart(this.items().length);
+    const { cw, areaHeight } = this.layout(this.width, plain);
+    const max = this.maxStart(this.stepLines(plain, cw).length, areaHeight);
     const start = up ? Math.max(0, this.start(max) - 1) : Math.min(max, this.start(max) + 1);
     this.scroll = start;
     this.follow = start >= max;
@@ -79,33 +111,59 @@ export class StepWindow {
   invalidate(): void {}
 
   render(width: number): string[] {
+    this.width = width;
     const { theme } = this.options;
     const paint: Paint = (kind, text) => (theme?.fg && text ? theme.fg(kind, text) : text);
-    const rule = (head: string) => paint("border", head + "─".repeat(Math.max(0, width - 1)));
+    const { cw, title, status, hint, areaHeight } = this.layout(width, paint);
+    const area = this.error !== undefined
+      ? wrap("守护进程重启后，之前的步骤就没有了。", cw).map((line) => paint("muted", line))
+      : this.visible(paint, cw, areaHeight);
+    const rule = (left: string, right: string) => paint("border", `${left}${"─".repeat(Math.max(0, width - 2))}${right}`);
     const row = (content: string) => {
-      const line = `${paint("border", "│")} ${content}`;
-      return visibleWidth(line) <= width ? line : `${truncateToWidth(line, Math.max(0, width - 1), "", false)}…`;
+      const fitted = visibleWidth(content) > cw ? truncateToWidth(content, cw, "", false) : content;
+      return `${paint("border", "│")} ${fitted}${" ".repeat(Math.max(0, cw - visibleWidth(fitted)))} ${paint("border", "│")}`;
     };
-    const title = theme?.bold ? theme.bold(clean(this.options.title)) : clean(this.options.title);
-    const area = this.error !== undefined ? [paint("muted", "守护进程重启后，之前的步骤就没有了。")] : this.visible(paint);
-    const hint = this.data && this.error === undefined ? "↑↓ 滚动 · Esc 关闭" : "Esc 关闭";
-    return [rule("╭"), row(title), row(this.statusLine(paint)), rule("├"), ...area.map(row), rule("├"), row(paint("dim", hint)), rule("╰")];
+    const lines = [rule("╭", "╮"), ...title.map(row), ...status.map(row), rule("├", "┤"), ...area.map(row), rule("├", "┤"), ...hint.map(row), rule("╰", "╯")];
+    return lines.map((line) => (visibleWidth(line) > width ? truncateToWidth(line, width, "", false) : line));
+  }
+
+  private layout(width: number, paint: Paint) {
+    const cw = Math.max(1, width - 4);
+    const { bold } = this.options.theme ?? {};
+    const title = wrap(clean(this.options.title), cw).map((line) => (bold ? bold(line) : line));
+    const status = this.statusLines(cw, paint);
+    const hint = wrap(this.data && this.error === undefined ? "↑↓ 滚动 · Esc 关闭" : "Esc 关闭", cw).map((line) => paint("dim", line));
+    const areaHeight = Math.max(3, this.rows - 1 - (4 + title.length + status.length + hint.length));
+    return { cw, title, status, hint, areaHeight };
   }
 
   private spin(): string { return SPINNER[this.frame]!; }
 
-  private statusLine(paint: Paint): string {
-    if (this.error !== undefined) return paint("error", `✗ 读不到步骤：${clean(this.error)}`);
+  private statusLines(cw: number, paint: Paint): string[] {
+    const { text, head, kind } = this.statusParts();
+    let left = head.replace(/\s/g, "").length;
+    return wrap(text, cw).map((line) => {
+      let i = 0;
+      while (i < line.length && left > 0) { if (!/\s/.test(line[i]!)) left--; i++; }
+      return i > 0 ? paint(kind, line.slice(0, i)) + line.slice(i) : line;
+    });
+  }
+
+  private statusParts(): { text: string; head: string; kind: string } {
+    if (this.error !== undefined) {
+      const text = `✗ 读不到步骤：${clean(this.error)}`;
+      return { text, head: text, kind: "error" };
+    }
     const view = this.data;
-    if (!view) return paint("dim", "读取中…");
+    if (!view) return { text: "读取中…", head: "读取中…", kind: "dim" };
     const { state } = view;
-    const head = LIVE.has(state) ? `${paint("accent", this.spin())} 运行中`
-      : PAUSED.has(state) ? paint("warning", "⏸ 已暂停")
-      : state === "completed" ? paint("success", "✓ 已完成")
-      : paint("error", state === "failed" ? `✗ 失败：${clean(view.reason ?? "")}` : state === "stopped" ? "✗ 已停止" : "✗ 已中断");
+    const [label, kind] = LIVE.has(state) ? [`${this.spin()} 运行中`, "accent"]
+      : PAUSED.has(state) ? ["⏸ 已暂停", "warning"]
+      : state === "completed" ? ["✓ 已完成", "success"]
+      : [state === "failed" ? `✗ 失败：${clean(view.reason ?? "")}` : state === "stopped" ? "✗ 已停止" : "✗ 已中断", "error"];
     const turns = view.maxTurns === null ? `↻${view.turns}` : `↻${view.turns}/${view.maxTurns}`;
     const elapsed = view.elapsedMs + (LIVE.has(state) ? this.options.now() - this.fetchedAt : 0);
-    return `${head} · 共 ${view.steps.length} 步 · ${turns} · ${formatElapsed(elapsed)}`;
+    return { text: `${label} · 共 ${view.steps.length} 步 · ${turns} · ${formatElapsed(elapsed)}`, head: LIVE.has(state) ? this.spin() : label!, kind: kind! };
   }
 
   private items(): Item[] {
@@ -122,23 +180,36 @@ export class StepWindow {
     return items;
   }
 
-  private maxStart(total: number): number { return total > this.areaHeight ? total - (this.areaHeight - 1) : 0; }
+  private stepLines(paint: Paint, cw: number): StepLine[] {
+    const out: StepLine[] = [];
+    for (const item of this.items()) {
+      const lead = item.indent ? "  " : "";
+      const hang = lead.length + visibleWidth(item.icon) + 1;
+      wrap(item.text, cw - hang).forEach((part, i) => {
+        const text = item.thinking ? paint("muted", part) : part;
+        out.push({ first: i === 0, thinking: item.thinking === true, text: i === 0 ? `${lead}${paint(item.color, item.icon)} ${text}` : `${" ".repeat(hang)}${text}` });
+      });
+    }
+    return out;
+  }
+
+  private maxStart(total: number, height: number): number { return total > height ? total - (height - 1) : 0; }
 
   private start(max: number): number { return this.follow ? max : Math.min(this.scroll, max); }
 
-  private visible(paint: Paint): string[] {
-    const items = this.items();
-    const render = (item: Item) => `${item.indent ? "  " : ""}${paint(item.color, item.icon)} ${item.thinking ? paint("muted", item.text) : item.text}`;
-    if (items.length <= this.areaHeight) return items.map(render);
-    const start = this.start(this.maxStart(items.length));
+  private visible(paint: Paint, cw: number, height: number): string[] {
+    const lines = this.stepLines(paint, cw);
+    if (lines.length <= height) return lines.map((line) => line.text);
+    const start = this.start(this.maxStart(lines.length, height));
     const top = start > 0;
-    const room = this.areaHeight - (top ? 1 : 0);
-    const bottom = start + room < items.length;
-    const content = items.slice(start, start + room - (bottom ? 1 : 0));
+    const room = height - (top ? 1 : 0);
+    const bottom = start + room < lines.length;
+    const end = start + room - (bottom ? 1 : 0);
+    const steps = (from: number, to: number) => lines.slice(from, to).filter((line) => line.first && !line.thinking).length;
     return [
-      ...(top ? [paint("dim", `↑ 上面还有 ${start} 步`)] : []),
-      ...content.map(render),
-      ...(bottom ? [paint("dim", `↓ 下面还有 ${items.slice(start + content.length).filter((item) => !item.thinking).length} 步`)] : []),
+      ...(top ? [paint("dim", `↑ 上面还有 ${steps(0, start)} 步`)] : []),
+      ...lines.slice(start, end).map((line) => line.text),
+      ...(bottom ? [paint("dim", `↓ 下面还有 ${steps(end, lines.length)} 步`)] : []),
     ];
   }
 }
