@@ -571,3 +571,23 @@ describe("PM 的 workflow_manage 工具说明", () => {
     for (const word of ["不再", "无需", "夹具"]) expect(description).not.toContain(word);
   });
 });
+
+const sentencesOf = (text: string) => text.split(/[。；\n]/);
+
+describe("pm 职责规矩的 worker 任务通过条件", () => {
+  test("worker 任务的通过条件只写调试检查能验证的行为，正式检查由 PM 在检查阶段做、不写进 worker 任务", () => {
+    const sentence = sentencesOf(loadRoleRules("pm")).find((line) => ["worker", "通过条件", "正式检查", "检查阶段"].every((key) => line.includes(key)) && /调试检查|debug/u.test(line));
+    expect(sentence).toBeDefined();
+    expect(sentence).toMatch(/不写进|不要写进|禁止写进/u);
+  });
+});
+
+describe("pm 的 verification_run 工具说明", () => {
+  test("写明子代理 worker、reviewer 只能跑调试检查", async () => {
+    const w = await createPmRunWorld(cleanups);
+    const description = w.provider.requests[0]!.tools!.find((entry) => entry.name === "one_company_verification_run")!.description;
+    const sentence = sentencesOf(description).find((line) => line.includes("worker") && line.includes("reviewer") && /调试检查|debug/u.test(line));
+    expect(sentence).toBeDefined();
+    expect(sentence).toMatch(/只能/u);
+  });
+});
