@@ -239,6 +239,41 @@ describe("新技术须经用户同意：主会话系统提示", () => {
     expect(prompt).toMatch(/purpose=panel-item 的 ask-tech 把这些技术列给用户，不用 ask/);
   });
 
+  test("TD-30 在对话里展示草稿要点请用户确认或批准之前，先用 ask-tech 弹技术清单；确认和批准两种说法都算", async () => {
+    const prompt = await start(noWindow);
+    const sentences = prompt.split(/[。；\n]/);
+    const hit = sentences.filter((sentence) => /需求要用新技术/.test(sentence) && sentence.includes("ask-tech") && /展示草稿/.test(sentence) && sentence.includes("确认") && sentence.includes("批准") && /之前|先/.test(sentence));
+    expect(hit.length).toBeGreaterThan(0);
+  });
+
+  test("TD-31 「实现」板块还写不出具体技术（未选定、由 PM 规划）时，不请用户确认或批准需求", async () => {
+    const prompt = await start(noWindow);
+    const sentences = prompt.split(/[。；\n]/);
+    const hit = sentences.filter((sentence) => /需求要用新技术/.test(sentence) && sentence.includes("「实现」板块") && sentence.includes("未选定") && sentence.includes("PM 规划") && /(不要?|不得|不能|禁止)[^，。]*请用户/.test(sentence) && sentence.includes("确认") && sentence.includes("批准"));
+    expect(hit.length).toBeGreaterThan(0);
+  });
+
+  test("TD-32 要用哪些新技术由主代理提出、用户确认，不留给 PM 去选", async () => {
+    const prompt = await start(noWindow);
+    const sentences = prompt.split(/[。；\n]/);
+    const hit = sentences.filter((sentence) => sentence.includes("新技术") && sentence.includes("PM") && sentence.includes("选") && /不(要|得|能|留|交|由|让)/.test(sentence) && sentence.includes("提出") && sentence.includes("用户确认"));
+    expect(hit.length).toBeGreaterThan(0);
+  });
+
+  test("TD-33 PM 上报新技术待裁决任务的 panel-item ask-tech 那条，写明这条路只用来补主代理当初没预见到的技术", async () => {
+    const prompt = await start(noWindow);
+    const line = prompt.split("\n").find((candidate) => /purpose=panel-item[^\n]*ask-tech/.test(candidate) && candidate.includes("PM 上报"));
+    expect(line).toBeDefined();
+    expect(line).toMatch(/(只|仅)(用来|用于)[^。；]*(没|未)预见/);
+  });
+
+  test("TD-34 只用项目里已有技术的需求，「实现」板块写「由 PM 规划」也可以请用户批准", async () => {
+    const prompt = await start(noWindow);
+    const sentences = prompt.split(/[。；\n]/);
+    const hit = sentences.filter((sentence) => /已有|已经在用/.test(sentence) && sentence.includes("由 PM 规划") && sentence.includes("请用户") && sentence.includes("批准") && !sentence.includes("不请用户"));
+    expect(hit.length).toBeGreaterThan(0);
+  });
+
   test("TD-09 主会话新增的新技术相关句子不含「不再」", async () => {
     const prompt = await start(noWindow);
     const related = prompt.split(/[。\n]/).filter((line) => line.includes("ask-tech"));
