@@ -6,7 +6,7 @@ import { startMainPoint } from "../helpers/point-main.ts";
 
 const config = acceptanceConfig();
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
-afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });
+afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); }, 120_000);
 
 const SPRINT = "## 背景 {#background}\n用户未说明。\n## 需求 {#requirements}\n给角色加快跑。\n## 功能 {#features}\n快跑行为如下。\n" +
   "### 地面快跑 {#features.sprint}\n按住 Shift 并按方向键时，水平速度变为行走速度的 1.5 倍。\n### 空中不变 {#features.airborne}\n角色在空中时按 Shift 不改变水平速度。\n" +
@@ -36,7 +36,7 @@ test.skipIf(!config || process.platform !== "darwin")("P22：用户只说批准�
   const approvedRecord = point.requirements()[0];
   const lastAssistantText = [...point.host.session.messages].reverse().flatMap((message) => message.role === "assistant"
     ? [message.content.map((block) => block.type === "text" ? block.text : "").join("")] : [])[0] ?? "";
-  const firstCalls = point.calls(0);
+  const firstCalls = point.calls(0), firstBrief = brief(0);
 
   await point.say("授权实施。");
   let rest = point.calls(afterApprove);
@@ -44,7 +44,7 @@ test.skipIf(!config || process.platform !== "darwin")("P22：用户只说批准�
   let nudged = false;
   if (!(rest.some(isPrepare) && rest.some(isDispatchPm))) { nudged = true; await point.say("请接着往下做。"); rest = point.calls(afterApprove); }
   const authorized = point.results(afterApprove).filter((result) => result.tool === "one_company_requirement_manage" && !result.isError && result.text.includes('"status":"authorized"'));
-  judgement = { approvalRequest, approved: approvedRecord?.approved ?? null, lastAssistantText, firstCalls: brief(0), secondCalls: brief(afterApprove), authorizedResults: authorized.length, nudged };
+  judgement = { approvalRequest, approved: approvedRecord?.approved ?? null, lastAssistantText, firstCalls: firstBrief, secondCalls: brief(afterApprove), authorizedResults: authorized.length, nudged };
 
   expect(approvalRequest, JSON.stringify(judgement)).toContain("实施");
   expect(approvedRecord?.approved, JSON.stringify(judgement)).toBeTruthy();
