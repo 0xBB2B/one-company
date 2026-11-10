@@ -20,7 +20,7 @@ const isPrepare = (call: Call) => call.name === "one_company_project_manage" && 
 const isDispatchPm = (call: Call) => call.name === "one_company_agent_manage" && requestOf(call).role === "pm";
 const isAuthorize = (call: Call) => call.name === "one_company_requirement_manage" && requestOf(call).action === "authorizeImplement";
 
-test.skipIf(!config || process.platform !== "darwin")("P23：用户说授权实施登录、账单以后再说时，主代理调用 authorizeImplement 被拒（原因含范围限制），批准清单里仍没有实施，不建工作区、不派 PM，并告诉用户要先改需求草稿", async () => {
+test.skipIf(!config || process.platform !== "darwin")("P23：用户说授权实施地面快跑、空中不变以后再说时，主代理调用 authorizeImplement 被拒（原因含范围限制），批准清单里仍没有实施，不建工作区、不派 PM，并告诉用户要先改需求草稿", async () => {
   const point = await startMainPoint(config!, "p23", { seed: async (place) => {
     const service = await RequirementService.open({ repositoryRoot: place.repo, dataRoot: place.dataRoot, repoId: place.repoId, authorize: () => true });
     await service.create({ operationId: uuidv7(), requestId: uuidv7(), title: "快跑", body: SPRINT });
@@ -33,7 +33,7 @@ test.skipIf(!config || process.platform !== "darwin")("P23：用户说授权实�
   await point.say("快跑这个需求草稿写好了吗？把要点给我看，我看完再决定批准。");
   await point.say("批准这一版。");
   const afterApprove = point.host.session.messages.length;
-  await point.say("授权实施登录，账单以后再说。");
+  await point.say("授权实施地面快跑，空中不变以后再说。");
   const rest = point.calls(afterApprove);
   const restricted = point.results(afterApprove).filter((result) => result.tool === "one_company_requirement_manage" && result.text.includes("范围限制"));
   const lastText = assistantTexts().at(-1) ?? "";
