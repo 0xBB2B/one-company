@@ -9,7 +9,7 @@ description: 需求已批准且工作区建好时，把批准的正文、原型�
 
 ## 业务规则（来源：PRD 03-approved-files-into-branch 约束 1～8、10）
 - 需求分支：`req/<需求编号>`，在需求自己的 worktree 里检出。首次批准时还没有工作区（`workspace-manage.ts` 的 `prepare` 要求需求已批准），所以首次提交发生在建工作区那一步；之后每批准一个新版本，在批准那一步提交。
-- 提交的文件，全部取自批准那一刻的文件状态（02 的 `readVersion` 按批准提交读）：
+- 提交的文件，全部取自批准那一刻的文件状态（02 的 `readDraftFiles` 按批准提交读）：
   - 正文 `docs/prd/<需求编号>.<需求标题>.md`，内容是批准的 prd.md 字节；
   - 原型 `docs/prd/<需求编号>.<原型名称>.html`；
   - `DESIGN.md`、`AGENTS.md` 放在分支根目录。
@@ -60,7 +60,7 @@ description: 需求已批准且工作区建好时，把批准的正文、原型�
 | `withConventions` | 改：多一个需求编号入参；有工作区时用 worktree 路径读项目级 AGENTS.md、DESIGN.md |
 
 ## 协作关系
-- `prepare` → `planApprovedFiles`（读 02 的 `readVersion` 和 baseCommit 里的文件）→ `mergeWithBase` → 建 worktree → `RequirementStateStore.bindWorkspace`（它要求 worktree 的 HEAD 等于 baseCommit，所以先绑定再提交）→ `commitApprovedFiles`。
+- `prepare` → `planApprovedFiles`（读 02 的 `readDraftFiles` 和 baseCommit 里的文件）→ `mergeWithBase` → 建 worktree → `RequirementStateStore.bindWorkspace`（它要求 worktree 的 HEAD 等于 baseCommit，所以先绑定再提交）→ `commitApprovedFiles`。
 - 依赖 02、04、05、06。
 
 ## 验证方式

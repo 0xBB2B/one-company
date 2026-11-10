@@ -38,7 +38,7 @@ description: 需求草稿的新建、保存、读取、对比、名单和 @ 补�
 ### src/modules/requirement/requirement-service.ts
 | 函数名 | 职责 |
 |---|---|
-| `create` | 改：生成 save 锚点（无父），提交第一版，返回带线尖版本号的回执 |
+| `create` | 改：生成 save 锚点（无父），提交第一版，返回带线尖版本号的回执；调 prd-storage `create` / `save` 时传真正的锚点编号（02 里这两处暂时传的是 operationId） |
 | `updateDraft` | 改：入参多一个对话线锚点列表；按线尖核对版本号，父提交用线尖 fileCommit，生成 save 锚点 |
 | `read` | 改：草稿的 saved 读取按线尖的提交；approved 读取不变 |
 | `diff` | 改：草稿的对比按线上的提交 |

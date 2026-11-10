@@ -62,6 +62,7 @@ description: 短决定、待答提问、连续性事实、批准清单挂上锚�
 |---|---|
 | `loadConfirmationContext` | 改：basis、candidate 取线上视图 |
 | `confirmUpdate` / `approve` | 改：带对话线；从 prd-storage 读回的是线尖那一版 |
+| `verifyWorkingCopy` | 改：批准和 `loadConfirmationContext` 里的工作副本核对，改成核对线尖那一版的提交内容（工作副本始终是 main，即最近一次保存，可能来自别的线），保存流程里的核对保持"工作副本等于本次保存" |
 
 ### src/modules/interaction/user-interaction.ts
 | 函数名 | 职责 |

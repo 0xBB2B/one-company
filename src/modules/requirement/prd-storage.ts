@@ -6,6 +6,7 @@ import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { checkPrototypeName } from "./requirement-prototypes.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -21,10 +22,15 @@ const SAFE_SEGMENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}(?![\s\S])/;
 const FULL_COMMIT_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\s\S])/;
 const OBJECT_ID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const HASH_RE = /^sha256:[0-9a-f]{64}(?![\s\S])/;
+const FIXED_TREE_FILES = [PRD_FILE, "DESIGN.md", "DESIGN.base.md", "AGENTS.md", "AGENTS.base.md"];
+const PROTOTYPE_PATH_RE = /^prototypes\/(.+)\.v[1-9][0-9]*\.html(?![\s\S])/u;
+const LINES_REF_PREFIX = "refs/lines/";
 const SAFE_PARTIAL_GIT_ENTRIES = new Set(["HEAD", "config", "description", "objects", "refs"]);
 
 export type PrdStorageAction = "create" | "updateDraft";
-export type PrdStorageInterfaceAction = "create" | "save" | "readVersion" | "diffVersions" | "verifyVersion";
+export type PrdStorageCommitKind = "prototype" | "conventions";
+type CommitAction = PrdStorageAction | PrdStorageCommitKind | "migration";
+export type PrdStorageInterfaceAction = "create" | "save" | "readVersion" | "diffVersions" | "verifyVersion" | "readDraftFiles" | "commitDraftFiles";
 export type PrdStoragePermissionPhase = "beforeAction" | "beforeWrite" | "beforeReturn" | "beforeReturnBody";
 
 export interface PrdStoragePermissionCheck {
@@ -62,6 +68,7 @@ export interface PrdStorageConfig {
 
 export interface PrdStorageSaveInput extends PrdStorageConfig {
   operationId: string;
+  anchor: string;
   expectedParent: string | null;
   bytes: Uint8Array;
 }
@@ -87,6 +94,28 @@ export interface PrdStorageReadResult {
   commit: string;
   prdHash: `sha256:${string}`;
   bytes: Uint8Array;
+}
+
+export interface PrdStorageDraftFilesInput extends PrdStorageConfig {
+  commit: string;
+}
+
+export interface PrdStorageDraftFiles {
+  commit: string;
+  prd: Uint8Array;
+  design: Uint8Array | null;
+  designBase: Uint8Array | null;
+  agents: Uint8Array | null;
+  agentsBase: Uint8Array | null;
+  prototypes: Record<string, Uint8Array>;
+}
+
+export interface PrdStorageCommitDraftInput extends PrdStorageConfig {
+  operationId: string;
+  anchor: string;
+  kind: PrdStorageCommitKind;
+  expectedParent: string;
+  changes: Record<string, Uint8Array | null>;
 }
 
 export interface PrdStorageDiffInput extends PrdStorageConfig {
@@ -151,7 +180,7 @@ interface GitResult {
 }
 
 interface CommitMetadata {
-  action: PrdStorageAction;
+  action: CommitAction;
   operationId: string;
   prdHash: `sha256:${string}`;
   parents: string[];
@@ -223,6 +252,18 @@ function assertSafeSegment(name: string, value: string): void {
 
 function assertRequirementId(requirementId: string): void {
   if (!UUID_V7_RE.test(requirementId)) fail("invalid_requirement_id", "requirementId 必须是小写 UUIDv7");
+}
+
+function assertAnchor(anchor: string): void {
+  if (typeof anchor !== "string" || !UUID_V7_RE.test(anchor)) fail("invalid_anchor", "anchor 必须是小写 UUIDv7");
+}
+
+function isManagedTreePath(path: string): boolean {
+  if (FIXED_TREE_FILES.includes(path)) return true;
+  const name = PROTOTYPE_PATH_RE.exec(path)?.[1];
+  if (name === undefined) return false;
+  try { checkPrototypeName(name); return true; }
+  catch { return false; }
 }
 
 function assertFullCommit(commit: string, name = "commit"): void {
@@ -673,21 +714,70 @@ async function currentHead(config: PrdStorageConfig, paths: PreparedPaths): Prom
   return head;
 }
 
-async function assertOnlyMainRef(config: PrdStorageConfig, paths: PreparedPaths, head: string | null): Promise<void> {
-  const refs = (await runGit(config, paths, ["for-each-ref", "--format=%(refname)%00%(objectname)"])).stdout.toString("utf8").split("\n").filter(Boolean);
-  if (head === null) {
-    if (refs.length !== 0) fail("git_invalid", "无提交仓库不能含其他引用");
-    return;
+async function assertManagedRefs(config: PrdStorageConfig, paths: PreparedPaths, head: string | null): Promise<void> {
+  const refs = (await runGit(config, paths, ["for-each-ref", "--format=%(refname)%00%(objecttype)%00%(objectname)"])).stdout.toString("utf8").split("\n").filter(Boolean);
+  let main: string | null = null;
+  for (const row of refs) {
+    const [name, type, oid] = row.split("\0");
+    if (name === "refs/heads/main") main = oid!;
+    else if (!(name!.startsWith(LINES_REF_PREFIX) && UUID_V7_RE.test(name!.slice(LINES_REF_PREFIX.length)))) fail("git_invalid", "需求仓库只能有 main 和 refs/lines 引用");
+    if (type !== "commit") fail("git_invalid", "受管引用必须指向提交");
   }
-  if (refs.length !== 1 || refs[0] !== `refs/heads/main\0${head}`) fail("git_invalid", "需求仓库只能有指向 HEAD 的 main 引用");
+  if (main !== head) fail("git_invalid", "需求仓库的 main 引用与 HEAD 不一致");
 }
 
-async function repositoryPrdBlob(config: PrdStorageConfig, paths: PreparedPaths, commit: string): Promise<string> {
+const BASE_PAIRS = [["DESIGN.base.md", "DESIGN.md"], ["AGENTS.base.md", "AGENTS.md"]];
+
+function assertBasesHaveMain(files: Map<string, string>): void {
+  for (const [base, main] of BASE_PAIRS) {
+    if (files.has(base) && !files.has(main)) fail("history_mismatch", `提交树有 ${base} 却没有 ${main}`);
+  }
+}
+
+async function assertHistoryTrees(config: PrdStorageConfig, paths: PreparedPaths, lineage: Map<string, string | null>): Promise<void> {
+  const tokens = (await runGit(config, paths, ["log", "--all", "--raw", "-r", "-z", "--root", "--no-renames", "--no-abbrev", "--format=%x01%H"])).stdout.toString("utf8").split("\0");
+  const changes = new Map<string, { path: string; mode: string; blob: string }[]>();
+  let current: { path: string; mode: string; blob: string }[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]!.replace(/^\n/, "");
+    if (token.startsWith("\x01")) {
+      current = [];
+      changes.set(token.slice(1), current);
+    } else if (token.startsWith(":")) {
+      const fields = token.split(" ");
+      current.push({ mode: fields[1]!, blob: fields[3]!, path: tokens[++i]! });
+    }
+  }
+  const states = new Map<string, Map<string, string>>();
+  for (const commit of [...lineage.keys()].reverse()) {
+    const parent = lineage.get(commit);
+    const files = new Map(parent ? states.get(parent) : undefined);
+    for (const change of changes.get(commit) ?? []) {
+      if (change.mode === "000000") files.delete(change.path);
+      else if (change.mode === "100644" && isManagedTreePath(change.path)) files.set(change.path, change.blob);
+      else fail("history_mismatch", "提交树含规定之外的路径或非普通文件");
+    }
+    if (!files.has(PRD_FILE)) fail("tree_mismatch", "提交树缺少 prd.md");
+    assertBasesHaveMain(files);
+    states.set(commit, files);
+  }
+}
+
+async function repositoryFileTree(config: PrdStorageConfig, paths: PreparedPaths, commit: string): Promise<Map<string, string>> {
   const entries = (await runGit(config, paths, ["ls-tree", "-r", "-z", commit])).stdout.toString("utf8").split("\0").filter(Boolean);
-  if (entries.length !== 1) fail("tree_mismatch", "提交树只能包含 prd.md");
-  const match = new RegExp(`^100644 blob ([0-9a-f]+)\\t${PRD_FILE_PATTERN}$`).exec(entries[0]!);
-  if (!match || !OBJECT_ID_RE.test(match[1]!)) fail("tree_mismatch", "提交中的 prd.md 必须是普通文件");
-  return match[1]!;
+  const files = new Map<string, string>();
+  for (const entry of entries) {
+    const match = /^100644 blob ([0-9a-f]+)\t([\s\S]+)$/.exec(entry);
+    if (!match || !OBJECT_ID_RE.test(match[1]!) || !isManagedTreePath(match[2]!)) fail("history_mismatch", "提交树含规定之外的路径或非普通文件");
+    files.set(match[2]!, match[1]!);
+  }
+  if (!files.has(PRD_FILE)) fail("tree_mismatch", "提交树缺少 prd.md");
+  assertBasesHaveMain(files);
+  return files;
+}
+
+async function prdBlobOf(config: PrdStorageConfig, paths: PreparedPaths, commit: string): Promise<string> {
+  return (await repositoryFileTree(config, paths, commit)).get(PRD_FILE)!;
 }
 
 async function managedIndexSnapshot(config: PrdStorageConfig, paths: PreparedPaths): Promise<ManagedIndexSnapshot> {
@@ -703,28 +793,27 @@ async function managedIndexSnapshot(config: PrdStorageConfig, paths: PreparedPat
 
 async function assertManagedIndexClean(config: PrdStorageConfig, paths: PreparedPaths, head: string | null): Promise<void> {
   const index = await managedIndexSnapshot(config, paths);
-  const expectedBlob = head === null ? null : await repositoryPrdBlob(config, paths, head);
+  const expectedBlob = head === null ? null : await prdBlobOf(config, paths, head);
   if (index.blob !== expectedBlob) fail("external_index", head === null ? "首次提交前暂存区必须为空" : "prd.md 暂存内容被外部修改");
 }
 
-async function recoverManagedIndex(config: PrdStorageConfig, paths: PreparedPaths, expectedParent: string | null, commit: string): Promise<void> {
+async function recoverManagedIndex(config: PrdStorageConfig, paths: PreparedPaths, commit: string): Promise<void> {
   const index = await managedIndexSnapshot(config, paths);
-  const committedBlob = await repositoryPrdBlob(config, paths, commit);
-  if (index.blob === committedBlob) {
-    await hardenGitPermissions(join(paths.requirementRoot, GIT_DIR));
-    return;
+  const committedBlob = await prdBlobOf(config, paths, commit);
+  if (index.blob !== committedBlob) {
+    const objects = (await runGit(config, paths, ["rev-list", "--all", "--objects"])).stdout.toString("utf8").split("\n");
+    const known = new Set(objects.filter((row) => row.endsWith(` ${PRD_FILE}`)).map((row) => row.slice(0, row.indexOf(" "))));
+    if (index.blob !== null && !known.has(index.blob)) fail("external_index", "提交中断后的暂存区既不匹配历史中的正文，也不匹配本操作的新树，已保留外部内容");
+    await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${committedBlob},${PRD_FILE}`]);
+    const repaired = await managedIndexSnapshot(config, paths);
+    if (repaired.blob !== committedBlob) fail("external_index", "暂存区补齐后未匹配本操作提交树");
   }
-  const parentBlob = expectedParent === null ? null : await repositoryPrdBlob(config, paths, expectedParent);
-  if (index.blob !== parentBlob) fail("external_index", "提交中断后的暂存区既不匹配旧父树，也不匹配本操作的新树，已保留外部内容");
-  await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${committedBlob},${PRD_FILE}`]);
-  const repaired = await managedIndexSnapshot(config, paths);
-  if (repaired.blob !== committedBlob) fail("external_index", "暂存区补齐后未匹配本操作提交树");
   await hardenGitPermissions(join(paths.requirementRoot, GIT_DIR));
 }
 
 async function showPrd(config: PrdStorageConfig, paths: PreparedPaths, commit: string): Promise<Buffer> {
   assertFullCommit(commit);
-  await repositoryPrdBlob(config, paths, commit);
+  await repositoryFileTree(config, paths, commit);
   return (await runGit(config, paths, ["show", `${commit}:${PRD_FILE}`])).stdout;
 }
 
@@ -753,12 +842,12 @@ async function parseCommitMetadata(config: PrdStorageConfig, paths: PreparedPath
   }
   if (lines.length !== trees.length + parents.length + authors.length + committers.length) fail("history_mismatch", "正文提交含非固定元数据");
   const escapedRequirement = config.requirementId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = new RegExp(`^prd\\(${escapedRequirement}\\): (create|updateDraft)\\n\\nOperation-Id: ([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\nPrd-Hash: (sha256:[0-9a-f]{64})\\n(?![\\s\\S])`).exec(message);
+  const match = new RegExp(`^prd\\(${escapedRequirement}\\): (create|updateDraft|prototype|conventions|migration)\\n\\nOperation-Id: ([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\nPrd-Hash: (sha256:[0-9a-f]{64})\\n(?![\\s\\S])`).exec(message);
   if (!match) fail("message_mismatch", "提交信息不符合固定正文格式");
-  return { action: match[1] as PrdStorageAction, operationId: match[2]!, prdHash: match[3] as `sha256:${string}`, parents };
+  return { action: match[1] as CommitAction, operationId: match[2]!, prdHash: match[3] as `sha256:${string}`, parents };
 }
 
-function assertCommitMetadataMatches(meta: CommitMetadata, expectedHash?: `sha256:${string}`, expectedParent?: string | null, operationId?: string, action?: PrdStorageAction): void {
+function assertCommitMetadataMatches(meta: CommitMetadata, expectedHash?: `sha256:${string}`, expectedParent?: string | null, operationId?: string, action?: CommitAction): void {
   if (expectedHash && meta.prdHash !== expectedHash) fail("hash_mismatch", "提交信息中的 Prd-Hash 与期望 hash 不一致");
   if (operationId && meta.operationId !== operationId) fail("message_mismatch", "提交信息中的 Operation-Id 与操作不一致");
   if (action && meta.action !== action) fail("message_mismatch", "提交信息中的 action 与操作不一致");
@@ -768,7 +857,7 @@ function assertCommitMetadataMatches(meta: CommitMetadata, expectedHash?: `sha25
   }
 }
 
-async function verifyCommitMatches(config: PrdStorageConfig, paths: PreparedPaths, commit: string, expectedHash?: `sha256:${string}`, expectedParent?: string | null, operationId?: string, action?: PrdStorageAction): Promise<VerifiedCommit> {
+async function verifyCommitMatches(config: PrdStorageConfig, paths: PreparedPaths, commit: string, expectedHash?: `sha256:${string}`, expectedParent?: string | null, operationId?: string, action?: CommitAction): Promise<VerifiedCommit> {
   const metadata = await parseCommitMetadata(config, paths, commit);
   assertCommitMetadataMatches(metadata, expectedHash, expectedParent, operationId, action);
   const bytes = await showPrd(config, paths, commit);
@@ -778,27 +867,39 @@ async function verifyCommitMatches(config: PrdStorageConfig, paths: PreparedPath
 }
 
 async function validatedLineage(config: PrdStorageConfig, paths: PreparedPaths, head: string | null): Promise<Map<string, string | null>> {
-  await assertOnlyMainRef(config, paths, head);
+  await assertManagedRefs(config, paths, head);
   const lineage = new Map<string, string | null>();
-  if (!head) return lineage;
-  const rows = (await runGit(config, paths, ["rev-list", "--topo-order", "--parents", head])).stdout.toString("utf8").trim().split("\n").filter(Boolean);
+  const rows = (await runGit(config, paths, ["rev-list", "--topo-order", "--parents", "--all"])).stdout.toString("utf8").trim().split("\n").filter(Boolean);
   for (const row of rows) {
     const [commit, ...parents] = row.split(" ");
     if (!commit || !FULL_COMMIT_RE.test(commit) || parents.length > 1 || (parents[0] && !FULL_COMMIT_RE.test(parents[0]))) {
-      fail("history_mismatch", "正文提交历史不是单条线性链");
+      fail("history_mismatch", "正文提交历史含多父提交");
     }
     lineage.set(commit, parents[0] ?? null);
   }
-  if (!lineage.has(head)) fail("history_mismatch", "HEAD 不在正文提交历史中");
+  await assertHistoryTrees(config, paths, lineage);
+  if (head && !lineage.has(head)) fail("history_mismatch", "HEAD 不在正文提交历史中");
   for (const [commit, parent] of lineage) {
     if (parent !== null && !lineage.has(parent)) fail("history_mismatch", "正文提交父链不完整", { commit });
   }
   return lineage;
 }
 
+async function mainSurvives(config: PrdStorageConfig, paths: PreparedPaths, main: string, parent: string): Promise<boolean> {
+  const ancestor = await runGit(config, paths, ["merge-base", "--is-ancestor", main, parent], { allowedExitCodes: [0, 1] });
+  if (ancestor.exitCode === 0) return true;
+  const lines = await runGit(config, paths, ["for-each-ref", "--contains", main, "--count=1", "--format=%(refname)", LINES_REF_PREFIX]);
+  return lines.stdout.length > 0;
+}
+
+async function lineCommit(config: PrdStorageConfig, paths: PreparedPaths, anchor: string): Promise<string | null> {
+  const result = await runGit(config, paths, ["rev-parse", "--verify", "--quiet", `${LINES_REF_PREFIX}${anchor}^{commit}`], { allowedExitCodes: [0, 1] });
+  return result.exitCode === 0 ? result.stdout.toString("utf8").trim() : null;
+}
+
 async function operationIdsInHistory(config: PrdStorageConfig, paths: PreparedPaths, head: string | null): Promise<Set<string>> {
   if (!head) return new Set();
-  const messages = (await runGit(config, paths, ["log", "--format=%B%x00", head])).stdout.toString("utf8");
+  const messages = (await runGit(config, paths, ["log", "--all", "--format=%B%x00"])).stdout.toString("utf8");
   const operationIds = new Set<string>();
   for (const match of messages.matchAll(/^Operation-Id: ([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/gm)) operationIds.add(match[1]!);
   return operationIds;
@@ -842,7 +943,26 @@ async function writePrdFile(requirementRoot: string, prdPath: string, bytes: Uin
   }
 }
 
-async function writeTreeCommit(config: PrdStorageConfig, paths: PreparedPaths, bytes: Uint8Array, action: PrdStorageAction, operationId: string, expectedParent: string | null, prdHash: `sha256:${string}`): Promise<string> {
+interface TreeCommitInput {
+  action: CommitAction;
+  operationId: string;
+  anchor: string;
+  parent: string | null;
+  mainBefore: string | null;
+  prdHash: `sha256:${string}`;
+  changes: Record<string, Uint8Array | null>;
+}
+
+async function advanceMain(config: PrdStorageConfig, paths: PreparedPaths, commit: string, mainBefore: string | null): Promise<void> {
+  await runGit(config, paths, ["update-ref", "HEAD", commit, mainBefore ?? "0".repeat(commit.length)]);
+  await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${await prdBlobOf(config, paths, commit)},${PRD_FILE}`]);
+}
+
+async function createLineRef(config: PrdStorageConfig, paths: PreparedPaths, anchor: string, commit: string): Promise<void> {
+  await runGit(config, paths, ["update-ref", `${LINES_REF_PREFIX}${anchor}`, commit, "0".repeat(commit.length)]);
+}
+
+async function writeTreeCommit(config: PrdStorageConfig, paths: PreparedPaths, input: TreeCommitInput): Promise<string> {
   const gitRoot = join(paths.requirementRoot, GIT_DIR);
   const rootStats = await lstat(gitRoot);
   assertOwnedObject(rootStats, "directory", "git_invalid", "Git 目录身份无效");
@@ -853,21 +973,27 @@ async function writeTreeCommit(config: PrdStorageConfig, paths: PreparedPaths, b
   let failure: unknown;
   let failed = false;
   try {
-    const blob = (await runGit(config, paths, ["hash-object", "-w", "--stdin", "--no-filters"], { input: Buffer.from(bytes) })).stdout.toString("utf8").trim();
-    if (!OBJECT_ID_RE.test(blob)) fail("git_failed", "Git 未返回有效 blob");
-    await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${blob},${PRD_FILE}`], { env: treeEnv });
+    if (input.parent) await runGit(config, paths, ["read-tree", input.parent], { env: treeEnv });
+    for (const [path, content] of Object.entries(input.changes)) {
+      if (content === null) {
+        await runGit(config, paths, ["update-index", "--force-remove", path], { env: treeEnv });
+        continue;
+      }
+      const blob = (await runGit(config, paths, ["hash-object", "-w", "--stdin", "--no-filters"], { input: Buffer.from(content) })).stdout.toString("utf8").trim();
+      if (!OBJECT_ID_RE.test(blob)) fail("git_failed", "Git 未返回有效 blob");
+      await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${blob},${path}`], { env: treeEnv });
+    }
     const tree = (await runGit(config, paths, ["write-tree"], { env: treeEnv })).stdout.toString("utf8").trim();
     if (!OBJECT_ID_RE.test(tree)) fail("git_failed", "Git 未返回有效 tree");
     const indexStats = await lstat(indexFile);
     assertOwnedObject(indexStats, "file", "git_invalid", "临时 Git 索引身份无效");
     indexIdentity = ownedObjectIdentity(indexStats);
-    const message = `prd(${config.requirementId}): ${action}\n\nOperation-Id: ${operationId}\nPrd-Hash: ${prdHash}\n`;
-    const commitArgs = expectedParent ? ["commit-tree", tree, "-p", expectedParent] : ["commit-tree", tree];
+    const message = `prd(${config.requirementId}): ${input.action}\n\nOperation-Id: ${input.operationId}\nPrd-Hash: ${input.prdHash}\n`;
+    const commitArgs = input.parent ? ["commit-tree", tree, "-p", input.parent] : ["commit-tree", tree];
     const commit = (await runGit(config, paths, commitArgs, { input: message })).stdout.toString("utf8").trim();
     assertFullCommit(commit);
-    if (expectedParent) await runGit(config, paths, ["update-ref", "HEAD", commit, expectedParent]);
-    else await runGit(config, paths, ["update-ref", "HEAD", commit, "0".repeat(commit.length)]);
-    await runGit(config, paths, ["update-index", "--add", "--cacheinfo", `100644,${blob},${PRD_FILE}`]);
+    if (input.action === "create" || input.action === "updateDraft") await advanceMain(config, paths, commit, input.mainBefore);
+    await createLineRef(config, paths, input.anchor, commit);
     return commit;
   } catch (error) {
     failed = true;
@@ -913,6 +1039,7 @@ async function ensureReadyForRead(config: PrdStorageConfig, interfaceAction: Prd
 
 async function saveInternal(input: PrdStorageSaveInput, action: PrdStorageAction, interfaceAction: PrdStorageInterfaceAction): Promise<PrdStorageWriteResult> {
   if (!SAFE_SEGMENT_RE.test(input.operationId)) fail("invalid_operation", "operationId 必须是安全短标识");
+  assertAnchor(input.anchor);
   if (input.expectedParent !== null) assertFullCommit(input.expectedParent, "expectedParent");
   requireAuthorized(input, { phase: "beforeAction", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent });
   const bytes = Buffer.from(input.bytes);
@@ -935,20 +1062,29 @@ async function saveInternal(input: PrdStorageSaveInput, action: PrdStorageAction
     fail("history_mismatch", "HEAD 父提交元数据与线性历史不一致");
   }
 
-  if (head && head !== input.expectedParent) {
-    const recoverable = headMetadata!.operationId === input.operationId
-      && headMetadata!.action === action
-      && headMetadata!.prdHash === prdHash
-      && (input.expectedParent === null ? headMetadata!.parents.length === 0 : headMetadata!.parents.length === 1 && headMetadata!.parents[0] === input.expectedParent);
-    if (!recoverable) fail("parent_mismatch", "HEAD 与 expectedParent 不一致，拒绝覆盖外部内容");
-    const working = await readFileSnapshot(paths.prdPath);
-    if (!working.exists || working.prdHash !== prdHash) fail("working_copy_mismatch", "prd.md 含未登记的外部内容，拒绝恢复旧操作");
-    await verifyCommitMatches(input, paths, head, prdHash, input.expectedParent, input.operationId, action);
-    await recoverManagedIndex(input, paths, input.expectedParent, head);
+  const lined = await lineCommit(input, paths, input.anchor);
+  const lineMissing = lined === null && head !== null && headMetadata!.operationId === input.operationId;
+  const existing = lineMissing ? head : lined;
+  if (existing) {
+    const metadata = existing === head ? headMetadata! : await parseCommitMetadata(input, paths, existing);
+    if (metadata.operationId !== input.operationId || metadata.action !== action || metadata.prdHash !== prdHash || (metadata.parents[0] ?? null) !== input.expectedParent) {
+      fail("operation_conflict", "这次保存的编号或锚点已用于其他正文提交");
+    }
+    if (lineMissing) {
+      const working = await readFileSnapshot(paths.prdPath);
+      if (!working.exists || working.prdHash !== prdHash) fail("working_copy_mismatch", "prd.md 含未登记的外部内容，拒绝恢复旧操作");
+      await verifyCommitMatches(input, paths, existing, prdHash, input.expectedParent, input.operationId, action);
+      await recoverManagedIndex(input, paths, existing);
+      await createLineRef(input, paths, input.anchor, existing);
+      await hardenGitPermissions(join(paths.requirementRoot, GIT_DIR));
+    } else await verifyCommitMatches(input, paths, existing, prdHash, input.expectedParent, input.operationId, action);
     requireAuthorized(input, { phase: "beforeReturn", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prdHash });
-    return { status: "recovered", action, operationId: input.operationId, commit: head, parent: input.expectedParent, prdHash, changed: true, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
+    return { status: "recovered", action, operationId: input.operationId, commit: existing, parent: input.expectedParent, prdHash, changed: true, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
   }
 
+  if (input.expectedParent === null ? head !== null : !lineage.has(input.expectedParent)) {
+    fail("parent_mismatch", "expectedParent 不是这个需求已有的提交，拒绝覆盖外部内容");
+  }
   await assertManagedIndexClean(input, paths, head);
   const operationIds = await operationIdsInHistory(input, paths, head);
   let expectedWorkingFile: PrdFileSnapshot;
@@ -960,12 +1096,15 @@ async function saveInternal(input: PrdStorageSaveInput, action: PrdStorageAction
       fail("working_copy_mismatch", "prd.md 含不属于当前操作的外部内容，拒绝覆盖");
     }
     if (operationIds.has(input.operationId)) fail("operation_conflict", "这次保存的编号已用于其他正文提交");
-    if (headHash === prdHash) {
+    const base = await verifyCommitMatches(input, paths, input.expectedParent!);
+    if (base.prdHash === prdHash) {
       requireAuthorized(input, { phase: "beforeReturn", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prdHash });
-      return { status: "unchanged", action, operationId: input.operationId, commit: head, parent: headMetadata!.parents[0] ?? null, prdHash, changed: false, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
+      return { status: "unchanged", action, operationId: input.operationId, commit: input.expectedParent!, parent: base.metadata.parents[0] ?? null, prdHash, changed: false, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
+    }
+    if (!(await mainSurvives(input, paths, head, input.expectedParent!))) {
+      fail("parent_mismatch", "以这个提交为父保存会让当前 main 的历史无法到达");
     }
   } else {
-    if (input.expectedParent !== null) fail("parent_mismatch", "仓库尚无提交，expectedParent 不为 null");
     expectedWorkingFile = await readFileSnapshot(paths.prdPath);
     if (expectedWorkingFile.exists && expectedWorkingFile.prdHash !== prdHash) {
       fail("working_copy_mismatch", "无提交仓库中的 prd.md 与登记操作目标不同，拒绝覆盖");
@@ -975,16 +1114,16 @@ async function saveInternal(input: PrdStorageSaveInput, action: PrdStorageAction
   requireAuthorized(input, { phase: "beforeWrite", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prdHash });
   await writePrdFile(paths.requirementRoot, paths.prdPath, bytes, input.operationId, prdHash, expectedWorkingFile);
   await assertOnlyPrdAndGit(paths.requirementRoot);
-  const commit = await writeTreeCommit(input, paths, bytes, action, input.operationId, head, prdHash);
-  await verifyCommitMatches(input, paths, commit, prdHash, head, input.operationId, action);
+  const commit = await writeTreeCommit(input, paths, { action, operationId: input.operationId, anchor: input.anchor, parent: input.expectedParent, mainBefore: head, prdHash, changes: { [PRD_FILE]: bytes } });
+  await verifyCommitMatches(input, paths, commit, prdHash, input.expectedParent, input.operationId, action);
   await assertWorktreeMatchesHash(paths.prdPath, prdHash);
   const newHead = await currentHead(input, paths);
   if (newHead !== commit) fail("head_mismatch", "提交后 HEAD 与实际提交不一致");
   await assertManagedIndexClean(input, paths, commit);
   const newLineage = await validatedLineage(input, paths, commit);
-  if (newLineage.get(commit) !== head) fail("history_mismatch", "新提交没有接到预期父提交");
+  if (newLineage.get(commit) !== input.expectedParent) fail("history_mismatch", "新提交没有接到预期父提交");
   requireAuthorized(input, { phase: "beforeReturn", action: interfaceAction, operationId: input.operationId, expectedParent: input.expectedParent, prdHash });
-  return { status: head ? "saved" : "created", action, operationId: input.operationId, commit, parent: head, prdHash, changed: true, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
+  return { status: head ? "saved" : "created", action, operationId: input.operationId, commit, parent: input.expectedParent, prdHash, changed: true, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
 }
 
 export async function create(input: PrdStorageSaveInput): Promise<PrdStorageWriteResult> {
@@ -998,7 +1137,75 @@ export async function save(input: PrdStorageSaveInput & { action: Exclude<PrdSto
 }
 
 function assertRequestedVersion(lineage: Map<string, string | null>, commit: string): void {
-  if (!lineage.has(commit)) fail("unknown_version", "请求的提交不属于当前线性正文历史");
+  if (!lineage.has(commit)) fail("unknown_version", "请求的提交不能从任何受管引用到达");
+}
+
+async function treeWithChanges(config: PrdStorageConfig, paths: PreparedPaths, parent: string, changes: Record<string, Uint8Array | null>): Promise<Map<string, string>> {
+  const files = await repositoryFileTree(config, paths, parent);
+  for (const [path, content] of Object.entries(changes)) {
+    if (content === null) files.delete(path);
+    else files.set(path, (await runGit(config, paths, ["hash-object", "--stdin", "--no-filters"], { input: Buffer.from(content) })).stdout.toString("utf8").trim());
+  }
+  return files;
+}
+
+export async function commitDraftFiles(input: PrdStorageCommitDraftInput): Promise<{ commit: string }> {
+  if (!SAFE_SEGMENT_RE.test(input.operationId)) fail("invalid_operation", "operationId 必须是安全短标识");
+  assertAnchor(input.anchor);
+  assertFullCommit(input.expectedParent, "expectedParent");
+  if (input.kind !== "prototype" && input.kind !== "conventions") fail("invalid_action", "kind 只能是 prototype 或 conventions");
+  for (const path of Object.keys(input.changes)) {
+    if (path === PRD_FILE || !isManagedTreePath(path)) fail("invalid_path", "changes 只能改 prd.md 之外的规定文件", { path });
+  }
+  const { paths, head, lineage } = await ensureReadyForRead(input, "commitDraftFiles", { operationId: input.operationId, expectedParent: input.expectedParent });
+  const existing = await lineCommit(input, paths, input.anchor);
+  if (existing) {
+    const metadata = await parseCommitMetadata(input, paths, existing);
+    if (metadata.operationId !== input.operationId || metadata.action !== input.kind || metadata.parents[0] !== input.expectedParent) {
+      fail("operation_conflict", "这个 anchor 已用于其他正文提交");
+    }
+    const wanted = await treeWithChanges(input, paths, input.expectedParent, input.changes);
+    const actual = await repositoryFileTree(input, paths, existing);
+    if (wanted.size !== actual.size || [...wanted].some(([path, blob]) => actual.get(path) !== blob)) {
+      fail("operation_conflict", "这个 anchor 已用于内容不同的正文提交");
+    }
+    requireAuthorized(input, { phase: "beforeReturn", action: "commitDraftFiles", operationId: input.operationId, expectedParent: input.expectedParent, prdHash: metadata.prdHash });
+    return { commit: existing };
+  }
+  if (!lineage.has(input.expectedParent)) fail("parent_mismatch", "expectedParent 不是这个需求已有的提交");
+  if ((await operationIdsInHistory(input, paths, head)).has(input.operationId)) fail("operation_conflict", "这次提交的编号已用于其他正文提交");
+  const parent = await verifyCommitMatches(input, paths, input.expectedParent);
+  assertBasesHaveMain(await treeWithChanges(input, paths, input.expectedParent, input.changes));
+  requireAuthorized(input, { phase: "beforeWrite", action: "commitDraftFiles", operationId: input.operationId, expectedParent: input.expectedParent, prdHash: parent.prdHash });
+  const commit = await writeTreeCommit(input, paths, { action: input.kind, operationId: input.operationId, anchor: input.anchor, parent: input.expectedParent, mainBefore: head, prdHash: parent.prdHash, changes: input.changes });
+  await verifyCommitMatches(input, paths, commit, parent.prdHash, input.expectedParent, input.operationId, input.kind);
+  await validatedLineage(input, paths, head);
+  requireAuthorized(input, { phase: "beforeReturn", action: "commitDraftFiles", operationId: input.operationId, expectedParent: input.expectedParent, prdHash: parent.prdHash });
+  return { commit };
+}
+
+export async function readDraftFiles(input: PrdStorageDraftFilesInput): Promise<PrdStorageDraftFiles> {
+  assertFullCommit(input.commit);
+  const { paths, lineage } = await ensureReadyForRead(input, "readDraftFiles", { commit: input.commit });
+  assertRequestedVersion(lineage, input.commit);
+  const verified = await verifyCommitMatches(input, paths, input.commit, undefined, lineage.get(input.commit)!);
+  const tree = await repositoryFileTree(input, paths, input.commit);
+  const read = async (path: string): Promise<Buffer | null> =>
+    tree.has(path) ? (await runGit(input, paths, ["cat-file", "blob", tree.get(path)!])).stdout : null;
+  const prototypes: Record<string, Uint8Array> = {};
+  for (const path of tree.keys()) {
+    if (PROTOTYPE_PATH_RE.test(path)) prototypes[path.slice("prototypes/".length, -".html".length)] = (await read(path))!;
+  }
+  requireAuthorized(input, { phase: "beforeReturnBody", action: "readDraftFiles", commit: input.commit, prdHash: verified.prdHash });
+  return {
+    commit: input.commit,
+    prd: verified.bytes,
+    design: await read("DESIGN.md"),
+    designBase: await read("DESIGN.base.md"),
+    agents: await read("AGENTS.md"),
+    agentsBase: await read("AGENTS.base.md"),
+    prototypes,
+  };
 }
 
 export async function verifyVersion(input: PrdStorageVerifyInput): Promise<PrdStorageVerifyResult> {

@@ -529,7 +529,7 @@ export class RequirementService {
       };
     } else if (action === "create") {
       if (operation.expectedParent === null) {
-        git = await createStorage({ ...config, operationId: operation.operationId, expectedParent: null, bytes: document.bytes });
+        git = await createStorage({ ...config, operationId: operation.operationId, anchor: operation.operationId, expectedParent: null, bytes: document.bytes });
       } else {
         const verified = await verifyVersion({
           ...config,
@@ -550,7 +550,7 @@ export class RequirementService {
         };
       }
     } else {
-      git = await saveStorage({ ...config, action, operationId: operation.operationId, expectedParent: operation.expectedParent, bytes: document.bytes });
+      git = await saveStorage({ ...config, action, operationId: operation.operationId, anchor: operation.operationId, expectedParent: operation.expectedParent, bytes: document.bytes });
     }
 
     operation = this.operations.recordGitResult(operation.operationId, git, owner).data;

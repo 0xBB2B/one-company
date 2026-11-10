@@ -12,6 +12,7 @@ description: data.db 从版本 10 迁到 11：原型看板转成按锚点记的�
 - 迁移前先备份 data.db（现有 `migrateRepositoryDatabases` 已做），在一次事务里转换，失败时库保持迁移前的样子，迁移框写明哪一步、为什么失败。
 - 短决定、提问、连续性事实、批准清单、需求记录、操作记录：内容和版本号都不动（批准依据链比对记录版本号，改了会失效）。它们没有 `line_anchor_members` 记录，按 01 的规则算作所有对话线共同的起点，在每条线上都算数。
 - 原型看板：每个需求的 `requirement_prototypes` 记录转成 05 定义的变动记录，转换后在任意对话线上叠加出来的看板和转换前逐项相同；然后删掉旧看板记录。`requirement_prototype_revisions`（批准快照）不动。
+- 每个需求文件仓库（不论需求状态）的 main 如果不能从任何 `refs/lines/*` 到达，补一个 `refs/lines/<新 UUIDv7>` 指向它，之后才能在旧版本上分叉保存（02 的不变量要求）。
 - 草稿需求里已通过、未移除的原型（看板 entry.draft），把 HTML 文件从 `repos/<仓库>/prototypes/<需求>/<名>.v<N>.html` 搬进这个需求的文件仓库：在 `main` 上加一个 kind 为 migration 的提交，`main` 前移到它（02 的规则已写明这个例外）。原文件保留。DESIGN.md 已在升级前写进主仓库根目录，不进文件状态。
 - 已批准、正在关闭、已关闭的需求，迁移不改它们的任何记录和文件。
 - 主仓库根目录的 DESIGN.md、AGENTS.md 迁移不碰。
@@ -80,7 +81,7 @@ export const lineRecordsV10Step: DataMigrationStep = {
 ### src/modules/requirement/line-migration.ts
 | 函数名 | 职责 |
 |---|---|
-| `moveDraftPrototypesIntoRepos` | 对每个草稿需求，把 entry.draft 的原型 HTML 作为一个迁移提交加进文件仓库；已有迁移提交时跳过 |
+| `moveDraftPrototypesIntoRepos` | 对每个需求文件仓库补 main 的 `refs/lines` 引用；对每个草稿需求，把 entry.draft 的原型 HTML 作为一个迁移提交加进文件仓库；已有迁移提交时跳过 |
 | `convertPrototypeBoards` | 把每个 `requirement_prototypes` 记录转成等价的变动记录，删掉旧记录；转换失败写清哪个需求、哪份原型、为什么 |
 | `lineRecordsV10Step` | 组装上面两步的迁移步骤 |
 
