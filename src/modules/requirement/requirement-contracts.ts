@@ -229,7 +229,7 @@ export const LineAnchorKind = Type.Union([
 ]);
 export const LineAnchorRecord = object({
   format: Type.Literal("line-anchor/v1"), repoId: hash, requirementId: id, anchor: id, parent: nullable(id),
-  kind: LineAnchorKind, lineVersion: positive, sequence: positive, fileCommit: nullable(commit), createdAt: counter,
+  kind: LineAnchorKind, lineVersion: positive, sequence: positive, fileCommit: nullable(commit), saved: nullable(PrdReference), createdAt: counter,
 });
 export type LineAnchorRecord = Static<typeof LineAnchorRecord>;
 export const LineAnchorMemberRecord = object({ format: Type.Literal("line-anchor-member/v1"), requirementId: id, anchor: id });

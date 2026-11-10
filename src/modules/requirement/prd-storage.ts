@@ -6,6 +6,7 @@ import { constants, type Stats } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { uuidv7 } from "../../core/storage/database.ts";
 import { checkPrototypeName } from "./requirement-prototypes.ts";
 
 const execFileAsync = promisify(execFile);
@@ -1182,6 +1183,30 @@ export async function commitDraftFiles(input: PrdStorageCommitDraftInput): Promi
   await validatedLineage(input, paths, head);
   requireAuthorized(input, { phase: "beforeReturn", action: "commitDraftFiles", operationId: input.operationId, expectedParent: input.expectedParent, prdHash: parent.prdHash });
   return { commit };
+}
+
+export async function commitMigrationFiles(input: PrdStorageConfig & { expectedParent: string; changes: Record<string, Uint8Array> }): Promise<{ commit: string }> {
+  assertFullCommit(input.expectedParent, "expectedParent");
+  for (const path of Object.keys(input.changes)) {
+    if (path === PRD_FILE || !isManagedTreePath(path)) fail("invalid_path", "changes 只能改 prd.md 之外的规定文件", { path });
+  }
+  const operationId = uuidv7();
+  const { paths, head, lineage } = await ensureReadyForRead(input, "commitDraftFiles", { operationId, expectedParent: input.expectedParent });
+  const done = (await runGit(input, paths, ["log", `--glob=${LINES_REF_PREFIX}*`, "--fixed-strings", `--grep=prd(${input.requirementId}): migration`, "--format=%H"])).stdout.toString("utf8").split("\n").find(Boolean);
+  if (done) return { commit: done };
+  if (!lineage.has(input.expectedParent)) fail("parent_mismatch", "expectedParent 不是这个需求已有的提交");
+  const parent = await verifyCommitMatches(input, paths, input.expectedParent);
+  if (!(await mainSurvives(input, paths, head, input.expectedParent))) await createLineRef(input, paths, uuidv7(), head);
+  const commit = await writeTreeCommit(input, paths, { action: "migration", operationId, anchor: uuidv7(), parent: input.expectedParent, mainBefore: head, prdHash: parent.prdHash, changes: input.changes });
+  await verifyCommitMatches(input, paths, commit, parent.prdHash, input.expectedParent, operationId, "migration");
+  await validatedLineage(input, paths, head);
+  return { commit };
+}
+
+export async function keepMainReachable(input: PrdStorageConfig): Promise<void> {
+  const { paths, head } = await ensureReadyForRead(input, "commitDraftFiles", {});
+  const lines = await runGit(input, paths, ["for-each-ref", "--contains", head, "--count=1", "--format=%(refname)", LINES_REF_PREFIX]);
+  if (lines.stdout.length === 0) await createLineRef(input, paths, uuidv7(), head);
 }
 
 export async function readDraftFiles(input: PrdStorageDraftFilesInput): Promise<PrdStorageDraftFiles> {

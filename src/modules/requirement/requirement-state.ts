@@ -81,7 +81,7 @@ export function recordSavedIn(db: LocalDatabase, repoId: string, now: number, re
   }
   if (record.version !== request.version) throw new StaleVersionError();
   const saveAnchor = () => createLineAnchorIn(db, { repoId, requirementId: request.requirementId, anchor: request.anchor, kind: "save",
-    line: request.line, fileCommit: request.reference.commit, now });
+    line: request.line, fileCommit: request.reference.commit, saved: request.reference, now });
   if (equal(record.data.saved, request.reference)) {
     const existingSave = db.events(eventStream(record.id)).reverse().find((event) => {
       const data = checked(RequirementEvent, event.data);

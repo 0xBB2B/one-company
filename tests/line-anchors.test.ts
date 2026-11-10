@@ -25,7 +25,8 @@ async function workspace() {
 
 type Kind = LineAnchorRecord["kind"];
 function add(db: LocalDatabase, requirementId: string, line: string[], kind: Kind, now: number, fileCommit?: string) {
-  return createLineAnchorIn(db, { repoId, requirementId, anchor: uuidv7(), kind, line, now, ...(fileCommit ? { fileCommit } : {}) });
+  const base = { repoId, requirementId, anchor: uuidv7(), line, now, ...(fileCommit ? { fileCommit } : {}) };
+  return kind === "save" ? createLineAnchorIn(db, { ...base, kind, saved: { commit: fileCommit ?? commit, hash: "b".repeat(64) } }) : createLineAnchorIn(db, { ...base, kind });
 }
 
 function tree(db: LocalDatabase, requirementId: string) {
@@ -94,13 +95,24 @@ test("对话线锚点全部查不到时回到最近一次保存的锚点", async
   });
 });
 
-test("新锚点记录格式完整，首个save锚点父为null、lineVersion为2", async () => {
+test("新锚点记录格式完整，首个save锚点父为null、lineVersion为2、saved是传入的保存正文引用", async () => {
   const run = await workspace(); const req = uuidv7();
   run((db) => {
     const anchor = uuidv7();
-    const rec = createLineAnchorIn(db, { repoId, requirementId: req, anchor, kind: "save", line: [], now: 123 });
-    expect(rec).toEqual({ format: "line-anchor/v1", repoId, requirementId: req, anchor, parent: null, kind: "save", lineVersion: 2, sequence: 1, fileCommit: null, createdAt: 123 });
+    const saved = { commit, hash: "d".repeat(64) };
+    const rec = createLineAnchorIn(db, { repoId, requirementId: req, anchor, kind: "save", line: [], now: 123, saved });
+    expect(rec).toEqual({ format: "line-anchor/v1", repoId, requirementId: req, anchor, parent: null, kind: "save", lineVersion: 2, sequence: 1, fileCommit: null, saved, createdAt: 123 });
     expect(db.read("line_anchors", anchor)?.data).toEqual(rec);
+  });
+});
+
+test("非save锚点的saved是null", async () => {
+  const run = await workspace(); const req = uuidv7();
+  run((db) => {
+    const save = add(db, req, [], "save", 1);
+    const decision = add(db, req, [save.anchor], "decision", 2);
+    expect(decision.saved).toBeNull();
+    expect(db.read("line_anchors", decision.anchor)?.data).toMatchObject({ saved: null });
   });
 });
 

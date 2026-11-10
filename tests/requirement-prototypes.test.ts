@@ -58,7 +58,7 @@ function lineOf(id: string): Promise<string[]> {
       const anchor = uuidv7();
       const { commit } = await createRequirementFiles({ dataRoot, repoId: ref.repoId, requirementId: id, operationId: uuidv7(), anchor, expectedParent: null, bytes: Buffer.from("# 需求\n"), authorize: () => true } as never);
       withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => {
-        createLineAnchorIn(db, { repoId: ref.repoId, requirementId: id, anchor, kind: "save", line: [], now: Date.now(), fileCommit: commit });
+        createLineAnchorIn(db, { repoId: ref.repoId, requirementId: id, anchor, kind: "save", line: [], now: Date.now(), fileCommit: commit, saved: { commit, hash: createHash("sha256").update("# 需求\n").digest("hex") } });
       }));
       lines.set(id, [anchor]);
       return lines.get(id)!;

@@ -9,6 +9,16 @@ const firstError = (schema: TSchema, data: unknown) => {
   return { path: error?.instancePath ?? "", reason: error ? `${error.instancePath || "/"} ${error.message}` : "结构不符" };
 };
 
+export function validBoard(data: unknown, requirementId: string): PrototypeBoard {
+  if (!Value.Check(PrototypeBoard, data)) {
+    const { path, reason } = firstError(PrototypeBoard, data);
+    const index = Number(/^\/entries\/(\d+)/.exec(path)?.[1]);
+    const name = (data as { entries?: Array<{ name?: string }> }).entries?.[index]?.name ?? "";
+    throw new Error(`原型记录（需求 ${requirementId}，原型「${name}」）读不出来：${reason}`);
+  }
+  return data;
+}
+
 type JsonObject = Record<string, unknown>;
 
 function migratePrototypeFile(file: unknown): unknown {
@@ -40,13 +50,7 @@ function voidInFlight(data: unknown): unknown {
     const inFlight = entry.inFlight as { version: number } | null;
     return inFlight ? { ...entry, inFlight: null, lastEnded: { version: inFlight.version, reason: V9_ENDED_REASON } } : entry;
   });
-  const board = { ...source, entries };
-  if (!Value.Check(PrototypeBoard, board)) {
-    const { path, reason } = firstError(PrototypeBoard, board);
-    const index = Number(/^\/entries\/(\d+)/.exec(path)?.[1]);
-    throw new Error(`原型记录（需求 ${source.requirementId}，原型「${source.entries[index]?.name ?? ""}」）读不出来：${reason}`);
-  }
-  return board;
+  return validBoard({ ...source, entries }, source.requirementId);
 }
 
 function migrateRevision(data: unknown): unknown {

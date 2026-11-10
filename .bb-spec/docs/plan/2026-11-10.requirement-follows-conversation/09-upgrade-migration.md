@@ -12,15 +12,16 @@ description: data.db 从版本 10 迁到 11：原型看板转成按锚点记的�
 - 迁移前先备份 data.db（现有 `migrateRepositoryDatabases` 已做），在一次事务里转换，失败时库保持迁移前的样子，迁移框写明哪一步、为什么失败。
 - 短决定、提问、连续性事实、批准清单、需求记录、操作记录：内容和版本号都不动（批准依据链比对记录版本号，改了会失效）。它们没有 `line_anchor_members` 记录，按 01 的规则算作所有对话线共同的起点，在每条线上都算数。
 - 原型看板：每个需求的 `requirement_prototypes` 记录转成 05 定义的变动记录，转换后在任意对话线上叠加出来的看板和转换前逐项相同；然后删掉旧看板记录。`requirement_prototype_revisions`（批准快照）不动。
-- 每个已保存过的草稿需求建一个起点锚点（`line_anchors` 里 kind 为 save、parent 为 null、lineVersion 等于 requirements 行当前的版本号、fileCommit 等于 main、sequence 为 1），用新命名空间的 `create` 写入；否则升级后第一次保存版本号会从 2 重新算。
-- 需求简介（`requirement_summaries`）的键从需求编号改成 `<需求编号>:<正文哈希>`：每条旧简介按它所属需求 requirements 行 saved 的哈希换成新键（`create` 新键、`remove` 旧键），内容不动；需求没有 saved 时删掉这条旧简介。
+- 每个已保存过的草稿需求建一个起点锚点（`line_anchors` 里 kind 为 save、parent 为 null、lineVersion 等于 requirements 行当前的版本号、sequence 为 1），fileCommit 等于 requirements 行 saved 的提交（有原型迁移提交时等于那个迁移提交，它以 saved 的提交为父）；不用 main，因为升级前停在半路的保存可能已把 main 推到没记账的提交上。用新命名空间的 `create` 写入；否则升级后第一次保存版本号会从 2 重新算。
+- 需求简介（`requirement_summaries`）的键从需求编号改成 `<需求编号>:<正文哈希>`：每条旧简介按它自己记录里的 prdHash 换成新键（`create` 新键、`remove` 旧键），内容不动（新格式本来就是每一版正文各存一份）。
 - 升级前已有的需求保存操作记录（`requirement_service_operations`）都补一条 `line_operation_anchors`（新 UUIDv7 锚点，parent 为这个需求的起点锚点或 null，unchangedTip 为 null），否则续完或重放这些操作时找不到锚点记录。
 - 每个需求文件仓库（不论需求状态）的 main 如果不能从任何 `refs/lines/*` 到达，补一个 `refs/lines/<新 UUIDv7>` 指向它，之后才能在旧版本上分叉保存（02 的不变量要求）。
-- 草稿需求里已通过、未移除的原型（看板 entry.draft），把 HTML 文件从 `repos/<仓库>/prototypes/<需求>/<名>.v<N>.html` 搬进这个需求的文件仓库：在 `main` 上加一个 kind 为 migration 的提交，`main` 前移到它（02 的规则已写明这个例外）。原文件保留。DESIGN.md 已在升级前写进主仓库根目录，不进文件状态。
-- 已批准、正在关闭、已关闭的需求，迁移不改它们已有的记录和文件；只为它们补锚点：一个起点 save 锚点（lineVersion 等于 requirements 行版本号、fileCommit 等于需求文件仓库 main）和一个以它为父的 approval 锚点（fileCommit 同上），否则 08 建工作区、再批准时找不到批准锚点。
+- 草稿需求里已通过、未移除的原型（看板 entry.draft），把 HTML 文件从 `repos/<仓库>/prototypes/<需求>/<名>.v<N>.html` 搬进这个需求的文件仓库：加一个 kind 为 migration 的提交（父是 requirements 行 saved 的提交），不移动 main（和产品里的原型提交一样），用一个 `refs/lines/*` 引用让它可达。原文件保留；原文件不在时迁移失败，写明哪个需求、哪份原型、缺的路径，下一步写把文件放回原处后再迁移。没有 saved（正文仓库从没建起来）的需求跳过文件搬运。DESIGN.md 已在升级前写进主仓库根目录，不进文件状态。
+- 已批准、正在关闭、已关闭的需求，迁移不改它们已有的记录和文件；只为它们补锚点：起点 save 锚点（fileCommit 等于 approved 的提交）→ 以它为父的 approval 锚点（同一提交）；批准后又存了修订草稿（saved 和 approved 不同）时，再接一个 save 锚点（fileCommit 等于 saved 的提交、lineVersion 等于 requirements 行版本号）。否则 08 建工作区、再批准时找不到批准锚点。
 - 主仓库根目录的 DESIGN.md、AGENTS.md 迁移不碰。
 - 升级前的对话里没有锚点记录，回退到升级前的保存点时线尖就是最近一次保存，不插"已恢复"消息（01、07 的规则自然满足，迁移不用为此做事）。
 - 迁移框里"会丢掉的数据"这一项，这一步写"这次迁移不会丢数据。"
+- 文件搬运需要读的记录，是前面各步骤转换之后的样子：在一个最后回滚的事务里先跑前面步骤的转换，再读出来交给文件搬运。文件搬运的结果经步骤接口交给同一步骤的转换，不用模块级状态（多个仓库可能同时迁移）。
 - 文件搬运在数据库事务之前做，可重复执行：已经有迁移提交的需求跳过。数据库事务失败时，已搬进文件仓库的提交留着，下次迁移认出后跳过。
 - `OUTDATED_VERSIONS` 里补上 9、10，旧版本库打开时报"请迁移"而不是"不支持的版本"。
 

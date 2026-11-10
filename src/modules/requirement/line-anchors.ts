@@ -5,7 +5,6 @@ import { uuidv7 } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { checked, LineAnchorMemberRecord, LineAnchorRecord } from "./requirement-contracts.ts";
 import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
-import { REQUIREMENT_OPERATION_NAMESPACE } from "./requirement-coordination.ts";
 
 export const LINE_ANCHOR_ENTRY = "one-company.line-anchor";
 
@@ -33,7 +32,7 @@ const MEMBERS = "line_anchor_members";
 export function createLineAnchorIn(db: LocalDatabase, input: {
   repoId: string; requirementId: string; anchor: string; kind: LineAnchorRecord["kind"];
   line: readonly string[]; now: number; fileCommit?: string;
-}): LineAnchorRecord {
+} & ({ kind: "save"; saved: PrdReference } | { kind: Exclude<LineAnchorRecord["kind"], "save">; saved?: undefined })): LineAnchorRecord {
   const all = anchorsOf(db, input.requirementId);
   const parent = viewOf(all, input.line).tip;
   const record = checked(LineAnchorRecord, {
@@ -41,7 +40,7 @@ export function createLineAnchorIn(db: LocalDatabase, input: {
     parent: parent?.anchor ?? null, kind: input.kind,
     lineVersion: parent ? parent.lineVersion + (input.kind === "save" ? 1 : 0) : input.kind === "save" ? 2 : 1,
     sequence: all.reduce((max, record) => Math.max(max, record.sequence), 0) + 1,
-    fileCommit: input.fileCommit ?? parent?.fileCommit ?? null, createdAt: input.now,
+    fileCommit: input.fileCommit ?? parent?.fileCommit ?? null, saved: input.saved ?? null, createdAt: input.now,
   });
   db.create(ANCHORS, record.anchor, record);
   return record;
@@ -129,21 +128,14 @@ export const RESTORE_FAILURE = {
   gitUnreadable: "这条对话线上最后一次保存的正文在需求自己的 Git 仓库里读不出，改用最近一次保存的那份",
 } as const;
 
-export function savedHashAt(operations: Iterable<{ requirementId: string; git: { commit: string; hash: string } | null }>, requirementId: string, commit: string): string | undefined {
-  for (const operation of operations) if (operation.requirementId === requirementId && operation.git?.commit === commit) return operation.git.hash;
-  return undefined;
-}
-
 export interface DraftLineView { version: number; saved: PrdReference | null; fileCommit: string | null; tip: LineAnchorRecord | null; updatedAt: number; restoreFailure?: string }
 
 export function draftLineView(
-  row: Pick<StoredRecord<RequirementRecord>, "version" | "data">, anchors: LineAnchorRecord[], line: readonly string[], hashAt: (commit: string) => string | undefined,
-  forcedFailure?: string,
+  row: Pick<StoredRecord<RequirementRecord>, "version" | "data">, anchors: LineAnchorRecord[], line: readonly string[], forcedFailure?: string,
 ): DraftLineView {
   const rowSaved = row.data.saved;
   const last = line.at(-1);
   const latestSave = latestSaveOf(anchors);
-  const hashOf = (commit: string) => commit === rowSaved?.commit ? rowSaved.hash : hashAt(commit);
   let failure = forcedFailure;
   let tip = latestSave;
   if (last !== undefined && !failure) {
@@ -155,9 +147,8 @@ export function draftLineView(
   const byAnchor = new Map(anchors.map((record) => [record.anchor, record]));
   let save: LineAnchorRecord | null = tip;
   for (const seen = new Set<string>(); save && save.kind !== "save" && !seen.has(save.anchor); save = save.parent ? byAnchor.get(save.parent) ?? null : null) seen.add(save.anchor);
-  const savedCommit = save?.fileCommit ?? null;
-  const hash = savedCommit === null ? undefined : hashOf(savedCommit);
-  return { version: tip.lineVersion, saved: savedCommit !== null && hash !== undefined ? { commit: savedCommit, hash } : null, fileCommit: tip.fileCommit, tip, updatedAt: Math.max(row.data.createdAt, tip.createdAt), ...restore };
+  const saved = save?.saved ?? null;
+  return { version: tip.lineVersion, saved, fileCommit: tip.fileCommit, tip, updatedAt: Math.max(row.data.createdAt, tip.createdAt), ...restore };
 }
 
 export function draftLineViewIn(
@@ -167,8 +158,7 @@ export function draftLineViewIn(
   if (!anyLifecycle && row.data.lifecycle !== "draft") {
     return { version: row.version, saved: row.data.saved, fileCommit: viewOf(anchorsOf(db, requirementId), line).tip?.fileCommit ?? row.data.saved?.commit ?? null, tip: null, updatedAt: row.data.updatedAt };
   }
-  return draftLineView(row, anchorsOf(db, requirementId), line, (commit) =>
-    savedHashAt(db.list<{ requirementId: string; git: { commit: string; hash: string } | null }>(REQUIREMENT_OPERATION_NAMESPACE).map((stored) => stored.data), requirementId, commit), forcedFailure);
+  return draftLineView(row, anchorsOf(db, requirementId), line, forcedFailure);
 }
 
 export function readAnchorIn(db: LocalDatabase, anchor: string): LineAnchorRecord | null {
@@ -195,9 +185,7 @@ function rawAnchors(db: RawDb, requirementId: string): LineAnchorRecord[] {
 export function rawLineView(db: RawDb, row: Pick<StoredRecord<RequirementRecord>, "version" | "data">, line: readonly string[]): DraftLineView {
   const requirementId = row.data.requirementId;
   if (row.data.lifecycle !== "draft") return { version: row.version, saved: row.data.saved, fileCommit: row.data.saved?.commit ?? null, tip: null, updatedAt: row.data.updatedAt };
-  const operations = db.prepare("SELECT data FROM records WHERE namespace=? AND json_extract(data,'$.requirementId')=?").all(REQUIREMENT_OPERATION_NAMESPACE, requirementId)
-    .map((operation) => JSON.parse(String(operation.data)) as { requirementId: string; git: { commit: string; hash: string } | null });
-  return draftLineView(row, rawAnchors(db, requirementId), line, (commit) => savedHashAt(operations, requirementId, commit));
+  return draftLineView(row, rawAnchors(db, requirementId), line);
 }
 
 export function rawLineCounter(db: RawDb, requirementId: string, line: readonly string[]): (namespace: string, key: string) => boolean {
