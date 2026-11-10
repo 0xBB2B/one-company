@@ -72,13 +72,17 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "m
   const provider = registerControlledProvider(runtime, { providerId: `host-${uuidv7()}`, modelId: "controlled" });
   const registry = new ModelRegistry(runtime), model = runtime.getModels(provider.providerId)[0]!;
   const notifications: string[] = [], windows: ShownWindow[] = [];
+  const branch: Array<{ type: "custom"; customType: string; data: { repoId: string; requirementId: string; anchor: string }; id: string; parentId: string | null }> = [];
+  const appendEntry = vi.fn((customType: string, data: { repoId: string; requirementId: string; anchor: string }) => {
+    branch.push({ type: "custom", customType, data, id: uuidv7(), parentId: branch.at(-1)?.id ?? null });
+  });
   let windowAnswer: WindowDecision = true, beforeAnswer: (() => Promise<void>) | undefined;
   const ctx = { cwd: repositoryRoot, mode: "tui", hasUI: true, isProjectTrusted: () => false, modelRegistry: registry, model,
     ui: { notify: (text: string) => notifications.push(text), confirm: () => { throw new Error("UI.confirm forbidden"); },
       ...answeringUi(async (window) => { windows.push(window); await beforeAnswer?.(); return windowAnswer; }) },
-    sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
+    sessionManager: { getSessionId: () => sessionId, getBranch: () => branch } } as unknown as ExtensionContext;
   let reachable = true, hostPath = repositoryRoot;
-  const interaction = new MainRequirementInteraction({ mainThinking: () => "off", ...options, dataRoot, authorization,
+  const interaction = new MainRequirementInteraction({ mainThinking: () => "off", ...options, pi: { appendEntry } as never, dataRoot, authorization,
     resolveHost: () => { if (!reachable) throw new HostAuthorizationError("host_unavailable"); return { windowId, sessionId, repositories: new Map([[repoId, { path: hostPath }]]) }; } });
   cleanup.push(async () => { interaction.dispose(); authorization.shutdown(); await rm(root, { recursive: true, force: true }); });
   const manage = createRequirementManageTool({ interaction }), user = createUserInteractTool({ interaction });
@@ -102,7 +106,7 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "m
     ({ input: { requirementId: String(created.requirementId), savedOperationId: String(created.operationId), version: Number(created.version) } });
   const setReachable = (value: boolean) => { reachable = value; };
   const setHostPath = (value: string) => { hostPath = value; };
-  return { root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage, setReachable, setHostPath,
+  return { branch, appendEntry, root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage, setReachable, setHostPath,
     windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; }, beforeAnswer: (hook: () => Promise<void>) => { beforeAnswer = hook; } };
 }
 /** 明确fixture语义输出；调用仍经过真实ModelRegistry/provider与生产解释适配器。 */
@@ -330,7 +334,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(w.interaction.inputTargets()).toEqual([]);
   });
 
-  test("M8D-AC7：新建和修改草稿都要写简介，程序按当前草稿版本记下简介；缺简介时拒绝并写明缺哪个字段", async () => {
+  test("M8D-AC7：新建和修改草稿都要写简介，每一版各存一份，旧版本的简介按旧哈希仍能读到、新版本按新哈希读到；缺简介时拒绝并写明缺哪个字段", async () => {
     const w = await world();
     w.capture();
     await expect(w.call({ action: "create", title: "登录", body: BODY }))
@@ -344,7 +348,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
       title: "登录", body: BODY + "补充一句。\n" });
     const second = state.read(String(created.requirementId)).data.saved!.hash;
     expect(requirementSummary(w.dataRoot, w.repoId, String(created.requirementId), second)).toBe("手机号验证码登录，邮箱登录照旧");
-    expect(requirementSummary(w.dataRoot, w.repoId, String(created.requirementId), first)).toBeUndefined();
+    expect(requirementSummary(w.dataRoot, w.repoId, String(created.requirementId), first)).toBe("手机号登录，保留邮箱登录");
   });
 
   test("普通问答、未来闲聊、伪来源、无输入均不能create；只读metadata不建空库", async () => {
@@ -1648,7 +1652,7 @@ describe("编号由程序生成", () => {
     expect(await commits()).toBe(before);
   });
 
-  test("需求挂着一次没做完的 create 时调 updateDraft：被拒，建议用原来的动作续完", async () => {
+  test("需求挂着一次没做完的 create 时调 updateDraft：因需求还没有这个版本被拒，原因不带内部编号；用原标题正文再调 create 能续完", async () => {
     const w = await world(), state = await stateOf(w);
     allowDrafts(w);
     const pending = await leaveUnfinishedCreate(w, createParams());
@@ -1656,8 +1660,11 @@ describe("编号由程序生成", () => {
     const error = await w.call({ action: "updateDraft", requirementId: pending.requirementId, version: state.read(pending.requirementId).version,
       summary: "短信登录", title: "短信登录需求", body: BODY }).catch((caught: unknown) => caught);
     expect(error).toBeInstanceOf(Error);
-    expect(reasonOf(error)).toContain("这个需求还有一次没完成的保存");
-    expect(reasonOf(error)).toContain("原来的动作");
+    expect(reasonOf(error).trim()).not.toBe("");
+    expect(reasonOf(error)).not.toContain(pending.operationId);
+    expect(reasonOf(error)).not.toContain(pending.requirementId);
+    w.capture(); const resumed = await w.call(createParams());
+    expect(resumed).toMatchObject({ status: "created", operationId: pending.operationId, requirementId: pending.requirementId });
   });
 
   test("create 时填了不属于本窗口的仓库编号：先按仓库鉴权拒绝，不建出那个仓库的库", async () => {
@@ -1748,18 +1755,20 @@ describe("编号由程序生成", () => {
     allowDrafts(w);
     const operations = new RequirementOperations({ dataRoot: w.dataRoot, repoId: w.repoId });
     const hash = requirementIntentHash({ title: "短信登录需求", body: BODY });
-    expect(operations.pendingSave(String(created.requirementId))).toBeNull();
+    expect(operations.pendingSave(String(created.requirementId), [])).toBeNull();
     expect(operations.pendingCreate(hash)).toBeNull();
     const unfinished = await leaveUnfinishedUpdate(w, created);
-    expect(operations.pendingSave(String(created.requirementId))).toMatchObject({ operationId: unfinished, action: "updateDraft", finalVersion: null });
-    expect(operations.pendingSave(uuidv7())).toBeNull();
+    expect(operations.pendingSave(String(created.requirementId), [unfinished])).toMatchObject({ operationId: unfinished, action: "updateDraft", finalVersion: null });
+    expect(operations.pendingSave(String(created.requirementId), [String(created.operationId)])).toBeNull();
+    expect(operations.pendingSave(String(created.requirementId), [])).toBeNull();
+    expect(operations.pendingSave(uuidv7(), [unfinished])).toBeNull();
     const pendingCreate = await leaveUnfinishedCreate(w, createParams());
     expect(operations.pendingCreate(hash)).toMatchObject({ operationId: pendingCreate.operationId, action: "create", finalVersion: null });
-    expect(operations.pendingSave(pendingCreate.requirementId)).toMatchObject({ operationId: pendingCreate.operationId, action: "create" });
+    expect(operations.pendingSave(pendingCreate.requirementId, [pendingCreate.operationId])).toMatchObject({ operationId: pendingCreate.operationId, action: "create" });
     expect(operations.pendingCreate(requirementIntentHash({ title: "别的", body: BODY }))).toBeNull();
     w.capture(); await w.call(createParams());
     expect(operations.pendingCreate(hash)).toBeNull();
-    expect(operations.pendingSave(pendingCreate.requirementId)).toBeNull();
+    expect(operations.pendingSave(pendingCreate.requirementId, [pendingCreate.operationId])).toBeNull();
   });
 });
 
@@ -2395,5 +2404,182 @@ describe("补授权实施 authorizeImplement", () => {
     const error = await rejectionOf(authorize());
     expect(error.message).toContain("原因：需求不在生效状态（还是草稿、已关闭或已取消），不能补授权实施");
     expect(error.message).toContain("建议：草稿请用户批准时在同一句话里说'批准并开始实施'；已关闭或已取消的需求不能再授权");
+describe("需求草稿跟着对话线", () => {
+  const lineWorld = async () => {
+    const w = await world();
+    return { w, branch: w.branch, appendEntry: w.appendEntry };
+  };
+
+  test("保存草稿成功后把回执里的锚点追加进对话", async () => {
+    const { w, appendEntry } = await lineWorld();
+    const created = await w.create();
+    expect(appendEntry).toHaveBeenCalledTimes(1);
+    expect(appendEntry).toHaveBeenLastCalledWith("one-company.line-anchor", { repoId: w.repoId, requirementId: created.requirementId, anchor: created.anchor });
+    expect(created.anchor).toMatch(UUID_V7_PATTERN);
+
+    w.capture("标题改一下"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    const updated = await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version,
+      summary: "手机号登录，保留邮箱登录", title: "手机号登录", body: BODY });
+    expect(appendEntry).toHaveBeenCalledTimes(3);
+    expect(appendEntry.mock.calls.map((call) => call[0])).toContain("one-company.save-start");
+    expect(appendEntry).toHaveBeenLastCalledWith("one-company.line-anchor", { repoId: w.repoId, requirementId: created.requirementId, anchor: updated.anchor });
+    expect(updated.anchor).not.toBe(created.anchor);
+  });
+
+  test("两条线上标题不同时，list 和 mentionCandidates 按当前分支的线显示标题", async () => {
+    const { w, branch } = await lineWorld();
+    const created = await w.create();
+    w.capture("标题改一下"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call({ action: "updateDraft", requirementId: created.requirementId, version: created.version,
+      summary: "手机号登录，保留邮箱登录", title: "手机号登录", body: BODY });
+    const full = branch.slice();
+    const titles = async () => ({
+      candidates: (await w.interaction.mentionCandidates(w.ctx)).map((item) => item.title),
+      listed: ((await w.call({ action: "list" })).requirements as Array<{ title: string }>).map((item) => item.title),
+    });
+
+    expect(await titles()).toEqual({ candidates: ["手机号登录"], listed: ["手机号登录"] });
+    branch.splice(0, branch.length, full[0]!);
+    expect(await titles()).toEqual({ candidates: ["登录"], listed: ["登录"] });
+  });
+});
+
+describe("需求草稿跟着对话线：钉住、保存开始记录与半路保存", () => {
+  const allow = (w: World) => { w.provider.awaitReply = async () => ({ type: "text", text: '{"allow":true}' }); };
+  const draftCall = (created: Record<string, unknown>, version: unknown, body: string, title = "登录") =>
+    ({ action: "updateDraft", requirementId: String(created.requirementId), version: Number(version), summary: "手机号登录，保留邮箱登录", title, body });
+  const saveOn = async (w: World, created: Record<string, unknown>, version: unknown, body: string) => {
+    w.capture("改一下"); return w.call(draftCall(created, version, body));
+  };
+  const entriesOf = (w: World, customType: string) => w.branch.filter((entry) => entry.customType === customType);
+  const readOf = (w: World, created: Record<string, unknown>) => w.call({ action: "read", requirementId: String(created.requirementId), source: "saved" });
+  const metadataOf = (w: World, created: Record<string, unknown>) => w.call({ action: "metadata", requirementId: String(created.requirementId) });
+  const elsewhere = (w: World, created: Record<string, unknown>, version: number, body: string) =>
+    w.service.updateDraft({ requirementId: String(created.requirementId), operationId: uuidv7(), version, title: "别处的标题", body });
+  const leaveUnfinished = async (w: World, created: Record<string, unknown>, version: unknown, body: string, point: "saved-version" | "git-result") => {
+    const spy = point === "saved-version"
+      ? vi.spyOn(RequirementOperations.prototype, "recordSavedVersion").mockImplementationOnce(() => { throw new Error("injected saved-version failure"); })
+      : vi.spyOn(RequirementOperations.prototype, "recordGitResult").mockImplementationOnce(() => { throw new Error("injected git-result failure"); });
+    try { w.capture("改一下"); await expect(w.call(draftCall(created, version, body))).rejects.toThrow(); } finally { spy.mockRestore(); }
+  };
+
+  test("新开对话读别处保存的需求时把读到的那一版钉进对话；别处再保存后这条线仍读到钉住的版本，照它保存成功并读到自己的内容", async () => {
+    const w = await world(), created = await w.create(), n = Number(created.version);
+    allow(w);
+    w.branch.length = 0;
+    const first = await readOf(w, created);
+    expect(first.version).toBe(n);
+    expect(entriesOf(w, "one-company.line-anchor").map((entry) => entry.data)).toEqual([{ repoId: w.repoId, requirementId: created.requirementId, anchor: created.anchor }]);
+
+    await elsewhere(w, created, n, BODY + "别处的内容。\n");
+    expect((await readOf(w, created)).version).toBe(n);
+    const receipt = await saveOn(w, created, n, BODY + "这条线自己的内容。\n");
+    expect(Number(receipt.version)).toBe(n + 1);
+    const after = await readOf(w, created);
+    expect(after.version).toBe(n + 1);
+    expect(String(after.text)).toContain("这条线自己的内容");
+  });
+
+  test("线尖那一版的正文读不出时，read 与 metadata 都退回最近一次保存并带不含内部词的恢复失败原因，照显示的版本保存后不再带", async () => {
+    const w = await world(), created = await w.create();
+    allow(w);
+    const v3 = await saveOn(w, created, created.version, BODY + "第三版。\n");
+    const tip = entriesOf(w, "one-company.line-anchor").at(-1)!.data.anchor;
+    const other = await elsewhere(w, created, Number(v3.version), BODY + "别处第四版。\n");
+    const record = withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list<{ anchor: string; fileCommit: string }>("line_anchors")).map((row) => row.data).find((row) => row.anchor === tip)!;
+    const storage = join(w.dataRoot, "repos", w.repoId, "requirements", String(created.requirementId));
+    const blob = (await git(storage, ["rev-parse", `${record.fileCommit}:prd.md`]));
+    await rm(join(storage, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+
+    const snapshot = w.branch.slice();
+    const read = await readOf(w, created);
+    w.branch.splice(0, w.branch.length, ...snapshot);
+    const metadata = await metadataOf(w, created);
+    for (const result of [read, metadata]) {
+      expect(result.version).toBe(other.version);
+      expect(typeof result.restoreFailure).toBe("string");
+      const text = String(result.restoreFailure);
+      expect(text).not.toContain(tip);
+      expect(text).not.toMatch(/[0-9a-f]{40}/);
+      expect(text).not.toContain("锚点");
+      expect(text).not.toContain("线尖");
+    }
+
+    const saved = await saveOn(w, created, metadata.version, BODY + "照显示版本保存。\n");
+    expect(Number(saved.version)).toBe(Number(other.version) + 1);
+    expect(await readOf(w, created)).not.toHaveProperty("restoreFailure");
+  });
+
+  test("每次新保存前对话里先多一条保存开始记录，操作编号与这次保存回执一致", async () => {
+    const w = await world(), created = await w.create();
+    allow(w);
+    const receipt = await saveOn(w, created, created.version, BODY + "第三版。\n");
+    const startIndex = w.branch.findIndex((entry) => entry.customType === "one-company.save-start" && (entry.data as { operationId?: string }).operationId === receipt.operationId);
+    const anchorIndex = w.branch.findIndex((entry) => entry.customType === "one-company.line-anchor" && entry.data.anchor === receipt.anchor);
+    expect(startIndex).toBeGreaterThanOrEqual(0);
+    expect(startIndex).toBeLessThan(anchorIndex);
+    expect(w.branch[startIndex]!.data).toMatchObject({ repoId: w.repoId, requirementId: created.requirementId, operationId: receipt.operationId });
+  });
+
+  for (const [point, label] of [["saved-version", "Git 结果已记下"], ["git-result", "Git 结果没记下"]] as const) {
+    test(`别处停在半路的保存（${label}）：新开对话读到显示的版本后用不同正文保存成功，不报 requirement_write_pending`, async () => {
+      const w = await world(), created = await w.create();
+      allow(w);
+      await leaveUnfinished(w, created, created.version, BODY + "停在半路的内容。\n", point);
+      w.branch.length = 0;
+      const shown = await readOf(w, created);
+      const outcome = await saveOn(w, created, shown.version, BODY + "新开对话的内容。\n").then((r) => r, (e: unknown) => e);
+      expect(outcome).toMatchObject({ status: "saved" });
+    });
+  }
+
+  test("同一对话里保存停在半路：相同标题正文再保存续完并沿用原操作编号，不同正文被拒并写明有一次没完成的保存", async () => {
+    const w = await world(), created = await w.create();
+    allow(w);
+    const body = BODY + "停在半路的内容。\n";
+    await leaveUnfinished(w, created, created.version, body, "saved-version");
+    const [unfinished] = withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list<{ operationId: string; finalVersion: number | null }>(REQUIREMENT_OPERATION_NAMESPACE))
+      .filter((row) => row.data.finalVersion === null);
+
+    const metadata = await metadataOf(w, created);
+    w.capture("换个内容");
+    const error = await w.call(draftCall(created, metadata.version, BODY + "不同的内容。\n")).catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(`${(error as Error).message}\n${adviceOf(error)?.why ?? ""}\n${adviceOf(error)?.next ?? ""}`).toContain("这个需求还有一次没完成的保存");
+
+    const resumed = await saveOn(w, created, created.version, body);
+    expect(resumed).toMatchObject({ status: "saved" });
+    expect(resumed.operationId).toBe(unfinished!.data.operationId);
+  });
+
+  test("回退到早版本后保存停在半路，新开空线不读直接按 metadata 的版本保存：被拒时再读一次照新显示的版本保存必须成功", async () => {
+    const w = await world(), created = await w.create();
+    allow(w);
+    const v3 = await saveOn(w, created, created.version, BODY + "第三版。\n");
+    await saveOn(w, created, v3.version, BODY + "第四版。\n");
+    const cut = w.branch.findIndex((entry) => entry.customType === "one-company.line-anchor" && entry.data.anchor === created.anchor);
+    w.branch.splice(cut + 1);
+    await leaveUnfinished(w, created, created.version, BODY + "回退后停在半路的内容。\n", "saved-version");
+
+    w.branch.length = 0;
+    const shown = await metadataOf(w, created);
+    const first = await saveOn(w, created, shown.version, BODY + "空线的内容。\n");
+    expect(first).toMatchObject({ status: "saved" });
+    expect(Number(first.version)).toBe(Number(shown.version) + 1);
+  });
+
+  test("对话线上最后一个锚点在库里找不到：read 成功返回最近一次保存并带恢复失败原因，对话里钉住最近一次保存的锚点", async () => {
+    const w = await world(), created = await w.create();
+    allow(w);
+    const v3 = await saveOn(w, created, created.version, BODY + "第三版。\n");
+    w.branch.push({ type: "custom", customType: "one-company.line-anchor", data: { repoId: w.repoId, requirementId: String(created.requirementId), anchor: uuidv7() }, id: uuidv7(), parentId: w.branch.at(-1)?.id ?? null });
+    const before = entriesOf(w, "one-company.line-anchor").length;
+
+    const read = await readOf(w, created);
+    expect(read.version).toBe(v3.version);
+    expect(typeof read.restoreFailure).toBe("string");
+    const anchors = entriesOf(w, "one-company.line-anchor");
+    expect(anchors.length).toBe(before + 1);
+    expect(anchors.at(-1)!.data).toEqual({ repoId: w.repoId, requirementId: created.requirementId, anchor: v3.anchor });
   });
 });

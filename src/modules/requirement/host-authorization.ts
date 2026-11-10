@@ -4,7 +4,9 @@ import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { DatabaseSync } from "node:sqlite";
 import { repositoryDatabase, UUID_V7_PATTERN, withDatabase } from "../../core/storage/database.ts";
 import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "../../core/storage/database-paths.ts";
-import { checkRequirement } from "./requirement-contracts.ts";
+import { checked, checkRequirement, LineAnchorRecord } from "./requirement-contracts.ts";
+import { draftLineView, savedHashAt } from "./line-anchors.ts";
+import { REQUIREMENT_OPERATION_NAMESPACE } from "./requirement-coordination.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { checkInteraction, PendingQuestion, VOIDED_INPUT_NEXT } from "./user-interaction-format.ts";
 import { checkDecisionRecord, decisionDigest } from "./short-decision-format.ts";
@@ -169,12 +171,20 @@ export class HostAuthorizationManager {
       return result;
     } finally { db.close(); }
   }
-  snapshot(repoId: string, requirementId: string, sessionId: string): { id: string; version: number; data: RequirementRecord } {
+  /** 传了对话线时，草稿返回这条线上的视图：版本号和 saved 取这条线上最后一次保存；不传则是记录原样。 */
+  snapshot(repoId: string, requirementId: string, sessionId: string, line?: readonly string[]): { id: string; version: number; data: RequirementRecord } {
     this.assertRepository(repoId, sessionId);
     return this.#read(repoId, sessionId, (db) => {
       const row = db.prepare("SELECT id, version, data FROM records WHERE namespace='requirements' AND record_key=?").get(requirementId);
       if (!row || row.id !== requirementId || typeof row.data !== "string") throw new HostAuthorizationError("unknown_requirement");
-      return { id: requirementId, version: Number(row.version), data: checkRequirement(JSON.parse(row.data), requirementId, repoId) };
+      const record = { id: requirementId, version: Number(row.version), data: checkRequirement(JSON.parse(row.data), requirementId, repoId) };
+      if (line === undefined || record.data.lifecycle !== "draft") return record;
+      const anchors = db.prepare("SELECT data FROM records WHERE namespace='line_anchors' AND json_extract(data,'$.requirementId')=?").all(requirementId)
+        .map((anchor) => checked(LineAnchorRecord, JSON.parse(String(anchor.data))));
+      const operations = db.prepare("SELECT data FROM records WHERE namespace=? AND json_extract(data,'$.requirementId')=?").all(REQUIREMENT_OPERATION_NAMESPACE, requirementId)
+        .map((operation) => JSON.parse(String(operation.data)) as { requirementId: string; git: { commit: string; hash: string } | null });
+      const view = draftLineView(record, anchors, line, (commit) => savedHashAt(operations, requirementId, commit));
+      return { id: requirementId, version: view.version, data: { ...record.data, saved: view.saved, updatedAt: view.updatedAt } };
     });
   }
   /** 读取全部相关问题（包括旧基线）而非模型挑选的一题。 */

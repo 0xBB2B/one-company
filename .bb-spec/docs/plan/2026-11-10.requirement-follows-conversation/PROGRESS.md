@@ -3,7 +3,7 @@
 |---|---|---|---|
 | 01 | 01-line-anchor-foundation | done | 2026-11-10 |
 | 02 | 02-requirement-file-repo | done | 2026-11-10 |
-| 03 | 03-line-draft-save-read | pending | — |
+| 03 | 03-line-draft-save-read | done | 2026-11-10 |
 | 04 | 04-line-process-records | pending | — |
 | 05 | 05-line-prototype-board | pending | — |
 | 06 | 06-conventions-draft | pending | — |
@@ -11,7 +11,8 @@
 | 08 | 08-approved-files-into-branch | pending | — |
 | 09 | 09-upgrade-migration | pending | — |
 ## 当前
-准备执行 `03-line-draft-save-read.md`。
+准备执行 `04-line-process-records.md`。
+03 自修记录：随机失败根因是已批准需求误按对话线算版本，已修，两组测试连跑 5 遍全过。审查 3 轮发现：恢复失败只做一半、主窗口核对与保存核对各算各的视图、空线跟着“最近一次保存”漂移、别处半路保存卡住新对话、补记后版本号跳 2。用户 2026-11-10 决定两处设计：别处停在半路的保存由程序续完或作废（PRD 01 约束 16）；读到哪版就钉进对话（约束 5、14）。主窗口保存前写 one-company.save-start 记录，只有记过的才算能续。7 条旧测试按新规则改写。未处理的低风险：保存落库后守护进程断开或切模型时锚点没写进对话，这条线重读仍是旧版，再存会多出一版。下游注意：批准、提问、裁决链路仍用 requirements 行版本号（计划 04 改）；计划 09 要换需求简介的键、给旧操作记录补 line_operation_anchors。
 01 自修记录：审查发现 5 处实现偏差（重新批准丢内容、kind 类型推成 never、按时间戳判先后、全表扫描、首锚点非保存时版本号），自修 1 次后复审通过；锚点记录新增 sequence 字段。下游注意：createLineAnchorIn、attachRecordIn 必须在 db.transaction 里调用；批量判断用 lineViewIn + memberAnchorIn。
 02 自修记录：实现先加了"没传 anchor 就用 operationId 顶上"的兼容兜底，已删掉并让旧测试补传 UUIDv7 锚点；审查发现旧仓库分叉丢版本、逐引用起子进程变慢、重放拨回 main、草稿文件重试不比内容、底稿单独存在、分叉空提交 6 处，自修 1 次后复审通过。`verifyWorkingCopy` 的批准核对挪到计划 04；旧仓库 main 补 refs/lines 挪到计划 09。未补的低风险测试：历史里出现可执行位/软链接/子模块条目、保存时 main 被别的进程抢先挪动（审查已用临时脚本实测通过）。
 ## 阻塞

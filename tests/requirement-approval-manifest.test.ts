@@ -279,7 +279,7 @@ test("真实saved loader拒绝历史操作/任意ref，当前版本变化使旧C
     operationId: uuidv7() })).rejects.toMatchObject({ code: "saved_operation_mismatch" });
   await expect(f.service.loadConfirmationContext({ requirementId: f.saved.requirementId, savedOperationId: f.saved.operationId,
     operationId: uuidv7(), path: "prd.md" } as any)).rejects.toMatchObject({ code: "invalid_shape" });
-  await f.service.updateDraft({ requirementId: f.saved.requirementId, operationId: uuidv7(), version: f.context.version,
+  await f.service.updateDraft({ requirementId: f.saved.requirementId, operationId: uuidv7(), version: f.saved.version,
     title: f.input.title, body: f.input.body + "补充候选\n" });
   expect(f.document()).toBeNull();
   await expect(f.store.register(manifest)).rejects.toMatchObject({ code: "manifest_admission_required" });

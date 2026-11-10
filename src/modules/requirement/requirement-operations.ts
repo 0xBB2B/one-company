@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { checkRequirement, commit, counter, hash, id, object, positive } from "./requirement-contracts.ts";
 import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
@@ -13,11 +13,17 @@ import {
   REQUIREMENT_OPERATION_NAMESPACE,
   assertRequirementWriteOwnedIn,
   claimRequirementWriteIn,
+  processIsAlive,
   readRequirementWriteClaimIn,
+  releaseDeadRequirementWriteIn,
   releaseRequirementWriteIn,
 } from "./requirement-coordination.ts";
 import type { RequirementWriteOwner } from "./requirement-coordination.ts";
 import { PRD_ARCHIVE_DIRECTORY } from "../../core/policy/content-policy.ts";
+import { draftLineViewIn, latestSaveAnchorIn } from "./line-anchors.ts";
+import { recordSavedIn } from "./requirement-state.ts";
+
+const OPERATION_ANCHORS = "line_operation_anchors";
 
 const nullable = <T extends Parameters<typeof Type.Union>[0][number]>(schema: T) => Type.Union([schema, Type.Null()]);
 const action = Type.Union([Type.Literal("create"), Type.Literal("updateDraft")]);
@@ -93,7 +99,8 @@ export interface PrepareRequirementOperation {
   intentHash: string;
   targetHash: string;
   expectedParent: string | null;
-  saveVersion: number;
+  line: readonly string[];
+  lineVersion: number;
   epoch: number;
   archivePath: string;
   repositoryRoot: string;
@@ -135,7 +142,7 @@ function checkOperation(value: unknown): RequirementOperation {
   return operation;
 }
 
-function mutableFields(input: PrepareRequirementOperation) {
+function mutableFields(input: Omit<PrepareRequirementOperation, "line" | "lineVersion">) {
   return {
     operationId: input.operationId,
     action: input.action,
@@ -145,7 +152,6 @@ function mutableFields(input: PrepareRequirementOperation) {
     intentHash: input.intentHash,
     targetHash: input.targetHash,
     expectedParent: input.expectedParent,
-    saveVersion: input.saveVersion,
     epoch: input.epoch,
     archivePath: input.archivePath,
     repositoryRoot: input.repositoryRoot,
@@ -200,24 +206,30 @@ export class RequirementOperations {
         }
         return existing;
       }
-      const conflicting = db.list(NAMESPACE)
-        .map((stored) => checkOperation(stored.data))
-        .some((operation) => operation.requirementId === input.requirementId && operation.finalVersion === null);
-      if (conflicting || readRequirementWriteClaimIn(db, this.repoId, input.requirementId)) {
+      if (!db.read("requirements", input.requirementId)) throw new RequirementServiceError("unknown_requirement");
+      for (const stored of db.list(NAMESPACE)) {
+        const operation = checkOperation(stored.data);
+        if (operation.requirementId !== input.requirementId || operation.finalVersion !== null) continue;
+        const claim = readRequirementWriteClaimIn(db, this.repoId, input.requirementId);
+        if (claim !== null && processIsAlive(claim.data.pid)) throw new RequirementServiceError("requirement_write_busy");
+        this.settleAbandoned(db, { ...stored, data: operation });
+      }
+      if (readRequirementWriteClaimIn(db, this.repoId, input.requirementId)) {
         throw new RequirementServiceError("requirement_write_pending");
       }
-      const requirementStored = db.read("requirements", input.requirementId);
-      if (!requirementStored) throw new RequirementServiceError("unknown_requirement");
+      const requirementStored = db.read("requirements", input.requirementId)!;
       const requirement = checkRequirement(requirementStored.data, input.requirementId, input.repoId);
       available(requirement);
-      if (requirementStored.version !== input.saveVersion) throw new RequirementServiceError("stale_version");
+      const view = draftLineViewIn(db, { version: requirementStored.version, data: requirement }, input.line);
+      if (view.version !== input.lineVersion) throw new RequirementServiceError("stale_version");
       if (requirement.epoch !== input.epoch) throw new RequirementServiceError("epoch_changed");
-      const parent = requirement.saved?.commit ?? null;
-      if (parent !== input.expectedParent) throw new RequirementServiceError("saved_version_changed");
+      if (view.fileCommit !== input.expectedParent) throw new RequirementServiceError("saved_version_changed");
       const now = this.checkedNow();
+      const { line: _line, lineVersion: _lineVersion, ...fields } = input;
       const data: RequirementOperation = {
         format: "requirement-service-operation/v1",
-        ...input,
+        ...fields,
+        saveVersion: requirementStored.version,
         git: null,
         savedVersion: null,
         finalVersion: null,
@@ -226,9 +238,38 @@ export class RequirementOperations {
       };
       checkOperation(data);
       const stored = db.create(NAMESPACE, input.operationId, data, input.operationId);
+      const unchangedTip = input.action === "updateDraft" && view.saved?.hash === input.targetHash
+        ? requirement.lifecycle === "draft" ? view.tip : latestSaveAnchorIn(db, input.requirementId)
+        : null;
+      db.create(OPERATION_ANCHORS, input.operationId, { format: "line-operation-anchor/v1", requirementId: input.requirementId, anchor: uuidv7(), unchangedTip: unchangedTip?.anchor ?? null, parent: view.tip?.anchor ?? null });
       claimRequirementWriteIn(db, { ...owner, repoId: this.repoId, requirementId: input.requirementId, operationId: input.operationId, acquiredAt: now }, { allowDeadOriginalOperationRecovery: false });
       return stored;
     }));
+  }
+
+  private settleAbandoned(db: LocalDatabase, stored: StoredRecord<RequirementOperation>): void {
+    const operation = stored.data;
+    releaseDeadRequirementWriteIn(db, this.repoId, operation.requirementId);
+    const row = db.read<RequirementRecord>("requirements", operation.requirementId)!;
+    const anchors = db.read<{ anchor: string; parent: string | null }>(OPERATION_ANCHORS, operation.operationId);
+    const applied = db.read("requirement_operations", operation.operationId) !== null;
+    if (!operation.git || !anchors || (!applied && row.version !== operation.saveVersion)) {
+      db.remove(NAMESPACE, operation.operationId, stored.version);
+      if (anchors) db.remove(OPERATION_ANCHORS, operation.operationId, anchors.version);
+      return;
+    }
+    const unchanged = operation.git.status === "unchanged" && operation.action === "updateDraft";
+    const savedVersion = applied ? operation.saveVersion + (unchanged ? 0 : 1) : unchanged ? row.version : recordSavedIn(db, this.repoId, this.checkedNow(), { ...row, data: checkRequirement(row.data, operation.requirementId, this.repoId) }, {
+      requirementId: operation.requirementId,
+      version: operation.saveVersion,
+      operationId: operation.operationId,
+      reference: { commit: operation.git.commit, hash: operation.git.hash },
+      anchor: anchors.data.anchor,
+      line: anchors.data.parent ? [anchors.data.parent] : [],
+    }).version;
+    const settled = { ...operation, savedVersion, finalVersion: savedVersion, updatedAt: Math.max(operation.updatedAt, this.checkedNow()) };
+    checkOperation(settled);
+    db.update(NAMESPACE, operation.operationId, stored.version, settled);
   }
 
   claim(operationId: string, owner: RequirementWriteOwner): StoredRecord<RequirementOperation> {
@@ -245,11 +286,26 @@ export class RequirementOperations {
     }));
   }
 
-  pendingSave(requirementId: string): RequirementOperation | null {
+  pendingSave(requirementId: string, started: readonly string[]): RequirementOperation | null {
     if (!existsSync(this.path)) return null;
     return withDatabase(this.path, (db) => db.list(NAMESPACE)
       .map((stored) => checkOperation(stored.data))
-      .find((operation) => operation.requirementId === requirementId && operation.finalVersion === null) ?? null);
+      .find((operation) => operation.requirementId === requirementId && operation.finalVersion === null && started.includes(operation.operationId)) ?? null);
+  }
+
+  anchorOf(operationId: string): string {
+    const stored = this.anchorRecord(operationId);
+    return stored.unchangedTip ?? stored.anchor;
+  }
+
+  newAnchorOf(operationId: string): string { return this.anchorRecord(operationId).anchor; }
+
+  parentOf(operationId: string): string | null { return this.anchorRecord(operationId).parent; }
+
+  private anchorRecord(operationId: string): { anchor: string; unchangedTip: string | null; parent: string | null } {
+    const stored = withDatabase(this.path, (db) => db.read<{ anchor: string; unchangedTip: string | null; parent: string | null }>(OPERATION_ANCHORS, operationId));
+    if (!stored) throw new RequirementServiceError("operation_corrupt", "操作没有对应的锚点记录");
+    return stored.data;
   }
 
   pendingCreate(intentHash: string): Pick<RequirementOperation, "action" | "requestId"> & { operationId: string | null } | null {

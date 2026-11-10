@@ -219,7 +219,7 @@ for (const race of ["input", "session", "closing", "version", "revoke", "model"]
   if (race === "session") w.core.startSession({ sessionId: "new", windowId: "new" });
   if (race === "revoke") w.core.revoke();
   if (race === "model") w.setModel({ ...model, configurationHash: "b".repeat(64) });
-  if (race === "version") w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version, operationId: uuidv7(), reference: w.candidate.to });
+  if (race === "version") w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version, operationId: uuidv7(), reference: w.candidate.to, anchor: uuidv7(), line: [] });
   if (race === "closing") w.state.beginClose({ requirementId: w.basis.requirementId, version: w.basis.version, intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
   settle(JSON.stringify(w.output())); await expect(pending).rejects.toThrow(SPECIFIC_DENIAL); expect(w.records()).toEqual([]);
 });
@@ -448,7 +448,7 @@ async function documentWorld() {
   const title = "渐进登录", body = "前言：保留邮箱。\r\n# 手机号 {#A}\r\n实施手机号。😀\r\n# 微信 {#B}\r\n未决，不实施。\r\n";
   const partition = partitionPrdDocument(w.basis.requirementId, title, body);
   w.candidate.to.hash = partition.prdHash;
-  const saved = w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version, operationId: w.candidate.operationId, reference: w.candidate.to });
+  const saved = w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version, operationId: w.candidate.operationId, reference: w.candidate.to, anchor: uuidv7(), line: [] });
   Object.assign(w.basis, { version: saved.version, prd: saved.data.saved }); Object.assign(w.candidate, { from: saved.data.saved });
   w.context.document = { candidate: candidateBinding(w.candidate), title, body, partition };
   w.setOutput(result([
@@ -467,7 +467,7 @@ async function documentWorld() {
     document.partition = partitionPrdDocument(w.basis.requirementId, title, document.body);
     w.candidate.to = { commit: (Number.parseInt(w.candidate.to.commit[0]!, 16) + 1).toString(16).slice(-1).repeat(40), hash: document.partition.prdHash };
     w.candidate.operationId = uuidv7(); w.candidate.candidateId = uuidv7(); w.candidate.intentHash = decisionDigest(w.candidate.to);
-    const saved = w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version, operationId: w.candidate.operationId, reference: w.candidate.to });
+    const saved = w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version, operationId: w.candidate.operationId, reference: w.candidate.to, anchor: uuidv7(), line: [] });
     Object.assign(w.basis, { version: saved.version, prd: saved.data.saved }); Object.assign(w.candidate, { from: saved.data.saved });
     document.candidate = candidateBinding(w.candidate);
     for (const e of w.output().entries) e.candidateId = w.candidate.candidateId;
@@ -606,11 +606,11 @@ async function requestScopeWorld(shared = false, bConfirmed = false) {
   const title = "请求范围", body = "# A {#A}\n实施A。\n# B {#B}\n" + (bConfirmed ? "实施B。\n" : "B未决。\n") + (shared ? "# 共享约束 {#C}\n保留邮箱。\n" : "");
   const document = createPrdDocument(w.basis.requirementId, title, body);
   const stored = await createStoredPrd({ dataRoot: w.options.dataRoot, repoId: w.options.repoId,
-    requirementId: w.basis.requirementId, operationId: w.candidate.operationId, expectedParent: null,
+    requirementId: w.basis.requirementId, operationId: w.candidate.operationId, anchor: uuidv7(), expectedParent: null,
     bytes: document.bytes, worktreeRoots: [w.options.repositoryRoot], authorize: () => true });
   w.candidate.to = { commit: stored.commit, hash: stored.prdHash.slice(7) };
   const saved = w.state.recordSavedVersion({ requirementId: w.basis.requirementId, version: w.basis.version,
-    operationId: w.candidate.operationId, reference: w.candidate.to });
+    operationId: w.candidate.operationId, reference: w.candidate.to, anchor: uuidv7(), line: [] });
   Object.assign(w.basis, { version: saved.version, prd: saved.data.saved }); Object.assign(w.candidate, { from: saved.data.saved });
   const partition = partitionPrdDocument(w.basis.requirementId, title, body);
   w.context.document = { candidate: candidateBinding(w.candidate), title, body, partition };

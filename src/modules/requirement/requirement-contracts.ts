@@ -105,7 +105,7 @@ export const RequirementEvent = object({
 export type RequirementEvent = Static<typeof RequirementEvent>;
 export const commands = {
   reserve: object({ requestId: id, intentHash: hash }),
-  save: object({ requirementId: id, version: positive, operationId: id, reference: PrdReference }),
+  save: object({ requirementId: id, version: positive, operationId: id, reference: PrdReference, anchor: id, line: Type.Array(id) }),
   approve: object({ requirementId: id, version: positive, receiptId: id, reference: PrdReference,
     manifest: ApprovalManifestReferenceSchema, docSpec: Type.Optional(RequirementDocSpecSchema), prototypes: Type.Optional(hash) }),
   authorizeImplement: object({ requirementId: id, version: positive, receiptId: id, manifest: ApprovalManifestReferenceSchema }),

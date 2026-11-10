@@ -1,5 +1,7 @@
-import type { LocalDatabase } from "../../core/storage/database.ts";
+import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { checked, LineAnchorMemberRecord, LineAnchorRecord } from "./requirement-contracts.ts";
+import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
+import { REQUIREMENT_OPERATION_NAMESPACE } from "./requirement-coordination.ts";
 
 export const LINE_ANCHOR_ENTRY = "one-company.line-anchor";
 
@@ -50,7 +52,7 @@ function viewOf(all: LineAnchorRecord[], line: readonly string[]): { tip: LineAn
   }
   let tip: LineAnchorRecord | null = null;
   for (let i = line.length - 1; i >= 0 && !tip; i--) tip = byAnchor.get(line[i]!) ?? null;
-  tip ??= pick(all.filter((record) => record.kind === "save"), (a, b) => a > b);
+  tip ??= latestSaveOf(all);
   return { tip, counted: ancestorsOf(tip), version: tip?.lineVersion ?? null };
 }
 
@@ -62,8 +64,12 @@ export function memberAnchorIn(db: LocalDatabase, namespace: string, key: string
   return db.read<{ anchor: string }>(MEMBERS, `${namespace}:${key}`)?.data.anchor ?? null;
 }
 
+function latestSaveOf(anchors: readonly LineAnchorRecord[]): LineAnchorRecord | null {
+  return anchors.filter((record) => record.kind === "save").reduce<LineAnchorRecord | null>((best, record) => !best || record.sequence > best.sequence ? record : best, null);
+}
+
 export function latestSaveAnchorIn(db: LocalDatabase, requirementId: string): LineAnchorRecord | null {
-  return anchorsOf(db, requirementId).filter((record) => record.kind === "save").reduce<LineAnchorRecord | null>((best, record) => !best || record.sequence > best.sequence ? record : best, null);
+  return latestSaveOf(anchorsOf(db, requirementId));
 }
 
 export function resolveLineTipIn(db: LocalDatabase, requirementId: string, line: readonly string[]): LineAnchorRecord | null {
@@ -81,4 +87,50 @@ export function isRecordCountedIn(db: LocalDatabase, input: { namespace: string;
 
 export function lineVersionIn(db: LocalDatabase, requirementId: string, line: readonly string[]): number | null {
   return lineViewIn(db, requirementId, line).version;
+}
+
+export const RESTORE_FAILURE = {
+  anchorMissing: "这条对话线上最后一次保存的记录在库里找不到，改用最近一次保存的那份",
+  gitUnreadable: "这条对话线上最后一次保存的正文在需求自己的 Git 仓库里读不出，改用最近一次保存的那份",
+} as const;
+
+export function savedHashAt(operations: Iterable<{ requirementId: string; git: { commit: string; hash: string } | null }>, requirementId: string, commit: string): string | undefined {
+  for (const operation of operations) if (operation.requirementId === requirementId && operation.git?.commit === commit) return operation.git.hash;
+  return undefined;
+}
+
+export interface DraftLineView { version: number; saved: PrdReference | null; fileCommit: string | null; tip: LineAnchorRecord | null; updatedAt: number; restoreFailure?: string }
+
+export function draftLineView(
+  row: Pick<StoredRecord<RequirementRecord>, "version" | "data">, anchors: LineAnchorRecord[], line: readonly string[], hashAt: (commit: string) => string | undefined,
+  forcedFailure?: string,
+): DraftLineView {
+  const rowSaved = row.data.saved;
+  const last = line.at(-1);
+  const latestSave = latestSaveOf(anchors);
+  const hashOf = (tip: LineAnchorRecord) => tip.fileCommit === null ? undefined : tip.fileCommit === rowSaved?.commit ? rowSaved.hash : hashAt(tip.fileCommit);
+  let failure = forcedFailure;
+  let tip = latestSave;
+  if (last !== undefined && !failure) {
+    if (!anchors.some((record) => record.anchor === last)) failure = RESTORE_FAILURE.anchorMissing;
+    else tip = viewOf(anchors, line).tip;
+  }
+  const restore = failure ? { restoreFailure: failure } : {};
+  if (!tip) return { version: row.version, saved: rowSaved, fileCommit: rowSaved?.commit ?? null, tip: null, updatedAt: row.data.updatedAt, ...restore };
+  const commit = tip.fileCommit;
+  const hash = hashOf(tip);
+  return { version: tip.lineVersion, saved: commit !== null && hash !== undefined ? { commit, hash } : null, fileCommit: commit, tip, updatedAt: tip.createdAt, ...restore };
+}
+
+export function draftLineViewIn(
+  db: LocalDatabase, row: Pick<StoredRecord<RequirementRecord>, "version" | "data">, line: readonly string[], anyLifecycle = false, forcedFailure?: string,
+): DraftLineView {
+  const requirementId = row.data.requirementId;
+  if (!anyLifecycle && row.data.lifecycle !== "draft") return { version: row.version, saved: row.data.saved, fileCommit: row.data.saved?.commit ?? null, tip: null, updatedAt: row.data.updatedAt };
+  return draftLineView(row, anchorsOf(db, requirementId), line, (commit) =>
+    savedHashAt(db.list<{ requirementId: string; git: { commit: string; hash: string } | null }>(REQUIREMENT_OPERATION_NAMESPACE).map((stored) => stored.data), requirementId, commit), forcedFailure);
+}
+
+export function readAnchorIn(db: LocalDatabase, anchor: string): LineAnchorRecord | null {
+  return db.read<LineAnchorRecord>(ANCHORS, anchor)?.data ?? null;
 }

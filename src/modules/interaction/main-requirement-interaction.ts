@@ -11,13 +11,13 @@ import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { adviceOf } from "../../core/exec/tool-failure.ts";
 import type { Context } from "@earendil-works/pi-ai";
 import { readProjectTrust } from "../../core/host/project-trust.ts";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostAuthorizationError, HostAuthorizationManager } from "../requirement/host-authorization.ts";
 import { RequirementService } from "../requirement/requirement-service.ts";
 import { RequirementOperations } from "../requirement/requirement-operations.ts";
 import type { RequirementServiceOptions } from "../requirement/requirement-service.ts";
 import type { ConfirmationContext, CreateRequirementInput, UpdateDraftInput, LoadConfirmationInput, ServiceAuthorizationRequest } from "../requirement/requirement-manage-contracts.ts";
-import { requirementIntentHash, RequirementServiceError } from "../requirement/requirement-manage-contracts.ts";
+import { requirementIntentHash } from "../requirement/requirement-manage-contracts.ts";
 import { UserInteractionCore } from "./user-interaction.ts";
 import { partitionPrdDocument, prdSectionsProblem } from "../requirement/prd-view.ts";
 import { RequirementDocError, resolveRepositoryRequirementDoc } from "../requirement/requirement-doc.ts";
@@ -40,6 +40,8 @@ import type { ApprovalManifestReference } from "../requirement/approval-manifest
 import { approvalManifestReference, confirmed, implementGoalUnitIds, manifestAuthorizesImplement, supplementImplementAction } from "../requirement/approval-manifest.ts";
 import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from "../panel/adjudication.ts";
 import { requirementSummary, saveRequirementSummary } from "../requirement/requirement-summary.ts";
+import { draftLineViewIn } from "../requirement/line-anchors.ts";
+import { currentLine, recordLineAnchor, recordSaveStart, startedSaves } from "./conversation-line.ts";
 import { askWindow, confirmWindow, mutedLines } from "../../core/host/question-window.ts";
 import type { WindowAnswer } from "../../core/host/question-window.ts";
 import type { WindowLine } from "../../core/host/question-window.ts";
@@ -64,7 +66,9 @@ export interface MainRequirementInteractionOptions {
   resolveHost: (ctx: ExtensionContext) => RequirementManageHostContext;
   openService?: OpenRequirementService;
   now?: () => number;
+  pi: Pick<ExtensionAPI, "appendEntry">;
 }
+interface HostView extends RequirementManageHostContext { lines(): Record<string, string[]>; started(): Record<string, string[]> }
 type PanelDecision = { itemId: string; itemVersion: string; techApproval?: true };
 interface CapturedInput {
   event: { source: "interactive"; text: string };
@@ -83,7 +87,7 @@ interface Delivery { sessionId: string; windowId: string; generation: number; re
 interface RecordProof { namespace: string; key: string; id: string; version: number; hash: string }
 type ResultScope = { kind: "registered"; proof: RegisteredScopeReturnProof } | { kind: "approved"; scope: RequirementApprovalScope } | { kind: "none" };
 interface HostResultProof {
-  repoId: string; record: StoredRecord<RequirementRecord>; resultHash: string; rows: RecordProof[]; scope: ResultScope;
+  repoId: string; record: StoredRecord<RequirementRecord>; line: readonly string[] | undefined; resultHash: string; rows: RecordProof[]; scope: ResultScope;
   sessionId: string; windowId: string; manager: object; repositoryPath: string;
   generation: number; authorizationGeneration: number;
 }
@@ -227,7 +231,7 @@ export class MainRequirementInteraction {
     const host = this.#host(ctx), drafts: Array<{ title: string; version: number }> = [];
     for (const item of await this.mentionCandidates(ctx)) {
       if (item.repoId === repoId && item.requirementId === requirementId) continue;
-      const record = this.#authorization.snapshot(item.repoId, item.requirementId, host.sessionId);
+      const record = this.#authorization.snapshot(item.repoId, item.requirementId, host.sessionId, host.lines()[item.requirementId] ?? []);
       if (record.data.saved && record.data.saved.hash !== record.data.approved?.hash) drafts.push({ title: item.title, version: record.data.revision + 1 });
     }
     return drafts.slice(0, 32);
@@ -239,13 +243,13 @@ export class MainRequirementInteraction {
     return resolveInternalModel({ role, agentDir: dirname(this.#options.dataRoot), repositoryRoot,
       projectTrusted: readProjectTrust(dirname(this.#options.dataRoot), repositoryRoot).trust === "trusted", registry: ctx.modelRegistry, mainModel: ctx.model, mainThinking: this.#options.mainThinking() });
   }
-  async #requirementTitle(host: RequirementManageHostContext, repoId: string, requirementId: string): Promise<string | undefined> {
-    const hash = this.#authorization.snapshot(repoId, requirementId, host.sessionId).data.saved?.hash;
+  async #requirementTitle(host: HostView, repoId: string, requirementId: string): Promise<string | undefined> {
+    const hash = this.#authorization.snapshot(repoId, requirementId, host.sessionId, host.lines()[requirementId] ?? []).data.saved?.hash;
     const repository = host.repositories.get(repoId);
     if (!hash || !repository) return undefined;
     let cached = this.#titles.get(requirementId);
     if (cached?.hash !== hash) {
-      const service = await (this.#options.openService ?? RequirementService.open)({ repositoryRoot: repository.path, dataRoot: this.#options.dataRoot, repoId,
+      const service = await (this.#options.openService ?? RequirementService.open)({ repositoryRoot: repository.path, dataRoot: this.#options.dataRoot, repoId, lines: host.lines(),
         authorize: (request) => request.repoId === repoId && ["metadata", "readSaved"].includes(request.action)
           && (request.requirementId === undefined || request.requirementId === requirementId) });
       cached = { hash, title: (await service.read({ requirementId, source: "saved" })).title };
@@ -255,12 +259,12 @@ export class MainRequirementInteraction {
   }
   /** 面板打开事项时由宿主记下；用户随后的回答就是对这个事项的裁决。 */
   noteOpenedItem(item: { repoId: string; requirementId: string; itemId: string }): void { this.#openedItem = Object.freeze({ ...item }); }
-  #host(ctx: ExtensionContext): RequirementManageHostContext {
+  #host(ctx: ExtensionContext): HostView {
     const host = this.#options.resolveHost(ctx), sessionId = ctx.sessionManager.getSessionId();
     const principal = this.#authorization.assertCurrentSession(sessionId);
     if (host.sessionId !== sessionId || host.windowId !== principal.windowId ||
       [...host.repositories.keys()].some((repoId) => !principal.repoIds.includes(repoId))) denied("stale_host");
-    return host;
+    return { ...host, lines: () => currentLine(ctx.sessionManager), started: () => startedSaves(ctx.sessionManager) };
   }
   #live(ctx: ExtensionContext, host: RequirementManageHostContext, generation: number): void {
     const current = this.#host(ctx);
@@ -278,8 +282,8 @@ export class MainRequirementInteraction {
       throw error;
     }
   }
-  #snapshot(host: RequirementManageHostContext, repoId: string, requirementId: string, active = true) {
-    const record = this.#authorization.snapshot(repoId, requirementId, host.sessionId);
+  #snapshot(host: HostView, repoId: string, requirementId: string, active = true, onLine = true) {
+    const record = this.#authorization.snapshot(repoId, requirementId, host.sessionId, onLine ? host.lines()[requirementId] ?? [] : undefined);
     if (active && (!["draft", "active"].includes(record.data.lifecycle) || record.data.recovery !== "ready")) denied("lifecycle_denied");
     return record;
   }
@@ -295,21 +299,27 @@ export class MainRequirementInteraction {
       return rows;
     }));
   }
+  #lined(db: LocalDatabase, row: StoredRecord<RequirementRecord>, line: readonly string[]): StoredRecord<RequirementRecord> {
+    const view = draftLineViewIn(db, row, line);
+    return { ...row, version: view.version, data: { ...row.data, saved: view.saved, updatedAt: view.updatedAt } };
+  }
   #checkProof(db: LocalDatabase, proof: HostResultProof): void {
-    const current = db.read("requirements", proof.record.id);
+    const stored = db.read<RequirementRecord>("requirements", proof.record.id);
+    const current = stored && proof.line ? this.#lined(db, stored, proof.line) : stored;
     if (!current || current.id !== proof.record.id || current.version !== proof.record.version || !same(current.data, proof.record.data)) denied("stale_result");
     for (const row of proof.rows) if (!same(this.#row(db, row.namespace, row.key), row)) denied("result_records_changed");
     if (proof.scope.kind === "approved") assertApprovalScopeReturnIn(db, proof.repoId, proof.record, proof.scope.scope);
     if (proof.scope.kind === "registered") assertRegisteredScopeReturnIn(db, proof.repoId, proof.record, proof.scope.proof);
   }
-  #prove<T extends object>(ctx: ExtensionContext, repoId: string, result: T, scope?: ResultScope, rows: RecordProof[] = []): T {
+  #prove<T extends object>(ctx: ExtensionContext, repoId: string, result: T, scope?: ResultScope, rows: RecordProof[] = [], onLine = true): T {
     const generation = this.#generation, authorizationGeneration = this.#authorization.generation;
     const host = this.#host(ctx);
     const r = result as Record<string, unknown>, requirementId = String(r.requirementId);
-    const before = this.#snapshot(host, repoId, requirementId, false);
+    const before = this.#snapshot(host, repoId, requirementId, false, onLine), line = onLine ? host.lines()[requirementId] ?? [] : undefined;
     const material = this.#resultCheck(result, ctx, host, repoId);
     withDatabase(repositoryDatabase(this.#options.dataRoot, repoId), (db) => db.transaction(() => {
-      const current = db.read("requirements", requirementId);
+      const stored = db.read<RequirementRecord>("requirements", requirementId);
+      const current = stored && line ? this.#lined(db, stored, line) : stored;
       if (!current || current.id !== requirementId || current.version !== before.version || !same(current.data, before.data) ||
         current.version !== r.version || before.data.epoch !== r.epoch) denied("stale_result");
       const record = { ...current, data: checkRequirement(current.data, requirementId, repoId) };
@@ -325,7 +335,7 @@ export class MainRequirementInteraction {
         const snapshots = (manifestRow.data as { decisionRecords: Array<{ id: string }> }).decisionRecords;
         for (const d of snapshots) allRows.push(this.#row(db, "short_decisions", d.id));
       }
-      const proof: HostResultProof = { repoId, record: structuredClone(record), resultHash: material.resultHash, rows: allRows, scope: structuredClone(actualScope),
+      const proof: HostResultProof = { repoId, record: structuredClone(record), line, resultHash: material.resultHash, rows: allRows, scope: structuredClone(actualScope),
         sessionId: material.sessionId, windowId: material.windowId, manager: material.manager,
         repositoryPath: material.repositoryPath ?? "", generation, authorizationGeneration };
       this.#checkProof(db, proof);
@@ -367,7 +377,7 @@ export class MainRequirementInteraction {
     this.#authorization.assertRepository(repoId, host.sessionId);
     const repository = host.repositories.get(repoId); if (!repository) return denied("foreign_repo");
     const service = await (this.#options.openService ?? RequirementService.open)({ repositoryRoot: repository.path,
-      dataRoot: this.#options.dataRoot, repoId, authorizeManifest, localMutationOrigin,
+      dataRoot: this.#options.dataRoot, repoId, authorizeManifest, localMutationOrigin, lines: host.lines(),
       authorize: (request) => {
         try {
           this.#live(ctx, host, generation);
@@ -382,7 +392,7 @@ export class MainRequirementInteraction {
     const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === "readSaved" || r.action === "metadata");
     const loaded = await service.loadConfirmationContext({ requirementId: request.requirementId, savedOperationId: request.savedOperationId, operationId: request.operationId });
     if (loaded.version !== request.version || loaded.requirementId !== request.requirementId || loaded.repoId !== request.repoId) denied("stale_candidate");
-    const actual = this.#snapshot(this.#host(ctx), request.repoId, request.requirementId);
+    const actual = this.#snapshot(this.#host(ctx), request.repoId, request.requirementId, true, false);
     if (actual.version !== loaded.version || actual.data.epoch !== loaded.epoch || !same(actual.data.saved, loaded.saved)) denied("stale_candidate");
     return loaded;
   }
@@ -516,9 +526,9 @@ export class MainRequirementInteraction {
   async draft(ctx: ExtensionContext, repoId: string, action: "create" | "updateDraft", draftInput: Omit<CreateRequirementInput, "requestId" | "operationId"> | Omit<UpdateDraftInput, "operationId">, summary: string) {
     this.#authorization.assertRepository(repoId, this.#host(ctx).sessionId);
     const operations = new RequirementOperations({ dataRoot: this.#options.dataRoot, repoId });
+    const savedId = (draftInput as Omit<UpdateDraftInput, "operationId">).requirementId;
     const unfinished = action === "create" ? operations.pendingCreate(requirementIntentHash({ title: draftInput.title, body: draftInput.body }))
-      : operations.pendingSave((draftInput as Omit<UpdateDraftInput, "operationId">).requirementId);
-    if (unfinished && unfinished.action !== action) throw new RequirementServiceError("requirement_write_pending", `那次是 ${unfinished.action}，用 ${unfinished.action} 续完`);
+      : operations.pendingSave(savedId, this.#host(ctx).started()[savedId] ?? []);
     const input = { ...draftInput, operationId: unfinished?.operationId ?? uuidv7(),
       ...(action === "create" ? { requestId: unfinished?.requestId ?? uuidv7() } : {}) } as CreateRequirementInput | UpdateDraftInput;
     const host = this.#host(ctx), generation = this.#generation;
@@ -546,8 +556,10 @@ export class MainRequirementInteraction {
       if (this.#currentInput(ctx) !== captured || r.action !== action || r.operationId !== input.operationId || r.intentHash !== intentHash) return false;
       return action === "create" ? r.requestId === (input as CreateRequirementInput).requestId : r.version === (input as UpdateDraftInput).version;
     }, undefined, pending?.origin);
+    if (action === "updateDraft" && !unfinished) recordSaveStart(this.#options.pi, { repoId, requirementId: savedId, operationId: input.operationId });
     const receipt = action === "create" ? await service.create(input as CreateRequirementInput) : await service.updateDraft(input as UpdateDraftInput);
     this.#live(ctx, host, generation);
+    recordLineAnchor(this.#options.pi, { repoId, requirementId: receipt.requirementId, anchor: receipt.anchor });
     const current = this.#snapshot(host, repoId, receipt.requirementId);
     if (current.version !== receipt.version || current.data.epoch !== receipt.epoch) denied("stale_result");
     saveRequirementSummary(this.#options.dataRoot, repoId, receipt.requirementId, receipt.prdHash, summary);
@@ -671,7 +683,7 @@ export class MainRequirementInteraction {
         ...(notRecorded.length ? { notRecorded } : {}) }, undefined, this.#decisionProofs(repoId, saved.decisionIds, saved.operationId));
     } finally { this.#implementAuthorization = undefined; }
   }
-  async #implementWindowLines(host: RequirementManageHostContext, repoId: string, requirementId: string, record: StoredRecord<RequirementRecord>): Promise<WindowLine[]> {
+  async #implementWindowLines(host: HostView, repoId: string, requirementId: string, record: StoredRecord<RequirementRecord>): Promise<WindowLine[]> {
     const title = await this.#requirementTitle(host, repoId, requirementId);
     const summary = record.data.saved ? requirementSummary(this.#options.dataRoot, repoId, requirementId, record.data.saved.hash) : undefined;
     return [{ text: `需求：${title}（已批准第 ${record.data.revision} 版）` },
@@ -683,7 +695,7 @@ export class MainRequirementInteraction {
     if (this.#capability && this.#interpreted?.repoId === request.repoId && this.#interpreted.requirementId === request.requirementId) request = { ...request, operationId: this.#interpreted.operationId };
     this.#candidate = { ...request };
     const loaded = await this.#load(ctx, request), core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
-    const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);
+    const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId, true, false);
     let docSpec = record.data.docSpec;
     try { docSpec ??= (await resolveRepositoryRequirementDoc(this.#options.dataRoot, host.repositories.get(request.repoId)!.path)).spec; }
     catch (error) { if (error instanceof RequirementDocError) throw new HostAuthorizationError(error.code, error.message); throw error; }
@@ -725,7 +737,7 @@ export class MainRequirementInteraction {
       this.#capability = undefined; this.#interpretation = undefined;
       return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
         version: loaded.version, epoch: loaded.epoch, targetRecorded: false, prdActivated: false, decisionIds: [], blockedBy: "candidate_requires_revision_or_clarification",
-        blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, []) });
+        blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, []) }, undefined, [], false);
     }
     const saved = core.save(capability);
     const decisionProofs = this.#decisionProofs(request.repoId, saved.decisionIds, saved.operationId);
@@ -735,7 +747,7 @@ export class MainRequirementInteraction {
     const base = { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
       version: loaded.version, epoch: loaded.epoch, targetRecorded, prdActivated: false, decisionIds: saved.decisionIds };
     if (!document) return this.#prove(ctx, request.repoId, { ...base, blockedBy: "candidate_requires_revision_or_clarification",
-      blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, saved.decisionIds) }, undefined, decisionProofs);
+      blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, saved.decisionIds) }, undefined, decisionProofs, false);
     const reference = approvalManifestReference(document.manifest);
     const authorizeManifest: NonNullable<RequirementServiceOptions["authorizeManifest"]> = (r) => {
       const current = core.authorizeDocument(capability, loaded);
@@ -753,9 +765,9 @@ export class MainRequirementInteraction {
     await store.register(document.manifest);
     const registered: ResultScope = { kind: "registered", proof: { reference, admission: { receiptId: document.authorization.receiptId, version: loaded.version, epoch: loaded.epoch, inputProof: document.authorization.inputProof }, summary } };
     if (!targetRecorded) return this.#prove(ctx, request.repoId, { ...base,
-      scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "explicit_target_required" }, registered, decisionProofs);
+      scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "explicit_target_required" }, registered, decisionProofs, false);
     if (input.fromQuestionWindow) return this.#prove(ctx, request.repoId, { ...base,
-      scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "window_answer_not_decision" }, registered, decisionProofs);
+      scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "window_answer_not_decision" }, registered, decisionProofs, false);
     const receiptId = document.authorization.receiptId;
     const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === "confirmUpdate" &&
       r.operationId === request.operationId && r.version === loaded.version && r.intentHash === loaded.candidate.intentHash &&
@@ -772,7 +784,7 @@ export class MainRequirementInteraction {
     return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prdActivated: true,
       implementAuthorization: authorized ? "已授权实施" : "没有授权实施",
       ...(authorized ? {} : { next: "需求已生效但没有授权实施：不建工作区、不派 PM；告诉用户要开始实施就说'授权实施'；等用户说了，再用 authorizeImplement 登记" }) },
-      { kind: "approved", scope: { status: "available", summary } }, decisionProofs);
+      { kind: "approved", scope: { status: "available", summary } }, decisionProofs, false);
   }
   #prototypeLines(items: DraftItem[], revision: number): WindowLine[] {
     const order = { new: 0, kept: 1, removed: 2 } as const;
@@ -820,12 +832,12 @@ export class MainRequirementInteraction {
       proposal: { conclusion, scope: request.scope, references: [], supersedes: [] }, unitIds: request.unitIds, actions: request.actions, partition: loaded.partition }));
     // 新问题改变解释范围；只能由之后真实收到的输入回答，不能沿用提问前能力。
     core.revoke(); this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined;
-    const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);
+    const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId, true, false);
     const caption = `${loaded.title}（第 ${record.data.revision + 1} 版）`;
     const answer = toAnswer(await open(caption));
     if (answer) this.#adoptQuestionAnswer(answer.text, host, ctx);
     return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: loaded.version, epoch: loaded.epoch, requestId: question.requestId,
-      caption, question: questionText, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false });
+      caption, question: questionText, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false }, undefined, [], false);
   }
   /** 整份草稿没能确认时，由程序按记录写明挡住的段落：以前登记的决定对不上的，和这次解读仍待定的；待定段落附上解读模型写的理由，供主代理决定问用户什么。 */
   #blockedReason(request: ConfirmationRequest, loaded: ConfirmationContext, interpretation: InteractionInterpretation, sessionId: string, justSaved: string[]): string {
@@ -925,15 +937,22 @@ export class MainRequirementInteraction {
       ...(panelDecision ? { panelDecision } : {}) };
     this.#inputTargets = []; this.#addressed.clear(); this.#ctx = ctx;
   }
+  #pinned<T extends { requirementId: string; lineAnchor?: string }>(ctx: ExtensionContext, repoId: string, result: T): Omit<T, "lineAnchor"> {
+    const { lineAnchor, ...rest } = result;
+    if (lineAnchor !== undefined && this.#host(ctx).lines()[result.requirementId]?.at(-1) !== lineAnchor) {
+      recordLineAnchor(this.#options.pi, { repoId, requirementId: result.requirementId, anchor: lineAnchor });
+    }
+    return rest;
+  }
   async metadata(ctx: ExtensionContext, repoId: string, requirementId: string) {
     const before = this.#snapshot(this.#host(ctx), repoId, requirementId, false);
     if (["closing", "closed"].includes(before.data.lifecycle)) return this.#prove(ctx, repoId, { requirementId, lifecycle: before.data.lifecycle, version: before.version, epoch: before.data.epoch });
     const service = await this.#service(ctx, repoId, requirementId, (r) => r.action === "metadata");
-    const result = await service.metadata(requirementId);
-    return this.#prove(ctx, repoId, result);
+    return this.#prove(ctx, repoId, this.#pinned(ctx, repoId, await service.metadata(requirementId)));
   }
   async read(ctx: ExtensionContext, input: ReadRequest | NextPageRequest) {
-    const host = this.#host(ctx), before = this.#snapshot(host, input.repoId, input.requirementId);
+    const host = this.#host(ctx);
+    let before = this.#snapshot(host, input.repoId, input.requirementId);
     const cursor = input.action === "next" ? this.#cursors.get(input.cursor) : undefined;
     if (input.action === "next") {
       if (!cursor || cursor.version !== before.version || cursor.epoch !== before.data.epoch ||
@@ -946,8 +965,10 @@ export class MainRequirementInteraction {
     const maxBytes = request.maxBytes ?? 8192;
     const result = request.action === "read" ? await service.read({ requirementId: request.requirementId, source })
       : await service.diff({ requirementId: request.requirementId, fromRevision: request.fromRevision!, ...(request.toRevision ? { toRevision: request.toRevision } : {}) });
+    const shown = "body" in result ? this.#pinned(ctx, request.repoId, result) : result;
+    if ("body" in result) before = this.#snapshot(host, input.repoId, input.requirementId);
     const text = "body" in result ? selectPrdSection(result.body, inspectPrdStructure(result.body), request.sectionId) : result.diff;
-    const { body: _body, diff: _diff, ...metadata } = result as typeof result & { body?: string; diff?: string };
+    const { body: _body, diff: _diff, ...metadata } = shown as typeof shown & { body?: string; diff?: string };
     const next = randomBytes(32).toString("hex");
     let page = pagePrdText(text, cursor?.offset ?? 0, maxBytes);
     const wrap = () => ({ ...metadata, text: page.text, coverage: { startByte: page.startByte, endByte: page.endByte, totalBytes: page.totalBytes,
@@ -986,7 +1007,7 @@ export class MainRequirementInteraction {
       signal?.throwIfAborted();
       this.#live(ctx, host, generation);
       const result = value as Record<string, unknown>, requirementId = String(result.requirementId);
-      const current = this.#snapshot(host, repoId, requirementId, params.action !== "metadata");
+      const current = this.#snapshot(host, repoId, requirementId, params.action !== "metadata", this.#proofs.get(result)?.line !== undefined);
       if (current.version !== result.version || current.data.epoch !== result.epoch) denied("stale_result");
       const content = [{ type: "text" as const, text: JSON.stringify(result) }], response = { content, details: result };
       if (Buffer.byteLength(JSON.stringify(response)) > TRANSPORT_BYTES) denied("response_limit");

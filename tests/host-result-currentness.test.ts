@@ -30,9 +30,10 @@ async function world(active: boolean) {
   const authorization = new HostAuthorizationManager({ dataRoot }); authorization.startWindow({ kind: "main", windowId, sessionId, repoIds: [repoId] });
   const runtime = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: null, refreshOnCreate: false });
   const provider = registerControlledProvider(runtime, { providerId: uuidv7(), modelId: "fixture" });
-  const ctx = { cwd: repo, modelRegistry: new ModelRegistry(runtime), model: runtime.getModels(provider.providerId)[0], sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
+  const branch: Array<{ type: "custom"; customType: string; data: unknown; id: string; parentId: string | null }> = [];
+  const ctx = { cwd: repo, modelRegistry: new ModelRegistry(runtime), model: runtime.getModels(provider.providerId)[0], sessionManager: { getSessionId: () => sessionId, getBranch: () => branch } } as unknown as ExtensionContext;
   let onResolve: (() => void) | undefined;
-  const interaction = new MainRequirementInteraction({ mainThinking: () => "off", dataRoot, authorization,
+  const interaction = new MainRequirementInteraction({ mainThinking: () => "off", pi: { appendEntry: (customType: string, data: unknown) => { branch.push({ type: "custom", customType, data, id: uuidv7(), parentId: branch.at(-1)?.id ?? null }); } } as never, dataRoot, authorization,
     resolveHost: () => {
     onResolve?.();
     return { windowId, sessionId, repositories: new Map([[repoId, { path: repo }]]) };
@@ -44,7 +45,7 @@ async function world(active: boolean) {
   const created = (await call({ action: "create", summary: "手机号登录，保留邮箱登录", title: "A需求", body: DEFAULT_DOC_BODY })).details!;
   const requirementId = String(created.requirementId), state = await RequirementStateStore.open({ dataRoot, repositoryRoot: repo, repoId, authorize: () => true });
   interaction.captureInput({ source: "interactive", text: `@[A需求#${requirementId.slice(-4)}] 分析A目标，不授权其他动作` }, ctx);
-  const params = { action: "confirmUpdate", requirementId, savedOperationId: String(created.operationId), version: state.read(requirementId).version };
+  const params = { action: "confirmUpdate", requirementId, savedOperationId: String(created.operationId), version: Number(created.version) };
   const entryOf = (c: string) => (kind: string, text: string) => ({ kind, conclusion: text, scope: "A范围", basis: "explicit", resolution: "direct", candidateId: c, requestId: null, actions: kind === "action" ? ["analyze"] : [], references: [], supersedes: [] });
   scriptReview(provider, (loaded) => {
     const entry = entryOf(loaded.candidate.candidateId), units = loaded.partition.units.map((u) => u.id);

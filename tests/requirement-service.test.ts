@@ -407,7 +407,7 @@ test("两个独立 Node 服务竞争同一需求时只有持有者进入正文�
   const second = await spawnServiceWrite(w, secondInput);
   expect(await second.closed).toBe(0);
   const secondResult = JSON.parse(second.stdout().trim().split("\n").at(-1)!);
-  expect(secondResult).toMatchObject({ ok: false, code: "requirement_write_pending" });
+  expect(secondResult).toMatchObject({ ok: false, code: "requirement_write_busy" });
   await writeFile(release, "continue");
   expect(await first.closed).toBe(0);
   expect(JSON.parse(first.stdout().trim().split("\n").at(-1)!)).toMatchObject({ ok: true });
@@ -430,7 +430,7 @@ test("活动持有者不能被偷占，进程真实结束后只有原 operation 
   const child = await spawnServiceWrite(w, input, { claimed, release });
   await waitForFile(claimed, child.stderr);
   await expect(w.service.updateDraft(input)).rejects.toMatchObject({ code: "requirement_write_busy" });
-  await expect(w.service.updateDraft({ ...input, operationId: uuidv7() })).rejects.toMatchObject({ code: "requirement_write_pending" });
+  await expect(w.service.updateDraft({ ...input, operationId: uuidv7() })).rejects.toMatchObject({ code: "requirement_write_busy" });
   child.proc.kill("SIGKILL");
   expect(await child.closed).not.toBe(0);
   const recovered = await w.service.updateDraft(input);
@@ -711,7 +711,7 @@ test("另一次保存没完成时，requirement_write_pending 的原因不带操
   const w = await world();
   const created = await w.service.create(createInput());
   const input = await leaveUnfinishedUpdate(w, created);
-  const error = await w.service.updateDraft({ ...input, operationId: uuidv7(), version: w.state.read(created.requirementId).version, body: "别的内容" }).catch((caught) => caught);
+  const error = await w.service.updateDraft({ ...input, body: "别的内容" }).catch((caught) => caught);
   expect(error).toMatchObject({ code: "requirement_write_pending" });
   expect(adviceOf(error)!.why).toContain("这个需求还有一次没完成的保存");
   expect(adviceOf(error)!.why).not.toContain(input.operationId);
@@ -719,6 +719,15 @@ test("另一次保存没完成时，requirement_write_pending 的原因不带操
   expect((await w.service.updateDraft(input)).status).toBe("saved");
   const next = await w.service.updateDraft({ ...input, operationId: uuidv7(), version: w.state.read(created.requirementId).version, body: "解锁后的新内容" });
   expect(next.status).toBe("saved");
+});
+
+test("服务层用新 operationId 保存时，别的没做完的保存被处理掉，这次保存成功", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  const unfinished = await leaveUnfinishedUpdate(w, created);
+  const receipt = await w.service.updateDraft({ ...unfinished, operationId: uuidv7(), version: w.state.read(created.requirementId).version, body: "新的内容" });
+  expect(receipt.status).toBe("saved");
+  expect((await w.service.read({ requirementId: created.requirementId, source: "saved" })).body).toBe("新的内容");
 });
 
 test("本次保存的 operation_not_ready 报错不带操作编号，建议里不叫模型填 operationId", async () => {
@@ -738,12 +747,14 @@ test("pendingSave：返回需求没做完的保存记录（create 或 updateDraf
   const w = await world();
   const operations = new RequirementOperations({ dataRoot: w.options.dataRoot, repoId: w.options.repoId });
   const created = await w.service.create(createInput());
-  expect(operations.pendingSave(created.requirementId)).toBeNull();
+  expect(operations.pendingSave(created.requirementId, [created.operationId])).toBeNull();
   const unfinished = await leaveUnfinishedUpdate(w, created);
-  expect(operations.pendingSave(created.requirementId)).toMatchObject({ operationId: unfinished.operationId, action: "updateDraft", finalVersion: null });
-  expect(operations.pendingSave(uuidv7())).toBeNull();
+  expect(operations.pendingSave(created.requirementId, [unfinished.operationId])).toMatchObject({ operationId: unfinished.operationId, action: "updateDraft", finalVersion: null });
+  expect(operations.pendingSave(created.requirementId, [created.operationId])).toBeNull();
+  expect(operations.pendingSave(created.requirementId, [])).toBeNull();
+  expect(operations.pendingSave(uuidv7(), [unfinished.operationId])).toBeNull();
   await w.service.updateDraft(unfinished);
-  expect(operations.pendingSave(created.requirementId)).toBeNull();
+  expect(operations.pendingSave(created.requirementId, [unfinished.operationId])).toBeNull();
 });
 
 test("pendingCreate：返回本仓库 intentHash 相同且没做完的 create 记录，hash 不同或已完成返回 null", async () => {
@@ -759,7 +770,7 @@ test("pendingCreate：返回本仓库 intentHash 相同且没做完的 create �
   await expect(w.service.create(input)).rejects.toThrow(/injected operation DB failure/);
   expect(operations.pendingCreate(hash)).toMatchObject({ operationId: input.operationId, action: "create", requestId: input.requestId, intentHash: hash, finalVersion: null });
   expect(operations.pendingCreate(requirementIntentHash({ title: input.title, body: "别的正文" }))).toBeNull();
-  expect(operations.pendingSave((operations.pendingCreate(hash))!.requirementId)).toMatchObject({ operationId: input.operationId });
+  expect(operations.pendingSave((operations.pendingCreate(hash))!.requirementId, [input.operationId])).toMatchObject({ operationId: input.operationId });
   await w.service.create(input);
   expect(operations.pendingCreate(hash)).toBeNull();
 });
@@ -795,17 +806,14 @@ test("续做时内容与原操作不同被拒，需求仍锁着、没写入新�
   expect(conflict).toMatchObject({ code: "requirement_write_pending" });
   expect(adviceOf(conflict)!.why).toContain("这个需求还有一次没完成的保存");
   expect(adviceOf(conflict)!.why).toContain("内容和这次不同");
-  const pending = await w.service.updateDraft({ ...input, operationId: uuidv7(), version: w.state.read(created.requirementId).version }).catch((caught) => caught);
-  expect(pending).toMatchObject({ code: "requirement_write_pending" });
   expect(w.state.read(created.requirementId)).toEqual(before);
 });
 
 test("批准时这个需求另一次保存没做完：被拒，原因不带操作编号，建议用原来的标题和正文再保存", async () => {
   const w = await world();
   const created = await w.service.create(createInput());
-  await w.bind(created.requirementId);
   const confirm = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
-  const input = await leaveUnfinishedUpdate(w, { ...created, version: w.state.read(created.requirementId).version });
+  const input = await leaveUnfinishedUpdate(w, created);
   const error = await w.service.confirmUpdate(confirm).catch((caught) => caught);
   expect(error).toMatchObject({ code: "unfinished_requirement_operation" });
   expect(adviceOf(error)!.why).not.toContain(input.operationId);
@@ -879,9 +887,8 @@ test("带原型的批准写入中途失败：看板和原型快照也保持调�
 test("另一次 updateDraft 没做完时批准被拒，原因写明还有一次没完成的保存，需求状态不变", async () => {
   const w = await world();
   const created = await w.service.create(createInput());
-  await w.bind(created.requirementId);
   const input = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
-  const unfinished = await leaveUnfinishedUpdate(w, { ...created, version: w.state.read(created.requirementId).version });
+  const unfinished = await leaveUnfinishedUpdate(w, created);
   const before = w.state.read(created.requirementId);
   const error = await w.service.confirmUpdate(input).catch((caught) => caught);
   expect(error).toBeInstanceOf(Error);
