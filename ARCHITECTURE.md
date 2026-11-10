@@ -10,7 +10,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 
 程序分两个进程跑：
 
-- **主窗口扩展**：pi 启动时加载 `src/app/extension/index.ts`，在主窗口里注册工具、命令、状态面板和程序窗口。
+- **主窗口扩展**：pi 启动时加载 `src/app/extension/index.ts`，在主窗口里注册工具、命令、状态面板和程序窗口；每次会话开始时先按项目的授信记录决定本次是否启用 OneCompany，停用时这些都不起作用。
 - **守护进程**：在后台持续运行代理的 Node 进程，每个仓库一个，同一仓库的多个 worktree 共用。打开主窗口时自动启动，空闲 10 分钟后自己退出；它跑的代码和安装目录里的不一样时，由新打开的窗口在它空闲时换成新的。PM、worker、reviewer、qa、explore（只读查资料的检索代理）、原型设计师这些代理会话都跑在守护进程里，主窗口关掉也不影响它们。
 
 两边通过数据根目录下 `sock/` 里的 Unix 套接字通信，消息格式在 `src/core/host/protocol.ts`。为什么这样分：代理一跑就是几十分钟，不能跟着某个窗口的生死走；多个窗口还要看到同一份需求状态。
@@ -32,7 +32,7 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | policy | 内容和权限规则、时钟、文字清洗 | `src/core/policy` | `core-permissions.ts`、`clock.ts` |
 | exec | 外部命令的报错格式、读 git、目标分支、origin 主机与本机 gh / glab 登录记录、git 快照、分支保护、安装前检查 git | `src/core/exec` | `tool-failure.ts`、`git-read.ts`、`target-branch.ts`、`git-host.ts`、`git-prerequisite.mjs` |
 | storage | 本机 SQLite 数据库、数据根目录、仓库身份、操作日志、旧版本库的迁移执行（备份、在一次事务里跑上层注入的转换步骤） | `src/core/storage` | `database.ts`、`data-root.ts`、`identity.ts`、`database-migration.ts` |
-| host | 主窗口生命周期、守护进程客户端和通信格式、守护进程过旧时换新、拉起守护进程前的旧库迁移框、程序窗口、底部面板、后台 shell 登记表、断网暂停 | `src/core/host` | `extension-lifecycle.ts`、`daemon-client.ts`（`connectDaemon`）、`protocol.ts`、`code-fingerprint.ts`、`upgrade-notice.ts`、`database-migration-prompt.ts`（`createBeforeSpawn`） |
+| host | 读授信记录、主窗口生命周期、守护进程客户端和通信格式、守护进程过旧时换新、拉起守护进程前的旧库迁移框、程序窗口、底部面板、后台 shell 登记表、断网暂停 | `src/core/host` | `extension-lifecycle.ts`、`daemon-client.ts`（`connectDaemon`）、`protocol.ts`、`code-fingerprint.ts`、`upgrade-notice.ts`、`database-migration-prompt.ts`（`createBeforeSpawn`）、`project-trust.ts`（`readProjectTrust`） |
 | agents | 角色定义的查找与复制、模型引用、职责规矩、MCP、检索排除、子代理会话、会话和运行记录、步骤簿（守护进程内存里按运行记下子代理的每次工具调用） | `src/modules/agents` | `agent-session.ts`（`createAgentRoleSession`）、`roles.ts`、`run-store.ts`、`run-steps.ts`（`RunStepBook`） |
 | requirement | 需求草稿与正文存储、批准清单（记下这一版正文的每一段、每个允许的动作分别由哪些决定确认）、需求状态、事件、备份恢复、短决定（对话里做出的决定，用户说的或模型提议的，归纳成一句结论加适用范围记下来）、主窗口授权、原型记录及其旧版本格式的转换步骤、原型外框（把设计师交的页面和清单拼成单个 HTML：左边切换栏，右边隔离框，框下方说明区，右上角切明暗和方案）、界面设计规范 DESIGN.md 的内容检查和按章比较 | `src/modules/requirement` | `RequirementService`、`RequirementStateStore`、`prd-storage.ts`、`approval-manifest.ts`、`prototype-record-migration.ts`、`prototype-frame.ts`（`buildPrototypeFrame`）、`design-spec.ts`（`checkDesignSpec`、`changedChapters`） |
 | prototype | 派原型设计师、"确认原型"窗口 | `src/modules/prototype` | `prototype-extension.ts`、`prototype-windows.ts` |
@@ -46,14 +46,14 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | project-index | 项目索引、语法解析、知识查询、`one_company_project_manage` 和 `one_company_knowledge_query` 工具 | `src/modules/project-index` | `project-index-service.ts`、`knowledge-query.ts`、`syntax-parser.ts`、`project-manage-tool.ts` |
 | shell | `/one:ps` 页面、后台 shell 工具、shell 摘要 | `src/modules/shell` | `shell-page.ts`、`shell-bash.ts` |
 | input-suggestion | 输入建议：主代理一轮正常结束后，用主窗口的模型读最近 3 轮对话推测用户下一句，在空的主会话输入栏里显示成灰色，按右方向键填入；替换了 pi 的主会话输入栏 | `src/modules/input-suggestion` | `input-suggestion-extension.ts`、`suggestion-model.ts`（`requestSuggestion`）、`suggestion-editor.ts`（`SuggestionEditor`） |
-| app/extension | pi 入口、命令注册、主会话规则注入 | `src/app/extension` | `index.ts`、`commands.ts`、`rules.ts` |
+| app/extension | pi 入口、会话开始时按授信记录启用或停用 OneCompany、命令注册、主会话规则注入 | `src/app/extension` | `index.ts`、`trust-gate.ts`（`createTrustGate`）、`commands.ts`、`rules.ts` |
 | app/daemon | 守护进程启动、加载器、生命周期、运行管理、PM 工具组装、通信服务端、请求参数校验表、项目索引在守护进程里的宿主 | `src/app/daemon` | `main.ts`、`lifecycle.ts`（`startDaemon`）、`RunManager`、`pm-tools.ts`、`method-params.ts`、`ProjectIndexHost` |
 
 ## 关键流程
 
 ### 主窗口连上守护进程
 
-pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExtension` 用 `WorkspaceClients` 连接工作区里每个仓库的守护进程，连不上时先由 `createBeforeSpawn` 读这个仓库 `data.db`、`index.db` 的版本，有可迁移的旧版本就弹迁移框，用户选迁移后经 storage 的 `migrateRepositoryDatabases` 备份并转换（转换步骤由 app/extension 从 requirement 注入），再用 `src/app/daemon/bootstrap.mjs` 拉起新进程 → app/daemon：`main.ts` 校验 SDK 版本后调 `startDaemon` → `startDaemon` 依次建 `DaemonServer`、`ProjectIndexHost`、`RunManager`，登记各请求方法，启动空闲退出计时 `IdleExit` → 主窗口先发 `upgrade.check` 问守护进程代码是否过旧（与启动时记下的 `codeFingerprint` 比较）：过旧且空闲就发 `upgrade.yield` 让它退出、再拉起新的；过旧但在忙就每 30 秒再查 → 主窗口发 `hello` 握手后开始调用。
+pi 加载 `src/app/extension/index.ts` → app/extension：会话开始时 `createTrustGate` 先按授信记录决定本次启用还是停用（记录为空时弹窗问，停用时后面都不发生）→ host：会话开始时 `lifecycleExtension` 用 `WorkspaceClients` 连接工作区里每个仓库的守护进程，连不上时先由 `createBeforeSpawn` 读这个仓库 `data.db`、`index.db` 的版本，有可迁移的旧版本就弹迁移框，用户选迁移后经 storage 的 `migrateRepositoryDatabases` 备份并转换（转换步骤由 app/extension 从 requirement 注入），再用 `src/app/daemon/bootstrap.mjs` 拉起新进程 → app/daemon：`main.ts` 校验 SDK 版本后调 `startDaemon` → `startDaemon` 依次建 `DaemonServer`、`ProjectIndexHost`、`RunManager`，登记各请求方法，启动空闲退出计时 `IdleExit` → 主窗口先发 `upgrade.check` 问守护进程代码是否过旧（与启动时记下的 `codeFingerprint` 比较）：过旧且空闲就发 `upgrade.yield` 让它退出、再拉起新的；过旧但在忙就每 30 秒再查 → 主窗口发 `hello` 握手后开始调用。
 
 ### 一个需求从提出到交付
 
