@@ -113,6 +113,17 @@ export const InteractionInterpretation = object({
 export type InteractionInterpretation = Static<typeof InteractionInterpretation>;
 
 export const VOIDED_INPUT_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户在主窗口重新说一句后再登记";
+const MODEL_CONFIG_VOIDED_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户先检查模型配置或改选模型，再在主窗口重新说一句后登记";
+export const VOIDED_INPUT_NEXT_BY_CODE: Readonly<Record<string, string>> = {
+  interaction_context_limit: "这句用户原话已作废，重试结果相同；先请用户回答或处理掉已有的问题和待定事项，再请用户在主窗口重新说一句后登记",
+  model_auth_unavailable: MODEL_CONFIG_VOIDED_NEXT,
+  model_unavailable: MODEL_CONFIG_VOIDED_NEXT,
+  request_limit: "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户把要说的话精简后，再在主窗口重新说一句后登记",
+  pending_description_mismatch: "这句用户原话已作废，不能直接重试；先把这段里的未决事项拆到单独小节后重存草稿，再请用户在主窗口重新说一句后登记",
+  document_needs_resave: "这句用户原话已作废，不能直接重试；先按用户的修改更新并保存草稿，再请用户在主窗口重新说一句后登记",
+  continuity_resolution_required: "这句用户原话已作废，不能直接重试；先在草稿里把这些段落标成待定后重存，或请用户说明怎么解决，再请用户在主窗口重新说一句后登记",
+  continuity_action_unresolved: "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户先说清这些段落怎么修订或澄清，或重说时不把它们写进授权范围，再在主窗口重新说一句后登记",
+};
 const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   action_candidate_required: { why: "用户原话的解读把它当成授权动作，但没有对应的待批准版本", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
   action_kind_required: { why: "用户原话的解读带了授权动作，但没有标成授权类决定", next: "重试一次；仍然失败就把这段原因告诉用户" },
@@ -170,7 +181,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   model_configuration_changed: { why: "解读用的模型配置已变化", next: "重试一次；仍然失败就把这段原因告诉用户" },
   model_interpretation_denied: { why: "调用解读模型或处理它的回答时出了意外错误，没有得到解读结果（不是用户的话说得不清楚）", next: VOIDED_INPUT_NEXT },
   model_response_denied: { why: "解读模型的回答格式不对或没有正常结束", next: VOIDED_INPUT_NEXT },
-  model_unavailable: { why: "解读用的模型不可用", next: VOIDED_INPUT_NEXT },
+  model_unavailable: { why: "解读用的模型不可用", next: MODEL_CONFIG_VOIDED_NEXT },
   action_not_explicit: { why: "授权动作不是用户明确说出的，或动作条目与授权范围对不上", next: "只把用户明确要求的动作写成 action 条目，并让它和授权范围一致" },
   continuity_action_unresolved: { why: "有待修订或待澄清的段落，却被写进了本次授权的动作范围", next: "先解决这些段落的修订或澄清，或本次授权不要包含它们" },
   continuity_resolution_required: { why: "之前待修订或待澄清的段落，这次既没有解决，也没有标成待定", next: "在草稿里把它标成待定，或按用户原话明确解决后再确认" },

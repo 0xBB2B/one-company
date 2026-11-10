@@ -18,7 +18,7 @@ import {
   checkInteraction, checkContext, checkProposal, checkInterpretation, interpreterView, parseInteraction,
 } from "../requirement/user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "../requirement/user-interaction-format.ts";
-import { ApprovalUnitIds, ApprovalPartition, VOIDED_INPUT_NEXT } from "../requirement/user-interaction-format.ts";
+import { ApprovalUnitIds, ApprovalPartition, VOIDED_INPUT_NEXT, VOIDED_INPUT_NEXT_BY_CODE } from "../requirement/user-interaction-format.ts";
 import { adviceOf } from "../../core/exec/tool-failure.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE, recordInteractionResolutionIn, loadInteractionContinuity, assertRetainedEvidenceIn, continuityInputProofIn } from "../requirement/interaction-continuity.ts";
 import { validateDocumentReview, createApprovalManifest, checkApprovalManifest, approvalManifestReference } from "../requirement/approval-manifest.ts";
@@ -60,7 +60,7 @@ const QuestionInput = object({ basis: InteractionBasis, candidate: Type.Union([C
 const Input = object({ source: Type.Literal("interactive"), text: Type.String({ minLength: 1 }) });
 const Session = object({ sessionId: Type.String({ minLength: 1, maxLength: 128 }), windowId: Type.String({ minLength: 1, maxLength: 128 }) });
 function withVoidedAdvice<T extends UserInteractionError | ShortDecisionError>(error: T): T {
-  const advice = { ...error.advice, next: VOIDED_INPUT_NEXT };
+  const advice = { ...error.advice, next: VOIDED_INPUT_NEXT_BY_CODE[error.code] ?? VOIDED_INPUT_NEXT };
   return (error instanceof ShortDecisionError ? new ShortDecisionError(error.code, advice) : new UserInteractionError(error.code, undefined, advice)) as T;
 }
 const QUESTIONS = "interaction_questions_v1";
