@@ -55,7 +55,7 @@ const fitTail = (text: string, width: number) => {
   return `…${kept}`;
 };
 
-export interface PageState { section?: string; focus?: "nav" | "pane"; selectName?: string; fresh?: string; notice?: PageNotice }
+export interface PageState { section?: string; focus?: "nav" | "pane"; selectName?: string; fresh?: string | string[]; notice?: PageNotice }
 export interface CopyRequest { entry: RoleCatalogEntry; name: string }
 export type SaveSwitchRequest =
   | { key: "git-delivery"; mode: DeliveryMode; layer: SettingsLayerName }
@@ -205,7 +205,7 @@ export class SettingsPageView {
   private cursor = 0;
   private expanded = false;
   private notice: PageNotice | undefined;
-  private fresh: string | undefined;
+  private fresh: string[] = [];
   private naming: { entry: RoleCatalogEntry; text: string; error?: string } | undefined;
   private readonly options: {
     catalog: RoleCatalog; theme: PageTheme; projectTrust: ProjectTrust; untrustedProjectCount: number; state?: PageState;
@@ -213,7 +213,7 @@ export class SettingsPageView {
     nameTaken(name: string): string | undefined; onCopy(request: CopyRequest): void; onClose(): void;
     onSaveSetting(request: SaveSettingRequest): void; onClearSetting(request: ClearSettingRequest): void;
     onSaveSwitch(request: SaveSwitchRequest): void; onClearSwitch(request: ClearSwitchRequest): void;
-    onToggleAgent(entry: RoleCatalogEntry): void;
+    onToggleAgent(entry: RoleCatalogEntry): void; onTrustProject(): void;
   };
   private readonly settingsTab: SettingsTab;
   private readonly deliveryPicker: DeliveryModePicker;
@@ -232,7 +232,7 @@ export class SettingsPageView {
     if (index >= 0) this.sectionIndex = index;
     if (state?.focus === "pane") this.focus = "pane";
     if (state?.selectName) this.cursor = Math.max(0, this.rowNames().indexOf(state.selectName));
-    this.fresh = state?.fresh;
+    this.fresh = [state?.fresh ?? []].flat();
     this.notice = state?.notice;
   }
 
@@ -284,7 +284,8 @@ export class SettingsPageView {
         const count = this.options.untrustedProjectCount;
         rows.unshift({ file: ".pi/agents/", source: "project", tone: "info", short: `${this.untrustedLabel()}，项目层的定义和设定没有生效`,
           detail: [{ key: "原因", value: `${this.untrustedLabel()}，项目层的定义和设定不会加载` }, { key: "目录", value: tilde(problem.dir) }],
-          footer: `在 pi 里把这个项目设为受信任后，项目层的${count ? ` ${count} 份` : ""}定义就会生效` });
+          footer: this.options.projectTrust === "unset" ? `按回车把本项目设为受信任，项目层的${count ? ` ${count} 份` : ""}定义就会生效`
+            : `在 pi 里把这个项目设为受信任后，项目层的${count ? ` ${count} 份` : ""}定义就会生效` });
       } else if (problem.kind === "foreign") {
         rows.push({ file: basename(problem.dir), source: problem.source, tone: "info", short: "不是 one-company 的定义，没有导入",
           detail: [{ key: "原因", value: "缺少 role 字段，视为其他工具的定义" }, { key: "文件", value: tilde(problem.dir) }], footer: "缺少 role 字段，视为其他工具的定义" });
@@ -313,7 +314,7 @@ export class SettingsPageView {
 
   handleInput(data: string): void {
     if (this.naming) { this.handleNaming(data); return; }
-    this.notice = undefined; this.fresh = undefined;
+    this.notice = undefined; this.fresh = [];
     const picker = this.settingsTab.picking() ? this.settingsTab : this.switchPicker();
     if (picker) { this.notice = picker.handleInput(data); return; }
     if (this.focus === "nav") {
@@ -328,7 +329,8 @@ export class SettingsPageView {
     if (matchesKey(data, "down")) { this.cursor = Math.min(this.cursor + 1, Math.max(0, this.rowCount() - 1)); this.expanded = false; return; }
     if (matchesKey(data, "up")) { this.cursor = Math.max(this.cursor - 1, 0); this.expanded = false; return; }
     if (matchesKey(data, "enter")) {
-      if (this.section === "models") this.settingsTab.start(SETTINGS_ROLES[this.cursor]!.key);
+      if (this.onTrustRow()) this.options.onTrustProject();
+      else if (this.section === "models") this.settingsTab.start(SETTINGS_ROLES[this.cursor]!.key);
       else if (this.section === "switches") (this.cursor === 0 ? this.deliveryPicker : this.methodsPicker).start();
       else if (this.rowCount()) this.expanded = !this.expanded;
       return;
@@ -345,6 +347,10 @@ export class SettingsPageView {
       if (this.section === "models") this.notice = this.settingsTab.clear(SETTINGS_ROLES[this.cursor]!.key);
       else if (this.section === "switches") this.notice = (this.cursor === 0 ? this.deliveryPicker : this.methodsPicker).clear();
     }
+  }
+
+  private onTrustRow(): boolean {
+    return this.section === "problems" && this.options.projectTrust === "unset" && this.cursor === 0;
   }
 
   private switchPicker(): DeliveryModePicker | MergeMethodsPicker | undefined {
@@ -426,7 +432,7 @@ export class SettingsPageView {
     if (this.naming) return this.renderNaming(width);
     if (modal) return [...(this.settingsTab.picking() ? this.settingsTab.renderPicker(width) : this.switchPicker()!.render(width)), ""];
     const { theme } = this.options, section = this.section;
-    const table = section === "models" ? this.settingsTab.renderList(width, this.focus === "pane" ? this.cursor : -1, this.fresh)
+    const table = section === "models" ? this.settingsTab.renderList(width, this.focus === "pane" ? this.cursor : -1, this.fresh[0])
       : section === "switches" ? this.switchPane(width) : section === "problems" ? this.problemPane(width) : this.definitionPane(width);
     if (!withTitle) return table;
     const title = this.isDefinitions() ? section : TITLE[section]!;
@@ -444,7 +450,7 @@ export class SettingsPageView {
       const name = fit(entry.name, cols.name - 1), model = fit(definition.model ?? FOLLOW, cols.model - 1), thinking = definition.thinking ?? "跟随";
       lines.push(tableRow(theme, selected, width, [
         [this.marker(selected), (text) => theme.fg("accent", text)],
-        [name, !state.enabled ? (text) => theme.fg("dim", text) : this.fresh === entry.name ? (text) => theme.fg("success", text) : undefined], [" ".repeat(cols.name - visibleWidth(name))],
+        [name, !state.enabled ? (text) => theme.fg("dim", text) : this.fresh.includes(entry.name) ? (text) => theme.fg("success", text) : undefined], [" ".repeat(cols.name - visibleWidth(name))],
         [" ".repeat(6), undefined, this.sourceTag(entry.source)], [" ".repeat(SOURCE - 6)],
         [pad(state.text, STATE), (text) => theme.fg(state.color, text)],
         [model, (text) => theme.fg(definition.model ? "accent" : "dim", text)], [" ".repeat(cols.model - visibleWidth(model))],
@@ -515,7 +521,7 @@ export class SettingsPageView {
     const row = (index: number, fresh: string, name: string, source: RoleSource, status: string, style?: (text: string) => string) => {
       const selected = this.selectedRow(index);
       return tableRow(theme, selected, width, [
-        [selected ? " ▸ " : "   ", (text) => theme.fg("accent", text)], [pad(name, cols.name), this.fresh === fresh ? (text) => theme.fg("success", text) : undefined],
+        [selected ? " ▸ " : "   ", (text) => theme.fg("accent", text)], [pad(name, cols.name), this.fresh.includes(fresh) ? (text) => theme.fg("success", text) : undefined],
         [" ".repeat(6), undefined, this.sourceTag(source)], [" ".repeat(SOURCE - 6)], [fit(status, Math.max(0, width - MARKER - cols.name - SOURCE)), style],
       ]);
     };
@@ -571,7 +577,7 @@ export class SettingsPageView {
     else if (this.switchPicker()) hint = this.switchPicker()!.hint();
     else if (this.focus === "nav") hint = "↑↓ 选分类  → 进右栏  Esc 退出";
     else if (this.section === "models" || this.section === "switches") hint = "←/Esc 回左栏  ↑↓ 选择  回车 修改  R 清除本层";
-    else hint = `←/Esc 回左栏  ↑↓ 选择  回车 ${this.expanded ? "收起" : "详情"}${this.section === "problems" ? "" : "  空格 开关  C 复制"}`;
+    else hint = `←/Esc 回左栏  ↑↓ 选择  回车 ${this.onTrustRow() ? "设为受信任" : this.expanded ? "收起" : "详情"}${this.section === "problems" ? "" : "  空格 开关  C 复制"}`;
     return narrow ? hint.replace("←/Esc 回左栏", "←/Esc 回目录").replace("→ 进右栏", "→ 进入") : hint;
   }
 

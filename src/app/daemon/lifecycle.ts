@@ -531,7 +531,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       loadAgentSettings: () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: new ProjectTrustStore(agentDir).get(repositoryRoot) === true }),
       loadDisabledAgents: () => disabledAgentNames(readDisabledAgents({ agentDir, repositoryRoot, projectTrusted: new ProjectTrustStore(agentDir).get(repositoryRoot) === true })),
       loadRoleCatalog: async () => (await loadDaemonRoleCatalog(agentDir, repositoryRoot)).roles,
-      skillDirs: [...(new ProjectTrustStore(agentDir).get(repositoryRoot) === true ? [join(repositoryRoot, ".pi", "skills")] : []),
+      loadSkillDirs: () => [...(new ProjectTrustStore(agentDir).get(repositoryRoot) === true ? [join(repositoryRoot, ".pi", "skills")] : []),
         join(agentDir, "skills"), join(dirname(defaultRoleDir()), "skills")],
     });
     registerProtocolHandlers({ server, manager: runManager, shellRegistry });
