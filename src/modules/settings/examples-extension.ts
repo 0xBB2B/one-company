@@ -8,7 +8,7 @@ import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { agentSwitchOf, readDisabledAgents } from "./agent-settings.ts";
 import { copyExampleFiles, ExampleCopyError, examplesDir, inspectExample, layerTargets, listExamples } from "./spec-examples.ts";
 import type { ExampleInspection, ExampleTargets } from "./spec-examples.ts";
-import { readProjectTrust, trustFilePath, trustProject } from "./project-trust.ts";
+import { readProjectTrust, trustFilePath, trustProject } from "../../core/host/project-trust.ts";
 import { tilde } from "./settings-page-ui.ts";
 
 export type ExamplesContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode">;

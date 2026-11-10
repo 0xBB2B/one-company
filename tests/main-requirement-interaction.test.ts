@@ -185,6 +185,35 @@ describe("主窗口共享控制器的真实服务路径", () => {
     });
   });
 
+  describe("授信记录读不了时按不信任，用用户层设定", () => {
+    const prepare = async (key: "interpreter" | "draft-verifier") => {
+      const w = await world();
+      vi.stubEnv("PI_CODING_AGENT_DIR", w.root);
+      cleanup.push(async () => { vi.unstubAllEnvs(); });
+      await writeFile(join(w.root, "settings.json"), JSON.stringify({ "one-company": { [key]: { model: `${w.provider.providerId}/controlled`, thinking: null } } }));
+      await mkdir(join(w.repositoryRoot, ".pi"), { recursive: true });
+      await writeFile(join(w.repositoryRoot, ".pi", "settings.json"), JSON.stringify({ "one-company": { [key]: { model: `${w.provider.providerId}/gpt-6.1-sol`, thinking: null } } }));
+      await writeFile(join(w.root, "trust.json"), '{"a": true,}');
+      return w;
+    };
+
+    test("解释器", async () => {
+      const w = await prepare("interpreter"), created = await w.create(), { input } = await w.request(created);
+      w.capture("同意"); scriptReview(w.provider, phoneReview);
+      const before = w.provider.models.length;
+      await w.call({ action: "confirmUpdate", ...input });
+      expect(w.provider.models.slice(before)).toEqual(["controlled"]);
+    });
+
+    test("草稿核验器", async () => {
+      const w = await prepare("draft-verifier");
+      w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+      const before = w.provider.models.length;
+      await w.call({ action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY });
+      expect(w.provider.models.slice(before)).toEqual(["controlled"]);
+    });
+  });
+
   describe.each([
     ["主仓库信任、worktree 不信任", true, false, "gpt-6.1-sol"],
     ["主仓库不信任、worktree 信任", false, true, "controlled"],

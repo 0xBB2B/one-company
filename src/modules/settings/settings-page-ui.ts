@@ -5,7 +5,7 @@ import {
   checkList, definitionColumns, fit, FOLLOW, layerRows, MARKER, pad, pickerHead, pickerList, SettingsTab, SOURCE, STATE, tableColumns, tableRow, layerNote, wrapHint, wrapText,
 } from "./agent-settings-ui.ts";
 import type { ClearSettingRequest, PageNotice, PickerRow, PageTheme, SaveSettingRequest, SettingsLayerName } from "./agent-settings-ui.ts";
-import type { ProjectTrust } from "./project-trust.ts";
+import type { ProjectTrust } from "../../core/host/project-trust.ts";
 import type { ModelLike } from "../agents/agent-resolve.ts";
 import { agentSwitchOf, MERGE_METHODS, SETTINGS_ROLES } from "./agent-settings.ts";
 import type { MergeMethod, readAgentSettings } from "./agent-settings.ts";

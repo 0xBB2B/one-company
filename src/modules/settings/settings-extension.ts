@@ -10,7 +10,7 @@ import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { defaultModeReason, methodsText, MODE_LABEL, SettingsPageView, tilde } from "./settings-page-ui.ts";
 import type { ClearSwitchRequest, CopyRequest, PageState, SaveSwitchRequest } from "./settings-page-ui.ts";
 import { AgentCopyError, copyAgentDefinition } from "../agents/agent-copy.ts";
-import { readProjectTrust, trustFilePath, trustProject } from "./project-trust.ts";
+import { readProjectTrust, trustFilePath, trustProject } from "../../core/host/project-trust.ts";
 import { describeSetting } from "./agent-settings-ui.ts";
 import type { ClearSettingRequest, PageNotice, PageTheme, SaveSettingRequest, SettingsLayerName } from "./agent-settings-ui.ts";
 import { agentSwitchOf, clearAgentSetting, clearGitDeliverySetting, clearMergeMethodsSetting, disabledAgentProblems, projectSettingsPath, readAgentSettings, saveAgentSetting, saveDisabledAgentsSetting, saveGitDeliverySetting, saveMergeMethodsSetting, SETTINGS_ROLES, userSettingsPath } from "./agent-settings.ts";

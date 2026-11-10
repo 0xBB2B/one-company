@@ -2,8 +2,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { afterEach, expect, test } from "vitest";
-import { packageSkillsDir, recordSectionIds, resolveRequirementDoc } from "../src/modules/requirement/requirement-doc.ts";
+import { packageSkillsDir, recordSectionIds, resolveRepositoryRequirementDoc, resolveRequirementDoc } from "../src/modules/requirement/requirement-doc.ts";
 
 const roots: string[] = [];
 afterEach(async () => { for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
@@ -75,4 +76,16 @@ test("M8C-AC4：skill 无效时报错写明原因与文件，不退回用户层�
     await expect(failure).rejects.toThrow(path);
     await expect(failure).rejects.toThrow(reason);
   }
+});
+
+test("授信记录读不了时，取仓库的需求文档规范不报错，项目层的规范不生效，先用户层再包内默认", async () => {
+  const w = await world();
+  const dataRoot = join(w.agentDir, "data");
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: w.repoRoot });
+  await writeFile(join(w.agentDir, "trust.json"), '{"a": true,}');
+  await w.project(FOUR);
+  const packaged = await resolveRepositoryRequirementDoc(dataRoot, w.repoRoot);
+  expect(packaged.source).toBe("package");
+  const user = await w.user(skill("  - { id: c, title: 丙, goal: true }\n  - { id: a, title: 甲, record: implementation }\n  - { id: b, title: 乙, record: acceptance }\n", "用户版。\n"));
+  expect(await resolveRepositoryRequirementDoc(dataRoot, w.repoRoot)).toMatchObject({ source: "user", path: user, body: "用户版。" });
 });

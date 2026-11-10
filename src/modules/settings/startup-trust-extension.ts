@@ -6,7 +6,7 @@ import { chooseWindow, mutedLines } from "../../core/host/question-window.ts";
 import { dataRoot } from "../../core/storage/data-root.ts";
 import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { projectRoleDir } from "../agents/roles.ts";
-import { distrustProject, readProjectTrust, trustFilePath, trustProject } from "./project-trust.ts";
+import { distrustProject, readProjectTrust, trustFilePath, trustProject } from "../../core/host/project-trust.ts";
 import { tilde } from "./settings-page-ui.ts";
 
 const TRUST = "信任", DISTRUST = "不信任", LATER = "以后再说";
