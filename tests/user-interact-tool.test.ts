@@ -227,11 +227,22 @@ test("M8D-AC9：对话里的提问记录块：登记中显示问题；回答后�
     .toBe("<error>没有登记：问题不符合登记要求：没有标出推荐项</>");
 });
 
-test("M8D-AC9：提问以外的动作不改显示，交给 pi 的默认样式", () => {
+test("M8D-AC9：pm-intake 的各动作不改显示，交给 pi 的默认样式", () => {
   const tool = createUserInteractTool({ interaction: {} as never });
-  const context = { args: { request: base }, state: {}, isError: false, invalidate: () => {} } as never;
-  expect(() => tool.renderCall!({ request: base } as never, renderTheme as never, context)).toThrow();
-  expect(() => tool.renderResult!({ content: [], details: {} } as never, { expanded: false, isPartial: false }, renderTheme as never, context)).toThrow();
+  const theme = { ...renderTheme, bg: (_kind: string, text: string) => text };
+  for (const action of ["ask", "forward", "reply"]) {
+    const request = { ...base, purpose: "pm-intake", action };
+    const context = { args: { request }, state: {}, isError: false, expanded: false, isPartial: false, invalidate: () => {} } as never;
+    expect(() => tool.renderCall!({ request } as never, theme as never, context)).toThrow();
+    expect(() => tool.renderResult!({ content: [], details: {} } as never, { expanded: false, isPartial: false }, theme as never, context)).toThrow();
+  }
+});
+
+test("panel-item 的 ask 仍画成提问卡片", () => {
+  const tool = createUserInteractTool({ interaction: {} as never });
+  const request = { purpose: "panel-item", action: "ask", repoId: base.repoId, requirementId: base.requirementId, itemId: `task:${uuidv7()}`, itemVersion: "v1", question: "起跳时机怎么定？", rootCheck: "根源", choices: CHOICES };
+  const context = { args: { request }, state: {}, isError: false, expanded: false, isPartial: false, invalidate: () => {} } as never;
+  expect(tool.renderCall!({ request } as never, renderTheme as never, context).render(80)[0]!.trimEnd()).toBe("<b>提问</b>  <muted>起跳时机怎么定？</>");
 });
 
 test("提问记录块在 pi 的工具显示组件里只画一份问题和回答，标题换成需求名", () => {

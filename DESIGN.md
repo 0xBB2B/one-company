@@ -62,7 +62,7 @@ OneCompany 是 pi（终端里的编码代理）的扩展包，所有界面都画
 
 ### 对话卡片（工具调用卡片、自定义消息卡片）
 
-- 写法：工具用 `renderCall` 返回标题行、`renderResult` 返回结果行；自定义消息用 `pi.registerMessageRenderer(<customType>, …)`。都返回 `new Text(<文字>, 0, 0)`。工具卡片的背景由 pi 按状态铺 toolPendingBg / toolSuccessBg / toolErrorBg；自定义消息渲染器的背景 pi 不铺，由渲染器自己用 customMessageBg 铺满整块。
+- 写法：工具用 `renderCall` 返回标题行、`renderResult` 返回结果行；自定义消息用 `pi.registerMessageRenderer(<customType>, …)`。都返回左右不留空的文字组件：简短卡片用 `src/core/host/tool-card.ts` 的 `CardText`（收起时每行按终端宽度截断、换行换成空格），「提问」卡片用 `new Text(<文字>, 0, 0)`。工具卡片的背景由 pi 按状态铺 toolPendingBg / toolSuccessBg / toolErrorBg；自定义消息渲染器的背景 pi 不铺，由渲染器自己用 customMessageBg 铺满整块。
 - 标题行：`theme.bold(<卡片名>)` + 两个空格 + `theme.fg("muted", <对象名>)`。现有样例：「提问」卡片 `src/modules/interaction/user-interact-tool.ts:63-64`。
 - 结果行：简短卡片的摘要紧接在标题行下面，不空行；「提问」卡片在标题和问题之间空一行。标签用 muted（如"你的回答  "），推荐标记用 success（"（推荐）"）。
 - 失败：结果行只写一行 `theme.fg("error", "<结论>：<原因>")`（现有样例："没有登记：<原因>"，`user-interact-tool.ts:78`）。
