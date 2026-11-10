@@ -12,6 +12,8 @@ import { cpus, release, tmpdir, totalmem, version } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PRD_ARCHIVE_DIRECTORY } from "../../src/core/policy/content-policy.ts";
+import { knowledgeView } from "../../src/modules/project-index/knowledge-query.ts";
+import type { KnowledgeFactPackage } from "../../src/modules/project-index/knowledge-query.ts";
 
 export interface QueryBenchmarkConfig {
   files: number;
@@ -739,7 +741,7 @@ async function runTier(input: {
           sample.pageBytes = byteLength(page);
           sample.generation = typeof page.generation === "number" ? page.generation : null;
           sample.baselineHash = typeof page.baselineHash === "string" ? page.baselineHash : null;
-          assertQueryPageMetadata(page, Number(query.request.maxBytes));
+          assertQueryPageMetadata(knowledgeView(page as KnowledgeFactPackage), Number(query.request.maxBytes));
           const hits = summarizeQueryHits(query.id, page.facts);
           sample.hitCount = hits.hitCount;
           sample.hitIdentifiers = hits.hitIdentifiers;

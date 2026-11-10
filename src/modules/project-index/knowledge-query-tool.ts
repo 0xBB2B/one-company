@@ -4,7 +4,9 @@ import { toolFailure } from "../../core/exec/tool-failure.ts";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { KNOWLEDGE_QUERY_LIMITS, KnowledgeQueryError, parseKnowledgeQuery } from "./knowledge-query-contracts.ts";
 import type { KnowledgeQuery } from "./knowledge-query-contracts.ts";
+import { knowledgeView } from "./knowledge-query.ts";
 import type { KnowledgeFactPackage } from "./knowledge-query.ts";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
 
 /** JSON正文再嵌入text字符串最多翻倍；为50KiB宿主content包装预留空间。 */
 export const KNOWLEDGE_TOOL_MAX_BYTES = 24_576;
@@ -34,10 +36,10 @@ export function parseKnowledgeTransportQuery(input: unknown): KnowledgeQuery {
   return query;
 }
 
-export function knowledgeContent(page: KnowledgeFactPackage) {
-  const content = [{ type: "text" as const, text: JSON.stringify(page) }];
-  if (Buffer.byteLength(JSON.stringify({ content })) > KNOWLEDGE_TOOL_CONTENT_BYTES) throw new KnowledgeQueryError("resource_limit");
-  return content;
+export function knowledgeToolResult(page: KnowledgeFactPackage) {
+  const result = leanToolResult(page, knowledgeView(page));
+  if (Buffer.byteLength(JSON.stringify({ content: result.content })) > KNOWLEDGE_TOOL_CONTENT_BYTES) throw new KnowledgeQueryError("resource_limit");
+  return result;
 }
 
 export interface KnowledgeQueryClient {
@@ -63,7 +65,7 @@ export function createKnowledgeQueryTool(options: { client(repoId: string): Know
     const client = options.client(row.repoId);
     if (!client) throw new KnowledgeQueryError("unavailable", "repoId 不是当前窗口已接入的仓库，或守护进程没有连接");
     const result = await client.call("knowledge.query", { query });
-    return { content: knowledgeContent(result.page as KnowledgeFactPackage), details: {} };
+    return knowledgeToolResult(result.page as KnowledgeFactPackage);
   }
   return { tool };
 }

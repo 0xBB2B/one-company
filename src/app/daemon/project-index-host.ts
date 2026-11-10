@@ -10,7 +10,7 @@ import { IndexStore } from "../../modules/project-index/index-store.ts";
 import type { WorkspaceIdentity } from "../../modules/project-index/index-store.ts";
 import { KnowledgeQuerySession } from "../../modules/project-index/knowledge-query.ts";
 import type { KnowledgeFactPackage, KnowledgeQueryCapture } from "../../modules/project-index/knowledge-query.ts";
-import { knowledgeContent, parseKnowledgeTransportQuery } from "../../modules/project-index/knowledge-query-tool.ts";
+import { knowledgeToolResult, parseKnowledgeTransportQuery } from "../../modules/project-index/knowledge-query-tool.ts";
 import { DEFAULT_INDEX_LIMITS, scanIndexWorkspace } from "../../modules/project-index/project-index-policy.ts";
 import { ProjectIndexService } from "../../modules/project-index/project-index-service.ts";
 import type { DaemonServer } from "./server.ts";
@@ -138,7 +138,7 @@ export class ProjectIndexHost {
         this.sessions.set(caller, session);
       }
       const page = await session.query(query);
-      knowledgeContent(page);
+      knowledgeToolResult(page);
       return page;
     });
   }

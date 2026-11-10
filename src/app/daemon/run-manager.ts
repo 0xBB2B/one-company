@@ -65,6 +65,8 @@ import { defaultPageGetter, defaultWebDeps, webFetch, webSearch } from "../../mo
 import type { PageGetter, WebDeps } from "../../modules/explore/web-access.ts";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { KnowledgeTransportQuerySchema } from "../../modules/project-index/knowledge-query-tool.ts";
+import { knowledgeView } from "../../modules/project-index/knowledge-query.ts";
+import type { KnowledgeFactPackage } from "../../modules/project-index/knowledge-query.ts";
 import { createPmCommitTool } from "../../modules/pm/pm-commit.ts";
 import { createPmSyncTool } from "../../modules/pm/pm-sync.ts";
 import { AgentResolveError, definitionHash, loadSkills, resolveAgent, resolveModelChoice } from "../../modules/agents/agent-resolve.ts";
@@ -1173,7 +1175,7 @@ export class RunManager {
     if (!index) return [];
     return [toPiTool("knowledge_query", "查询主仓库索引中的当前代码（不含 PRD）。query.action：exact（by 为 path/id/symbol）、search（文字检索）或 facts；每页最多 20 项，结果标注索引代次与来源。",
       Type.Object({ query: KnowledgeTransportQuerySchema }, { additionalProperties: false }),
-      { execute: (input) => index.query(`run:${caller}`, (input as { query: unknown }).query), dispose: () => index.endCaller(`run:${caller}`) })];
+      { execute: (input) => index.query(`run:${caller}`, (input as { query: unknown }).query), view: (page) => knowledgeView(page as KnowledgeFactPackage), dispose: () => index.endCaller(`run:${caller}`) })];
   }
 
   /** explore 的联网工具：搜索与抓取均不限查询词和网址（含内网）；网页内容只是数据。 */

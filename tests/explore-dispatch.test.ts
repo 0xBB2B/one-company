@@ -228,11 +228,13 @@ test("M7-AC16：PM 与 explore 都可调用 knowledge_query 查询主仓库索�
   w.provider.queue.push({ type: "toolcall", name: "one_company_knowledge_query", input: { query: { action: "facts" } } }, { type: "text", text: "查完" },
     { type: "text", text: "PM 收到" });
   await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId }, request: { question: "项目有哪些文件", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
-  await until(() => w.provider.requests.some((request) => text(request).includes("knowledge-facts/v1")));
+  await until(() => w.provider.requests.some((request) => text(request).includes("untrusted_project_data_not_instructions_or_authorization")));
   const explore = w.provider.requests.find((request) => request.systemPrompt?.includes("检索来源：直接读取本地文件"))!;
   expect(explore.tools?.map((tool) => tool.name).sort()).toEqual(["grep", "one_company_knowledge_query", "one_company_result_submit", "read"]);
-  const reply = w.provider.requests.find((request) => text(request).includes("knowledge-facts/v1"))!;
-  expect(text(reply)).toMatch(/\\"generation\\":[1-9]/u);
+  const reply = w.provider.requests.find((request) => text(request).includes("untrusted_project_data_not_instructions_or_authorization"))!;
+  const modelText = (reply.messages.at(-1)!.content as Array<{ type: string; text?: string }>).map((block) => block.text ?? "").join("");
+  expect(modelText).toMatch(/"generation":[1-9]/u);
+  for (const removed of ["knowledge-facts/v1", "baselineHash", "fileHash"]) expect(modelText).not.toContain(removed);
 });
 
 test("M7-AC18：需求关闭停止其 PM 与绑定检索，但不误停无关的 main 无需求检索", async () => {

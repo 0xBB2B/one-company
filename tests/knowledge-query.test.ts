@@ -9,7 +9,7 @@ import { indexDatabase } from "../src/core/storage/database-paths.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { ProjectIndexService } from "../src/modules/project-index/project-index-service.ts";
 import { readIndexFile } from "../src/modules/project-index/project-index-policy.ts";
-import { KnowledgeQuerySession } from "../src/modules/project-index/knowledge-query.ts";
+import { KnowledgeQuerySession, knowledgeView } from "../src/modules/project-index/knowledge-query.ts";
 import type { KnowledgeQueryAdapter, KnowledgeQueryCapture, KnowledgeFactPackage } from "../src/modules/project-index/knowledge-query.ts";
 import { KNOWLEDGE_QUERY_LIMITS, parseKnowledgeQuery } from "../src/modules/project-index/knowledge-query-contracts.ts";
 import { addWorktree, createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
@@ -259,7 +259,7 @@ test("真实131072码点边界中文/emoji/CRLF命中一次，不能依据哈希
   await expect(missingView.query({ action: "search", text: queries[0] })).rejects.toMatchObject({ code: "unavailable" }); missingView.close();
 });
 
-test("32个长中文/转义文件按最终JSON整包48KiB分页，限制字段无损", async () => {
+test("32个长中文/转义文件按发给模型的视图分页，每页视图不超过48KiB，每页条数不少于按完整页切分", async () => {
   const w = await fixture();
   const expected = "中".repeat(1150) + '\\"\n\t😀'.repeat(10);
   for (let i = 0; i < 32; i++) await put(w.repo.root, `docs/bulk-${i}.json`, JSON.stringify({ title: "批量", expected }));
@@ -270,15 +270,84 @@ test("32个长中文/转义文件按最终JSON整包48KiB分页，限制字段�
   const pages = await all(session, { action: "search", text: "批量", pageSize: 20, maxBytes: 49152 });
   expect(pages.length).toBeGreaterThan(1);
   for (const page of pages) {
-    const json = JSON.stringify(page);
-    expect(Buffer.byteLength(json)).toBeLessThanOrEqual(49152); expect(JSON.parse(json)).toEqual(page);
+    expect(Buffer.byteLength(JSON.stringify(knowledgeView(page)))).toBeLessThanOrEqual(49152);
+    expect(JSON.parse(JSON.stringify(page))).toEqual(page);
     expect(page.limitations).toMatchObject({ diagnosticCounts: {}, formalVerification: "not_available", performanceImprovement: "unknown", scope: "caller_allowed_files_only" });
     expect(page.coverage.omitted).toBe(0);
     expect(page).toHaveProperty("nextCursor");
   }
-  const sources = pages.flatMap((page) => page.facts).filter((fact) => fact.kind === "source" && fact.source.path.startsWith("docs/bulk-"));
+  const facts = pages.flatMap((page) => page.facts);
+  const sources = facts.filter((fact) => fact.kind === "source" && fact.source.path.startsWith("docs/bulk-"));
   expect(new Set(sources.map((fact) => fact.source.path)).size).toBe(32);
-  expect(pages.at(-1)!.nextCursor).toBeNull(); expect(pages.at(-1)!.coverage.remaining).toBe(0); session.close();
+  expect(pages.at(-1)!.nextCursor).toBeNull(); expect(pages.at(-1)!.coverage.remaining).toBe(0);
+  const legacy: number[] = [];
+  for (let from = 0; from < facts.length;) {
+    let count = 0;
+    while (from + count < facts.length && count < 20
+      && Buffer.byteLength(JSON.stringify({ ...pages[0]!, facts: facts.slice(from, from + count + 1), nextCursor: "x".repeat(43) })) <= 49152) count++;
+    legacy.push(count); from += count;
+  }
+  expect(pages.length).toBeLessThanOrEqual(legacy.length);
+  expect(pages[0]!.facts.length).toBeGreaterThanOrEqual(legacy[0]!);
+  session.close();
+});
+
+test("无命中的查询视图只留 trust/generation/indexStatus/limitations/coverage/facts/nextCursor，限制字段只留三项常驻值", async () => {
+  const w = await fixture();
+  const session = new KnowledgeQuerySession(w.adapter);
+  const full = await session.query({ action: "search", text: "绝对不存在的词汇qzxv" });
+  expect(full.facts).toEqual([]);
+  const view = JSON.parse(JSON.stringify(knowledgeView(full)));
+  expect(Object.keys(view).sort()).toEqual(["coverage", "facts", "generation", "indexStatus", "limitations", "nextCursor", "trust"]);
+  expect(view).toMatchObject({ trust: full.trust, generation: full.generation, indexStatus: full.indexStatus, nextCursor: full.nextCursor, facts: [] });
+  expect(view.limitations).toMatchObject({ unknownCodeRelations: full.limitations.unknownCodeRelations, formalVerification: "not_available", performanceImprovement: "unknown" });
+  expect(view.limitations).not.toHaveProperty("scope");
+  expect(view.limitations).not.toHaveProperty("diagnosticCounts");
+  expect(view.limitations).not.toHaveProperty("diagnostics");
+  expect(view.limitations).not.toHaveProperty("diagnosticDetailsOmitted");
+  expect(full.limitations.unindexedFiles ? view.limitations.unindexedFiles : "absent").toBe(full.limitations.unindexedFiles || "absent");
+  expect(view.coverage).toEqual({ complete: true });
+  expect(full).toMatchObject({ format: "knowledge-facts/v1", coverage: { matched: 0, returned: 0 }, limitations: { scope: "caller_allowed_files_only" } });
+  session.close();
+});
+
+test("命中符号、代码关系、文件、源码片段的查询视图按种类去掉指定字段，其余取值与完整页一致", async () => {
+  const w = await fixture();
+  const session = new KnowledgeQuerySession(w.adapter);
+  const full = await session.query({ action: "search", text: "jump", pageSize: 20 });
+  const view = JSON.parse(JSON.stringify(knowledgeView(full))) as KnowledgeFactPackage;
+  expect(new Set(full.facts.map((fact) => fact.kind))).toEqual(new Set(["symbol", "code_relation", "file", "source"]));
+  const drop = { symbol: ["startColumn", "endColumn", "startOffset", "endOffset"], file: ["hash", "parserVersion"],
+    code_relation: ["startColumn", "endColumn", "evidence"], source: [] } as const;
+  const without = (value: unknown, keys: readonly string[]) => Object.fromEntries(Object.entries(value as object).filter(([key]) => !keys.includes(key)));
+  expect(view.facts).toHaveLength(full.facts.length);
+  full.facts.forEach((fact, index) => {
+    const shown = view.facts[index]!;
+    expect(Object.keys(shown).sort()).toEqual(["complete", "data", "id", "kind", "source"]);
+    expect(shown).toMatchObject({ id: fact.id, kind: fact.kind, complete: fact.complete });
+    expect(shown.source).toEqual({ path: fact.source.path, startLine: fact.source.startLine, endLine: fact.source.endLine });
+    expect(shown.data).toEqual(without(fact.data, drop[fact.kind]));
+  });
+  const symbol = full.facts.find((fact) => fact.kind === "symbol")!, relation = full.facts.find((fact) => fact.kind === "code_relation")!;
+  expect(symbol.data).toHaveProperty("startColumn");
+  expect(relation.data).toHaveProperty("evidence");
+  expect(view.facts.find((fact) => fact.kind === "symbol")!.data).toHaveProperty("name");
+  expect(view.limitations).not.toHaveProperty("scope");
+  expect(view.coverage).not.toHaveProperty("matched");
+  expect(view.coverage).not.toHaveProperty("returned");
+  expect(view).not.toHaveProperty("baselineHash");
+  session.close();
+});
+
+test("覆盖不足时视图的 coverage 保留 remaining/omitted/sourceExcerptsTruncated 的非零值，为零时不出现", async () => {
+  const w = await fixture();
+  const session = new KnowledgeQuerySession(w.adapter);
+  const first = await session.query({ action: "facts", pageSize: 1 });
+  expect(first.coverage.remaining).toBeGreaterThan(0);
+  const view = JSON.parse(JSON.stringify(knowledgeView(first)));
+  expect(view.coverage).toEqual({ complete: false, remaining: first.coverage.remaining });
+  expect(view.nextCursor).toBe(first.nextCursor);
+  session.close();
 });
 
 test("范围过滤在SQLite提供正文之前完成，不读取其他worktree/prd_metadata/未授权路径正文", async () => {
@@ -385,9 +454,12 @@ test("最小输出预算仍保留所有阻塞类别/未覆盖统计，缓存条�
     async assertCurrent() { /* 本用例验证分页预算；真实文件核对另有专用用例。 */ } };
   const session = new KnowledgeQuerySession(adapter, { now: () => now });
   const result = await session.query({ action: "facts", maxBytes: 4096, pageSize: 1 });
-  expect(Buffer.byteLength(JSON.stringify(result))).toBeLessThanOrEqual(4096);
+  expect(Buffer.byteLength(JSON.stringify(knowledgeView(result)))).toBeLessThanOrEqual(4096);
   expect(result.limitations.diagnosticCounts).toEqual({ budget_exceeded: 40, unknown: 1 });
   expect(result.limitations.diagnosticDetailsOmitted).toBe(33); expect(result.coverage.complete).toBe(false);
+  const view = JSON.parse(JSON.stringify(knowledgeView(result)));
+  expect(view.limitations).toMatchObject({ diagnosticCounts: { budget_exceeded: 40, unknown: 1 }, diagnostics: result.limitations.diagnostics, diagnosticDetailsOmitted: 33 });
+  expect(view.coverage).toMatchObject({ complete: false });
   for (let i = 1; i < 8; i++) await session.query({ action: "facts", pageSize: 1 });
   const ninth = await session.query({ action: "facts", pageSize: 1 });
   expect(ninth.nextCursor).toBeTruthy();
