@@ -30,14 +30,14 @@ OneCompany 是 pi（一个终端里的编码代理）的扩展包。用户在 pi
 | 模块 | 职责 | 目录 | 关键文件 / 类型 |
 |---|---|---|---|
 | policy | 内容和权限规则、时钟、文字清洗 | `src/core/policy` | `core-permissions.ts`、`clock.ts` |
-| exec | 外部命令的报错格式、读 git、目标分支、origin 主机与本机 gh / glab 登录记录、git 快照、分支保护、安装前检查 git | `src/core/exec` | `tool-failure.ts`、`git-read.ts`、`target-branch.ts`、`git-host.ts`、`git-prerequisite.mjs` |
+| exec | 外部命令的报错格式、工具结果里发给模型的部分和完整结果的拆分、读 git、目标分支、origin 主机与本机 gh / glab 登录记录、git 快照、分支保护、安装前检查 git | `src/core/exec` | `tool-failure.ts`、`tool-result.ts`（`leanToolResult`）、`git-read.ts`、`target-branch.ts`、`git-host.ts`、`git-prerequisite.mjs` |
 | storage | 本机 SQLite 数据库、数据根目录、仓库身份、操作日志、旧版本库的迁移执行（备份、在一次事务里跑上层注入的转换步骤） | `src/core/storage` | `database.ts`、`data-root.ts`、`identity.ts`、`database-migration.ts` |
-| host | 主窗口生命周期、守护进程客户端和通信格式、守护进程过旧时换新、拉起守护进程前的旧库迁移框、程序窗口、底部面板、后台 shell 登记表、断网暂停 | `src/core/host` | `extension-lifecycle.ts`、`daemon-client.ts`（`connectDaemon`）、`protocol.ts`、`code-fingerprint.ts`、`upgrade-notice.ts`、`database-migration-prompt.ts`（`createBeforeSpawn`） |
+| host | 主窗口生命周期、守护进程客户端和通信格式、守护进程过旧时换新、拉起守护进程前的旧库迁移框、程序窗口、底部面板、主窗口工具卡片的共用渲染、后台 shell 登记表、断网暂停 | `src/core/host` | `extension-lifecycle.ts`、`daemon-client.ts`（`connectDaemon`）、`protocol.ts`、`code-fingerprint.ts`、`upgrade-notice.ts`、`database-migration-prompt.ts`（`createBeforeSpawn`） |
 | agents | 角色定义的查找与复制、模型引用、职责规矩、MCP、检索排除、子代理会话、会话和运行记录、步骤簿（守护进程内存里按运行记下子代理的每次工具调用） | `src/modules/agents` | `agent-session.ts`（`createAgentRoleSession`）、`roles.ts`、`run-store.ts`、`run-steps.ts`（`RunStepBook`） |
 | requirement | 需求草稿与正文存储、批准清单（记下这一版正文的每一段、每个允许的动作分别由哪些决定确认）、需求状态、事件、备份恢复、短决定（对话里做出的决定，用户说的或模型提议的，归纳成一句结论加适用范围记下来）、主窗口授权、原型记录及其旧版本格式的转换步骤、原型外框（把设计师交的页面和清单拼成单个 HTML：左边切换栏，右边隔离框，框下方说明区，右上角切明暗和方案）、界面设计规范 DESIGN.md 的内容检查和按章比较 | `src/modules/requirement` | `RequirementService`、`RequirementStateStore`、`prd-storage.ts`、`approval-manifest.ts`、`prototype-record-migration.ts`、`prototype-frame.ts`（`buildPrototypeFrame`）、`design-spec.ts`（`checkDesignSpec`、`changedChapters`） |
 | prototype | 派原型设计师、"确认原型"窗口 | `src/modules/prototype` | `prototype-extension.ts`、`prototype-windows.ts` |
 | verification | 检查轮（所有 worker 任务审查通过后，PM 开的最后一轮全量测试和 QA 验收）、worker 改动的应用、写入保护、命令边界、项目规范（AGENTS.md）写入、拦住代理直接改 AGENTS.md 和 DESIGN.md、派 worker 和 reviewer 时带上 DESIGN.md | `src/modules/verification` | `CheckRoundService`、`change-apply.ts`、`write-guard.ts` |
-| explore | 只读检索的约定、派发、会话、联网，以及主窗口的 `one_company_agent_manage` 工具 | `src/modules/explore` | `agent-manage-extension.ts`、`explore-dispatch.ts`、`web-access.ts` |
+| explore | 只读检索的约定、派发、会话、联网、发给派出方的结论摘要和按运行编号取来源，以及主窗口的 `one_company_agent_manage` 工具 | `src/modules/explore` | `agent-manage-extension.ts`、`explore-report.ts`（`exploreReportView`）、`explore-dispatch.ts`、`web-access.ts` |
 | settings | `/one:setting` 设置页、模型设定、PM 和内部代理用哪个模型、角色定义的开关、Git 交付档位和合并方式；`/one:examples` 把设计规范样例复制到用户层或项目层 | `src/modules/settings` | `settings-page-ui.ts`、`agent-settings.ts`、`internal-model.ts`、`examples-extension.ts`（`openExamplesPage`）、`spec-examples.ts` |
 | pm | 计划、派工、PM 提交与同步目标分支、PM 接手复核、需求读取工具、验证命令、子代理交结果 | `src/modules/pm` | `plan-manage.ts`、`task-dispatch.ts`、`PmIntakeService`、`pm-commit.ts`、`result-submit.ts` |
 | delivery | 关闭需求与归档提交、需求流程管理、Git 交付（远程：推送、建 PR/MR、合并；仅本地：合进主仓库当前分支）、需求工作区（worktree）管理 | `src/modules/delivery` | `RequirementCloseService`、`archive-commit.ts`、`workflow-manage.ts`、`git-delivery.ts`（`deliverRequirement`）、`local-delivery.ts`（`deliverLocally`）、`WorkspaceManageService` |
@@ -75,7 +75,7 @@ pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExte
 
 | 表 | 用途 | 关键关系 |
 |---|---|---|
-| `records` | 当前状态，按"命名空间 + 键"存一份最新的 JSON，带版本号 | 三个库都有；`data.db` 里存需求、运行、计划、对话、决定等，`global.db` 里存守护进程凭证和主窗口 shell 登记，`index.db` 里存索引条目 |
+| `records` | 当前状态，按"命名空间 + 键"存一份最新的 JSON，带版本号 | 三个库都有；`data.db` 里存需求、运行、计划、对话、决定、PM 派出检索的完整报告等，`global.db` 里存守护进程凭证和主窗口 shell 登记，`index.db` 里存索引条目 |
 | `events` | 按流编号追加的事件 | 三个库都有；`data.db` 里是需求状态变化和对话里的短决定，`index.db` 里是索引事件 |
 | `index_schema_metadata` | 索引库的结构版本 | 只在 `index.db` |
 | `source_fragments_fts` | 源码片段的全文检索表，靠触发器跟 `records` 里的源码片段同步 | 只在 `index.db` |
@@ -100,6 +100,8 @@ pi 加载 `src/app/extension/index.ts` → host：会话开始时 `lifecycleExte
 ## 公共机制
 
 - **给模型看的报错**：外部命令和工具的失败统一用 `src/core/exec/tool-failure.ts` 转成"哪一步失败、为什么、下一步怎么做"。
+- **给模型看的工具结果**：工具成功时用 `src/core/exec/tool-result.ts` 的 `leanToolResult` 把结果分成两份：`content` 只放模型下一步用得上的字段，发给模型；`details` 放完整结果，存进会话记录供界面和程序核对用。子代理工具经 `toPiTool` 的 `view` 接入，主窗口工具各自给出视图函数。
+- **主窗口工具卡片**：`src/core/host/tool-card.ts` 的 `toolCard` 按各工具的卡片表画出标题行加一两行摘要，展开时显示调用参数和完整结果，失败时一行写原因；颜色和写法以 `DESIGN.md` 为准。
 - **代理会话**：所有角色的会话都由 `createAgentRoleSession`（`src/modules/agents/agent-session.ts`）创建，统一挂上职责规矩、写入范围检查、MCP 和模型请求重试。
 - **规矩注入**：包内这几个目录的文件都由 `src/modules/agents/package-rules.ts` 读取。主代理的提示词由 `src/app/extension/rules.ts` 加上 `rules/` 和 `shared/`；子代理的提示词由 `buildAgentPrompt` 拼成"角色定义正文 + `role-rules/` 里对应职责的规矩 + `shared/`"（专项审查用 `role-rules/reviewer-specialist.md`），定义里点名的 `skills/` 全文拼进任务说明；派通用 reviewer 时，被审 worker 加载、但本任务专项审查都没覆盖的 skill 也拼进去。
 - **数据根目录**：由 `src/core/storage/data-root.ts` 决定，设了 `PI_CODING_AGENT_DIR` 时放在它下面的 `one-company/`；仓库身份和套接字路径在 `src/core/storage/identity.ts`。
