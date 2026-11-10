@@ -222,3 +222,14 @@ export function checkRequirement(value: unknown, requirementId: string, repoId: 
     (record.workspace !== null && (record.workspace.requirementId !== requirementId || record.workspace.repoId !== repoId))) throw new RequirementStateError("invalid_state");
   return record;
 }
+
+export const LineAnchorKind = Type.Union([
+  Type.Literal("save"), Type.Literal("decision"), Type.Literal("question"), Type.Literal("manifest"),
+  Type.Literal("prototype"), Type.Literal("conventions"), Type.Literal("approval"),
+]);
+export const LineAnchorRecord = object({
+  format: Type.Literal("line-anchor/v1"), repoId: hash, requirementId: id, anchor: id, parent: nullable(id),
+  kind: LineAnchorKind, lineVersion: positive, sequence: positive, fileCommit: nullable(commit), createdAt: counter,
+});
+export type LineAnchorRecord = Static<typeof LineAnchorRecord>;
+export const LineAnchorMemberRecord = object({ format: Type.Literal("line-anchor-member/v1"), requirementId: id, anchor: id });
