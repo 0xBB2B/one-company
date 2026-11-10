@@ -2,6 +2,7 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import type { CoreTool } from "../../core/policy/core-permissions.ts";
 import type { AgentRole } from "./roles.ts";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 
 export const CORE_TOOL_PREFIX = "one_company_";
@@ -26,6 +27,7 @@ export function coreToolName(tool: CoreTool): string {
 
 export interface CoreToolRuntime {
   execute(input: unknown, signal?: AbortSignal): unknown;
+  view?(result: unknown, params: unknown): unknown;
   dispose(): void;
 }
 
@@ -41,7 +43,7 @@ export function toPiTool(tool: CoreTool, description: string, parameters: TSchem
       let result: unknown;
       try { result = await runtime.execute(params, signal); }
       catch (error) { throw toolFailure(toolStep(coreToolName(tool), params), error); }
-      return { content: [{ type: "text", text: JSON.stringify(result ?? null) }], details: {} };
+      return leanToolResult(result, runtime.view ? runtime.view(result, params) : result);
     },
   } as ToolDefinition;
 }
