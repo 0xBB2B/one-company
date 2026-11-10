@@ -27,6 +27,10 @@ test.skipIf(!config || process.platform !== "darwin")("P22：用户只说批准�
   cleanups.push(() => point.close(judgement));
   const brief = (since: number) => point.calls(since).map((call) => `${call.name}:${requestOf(call).action ?? ""}${requestOf(call).role ? `:${requestOf(call).role}` : ""}`);
 
+  const assistantTexts = () => point.host.session.messages.flatMap((message) => message.role === "assistant"
+    ? [message.content.map((block) => block.type === "text" ? block.text : "").join("")] : []);
+  await point.say("快跑这个需求草稿写好了吗？把要点给我看，我看完再决定批准。");
+  const approvalRequest = assistantTexts().at(-1) ?? "";
   await point.say("批准这一版。");
   const afterApprove = point.host.session.messages.length;
   const approvedRecord = point.requirements()[0];
@@ -40,11 +44,13 @@ test.skipIf(!config || process.platform !== "darwin")("P22：用户只说批准�
   let nudged = false;
   if (!(rest.some(isPrepare) && rest.some(isDispatchPm))) { nudged = true; await point.say("请接着往下做。"); rest = point.calls(afterApprove); }
   const authorized = point.results(afterApprove).filter((result) => result.tool === "one_company_requirement_manage" && !result.isError && result.text.includes('"status":"authorized"'));
-  judgement = { approved: approvedRecord?.approved ?? null, lastAssistantText, firstCalls: brief(0), secondCalls: brief(afterApprove), authorizedResults: authorized.length, nudged };
+  judgement = { approvalRequest, approved: approvedRecord?.approved ?? null, lastAssistantText, firstCalls: brief(0), secondCalls: brief(afterApprove), authorizedResults: authorized.length, nudged };
 
+  expect(approvalRequest, JSON.stringify(judgement)).toContain("实施");
   expect(approvedRecord?.approved, JSON.stringify(judgement)).toBeTruthy();
   expect(firstCalls.some(isPrepare), JSON.stringify(judgement)).toBe(false);
   expect(firstCalls.some(isDispatchPm), JSON.stringify(judgement)).toBe(false);
+  expect(firstCalls.some(isAuthorize), JSON.stringify(judgement)).toBe(false);
   expect(lastAssistantText, JSON.stringify(judgement)).toMatch(/还没|尚未|没有|未.{0,4}(授权|实施)/u);
   expect(lastAssistantText, JSON.stringify(judgement)).toContain("实施");
   expect(rest.some(isAuthorize), JSON.stringify(judgement)).toBe(true);

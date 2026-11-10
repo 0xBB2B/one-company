@@ -768,7 +768,10 @@ export class MainRequirementInteraction {
         throw error;
       });
     // 这些只是该次决定的元数据，不是可转交worker的能力；激活不启动PM。
-    return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prdActivated: true },
+    const authorized = manifestAuthorizesImplement(document.manifest);
+    return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prdActivated: true,
+      implementAuthorization: authorized ? "已授权实施" : "没有授权实施",
+      ...(authorized ? {} : { next: "需求已生效但没有授权实施：不建工作区、不派 PM；告诉用户要开始实施就说'授权实施'；等用户说了，再用 authorizeImplement 登记" }) },
       { kind: "approved", scope: { status: "available", summary } }, decisionProofs);
   }
   #prototypeLines(items: DraftItem[], revision: number): WindowLine[] {

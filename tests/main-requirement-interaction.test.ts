@@ -2038,14 +2038,14 @@ function scriptImplement(provider: ControlledProvider, entry: object = IMPLEMENT
   };
 }
 /** 工作区已绑定、按 phoneReview 批准过一次的需求；implement=false 时批准清单里没有实施。 */
-async function approvedWorld(implement = false, review: typeof phoneReview = (c) => phoneReview(c, implement ? "implement" : "analyze")) {
+async function approvedWorld(implement = false, review: typeof phoneReview = (c) => phoneReview(c, implement ? "implement" : "analyze"), utterance = "同意") {
   const w = await world(), created = await w.create();
   const worktree = join(w.root, "worktree"); await git(w.repositoryRoot, ["worktree", "add", "-b", "requirement-test", worktree, "HEAD"]);
   const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
   const baseCommit = await git(w.repositoryRoot, ["rev-parse", "HEAD"]);
   const bound = await state.bindWorkspace({ requirementId: String(created.requirementId), version: Number(created.version), path: worktree, baseCommit, prepareOperationId: uuidv7() });
   const { input } = await w.request({ ...created, version: bound.version });
-  w.capture("同意"); scriptReview(w.provider, review);
+  w.capture(utterance); scriptReview(w.provider, review);
   const approved = await w.call({ action: "confirmUpdate", ...input });
   const requirementId = input.requirementId;
   const authorize = () => w.call({ action: "authorizeImplement", requirementId });
@@ -2239,8 +2239,7 @@ describe("补授权实施 authorizeImplement", () => {
     expect(implementAuthorized({ dataRoot: w.dataRoot, repoId: w.repoId }, state.read(requirementId))).toBe(false);
   });
 
-  test("补授权后能派出 PM；补授权前派 PM 被拒", async () => {
-    const { w, authorize, requirementId, baseCommit, worktree } = await approvedWorld();
+  async function pmDispatcher(w: Awaited<ReturnType<typeof approvedWorld>>["w"], requirementId: string, baseCommit: string, worktree: string) {
     withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => {
       db.create("managed_workspaces", requirementId, { format: "managed-workspace/v1", requirementId, title: "登录", operationId: uuidv7(),
         baseCommit, branch: "requirement-test", path: worktree, status: "ready", recycleOperationId: null });
@@ -2257,11 +2256,41 @@ describe("补授权实施 authorizeImplement", () => {
     runs.markStarted();
     cleanup.push(async () => { clock.stopGapWatcher(); for (const run of (await runStore.list({ limit: 100 })).items) await runs.stop(run.id, { reason: "main_agent" }).catch(() => {}); });
     const dispatch = () => runs.dispatchPm({ requirementId, model: { provider: "pm-model", id: "test" }, thinking: "off" });
+    return { dispatch, pm };
+  }
+
+  test("补授权后能派出 PM；补授权前派 PM 被拒", async () => {
+    const { w, authorize, requirementId, baseCommit, worktree } = await approvedWorld();
+    const { dispatch, pm } = await pmDispatcher(w, requirementId, baseCommit, worktree);
     await expect(dispatch()).rejects.toMatchObject({ code: "implement_not_authorized" });
     w.capture("授权实施"); scriptImplement(w.provider);
     await authorize();
     scriptReplies(pm, [{ type: "text", text: "等待" }]);
     expect(await dispatch()).toMatchObject({ runId: expect.any(String) });
+  }, 30000);
+
+  test("批准原话含实施：结果写明已授权实施，之后能派出 PM", async () => {
+    const { w, approved, requirementId, baseCommit, worktree } = await approvedWorld(true, undefined, "批准并开始实施");
+    expect(approved).toMatchObject({ prdActivated: true, implementAuthorization: "已授权实施" });
+    const { dispatch, pm } = await pmDispatcher(w, requirementId, baseCommit, worktree);
+    scriptReplies(pm, [{ type: "text", text: "等待" }]);
+    expect(await dispatch()).toMatchObject({ runId: expect.any(String) });
+  }, 30000);
+
+  test("批准原话没说实施：结果写明没有授权实施，并告诉主代理不建工作区、不派 PM，用户说授权实施再登记", async () => {
+    const { approved } = await approvedWorld(false);
+    expect(approved).toMatchObject({ prdActivated: true, implementAuthorization: "没有授权实施",
+      next: "需求已生效但没有授权实施：不建工作区、不派 PM；告诉用户要开始实施就说'授权实施'；等用户说了，再用 authorizeImplement 登记" });
+  });
+
+  test("没授权实施时派 PM 被拒，建议提到 authorizeImplement", async () => {
+    const { w, requirementId, baseCommit, worktree } = await approvedWorld(false);
+    const { dispatch } = await pmDispatcher(w, requirementId, baseCommit, worktree);
+    const error = await rejectionOf(dispatch());
+    expect(error).toMatchObject({ code: "implement_not_authorized" });
+    const next = adviceOf(error)?.next ?? "";
+    expect(next).toContain("authorizeImplement");
+    expect(next).not.toContain("在批准需求时授权实施");
   }, 30000);
 
   test("确认窗口打开期间用户又说了新话：之后选确认也报处理期间用户又说了新的话，不登记、不解读新话", async () => {

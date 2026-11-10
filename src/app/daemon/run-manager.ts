@@ -269,7 +269,7 @@ const PROTOCOL_NEXT: Record<string, string> = {
   pm_already_owned: "查询现有 PM 的运行状态，不要重复派出",
   requirement_not_active: "重新读取需求状态；只有活动需求才能派出",
   workspace_not_ready: "先用项目管理工具准备需求工作区，并等用户批准需求",
-  implement_not_authorized: "请用户在批准需求时授权实施，再派出 PM",
+  implement_not_authorized: "请用户在主窗口说要实施，再用 one_company_requirement_manage authorizeImplement 补授权，成功后再派出 PM",
   not_found: "核对运行编号；运行可能已结束或不属于你",
   pm_not_running: "PM 已不在运行，停止操作，由主代理决定是否重新派出 PM",
   task_not_ready: "用 plan_manage read 查看任务状态，按原因处理后再派",
