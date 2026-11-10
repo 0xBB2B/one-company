@@ -6,7 +6,7 @@ import { registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
 import { RequirementService } from "../src/modules/requirement/requirement-service.ts";
 import { lineViewIn } from "../src/modules/requirement/line-anchors.ts";
 import { readDraftFiles } from "../src/modules/requirement/prd-storage.ts";
-import { awaitingOnLine, draftPrototypes, lineDesignSpec, promoteOnApprovalIn, prototypeFilePath } from "../src/modules/requirement/requirement-prototypes.ts";
+import { draftPrototypes, inFlightSummary, lineDesignSpec, promoteOnApprovalIn, prototypeFilePath } from "../src/modules/requirement/requirement-prototypes.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 import { VALID_DESIGN } from "./helpers/design-sample.ts";
@@ -94,19 +94,19 @@ test("在途原型只挡住它自己那条线上的批准：线 A 批准被 in_f
   expect(w.promote(lineB, digestB).items).toEqual([]);
 });
 
-test("awaitingOnLine 列出线 A 上交了稿、等确认的原型，线 B 上为空", async () => {
+test("线 A 上交了稿、等确认的原型只在线 A 的在途摘要里，线 B 上没有", async () => {
   const w = await world();
   const a = await w.designed([w.baseAnchor], BUTTON_36);
-  const onA = await awaitingOnLine(w.ref, w.requirementId, a.line as never);
-  expect(onA.map((item: { name: string }) => item.name)).toEqual([NAME]);
-  expect(await awaitingOnLine(w.ref, w.requirementId, [w.baseAnchor] as never)).toEqual([]);
+  const awaiting = async (line: string[]) => (await inFlightSummary(w.ref, w.requirementId, line)).filter((item) => item.status === "awaiting").map((item) => item.name);
+  expect(await awaiting(a.line as never)).toEqual([NAME]);
+  expect(await awaiting([w.baseAnchor])).toEqual([]);
 });
 
-test("设计师还在做（没交稿）时，awaitingOnLine 不列它", async () => {
+test("设计师还在做（没交稿）时，在途摘要里是设计中，不是等确认", async () => {
   const w = await world();
   w.provider.queue.push(w.slow);
   const a = await w.dispatch([w.baseAnchor]);
-  expect(await awaitingOnLine(w.ref, w.requirementId, a.line as never)).toEqual([]);
+  expect((await inFlightSummary(w.ref, w.requirementId, a.line as never)).map((item) => item.status)).toEqual(["designing"]);
   await w.call("runs.stop", { runId: a.runId });
 });
 

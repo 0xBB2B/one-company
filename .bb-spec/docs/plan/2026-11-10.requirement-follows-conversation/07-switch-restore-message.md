@@ -9,8 +9,8 @@ description: 换对话线后核对每个需求，变了、已批准停在批准�
 
 ## 业务规则（来源：PRD 02-switch-message 全部约束；01-line-bound-draft 约束 1、8、14）
 - 触发时机：pi 的 `session_tree`（两次 Esc、`/tree` 回到某一步）、`session_start` 且 reason 为 `fork`、`resume`、`startup`（`pi -c`、`pi --session` 打开旧对话时 reason 是 startup；新开空对话时线上没有锚点，自然什么都不插）、`reload` 不处理。
-- 判断"变了"：对每个需求，比较换线前本窗口用的线尖锚点和换线后的线尖锚点，不同就算变了。启动时（startup、resume、fork）"换线前"取这个需求最近一次保存的锚点。
-- 要考虑的需求：换线前后两条线上出现过锚点的全部需求。
+- 判断"变了"：对每个需求，比较换线前本窗口用的线尖锚点和换线后的线尖锚点，不同就算变了。启动时（startup、resume、fork）比较这条线上的正文落在哪次保存：线视图的 saved（线尖往上最近的保存）就是这个需求最近一次保存时不算变（线尖是接在它后面的短决定等锚点也一样），不是才算变。
+- 要考虑的需求：换线后这条线上出现过锚点的需求；新线上没有它的锚点（后来的线上才新建）的需求保持不动，不写进消息。
 - 已批准、正在关闭、已关闭的需求，新线尖不是批准锚点的后代（停在批准之前）时，写"已批准"一块；新线尖在批准锚点之后或线上没有它的锚点时不写。
 - 恢复失败：线上最后一个锚点在库里找不到，或它的提交读不出。失败时这个需求在本窗口用最近保存的那份（03 的 `lineDraftState` 已退回），消息里写失败块。
 - 消息：`pi.sendMessage({ customType: "one-company.requirement-restore", content, display: true }, { triggerTurn: false })`，插入后主代理不自动回复。
@@ -19,7 +19,7 @@ description: 换对话线后核对每个需求，变了、已批准停在批准�
   - 已批准：`「<标题>」已批准，以库里的版本 <M> 为准`，M 是 requirements 行当前的版本号。
   - 没能恢复：第一行 `「<标题>」没能恢复至版本 <N>，仍是版本 <M>`，M 是退回后那份的版本号；下面三行列表依次是 `- 原因：<哪一步、为什么失败>`、`- 下一步：主代理先读取库里的内容再操作；要用回版本 <N>，让主代理照对话里的内容重新保存一次`、`- 运行日志：<主窗口这次打开的守护进程日志路径>`。原因不写错误码。N 取对话里那个锚点对应的工具结果里的版本号，取不到时写"对话里的那一版"。
   - 标题用新线上的标题。
-- 换到新线后，用 05 的 `awaitingOnLine` 查这条线上交了稿、等确认的原型，有就照现在的方式依次弹"确认原型"窗口。
+- 换到新线后（`session_tree` 和 fork、resume、startup 三种 `session_start`），按这条线读原型看板（`prototypes.board`），取交了稿、等确认的原型，有就照现在的方式依次弹"确认原型"窗口（05 不在内存里记等待清单）。
 - 换线前 pi 发 `session_before_tree` / `session_before_switch` / `session_before_fork` 时撤销本窗口已捕获的用户输入（现有的 `authorization.revoke()`），保持不变。
 
 ## 涉及文件
@@ -59,7 +59,7 @@ description: 换对话线后核对每个需求，变了、已批准停在批准�
 ### src/modules/prototype/prototype-extension.ts
 | 函数名 | 职责 |
 |---|---|
-| `session_tree` 处理 | 新：用 `awaitingOnLine` 查新线上等确认的原型并弹窗 |
+| `session_tree` 处理 | 新：按新线读原型看板，取等确认的原型并弹窗 |
 
 ## 协作关系
 - `session_tree` / `session_start` → `currentLine`（03）→ 对每个需求 `lineDraftState`（03）、`resolveLineTipIn`（01）→ `lineSwitchReport` → `restoreMessageText` → `pi.sendMessage`。

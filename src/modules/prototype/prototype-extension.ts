@@ -11,7 +11,7 @@ import { chooseOrWriteWindow, chooseWindow } from "../../core/host/question-wind
 import { optionLetter } from "../requirement/requirement-prototypes.ts";
 import type { PickedOption } from "../requirement/requirement-prototypes.ts";
 import { id, object } from "../requirement/requirement-contracts.ts";
-import { currentLine, recordLineAnchor } from "../requirement/line-anchors.ts";
+import { currentLine, currentLineRepos, recordLineAnchor } from "../requirement/line-anchors.ts";
 import { uuidv7 } from "../../core/storage/database.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import { AdvisedError, adviceOf, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
@@ -141,6 +141,24 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     return "decided";
   }
 
+  async function confirmAwaitingOnLine(window: WindowContextValue, ctx: ExtensionContext): Promise<void> {
+    const repoOf = currentLineRepos(ctx.sessionManager);
+    for (const [requirementId, line] of Object.entries(currentLine(ctx.sessionManager))) {
+      const repoId = repoOf[requirementId]!, client = window.clients.forRepo(repoId);
+      if (!client) continue;
+      const board = await client.call("prototypes.board", { requirementId, line }) as unknown as { entries: Array<{ name: string; inFlight: { status: string } | null }> };
+      for (const entry of board.entries) {
+        if (entry.inFlight?.status !== "awaiting") continue;
+        await enqueue(() => confirmPrototypeFlow(client, ctx, { repoId, requirementId, name: entry.name }));
+      }
+    }
+  }
+  const confirmAwaitingAfterSwitch = (window: Promise<WindowContextValue>, ctx: ExtensionContext) => {
+    if (!ctx.hasUI) return;
+    void window.then((ready) => confirmAwaitingOnLine(ready, ctx).catch((error: unknown) => ctx.ui.notify(`原型确认窗口没能打开：${reasonOf(error)}`, "warning")),
+      () => undefined);
+  };
+
   pi.registerTool({
     name: TOOL_NAME,
     label: "prototype",
@@ -181,11 +199,16 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     },
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_tree", (_event, ctx) => {
+    sessionContext = ctx;
+    confirmAwaitingAfterSwitch(resolveWindowReady(), ctx);
+  });
+  pi.on("session_start", async (event, ctx) => {
     const current = ctx.sessionManager.getSessionId();
     for (const unsubscribe of unsubscribes.splice(0)) unsubscribe();
     sessionId = current;
     sessionContext = ctx;
+    if (["startup", "resume", "fork"].includes(event.reason)) confirmAwaitingAfterSwitch(resolveWindowReady(), ctx);
     void resolveWindowReady().then((window) => {
       if (sessionId !== current) return;
       for (const repo of window.workspace.repos) {

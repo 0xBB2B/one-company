@@ -17,6 +17,12 @@ export function currentLine(sessionManager: Pick<SessionManager, "getBranch">): 
   return line;
 }
 
+export function currentLineRepos(sessionManager: Pick<SessionManager, "getBranch">): Record<string, string> {
+  const repos: Record<string, string> = {};
+  for (const entry of branchCustomEntries<LineAnchorEntry>(sessionManager, LINE_ANCHOR_ENTRY)) repos[entry.requirementId] = entry.repoId;
+  return repos;
+}
+
 export function recordLineAnchor(pi: Pick<ExtensionAPI, "appendEntry">, entry: LineAnchorEntry): void {
   appendCustomEntry(pi, LINE_ANCHOR_ENTRY, entry);
 }
@@ -74,6 +80,19 @@ function viewOf(all: LineAnchorRecord[], line: readonly string[]): { tip: LineAn
 
 export function lineViewIn(db: LocalDatabase, requirementId: string, line: readonly string[]) {
   return viewOf(anchorsOf(db, requirementId), line);
+}
+
+export function lineSwitchFactsIn(db: LocalDatabase, requirementId: string, line: readonly string[]): { tipVersion: number | null; tipSave: string | null; afterApproval: boolean; lastSaved: number | null } {
+  const all = anchorsOf(db, requirementId);
+  const byAnchor = new Map(all.map((record) => [record.anchor, record]));
+  const tip = byAnchor.get(line.at(-1) ?? "") ?? null;
+  const approval = all.filter((record) => record.kind === "approval").reduce<LineAnchorRecord | null>((first, record) => !first || record.sequence < first.sequence ? record : first, null);
+  let afterApproval = false;
+  for (let cursor = tip; cursor && !afterApproval; cursor = cursor.parent ? byAnchor.get(cursor.parent) ?? null : null) afterApproval = cursor.anchor === approval?.anchor;
+  let save = tip;
+  while (save && save.kind !== "save") save = save.parent ? byAnchor.get(save.parent) ?? null : null;
+  const saves = line.flatMap((anchor) => { const record = byAnchor.get(anchor); return record?.kind === "save" ? [record.createdAt] : []; });
+  return { tipVersion: tip?.lineVersion ?? null, tipSave: save?.anchor ?? null, afterApproval, lastSaved: saves.length ? Math.max(...saves) : null };
 }
 
 export function memberAnchorIn(db: LocalDatabase, namespace: string, key: string): string | null {

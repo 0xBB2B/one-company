@@ -1,7 +1,12 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostAuthorizationError, HostAuthorizationManager } from "../requirement/host-authorization.ts";
 import { dataRoot } from "../../core/storage/identity.ts";
-import { DAEMON_CLIENT_LIFECYCLE_EVENTS } from "../../core/host/daemon-client.ts";
+import { DAEMON_CLIENT_LIFECYCLE_EVENTS, launchedDaemonLogPath } from "../../core/host/daemon-client.ts";
+import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
+import { currentLine, currentLineRepos, latestSaveAnchorIn, lineSwitchFactsIn } from "../requirement/line-anchors.ts";
+import { RequirementService } from "../requirement/requirement-service.ts";
+import { lineSwitchKind, lineSwitchReport, restoreMessageText, windowLineMemory } from "./line-switch.ts";
+import type { LineSwitchItem } from "./line-switch.ts";
 import { createRequirementManageTool } from "./requirement-manage-tool.ts";
 import { createUserInteractTool } from "./user-interact-tool.ts";
 import { MainIntakeInteraction } from "./main-intake-interaction.ts";
@@ -25,6 +30,7 @@ export interface RequirementManageExtensionDeps {
   readonly pmIntakeProviders?: MainIntakeProviders;
   readonly windowReady?: typeof windowReady;
   readonly windowContext?: typeof windowContext;
+  readonly daemonLogPath?: (repoId: string) => string | undefined;
 }
 /** 这句话 @ 到的需求，写进本轮系统提示；编号由程序按用户原话解析，不是模型填写。 */
 export function mentionNote(targets: readonly MentionTarget[], repos: ReadonlyArray<{ repoId: string; path: string }>): string {
@@ -50,10 +56,46 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
     authorization, resolveHost, pi, ...(deps.openService ? { openService: deps.openService } : {}) });
   const intake = new MainIntakeInteraction({ dataRoot: root, authorization, resolveHost,
     providers: deps.pmIntakeProviders ?? createPmIntakeProviders(root) });
+  const logPathOf = deps.daemonLogPath ?? launchedDaemonLogPath;
+  const lineMemory = windowLineMemory();
+  const reportLineSwitch = async (ctx: ExtensionContext, window: Pick<WindowContextValue, "workspace">, before: "window" | "latestSave"): Promise<void> => {
+    const line = currentLine(ctx.sessionManager), repoOf = currentLineRepos(ctx.sessionManager);
+    const items: LineSwitchItem[] = [];
+    for (const repository of window.workspace.repos) {
+      const repoId = repository.repoId;
+      const repoLine = Object.fromEntries(Object.entries(line).filter(([requirementId]) => repoOf[requirementId] === repoId));
+      if (!Object.keys(repoLine).length) continue;
+      const service = await RequirementService.open({ repositoryRoot: repository.path, dataRoot: root, repoId, lines: repoLine,
+        authorize: (request) => request.repoId === repoId && ["metadata", "readSaved", "readApproved"].includes(request.action)
+          && (request.requirementId === undefined || request.requirementId in repoLine) }).catch(() => undefined);
+      for (const [requirementId, anchors] of Object.entries(repoLine)) {
+        const lineTip = anchors.at(-1)!;
+        try {
+          if (!service) throw new Error("需求服务打不开");
+          const metadata = await service.metadata(requirementId);
+          const { facts, previous } = withDatabase(repositoryDatabase(root, repoId), (db) => ({ facts: lineSwitchFactsIn(db, requirementId, anchors),
+            previous: before === "window" ? lineMemory.tipOf(requirementId) : latestSaveAnchorIn(db, requirementId)?.anchor ?? null }));
+          const failure = metadata.restoreFailure ? { reason: metadata.restoreFailure, conversationVersion: facts.tipVersion, logPath: logPathOf(repoId) } : undefined;
+          const item: LineSwitchItem = { requirementId, title: "", lifecycle: metadata.lifecycle, before: previous,
+            tip: before === "latestSave" ? facts.tipSave ?? lineTip : lineTip, tipVersion: facts.tipVersion, currentVersion: metadata.version,
+            afterApproval: facts.afterApproval, lastSaved: facts.lastSaved, ...(failure ? { failure } : {}) };
+          if (lineSwitchKind(item)) item.title = metadata.lifecycle === "draft" ? (await service.read({ requirementId, source: "saved" })).title : await service.approvedTitle(requirementId);
+          items.push(item);
+        } catch {
+          const title = await service?.read({ requirementId, source: "saved" }).then((read) => read.title, () => requirementId) ?? requirementId;
+          items.push({ requirementId, title, lifecycle: "draft", before: null, tip: lineTip, tipVersion: null, currentVersion: null, afterApproval: false, lastSaved: null,
+            failure: { reason: "读取这个需求的记录时出错了", conversationVersion: null, logPath: logPathOf(repoId) } });
+        }
+      }
+    }
+    lineMemory.remember(line);
+    const text = restoreMessageText(lineSwitchReport(items));
+    if (text) pi.sendMessage({ customType: "one-company.requirement-restore", content: text, display: true }, { triggerTurn: false });
+  };
   let unregisterShutdown: (() => void) | undefined;
   const connections: Array<() => void> = [];
   const shutdown = () => { mention = undefined; for (const stop of connections.splice(0)) stop(); intake.shutdown(); interaction.shutdown(); authorization.shutdown(); };
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
     interaction.shutdown();
     intake.shutdown();
     const window = await awaitWindow(), sessionId = ctx.sessionManager.getSessionId();
@@ -86,6 +128,12 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
         () => (mention?.candidates() ?? Promise.resolve([])).catch(() => []), () => mention?.multiRepo ?? false));
     }
     intake.startSession(ctx, hostOf(window));
+    if (["startup", "resume", "fork"].includes(event.reason)) await reportLineSwitch(ctx, window, "latestSave");
+  });
+  pi.on("session_tree", async (_event, ctx) => {
+    let window: WindowContextValue;
+    try { window = currentWindow(); } catch { return; }
+    await reportLineSwitch(ctx, window, "window");
   });
   pi.on("input", (event, ctx) => {
     if (currentWindow().workspace.repos.length === 0) return { action: "continue" };
@@ -99,7 +147,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
   });
   pi.on("session_before_switch", () => { authorization.revoke(); });
   pi.on("session_before_fork", () => { authorization.revoke(); });
-  pi.on("session_before_tree", () => { authorization.revoke(); });
+  pi.on("session_before_tree", (_event, ctx) => { lineMemory.remember(currentLine(ctx.sessionManager)); authorization.revoke(); });
   pi.on("session_before_compact", (_event, ctx) => { intake.clearForCompaction(ctx); });
   pi.on("model_select", () => { authorization.revoke(); });
   pi.on("session_shutdown", () => { unregisterShutdown?.(); unregisterShutdown = undefined; shutdown(); });

@@ -586,10 +586,6 @@ export async function inFlightSummary(ref: Ref, requirementId: string, line: rea
   return inFlightItems(await readPrototypeBoard(ref, requirementId, line));
 }
 
-export async function awaitingOnLine(ref: Ref, requirementId: string, line: readonly string[]): Promise<Array<{ name: string; version: number }>> {
-  return (await inFlightSummary(ref, requirementId, line)).filter((item) => item.status === "awaiting").map(({ name, version }) => ({ name, version }));
-}
-
 export function inFlightBlock(items: Array<{ name: string; version: number; status: "designing" | "awaiting" }>): PrototypeBoardError | null {
   if (!items.length) return null;
   const why = `还不能批准：${items.map((item) => item.status === "awaiting" ? `原型「${item.name}」第 ${item.version} 版还在等你确认` : `原型「${item.name}」设计师还在做`).join("，")}`;

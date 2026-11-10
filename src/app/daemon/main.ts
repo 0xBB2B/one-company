@@ -27,6 +27,7 @@ async function main(): Promise<void> {
     idleTimeoutMs,
     clockSkewFile,
     modelProviderModulePath,
+    logPath: capturedEnv.ONE_COMPANY_DAEMON_LOG_PATH,
   });
 }
 

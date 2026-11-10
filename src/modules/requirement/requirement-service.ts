@@ -932,6 +932,23 @@ export class RequirementService {
       title: parsed.title, body: parsed.body, partition, difference };
   }
 
+  async approvedTitle(requirementId: string): Promise<string> {
+    const id = checkServiceInput(MetadataRequirementInput, requirementId);
+    const authorization: ServiceAuthorizationRequest = { action: "readApproved", repoId: this.options.repoId, requirementId: id };
+    this.authorize(authorization);
+    const record = (await this.state(authorization)).read(id);
+    const reference = record.data.approved;
+    if (!reference) throw new RequirementServiceError("version_unavailable");
+    const bound = { ...authorization, prdHash: storageHash(reference.hash), version: record.version, epoch: record.data.epoch };
+    this.authorize(bound);
+    const result = await readVersion({
+      ...this.storageConfig(bound, id, this.operations.repositoryIdentity(id), () => {}),
+      commit: reference.commit,
+      expectedHash: storageHash(reference.hash),
+    });
+    return parsePrdDocument(result.bytes, id).title;
+  }
+
   async metadata(requirementId: string): Promise<RequirementMetadataResult> {
     const id = checkServiceInput(MetadataRequirementInput, requirementId);
     const authorization: ServiceAuthorizationRequest = { action: "metadata", repoId: this.options.repoId, requirementId: id };

@@ -39,6 +39,7 @@ const ANCHOR_ENTRY = "one-company.line-anchor";
 
 interface Options {
   hasUI?: boolean;
+  windowReady?: () => Promise<unknown>;
   branch?: unknown[];
   openFile?: (path: string) => Promise<boolean>;
   responses?: Record<string, (params: Record<string, unknown>) => unknown>;
@@ -67,7 +68,7 @@ async function harness(options: Options = {}) {
     clients: { forRepo: (id: string) => (id === REPO ? client : undefined), all: () => [client], skipped: () => [], closeAll: () => {} } };
   const order: string[] = [];
   const openFile = vi.fn(async (path: string) => { order.push("open"); return options.openFile ? options.openFile(path) : true; });
-  prototypeExtension(pi as never, { windowReady: () => Promise.resolve(window) as never, openFile } as never);
+  prototypeExtension(pi as never, { windowReady: options.windowReady ?? (() => Promise.resolve(window) as never), openFile } as never);
 
   const views: Views = [];
   const custom = vi.fn((factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: unknown) => void) => Views[number]) =>
@@ -890,4 +891,91 @@ test("确认窗口开着时主代理又保存了草稿：用户点移除，remov
   (await h.nextView()).handleInput("\r");
   await done;
   expect(h.called("prototypes.remove")[0]!.line).toEqual([...LINE, SAVE_ANCHOR]);
+});
+
+const OTHER_ANCHOR = "01900000-0000-7000-8000-0000000000b1";
+const OTHER_LINE = [BASE_ANCHOR, OTHER_ANCHOR];
+const boardWith = (status: "awaiting" | "designing" | null) => () => ({ entries: [{ name: "设置页", inFlight: status ? { status, version: 2 } : null, draft: null }] });
+const switchEvents: Array<[string, Record<string, unknown>]> = [["session_tree", {}], ["session_start", { reason: "startup" }], ["session_start", { reason: "resume" }], ["session_start", { reason: "fork" }]];
+
+test.each(switchEvents)("换线（%s %j）后，新线上有交了稿等确认的原型：按新线查看板，先打开浏览器再弹确认原型窗口", async (event, payload) => {
+  const h = await harness({ responses: { "prototypes.board": boardWith("awaiting"), "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger(event, payload, h.ctx);
+  const view = await h.nextView();
+  expect(h.called("prototypes.board")).toContainEqual({ requirementId: REQ, line: OTHER_LINE });
+  expect(h.called("prototypes.pending")).toEqual([{ requirementId: REQ, line: OTHER_LINE, name: "设置页" }]);
+  expect(h.order).toEqual(["open", "window"]);
+  expect(view.render(80)).toEqual(CONFIRM_FRAME(true, 2));
+});
+
+test("换线后新线上没有等确认的原型：不弹窗", async () => {
+  const h = await harness({ responses: { "prototypes.board": boardWith(null), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger("session_tree", {}, h.ctx);
+  await vi.waitFor(() => expect(h.called("prototypes.board").length).toBeGreaterThan(0));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.custom).not.toHaveBeenCalled();
+  expect(h.called("prototypes.pending")).toEqual([]);
+});
+
+test("换线后新线上的原型设计师还在做（没交稿）：不弹窗", async () => {
+  const h = await harness({ responses: { "prototypes.board": boardWith("designing"), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger("session_tree", {}, h.ctx);
+  await vi.waitFor(() => expect(h.called("prototypes.board").length).toBeGreaterThan(0));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.custom).not.toHaveBeenCalled();
+});
+
+test("session_start 原因为 reload：不查看板，不弹窗", async () => {
+  const h = await harness({ responses: { "prototypes.board": boardWith("awaiting"), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger("session_start", { reason: "reload" }, h.ctx);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.called("prototypes.board")).toEqual([]);
+  expect(h.custom).not.toHaveBeenCalled();
+});
+
+test("换线后线上没有任何需求锚点：不查看板，不弹窗", async () => {
+  const h = await harness({ responses: { "prototypes.board": boardWith("awaiting"), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch([]);
+  await h.fake.trigger("session_tree", {}, h.ctx);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.called("prototypes.board")).toEqual([]);
+  expect(h.custom).not.toHaveBeenCalled();
+});
+
+test("没有界面时换线：不查看板、不弹窗、不报错", async () => {
+  const h = await harness({ hasUI: false, responses: { "prototypes.board": boardWith("awaiting"), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await expect(h.fake.trigger("session_tree", {}, h.ctx)).resolves.toBeDefined();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.called("prototypes.board")).toEqual([]);
+  expect(h.custom).not.toHaveBeenCalled();
+  expect((h.ctx.ui.notify as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+});
+
+test("同一条线上有两份等确认的原型：换线后依次弹出两次，第一个关掉后才弹第二个", async () => {
+  const board = () => ({ entries: [{ name: "设置页", inFlight: { status: "awaiting", version: 2 }, draft: null }, { name: "引导页", inFlight: { status: "awaiting", version: 1 }, draft: null }] });
+  const h = await harness({ responses: { "prototypes.board": board, "prototypes.pending": (params) => pendingFor(params.name as string), "prototypes.decide": decideOk } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger("session_tree", {}, h.ctx);
+  const first = await h.nextView();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(h.views).toHaveLength(1);
+  expect(first.render(80)).toContain(" 原型：设置页（第 2 版）");
+  first.handleInput("\x1b");
+  const second = await h.nextView(1);
+  expect(second.render(80)).toContain(" 原型：引导页（第 1 版）");
+  expect(h.custom).toHaveBeenCalledTimes(2);
+});
+
+test.each(switchEvents)("窗口启动失败时换线（%s %j）：不弹警告也不弹窗", async (event, payload) => {
+  const h = await harness({ windowReady: () => Promise.reject(new Error("窗口未启动")), responses: { "prototypes.board": boardWith("awaiting"), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger(event, payload, h.ctx);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.ctx.ui.notify).not.toHaveBeenCalled();
+  expect(h.custom).not.toHaveBeenCalled();
 });
