@@ -6,7 +6,7 @@ import type { WorkspaceClientsHandle } from "../../core/host/daemon-client.ts";
 import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { windowContext } from "../../core/host/extension-lifecycle.ts";
-import { requirementLabel, summaryLine, toolCard } from "../../core/host/tool-card.ts";
+import { mutedItem, requirementLabel, summaryLine, toolCard } from "../../core/host/tool-card.ts";
 import type { CardSpec } from "../../core/host/tool-card.ts";
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
@@ -29,7 +29,7 @@ const WORKFLOW_CARDS = {
     "delivery-check": { title: "需求流程", object: (request) => requirementLabel(request.requirementId),
       summary: (details, theme) => {
         const { deliverable, blockers } = details.result as { deliverable: boolean; blockers: string[] };
-        return [deliverable ? theme.fg("success", "可以交付") : summaryLine(theme, "还不能交付", blockers[0], blockers.length > 1 ? `共 ${blockers.length} 项` : undefined)];
+        return [deliverable ? theme.fg("success", "可以交付") : [{ text: "还不能交付" }, mutedItem(theme, blockers[0]!, true), ...(blockers.length > 1 ? [mutedItem(theme, `共 ${blockers.length} 项`)] : [])]];
       } },
     close: { title: "关闭需求", object: (request) => requirementLabel(request.requirementId),
       summary: (details, theme) => {

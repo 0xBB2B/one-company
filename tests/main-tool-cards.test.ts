@@ -133,6 +133,124 @@ test("prototype status：没有原型写「还没有原型」；5 个原型只�
   expect(draw(prototype, statusArgs, ok({ entries: entries.slice(0, 2) })).join("")).not.toContain("还有");
 });
 
+const bare = (line: string) => line.replace(/<\/?[a-z]*>/g, "");
+const LONG_NAME = "桌面接入工具安装配置与首次启动引导流程及权限申请说明原型";
+const protoEntries = (first: Record<string, unknown>, count: number) => Array.from({ length: count }, (_, i) => i === 0 ? first : entry({ approved: { version: 1 } }, `原型${i}`));
+
+test("prototype status 超宽：名字比状态长时截名字加省略号，状态和「还有 K 个原型」完整", () => {
+  const entries = protoEntries(entry({ approved: { version: 1 } }, "短名"), 4);
+  entries[1] = entry({ inFlight: { version: 3, status: "awaiting" } }, LONG_NAME);
+  const lines = draw(prototype, statusArgs, ok({ entries }), { width: 78 });
+  expect(lines[1]).toBe("短名：第 1 版已随需求批准");
+  expect(lines[2]).toMatch(/^桌.+…：第 3 版等你确认\s*<muted>· 还有 2 个原型<\/>$/);
+  expect(lines[2]).not.toContain(LONG_NAME);
+  for (const line of lines) expect(visibleWidth(bare(line))).toBeLessThanOrEqual(78);
+});
+
+test("prototype status 超宽：没交稿原因很长时原型名完整，原因从右边截加省略号，「还有 K 个原型」完整", () => {
+  const reason = "设计师在第 18 轮用完轮数上限，还没写出可以打开的页面文件";
+  const entries = protoEntries(entry({}, "甲"), 4);
+  entries[1] = entry({ lastEnded: { version: 1, reason } }, "支付结果页原型");
+  const lines = draw(prototype, statusArgs, ok({ entries }), { width: 78 });
+  expect(lines[2]).toMatch(/^支付结果页原型：第 1 版没交稿：设计师.*…\s*<muted>· 还有 2 个原型<\/>$/);
+  expect(lines[2]).not.toContain(reason);
+  for (const line of lines) expect(visibleWidth(bare(line))).toBeLessThanOrEqual(78);
+});
+
+test("prototype status 超宽：第一行（没有计数）同样截较长的那段，行尾无多余内容", () => {
+  const lines = draw(prototype, statusArgs, ok({ entries: [entry({ inFlight: { version: 3, status: "awaiting" } }, LONG_NAME)] }), { width: 50 });
+  expect(lines[1]).toMatch(/^桌.+…：第 3 版等你确认$/);
+  expect(visibleWidth(bare(lines[1]!))).toBeLessThanOrEqual(50);
+});
+
+test("prototype status 宽度刚好够时显示与完整文字完全相同", () => {
+  const entries = protoEntries(entry({ approved: { version: 1 } }, "甲"), 3);
+  const lines = draw(prototype, statusArgs, ok({ entries }), { width: 120 });
+  expect(lines[1]).toBe("甲：第 1 版已随需求批准");
+  expect(lines[2]).toBe("原型1：第 1 版已随需求批准  <muted>· 还有 1 个原型</>");
+});
+
+test("prototype status 窄到可截文字只剩省略号也放不下时，整行从右边截，每行不超宽", () => {
+  const entries = protoEntries(entry({ inFlight: { version: 3, status: "awaiting" } }, LONG_NAME), 4);
+  const lines = draw(prototype, statusArgs, ok({ entries }), { width: 12, theme: plainTheme as never });
+  for (const line of lines.slice(1)) {
+    expect(line.endsWith("…")).toBe(true);
+    expect(visibleWidth(line)).toBeLessThanOrEqual(12);
+  }
+});
+
+test("workflow_manage delivery-check 超宽：只截卡住原因加省略号，「还不能交付」和「共 N 项」完整", () => {
+  const args = { action: "delivery-check", repoId: REPO, requirementId: REQ };
+  const reason = "计划里还有三个任务没有做完而且最近一次审查提出的问题还没有逐条处理完毕需要继续";
+  const lines = draw(workflow, args, ok({ result: { deliverable: false, blockers: [reason, "b", "c"] } }), { width: 60 });
+  expect(lines[1]).toMatch(/^还不能交付  <muted>· 计划.+…<\/>  <muted>· 共 3 项<\/>$/);
+  for (const line of lines) expect(visibleWidth(bare(line))).toBeLessThanOrEqual(60);
+});
+
+test("workflow_manage delivery-check 超宽且只有 1 项：卡住原因截断，行尾没有计数", () => {
+  const args = { action: "delivery-check", repoId: REPO, requirementId: REQ };
+  const lines = draw(workflow, args, ok({ result: { deliverable: false, blockers: ["计划里还有三个任务没有做完".repeat(5)] } }), { width: 40 });
+  expect(lines[1]).toMatch(/^还不能交付  <muted>· 计划.+…<\/>$/);
+  expect(visibleWidth(bare(lines[1]!))).toBeLessThanOrEqual(40);
+});
+
+test("workflow_manage delivery-check 窄到卡住原因只剩省略号也放不下时，整行从右边截，每行不超宽", () => {
+  const args = { action: "delivery-check", repoId: REPO, requirementId: REQ };
+  const lines = draw(workflow, args, ok({ result: { deliverable: false, blockers: ["计划没做完", "b", "c"] } }), { width: 12, theme: plainTheme as never });
+  expect(lines[1]!.endsWith("…")).toBe(true);
+  expect(visibleWidth(lines[1]!)).toBeLessThanOrEqual(12);
+});
+
+const ansiTheme = { fg: (_kind: string, text: string) => `\x1b[90m${text}\x1b[39m`, bold: (text: string) => `\x1b[1m${text}\x1b[22m`, bg: (_kind: string, text: string) => text };
+const RESET_ALL = "\x1b[0m";
+const deliveryArgs = { action: "delivery-check", repoId: REPO, requirementId: REQ };
+const LONG_REASON = "计划里还有三个任务没有做完而且最近一次审查提出的问题还没有逐条处理完毕需要继续";
+
+test("prototype status 超宽且用真实色码：被截的行里没有清除全部样式的 \\x1b[0m", () => {
+  const entries = protoEntries(entry({ approved: { version: 1 } }, "短名"), 4);
+  entries[1] = entry({ inFlight: { version: 3, status: "awaiting" } }, LONG_NAME);
+  const lines = draw(prototype, statusArgs, ok({ entries }), { width: 78, theme: ansiTheme as never });
+  expect(lines[2]).toContain("…");
+  expect(lines[2]).not.toContain(RESET_ALL);
+});
+
+test("workflow_manage delivery-check 超宽且用真实色码：没有 \\x1b[0m，被截的卡住原因末尾的省略号仍在灰色里", () => {
+  const lines = draw(workflow, deliveryArgs, ok({ result: { deliverable: false, blockers: [LONG_REASON, "b", "c"] } }), { width: 60, theme: ansiTheme as never });
+  expect(lines[1]).not.toContain(RESET_ALL);
+  expect(lines[1]).toMatch(/\x1b\[90m[^\x1b]*…\x1b\[39m/);
+});
+
+test("prototype status 可见总宽刚好等于渲染宽度时显示完整文字，少 1 列开始截且行尾计数完整", () => {
+  const entries = protoEntries(entry({ approved: { version: 1 } }, "甲"), 3);
+  const full = draw(prototype, statusArgs, ok({ entries }), { width: 200, theme: plainTheme as never })[2]!;
+  const total = visibleWidth(full);
+  const exact = draw(prototype, statusArgs, ok({ entries }), { width: total, theme: plainTheme as never });
+  expect(exact[2]).toBe(full);
+  expect(exact.slice(1).join("")).not.toContain("…");
+  const tight = draw(prototype, statusArgs, ok({ entries }), { width: total - 1, theme: plainTheme as never });
+  expect(tight[2]).toContain("…");
+  expect(tight[2]!.endsWith("· 还有 1 个原型")).toBe(true);
+  for (const line of tight) expect(visibleWidth(line)).toBeLessThanOrEqual(total - 1);
+});
+
+test("workflow_manage delivery-check 可见总宽刚好等于渲染宽度时显示完整文字，少 1 列开始截且行尾计数完整", () => {
+  const result = ok({ result: { deliverable: false, blockers: ["计划没做完", "b", "c"] } });
+  const full = draw(workflow, deliveryArgs, result, { width: 200, theme: plainTheme as never })[1]!;
+  const total = visibleWidth(full);
+  const exact = draw(workflow, deliveryArgs, result, { width: total, theme: plainTheme as never });
+  expect(exact[1]).toBe(full);
+  expect(exact.slice(1).join("")).not.toContain("…");
+  const tight = draw(workflow, deliveryArgs, result, { width: total - 1, theme: plainTheme as never });
+  expect(tight[1]).toContain("…");
+  expect(tight[1]!.endsWith("共 3 项")).toBe(true);
+  for (const line of tight) expect(visibleWidth(line)).toBeLessThanOrEqual(total - 1);
+});
+
+test("project_manage refresh：结果截断了摘要也不写「有截断」", () => {
+  const result = ok({ action: "refresh", status: "ready", files: 5, skipped: [], skippedCount: 2, diagnosticCount: 0, truncation: { truncated: true } });
+  expect(draw(project, wrap({ action: "refresh" }), result)[1]).toBe("完成  <muted>· 5 个文件</>  <muted>· 跳过 2 个</>");
+});
+
 test("prototype confirm、remove：摘要是工具返回的那句话", () => {
   const said = "用户已在窗口里作出决定，结果以程序记录为准";
   expect(draw(prototype, wrap({ action: "confirm", requirementId: REQ, name: PROTO }), ok(said))).toEqual([`<b>确认原型</b>  <muted>${PROTO}</>`, said]);
@@ -185,10 +303,10 @@ test("git_deliver：delivered 按合并状态写，其余状态各有说法", ()
 
 const skipped = Array.from({ length: 11 }, (_, i) => ({ path: `skip/${i}.bin`, reason: "二进制" }));
 
-test("project_manage init：标题写仓库目录名；摘要写状态、文件数、跳过数，有截断才写最后一项", () => {
+test("project_manage init：标题写仓库目录名；摘要写状态、文件数、跳过数，结果截断了也不写「有截断」", () => {
   const args = wrap({ action: "init" });
   expect(draw(project, args, ok({ action: "init", status: "ready", files: 166, skipped, skippedCount: 11, diagnosticCount: 0, truncation: { truncated: true } })))
-    .toEqual(["<b>初始化项目索引</b>  <muted>one-company</>", "完成  <muted>· 166 个文件</>  <muted>· 跳过 11 个</>  <muted>· 有截断</>"]);
+    .toEqual(["<b>初始化项目索引</b>  <muted>one-company</>", "完成  <muted>· 166 个文件</>  <muted>· 跳过 11 个</>"]);
   expect(draw(project, args, ok({ action: "init", status: "ready", files: 166, skipped, skippedCount: 11, diagnosticCount: 0, truncation: { truncated: false } }))[1]).toBe("完成  <muted>· 166 个文件</>  <muted>· 跳过 11 个</>");
   for (const [status, text] of [["partial", "完成"], ["invalid", "索引无效"], ["cancelled", "已取消"]]) {
     expect(draw(project, wrap({ action: "refresh" }), ok({ action: "refresh", status, files: 1, skipped: [], skippedCount: 0, diagnosticCount: 0, truncation: { truncated: false } }))[1]).toMatch(new RegExp(`^${text}  `));

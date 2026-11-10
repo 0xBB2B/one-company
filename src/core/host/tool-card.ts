@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import type { Component } from "@earendil-works/pi-tui";
-import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { sliceByColumn, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { unwrapRequest } from "../exec/tool-request.ts";
 import { windowContext } from "./extension-lifecycle.ts";
 
@@ -10,18 +10,41 @@ export type CardRow = Readonly<Record<string, any>>;
 // 省略号放在样式重置码之后，行尾才是真正的“…”
 const fit = (line: string, width: number): string => (visibleWidth(line) <= width ? line : `${truncateToWidth(line, width - 1, "")}…`);
 
+export type CardSegment = { text: string; style?: (text: string) => string; shrink?: boolean };
+export type CardLine = string | CardSegment[];
+
+const flat = (text: string): string => text.replace(/\s*[\r\n]+\s*/gu, " ");
+
+function fitSegments(segments: CardSegment[], width: number): string {
+  const texts = segments.map((segment) => flat(segment.text));
+  const paint = (): string => segments.map((segment, index) => (segment.style ? segment.style(texts[index]!) : texts[index]!)).join("");
+  const total = (): number => texts.reduce((sum, text) => sum + visibleWidth(text), 0);
+  while (total() > width) {
+    let widest = -1;
+    for (let index = 0; index < segments.length; index++) {
+      if (!segments[index]!.shrink || texts[index] === "…") continue;
+      if (widest === -1 || visibleWidth(texts[index]!) > visibleWidth(texts[widest]!)) widest = index;
+    }
+    if (widest === -1) return fit(paint(), width);
+    const room = Math.max(1, visibleWidth(texts[widest]!) - (total() - width));
+    // truncateToWidth 会在结果末尾补 \x1b[0m，落在行中间会清掉卡片底色和段内颜色
+    texts[widest] = `${sliceByColumn(texts[widest]!, 0, room - 1, true)}…`;
+  }
+  return paint();
+}
+
 export class CardText implements Component {
-  private lines: string[];
+  private lines: CardLine[];
   private readonly expanded: string;
-  constructor(lines: string[], expanded = "") {
+  constructor(lines: CardLine[], expanded = "") {
     this.lines = lines;
     this.expanded = expanded;
   }
-  setLines(lines: string[]): void { this.lines = lines; }
+  setLines(lines: CardLine[]): void { this.lines = lines; }
   invalidate(): void {}
   render(width: number): string[] {
     const open = this.expanded === "" ? [] : this.expanded.split("\n").flatMap((line) => (line === "" ? [""] : wrapTextWithAnsi(line, width)));
-    return [...this.lines.map((line) => fit(line.replace(/\s*[\r\n]+\s*/gu, " "), width)), ...open];
+    return [...this.lines.map((line) => (typeof line === "string" ? fit(flat(line), width) : fitSegments(line, width))), ...open];
   }
 }
 
@@ -31,6 +54,10 @@ export function cardHeader(theme: CardTheme, action: string, object?: string): s
 
 export function summaryLine(theme: CardTheme, first: string, ...rest: Array<string | undefined>): string {
   return first + rest.filter((item): item is string => !!item).map((item) => `  ${theme.fg("muted", `· ${item}`)}`).join("");
+}
+
+export function mutedItem(theme: CardTheme, text: string, shrink = false): CardSegment {
+  return { text: `  · ${text}`, style: (t) => t.replace(/^( *)([\s\S]*)$/u, (_, lead: string, rest: string) => lead + theme.fg("muted", rest)), shrink };
 }
 
 function pretty(value: unknown): string {
@@ -87,7 +114,7 @@ export function repoLabel(repoId: string): string {
 export interface CardSpec {
   title: string;
   object(request: CardRow, details: CardRow | undefined): string | undefined;
-  summary(details: CardRow, theme: CardTheme, request: CardRow): string[];
+  summary(details: CardRow, theme: CardTheme, request: CardRow): CardLine[];
   note?(request: CardRow, details: CardRow): void;
 }
 export interface CardTable { actionOf(args: unknown): string | undefined; cards: Readonly<Record<string, CardSpec>> }

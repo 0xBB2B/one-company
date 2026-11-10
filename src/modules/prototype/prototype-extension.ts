@@ -17,8 +17,8 @@ import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { requestParameters } from "../../core/exec/tool-request.ts";
 import { revokeCapturedInput, windowReady as defaultWindowReady } from "../../core/host/extension-lifecycle.ts";
 import type { WindowContextValue } from "../../core/host/extension-lifecycle.ts";
-import { requirementLabel, shortId, summaryLine, toolCard } from "../../core/host/tool-card.ts";
-import type { CardRow, CardSpec } from "../../core/host/tool-card.ts";
+import { mutedItem, requirementLabel, shortId, summaryLine, toolCard } from "../../core/host/tool-card.ts";
+import type { CardRow, CardSegment, CardSpec } from "../../core/host/tool-card.ts";
 
 const TOOL_NAME = "one_company_prototype";
 const ENTRY_TYPE = "one-company.prototype-record";
@@ -35,7 +35,7 @@ const PARAMETERS = requestParameters([
   object({ action: Type.Literal("remove"), repoId, requirementId: id, name }),
 ]);
 
-function prototypeLine(entry: CardRow): string {
+function prototypeLine(entry: CardRow): CardSegment[] {
   const { inFlight, draft, approved, lastEnded } = entry;
   const status = entry.removed ? "已从草稿移除"
     : inFlight ? `第 ${inFlight.version} 版${inFlight.status === "awaiting" ? "等你确认" : "设计中"}`
@@ -43,7 +43,7 @@ function prototypeLine(entry: CardRow): string {
     : approved ? `第 ${approved.version} 版已随需求批准`
     : lastEnded ? `第 ${lastEnded.version} 版没交稿：${lastEnded.reason}`
     : "还没交稿";
-  return `${entry.name}：${status}`;
+  return [{ text: entry.name, shrink: true }, { text: "：" }, { text: status, shrink: true }];
 }
 
 const said: CardSpec["summary"] = (details) => [details as unknown as string];
@@ -58,7 +58,7 @@ const PROTOTYPE_CARDS = {
         const entries = details.entries as CardRow[];
         if (entries.length === 0) return ["还没有原型"];
         const lines = entries.slice(0, 2).map(prototypeLine);
-        if (entries.length > 2) lines[1] = summaryLine(theme, lines[1]!, `还有 ${entries.length - 2} 个原型`);
+        if (entries.length > 2) lines[1] = [...lines[1]!, mutedItem(theme, `还有 ${entries.length - 2} 个原型`)];
         return lines;
       } },
     confirm: { title: "确认原型", object: (request) => request.name, summary: said },

@@ -752,7 +752,7 @@ const projectCard = (title: string, object: CardSpec["object"], summary: (detail
 const INDEX_TEXT: Record<string, string> = { ready: "完成", partial: "完成", invalid: "索引无效", cancelled: "已取消" };
 const INDEX_STATE_TEXT: Record<string, string> = { ready: "就绪", building: "建立中", partial: "部分完成", invalid: "无效", cancelled: "已取消", interrupted: "中断了" };
 const indexRun = (title: string) => projectCard(title, repoObject, (details, theme) => [summaryLine(theme, INDEX_TEXT[details.status] ?? details.status,
-  `${details.files} 个文件`, `跳过 ${details.skippedCount} 个`, details.truncation?.truncated ? "有截断" : undefined)]);
+  `${details.files} 个文件`, `跳过 ${details.skippedCount} 个`)]);
 const maintenance = (title: string) => projectCard(title, repoObject, (details) => [details.status === "needs_review" ? "已恢复，待核对" : "完成"]);
 const CONVENTIONS_TEXT: Record<string, string> = { written: "已写入", unchanged: "内容没变", cancelled: "没写入", revise: "你要修改" };
 
