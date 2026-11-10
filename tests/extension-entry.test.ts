@@ -1,10 +1,12 @@
 import { describe, expect, test } from "vitest";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import registerExtensions from "../src/app/extension/index.ts";
 import shellUiExtension from "../src/modules/shell/shell-ui-extension.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
+import { runGit } from "./helpers/git-run.ts";
 
 const PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -12,9 +14,6 @@ const REQUIRED_COMMAND_NAMES = [
   "one:setting",
   "one:ps",
 ];
-
-// extension-lifecycle.ts 的 session_start 处理器体内唯一出现的变量名，用来在不触发真实会话的前提下辨认注册顺序中的第一个处理器来自谁
-const LIFECYCLE_SESSION_START_MARKER = "capturedShutdown";
 
 function makeShellUiCtx() {
   return {
@@ -80,14 +79,28 @@ describe("src/app/extension/index.ts 唯一扩展入口", () => {
     expect(pkg.pi?.extensions).toEqual(["./src/app/extension/index.ts"]);
   });
 
-  test("session_start 处理器注册顺序中，首位来自 lifecycle（先于 pm-panel/shell-ui）", () => {
-    const fakePi = createFakePi();
+  test("授信判断的 session_start 处理排在所有子扩展之前：记录为空且无界面时，子扩展的处理一个都不执行", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "pi-t-")));
+    const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+    try {
+      await mkdir(join(root, "agent"), { recursive: true });
+      await mkdir(join(root, "repo"));
+      await runGit(["init", "-q"], join(root, "repo"));
+      const fakePi = createFakePi();
+      const pi = Object.assign(fakePi.pi, { getActiveTools: () => [], setActiveTools() {}, getAllTools: () => [], getSettings: () => ({}) });
+      registerExtensions(pi as never);
+      expect(fakePi.handlerCount("session_start")).toBeGreaterThan(1);
 
-    registerExtensions(fakePi.pi);
+      const touched = new Set<string | symbol>();
+      const ctx = new Proxy({ hasUI: false, cwd: join(root, "repo") }, { get(target, prop, receiver) { touched.add(prop); return Reflect.get(target, prop, receiver); } });
+      await fakePi.trigger("session_start", { type: "session_start", reason: "startup" }, ctx);
 
-    const sessionStartHandlers = fakePi.handlersFor("session_start");
-    expect(sessionStartHandlers.length).toBeGreaterThan(0);
-    expect(sessionStartHandlers[0]!.toString()).toContain(LIFECYCLE_SESSION_START_MARKER);
+      expect([...touched].filter((prop) => prop !== "cwd" && prop !== "hasUI")).toEqual([]);
+    } finally {
+      if (savedAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = savedAgentDir;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

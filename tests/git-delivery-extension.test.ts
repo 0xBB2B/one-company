@@ -257,3 +257,19 @@ test("交付工具用守护进程给的 repositoryRoot 查信任、读项目层�
   expect(localMock).toHaveBeenCalledTimes(1);
   expect(localMock.mock.calls[0]![2]).toEqual({ repositoryRoot: given, mergeMethods: ["rebase"] });
 });
+
+test("授信记录读不了时交付失败，写明读不了授信记录和原因，建议改好文件后再交付，仓库与交付函数都没有动", async () => {
+  const w = await world();
+  await w.makeDeliverable();
+  await w.start();
+  const trustPath = join(process.env.PI_CODING_AGENT_DIR!, "trust.json");
+  await writeFile(trustPath, '{"a": true,}');
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: w.mainRoot, encoding: "utf8" });
+  const before = [git("rev-parse", "HEAD"), git("branch", "--list"), git("status", "--porcelain")];
+  let message = "";
+  try { await w.run(PARAMS); } catch (error) { message = (error as Error).message; }
+  expect(message).toContain(`读不了授信记录 ${trustPath}：Failed to read trust store`);
+  expect(message).toContain("改好这个文件后再交付");
+  expect([git("rev-parse", "HEAD"), git("branch", "--list"), git("status", "--porcelain")]).toEqual(before);
+  expect(vi.mocked(gitDelivery.deliverRequirement)).not.toHaveBeenCalled();
+});

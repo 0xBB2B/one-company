@@ -21,13 +21,14 @@ const until = async (check: () => boolean | Promise<boolean>, ms = 30_000) => {
   throw new Error("等待超时");
 };
 
-async function firstPmRequestProvider(trust: boolean | undefined) {
+async function firstPmRequestProvider(trust: boolean | undefined | "unreadable") {
   const fixture = await createPmIntakeFixture(); cleanups.push(() => fixture.cleanup());
   const agentDir = dirname(fixture.dataRoot);
   await mkdir(join(fixture.repositoryRoot, ".pi"), { recursive: true });
   await writeFile(join(agentDir, "settings.json"), JSON.stringify({ "one-company": { pm: { model: "user-model/test", thinking: null } } }));
   await writeFile(join(fixture.repositoryRoot, ".pi", "settings.json"), JSON.stringify({ "one-company": { pm: { model: "project-model/test", thinking: null } } }));
-  if (trust !== undefined) new ProjectTrustStore(agentDir).set(fixture.repositoryRoot, trust);
+  if (trust === "unreadable") await writeFile(join(agentDir, "trust.json"), '{"a": true,}');
+  else if (trust !== undefined) new ProjectTrustStore(agentDir).set(fixture.repositoryRoot, trust);
   const record = fixture.state.read(fixture.requirementId).data;
   fixture.db((db) => {
     db.create("managed_workspaces", fixture.requirementId, { format: "managed-workspace/v1", requirementId: fixture.requirementId, title: "角色跳跃", operationId: uuidv7(),
@@ -59,4 +60,8 @@ test("授信记录里没有这个项目时，PM 用用户层设定的模型，�
 
 test("授信记录为 true 时，PM 用项目层设定的模型", async () => {
   expect(await firstPmRequestProvider(true)).toBe("project-model");
+}, 120_000);
+
+test("授信记录读不了时，daemon 照常派出 PM，用用户层设定的模型，项目层的设定不生效", async () => {
+  expect(await firstPmRequestProvider("unreadable")).toBe("user-model");
 }, 120_000);

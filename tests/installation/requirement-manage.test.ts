@@ -120,6 +120,7 @@ test.skipIf(process.platform !== "darwin")("M1-AC12/13/15：pnpm 安装产物由
     await git(repositoryRoot, ["-c", "user.name=test", "-c", "user.email=test@localhost", "commit", "-m", "initial"]);
     const identity = await repositoryIdentity(repositoryRoot);
 
+    await writeFile(join(agentDir, "trust.json"), JSON.stringify({ [await realpath(repositoryRoot)]: true }));
     process.env.PI_CODING_AGENT_DIR = agentDir;
     process.env.HOME = home;
     process.env.PI_OFFLINE = "1";

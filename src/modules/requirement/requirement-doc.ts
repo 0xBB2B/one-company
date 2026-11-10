@@ -2,8 +2,9 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseFrontmatter, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import type { Static } from "typebox";
+import { readProjectTrust } from "../../core/host/project-trust.ts";
 import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { PRD_SECTION_ID_PATTERN } from "./prd-view.ts";
 import type { RequirementDocSpecSchema } from "./requirement-contracts.ts";
@@ -54,7 +55,7 @@ export async function resolveRequirementDoc(input: { repoRoot?: string; agentDir
 export async function resolveRepositoryRequirementDoc(dataRoot: string, repoRoot: string): Promise<ResolvedRequirementDoc> {
   const agentDir = dirname(dataRoot);
   const primaryRoot = await primaryWorktreeRoot(repoRoot);
-  return resolveRequirementDoc({ repoRoot: primaryRoot, agentDir, projectTrusted: new ProjectTrustStore(agentDir).get(primaryRoot) === true });
+  return resolveRequirementDoc({ repoRoot: primaryRoot, agentDir, projectTrusted: readProjectTrust(agentDir, primaryRoot).trust === "trusted" });
 }
 
 function checkSections(value: unknown, invalid: (reason: string) => never): RequirementDocSection[] {

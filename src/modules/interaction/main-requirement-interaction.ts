@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { adviceOf } from "../../core/exec/tool-failure.ts";
 import type { Context } from "@earendil-works/pi-ai";
-import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { readProjectTrust } from "../../core/host/project-trust.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { HostAuthorizationError, HostAuthorizationManager } from "../requirement/host-authorization.ts";
 import { RequirementService } from "../requirement/requirement-service.ts";
@@ -234,7 +234,7 @@ export class MainRequirementInteraction {
     if (!repository) return denied("foreign_repo");
     const repositoryRoot = await primaryWorktreeRoot(repository.path);
     return resolveInternalModel({ role, agentDir: dirname(this.#options.dataRoot), repositoryRoot,
-      projectTrusted: new ProjectTrustStore(dirname(this.#options.dataRoot)).get(repositoryRoot) === true, registry: ctx.modelRegistry, mainModel: ctx.model, mainThinking: this.#options.mainThinking() });
+      projectTrusted: readProjectTrust(dirname(this.#options.dataRoot), repositoryRoot).trust === "trusted", registry: ctx.modelRegistry, mainModel: ctx.model, mainThinking: this.#options.mainThinking() });
   }
   async #requirementTitle(host: RequirementManageHostContext, repoId: string, requirementId: string): Promise<string | undefined> {
     const hash = this.#authorization.snapshot(repoId, requirementId, host.sessionId).data.saved?.hash;

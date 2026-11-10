@@ -124,6 +124,21 @@ test("M9-AC14：daemon 从 dirname(dataRoot)/agents 与受信任项目的 .pi/ag
   expect((await w.runs().list({ limit: 50 })).items.filter((run) => run.kind === "role")).toEqual([]);
 }, 120_000);
 
+test("授信记录读不了时 daemon 照常拉起并接受请求，同名角色用用户层那份，只在项目层的角色不加载", async () => {
+  const w = await world();
+  await mkdir(w.userAgents, { recursive: true }); await mkdir(w.projectAgents, { recursive: true });
+  await writeFile(join(w.userAgents, "ui-dev.md"), "---\nname: ui-dev\ndescription: 用户版描述\nrole: worker\n---\n你是 ui-dev。\n");
+  await writeFile(join(w.projectAgents, "ui-dev.md"), "---\nname: ui-dev\ndescription: 项目版描述\nrole: worker\n---\n你是 ui-dev。\n");
+  await writeFile(join(w.projectAgents, "proj-dev.md"), definition("proj-dev"));
+  await writeFile(join(w.agentDir, "trust.json"), '{"a": true,}');
+  await w.readyPm([spec("login"), spec("cover", { goalUnitIds: ["scenario.failure"] })]);
+  await w.reply("gate-model", { type: "toolcall", name: "one_company_agent_manage", input: { action: "catalog", role: "worker" } });
+  const catalog = await w.toolResult(4);
+  expect(catalog).toContain("用户版描述");
+  expect(catalog).not.toContain("项目版描述");
+  expect(catalog).not.toContain("proj-dev");
+}, 120_000);
+
 test("M9-AC15/AC16：零匹配走默认 worker、指定专业定义按定义派出并加载 skill；指定不存在、缺 skill、缺模型、思考等级不受支持或越权声明工具时明确拒绝、不静默改默认、不建运行", async () => {
   const w = await world();
   await mkdir(w.userAgents, { recursive: true });

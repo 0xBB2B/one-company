@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { chooseWindow, mutedLines, openProgramWindow } from "../../core/host/question-window.ts";
 import type { WindowChoice } from "../../core/host/question-window.ts";
@@ -10,14 +9,11 @@ import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { defaultModeReason, methodsText, MODE_LABEL, SettingsPageView, tilde } from "./settings-page-ui.ts";
 import type { ClearSwitchRequest, CopyRequest, PageState, SaveSwitchRequest } from "./settings-page-ui.ts";
 import { AgentCopyError, copyAgentDefinition } from "../agents/agent-copy.ts";
-import { readProjectTrust, trustProject } from "./project-trust.ts";
 import { describeSetting } from "./agent-settings-ui.ts";
 import type { ClearSettingRequest, PageNotice, PageTheme, SaveSettingRequest, SettingsLayerName } from "./agent-settings-ui.ts";
 import { agentSwitchOf, clearAgentSetting, clearGitDeliverySetting, clearMergeMethodsSetting, disabledAgentProblems, projectSettingsPath, readAgentSettings, saveAgentSetting, saveDisabledAgentsSetting, saveGitDeliverySetting, saveMergeMethodsSetting, SETTINGS_ROLES, userSettingsPath } from "./agent-settings.ts";
 import type { RoleCatalogEntry } from "../agents/roles.ts";
 import { defaultRoleDir, loadRoleCatalog, projectRoleDir, userRoleDir } from "../agents/roles.ts";
-
-const TRUSTED_NOTE = " · 已把本项目设为受信任";
 
 export type SettingsExtensionContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode" | "modelRegistry" | "model">;
 
@@ -31,18 +27,10 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
   const nameTaken = (name: string) => layers.find((layer) => existsSync(fileOf(layer.dir, name)))?.label;
   const settingsPaths: Record<SettingsLayerName, string> = { user: userSettingsPath(agentDir), project: projectSettingsPath(repositoryRoot) };
   const layerLabel: Record<SettingsLayerName, string> = { user: "用户层", project: "项目层" };
-  const readSettings = () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: readProjectTrust(agentDir, repositoryRoot) === "trusted" });
+  const readSettings = () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: true });
   const models = ctx.modelRegistry.getAll().filter((model) => ctx.modelRegistry.hasConfiguredAuth(model));
-  type Picked = { state: PageState } & ({ copy: CopyRequest } | { save: SaveSettingRequest } | { clear: ClearSettingRequest } | { saveSwitch: SaveSwitchRequest } | { clearSwitch: ClearSwitchRequest } | { toggle: RoleCatalogEntry } | { trust: true });
-  const claimProjectLayer = (): string => {
-    const now = readProjectTrust(agentDir, repositoryRoot);
-    if (now === "denied") throw new Error("你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust");
-    if (now === "trusted") return "";
-    trustProject(agentDir, repositoryRoot);
-    return TRUSTED_NOTE;
-  };
-  let claimedNote = "";
-  const applyChange = async (picked: Exclude<Picked, { copy: CopyRequest } | { trust: true }>): Promise<{ text: string; fresh: string; tone?: PageNotice["tone"] }> => {
+  type Picked = { state: PageState } & ({ copy: CopyRequest } | { save: SaveSettingRequest } | { clear: ClearSettingRequest } | { saveSwitch: SaveSwitchRequest } | { clearSwitch: ClearSwitchRequest } | { toggle: RoleCatalogEntry });
+  const applyChange = async (picked: Exclude<Picked, { copy: CopyRequest }>): Promise<{ text: string; fresh: string; tone?: PageNotice["tone"] }> => {
     if ("toggle" in picked) {
       const { name, source } = picked.toggle, layer: SettingsLayerName = source === "project" ? "project" : "user";
       const disabled = (await readSettings()).disabledAgents, names = disabled[layer];
@@ -55,9 +43,8 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     if ("save" in picked) {
       const { role, layer, model, thinking } = picked.save;
       const { label, effect } = SETTINGS_ROLES.find((item) => item.key === role)!;
-      const note = claimedNote = layer === "project" ? claimProjectLayer() : "";
       await saveAgentSetting({ path: settingsPaths[layer], role, model, thinking });
-      return { fresh: role, text: `✓ ${label} 改为 ${describeSetting(role, { model, thinking })}，存到${layerLabel[layer]}，${effect}${note}` };
+      return { fresh: role, text: `✓ ${label} 改为 ${describeSetting(role, { model, thinking })}，存到${layerLabel[layer]}，${effect}` };
     }
     if ("clear" in picked) {
       const { role, layer } = picked.clear;
@@ -68,13 +55,12 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     }
     if ("saveSwitch" in picked) {
       const request = picked.saveSwitch, path = settingsPaths[request.layer];
-      const note = claimedNote = request.layer === "project" ? claimProjectLayer() : "";
       if (request.key === "git-delivery") {
         await saveGitDeliverySetting({ path, mode: request.mode });
-        return { fresh: "git-delivery", text: `✓ Git 交付 改为${MODE_LABEL[request.mode]}，存到${layerLabel[request.layer]}，立即生效${note}` };
+        return { fresh: "git-delivery", text: `✓ Git 交付 改为${MODE_LABEL[request.mode]}，存到${layerLabel[request.layer]}，立即生效` };
       }
       await saveMergeMethodsSetting({ path, methods: request.methods });
-      return { fresh: "merge-methods", text: `✓ 合并方式 改为 ${methodsText(request.methods)}，存到${layerLabel[request.layer]}，立即生效${note}` };
+      return { fresh: "merge-methods", text: `✓ 合并方式 改为 ${methodsText(request.methods)}，存到${layerLabel[request.layer]}，立即生效` };
     }
     const { key, layer } = picked.clearSwitch;
     await (key === "git-delivery" ? clearGitDeliverySetting : clearMergeMethodsSetting)({ path: settingsPaths[layer] });
@@ -87,58 +73,28 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     const now = settings.mergeMethods;
     return { fresh: key, text: `✓ 已清除${layerLabel[layer]}的合并方式 设定，现在用${now.source === "default" ? "内置默认值" : `${layerLabel[now.source]}的值`}：${methodsText(now.methods)}` };
   };
-  const confirmProjectTrust = async (): Promise<{ kind: "trusted" | "denied" | "cancelled" } | { kind: "failed"; reason: string }> => {
-    const choice = await chooseWindow(ctx, { title: "把这个项目设为受信任？",
-      lines: [{ text: `项目：${tilde(repositoryRoot)}` }, { text: "设为受信任后，项目里的 .pi 设置和角色定义都会生效。" }, ...mutedLines(["和在 pi 里输入 /trust 选 Trust 一样，会记进 pi 的授信记录。"])],
-      choices: [{ label: "设为受信任", description: "记进授信记录，项目层马上生效" }, { label: "取消", description: "不改授信记录，回到设置页" }], cancelNote: "不改授信记录" });
-    if (choice !== "设为受信任") return { kind: "cancelled" };
-    const now = readProjectTrust(agentDir, repositoryRoot);
-    if (now === "denied") return { kind: "denied" };
-    if (now === "unset") {
-      try { trustProject(agentDir, repositoryRoot); } catch (error) { return { kind: "failed", reason: (error instanceof Error ? error.message : String(error)).split("\n")[0] }; }
-    }
-    return { kind: "trusted" };
-  };
   let state: PageState | undefined;
   for (;;) {
-    const projectTrust = readProjectTrust(agentDir, repositoryRoot), projectTrusted = projectTrust === "trusted";
-    const untrustedProjectCount = projectTrusted ? 0 : await readdir(dirs.projectDir).then((files) => files.filter((file) => file.endsWith(".md")).length, () => 0);
-    const catalog = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted });
+    const catalog = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted: true });
     const settings = await readSettings();
     settings.problems.push(...disabledAgentProblems(settings.disabledAgents, { user: settingsPaths.user, project: settingsPaths.project }, catalog));
     const picked = await openProgramWindow<Picked>(ctx, (tui, theme, _keybindings, done) => {
-      const view: SettingsPageView = new SettingsPageView({ catalog, theme: theme as unknown as PageTheme, projectTrust, untrustedProjectCount, nameTaken,
+      const view: SettingsPageView = new SettingsPageView({ catalog, theme: theme as unknown as PageTheme, nameTaken,
         settings, models, mainModel: ctx.model, mainThinking: options.mainThinking(), ...(state ? { state } : {}),
         onCopy: (copy) => done({ copy, state: view.state() }), onSaveSetting: (save) => done({ save, state: view.state() }), onClearSetting: (clear) => done({ clear, state: view.state() }),
-        onSaveSwitch: (saveSwitch) => done({ saveSwitch, state: view.state() }), onClearSwitch: (clearSwitch) => done({ clearSwitch, state: view.state() }), onToggleAgent: (toggle) => done({ toggle, state: view.state() }), onTrustProject: () => done({ trust: true, state: view.state() }),
+        onSaveSwitch: (saveSwitch) => done({ saveSwitch, state: view.state() }), onClearSwitch: (clearSwitch) => done({ clearSwitch, state: view.state() }), onToggleAgent: (toggle) => done({ toggle, state: view.state() }),
         onClose: () => done(undefined) });
       return { render: (width: number) => view.render(width), invalidate: () => view.invalidate(),
         handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); } };
     });
     if (!picked) return;
-    if ("trust" in picked) {
-      const result = await confirmProjectTrust();
-      if (result.kind === "trusted") {
-        const reloaded = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted: true });
-        state = { section: "worker", focus: "nav", fresh: reloaded.roles.filter((role) => role.source === "project").map((role) => role.name),
-          notice: { tone: "ok", text: `✓ 已把本项目设为受信任${untrustedProjectCount ? `，项目层的 ${untrustedProjectCount} 份定义已生效` : ""}` } };
-      } else if (result.kind === "denied") {
-        state = { ...picked.state, notice: { tone: "error", text: "✗ 没有设为受信任：你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust" } };
-      } else if (result.kind === "failed") {
-        state = { ...picked.state, notice: { tone: "error", text: `✗ 没有设为受信任：${result.reason}` } };
-      } else {
-        state = { ...picked.state, notice: { tone: "muted", text: "已取消，授信记录没有改" } };
-      }
-      continue;
-    }
     if (!("copy" in picked)) {
-      claimedNote = "";
       try {
         const { text, fresh, tone = "ok" } = await applyChange(picked);
         state = { ...picked.state, fresh, notice: { tone, text } };
       } catch (error) {
         const message = (error instanceof Error ? error.message : String(error)).split("\n")[0];
-        state = { ...picked.state, notice: { tone: "error", text: `✗ 没有保存：${message}${claimedNote}` } };
+        state = { ...picked.state, notice: { tone: "error", text: `✗ 没有保存：${message}` } };
       }
       continue;
     }
@@ -148,33 +104,26 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     const user = target(dirs.userDir), project = target(dirs.projectDir);
     const choices: WindowChoice[] = [
       { label: "用户层", ...(user.taken ? { disabled: `已有 ${tilde(user.path)}` } : { description: tilde(user.path) }) },
-      { label: "项目层", ...(projectTrust === "denied" ? { disabled: "你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust" } : project.taken ? { disabled: `已有 ${tilde(project.path)}` } : { description: projectTrust === "unset" ? `${tilde(project.path)} · 选它会把本项目设为受信任` : tilde(project.path) }) },
+      { label: "项目层", ...(project.taken ? { disabled: `已有 ${tilde(project.path)}` } : { description: tilde(project.path) }) },
     ];
     if (choices.every((choice) => choice.disabled)) {
-      back({ tone: "muted", text: project.taken ? `用户层和项目层都已经有 ${name}，直接编辑对应文件即可` : `用户层已经有 ${name}，直接编辑这个文件即可；你在 pi 里选过不信任这个项目，不能复制到项目层` });
+      back({ tone: "muted", text: `用户层和项目层都已经有 ${name}，直接编辑对应文件即可` });
       continue;
     }
     const layer = await chooseWindow(ctx, { title: `复制 ${entry.name} 到哪一层？`,
       lines: mutedLines([`新名称：${name}`]), choices });
     if (!layer) { back({ tone: "muted", text: "已取消复制" }); continue; }
     const targetDir = layer === "用户层" ? dirs.userDir : dirs.projectDir;
-    let note = "";
-    try {
-      if (layer === "项目层") note = claimProjectLayer();
-    } catch (error) {
-      back({ tone: "muted", text: `复制没有完成：${(error instanceof Error ? error.message : String(error)).split("\n")[0]}` });
-      continue;
-    }
     try {
       const copied = await copyAgentDefinition({ entry, newName: name, targetDir, layerDirs: layers.map((item) => item.dir) });
-      back({ tone: "ok", text: `✓ 已复制到 ${tilde(copied)}，打开它写专长、skills 和 mcp${note}` }, name, name);
+      back({ tone: "ok", text: `✓ 已复制到 ${tilde(copied)}，打开它写专长、skills 和 mcp` }, name, name);
     } catch (error) {
       const code = (error as { code?: unknown }).code;
       const text = (error instanceof AgentCopyError ? error.message
         : code === "ENOENT" ? "复制没有完成：源文件已经不存在，重新打开本页再试"
         : code === "EEXIST" ? `复制没有完成：${tilde(fileOf(targetDir, name))} 已经存在，换一个名字再复制`
         : code === "EACCES" || code === "EPERM" ? `复制没有完成：没有权限写入 ${tilde(targetDir)}`
-        : `复制没有完成：${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`) + note;
+        : `复制没有完成：${(error instanceof Error ? error.message : String(error)).split("\n")[0]}`);
       back({ tone: "muted", text });
     }
   }

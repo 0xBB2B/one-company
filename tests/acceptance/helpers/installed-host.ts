@@ -3,7 +3,7 @@ import { resolveAcceptanceModel } from "./acceptance-model.ts";
 import type { Thinking } from "./acceptance-model.ts";
 import { answeringUi } from "../../helpers/window-host.ts";
 import type { ShownWindow, WindowDecision } from "../../helpers/window-host.ts";
-import { chmod, copyFile, mkdir, realpath, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -142,6 +142,9 @@ export async function startInstalledHost(options: { installed: string; repo: str
     };
     return stream;
   }) as typeof runtime.streamSimple;
+  const trustPath = join(agentDir, "trust.json");
+  const trusted = await readFile(trustPath, "utf8").then((text) => JSON.parse(text) as Record<string, boolean>, () => ({}));
+  await writeFile(trustPath, JSON.stringify({ ...trusted, [await realpath(repo)]: true }));
   const model = runtime.getModel(config.provider, config.modelId);
   if (!model) throw new Error(`模型配置里找不到 ${config.provider}/${config.modelId}`);
   /** 主代理的提问窗口一律选程序标了"推荐"的那一项，每次结果相同。 */

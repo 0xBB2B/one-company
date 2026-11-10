@@ -56,7 +56,7 @@ export interface LoadRoleCatalogOptions {
 }
 
 export interface RoleCatalogProblem {
-  kind: "unreadable" | "foreign" | "invalid" | "untrusted" | "retired";
+  kind: "unreadable" | "foreign" | "invalid" | "retired";
   source: RoleSource;
   dir: string;
   reason: string;
@@ -204,9 +204,5 @@ export async function loadRoleCatalog(options: LoadRoleCatalogOptions): Promise<
       merged.set(entry.name, lower ? { ...entry, overrides: [...(lower.overrides ?? []), lower.source] } : entry);
     }
   }
-  if (!options.projectTrusted) {
-    problems.push({ kind: "untrusted", source: "project", dir: options.projectDir, reason: "项目未受宿主信任，项目层角色定义未生效" });
-  }
-
   return { roles: [...merged.values()], problems };
 }

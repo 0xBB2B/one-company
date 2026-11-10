@@ -250,7 +250,6 @@ describe("分层加载", () => {
     expect(trusted.roles.find((entry) => entry.name === "worker")?.definition?.description).toBe("项目");
     const untrusted = await loadRoleCatalog({ defaultDir, userDir, projectDir, parseFrontmatter, projectTrusted: false });
     expect(untrusted.roles.find((entry) => entry.name === "worker")?.definition?.description).toBe("用户");
-    expect(untrusted.problems.map((problem) => problem.source)).toEqual(["project"]);
   });
 
   test("无效定义标为不可用并给出原因，目录缺失正常", async () => {
