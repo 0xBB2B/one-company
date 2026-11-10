@@ -86,7 +86,6 @@ pi 的工具结果分两部分：`content` 发给模型，进上下文；`detail
 | agent_manage（pm）· catalog | items 的 name、description、source、role，nextCursor | total |
 | git_commit | commit | branch、paths |
 | git_sync | status、changed、conflicted、previousHead、target | head |
-| web_search | hits 的 url、title、snippet，provider，failures | retrievedAt |
 
 **知识查询（主代理和子代理相同）**
 

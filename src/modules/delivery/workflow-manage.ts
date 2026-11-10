@@ -152,3 +152,16 @@ async function openWorkflowManageTool(options: WorkflowManageToolOptions) {
   }
   return { execute, dispose() { disposed = true; rounds.dispose(); close.dispose(); } };
 }
+
+export function pmWorkflowView(result: unknown, params: unknown): unknown {
+  const full = result as Record<string, unknown>;
+  switch ((params as { action: WorkflowManageAction }).action) {
+    case "advance": case "finish": case "check-decision": {
+      const { baseline: _baseline, requirementId: _requirementId, ...round } = full;
+      return round;
+    }
+    case "delivery-check": return { deliverable: full.deliverable, blockers: full.blockers, suggestions: full.suggestions };
+    case "report": return full.status === "submitted" ? { status: "submitted" } : full;
+    default: return full;
+  }
+}

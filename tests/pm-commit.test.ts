@@ -33,7 +33,7 @@ function expectFailure(message: string, why: string | RegExp, next: string | Reg
   if (typeof next === "string") expect(advice).toContain(next); else expect(advice).toMatch(next);
 }
 const run = (tool: ReturnType<typeof createPmCommitTool>, params: unknown) =>
-  (tool as unknown as { execute(id: string, params: unknown): Promise<{ content: Array<{ text: string }> }> }).execute("c", params);
+  (tool as unknown as { execute(id: string, params: unknown): Promise<{ content: Array<{ text: string }>; details: unknown }> }).execute("c", params);
 
 test("PM 只提交列出的文件（含删除），保留其他已暂存内容，提交说明末尾由程序加上需求编号，返回提交编号", async () => {
   const r = await repo();
@@ -42,8 +42,12 @@ test("PM 只提交列出的文件（含删除），保留其他已暂存内容�
     writeScope: () => ["a.ts", "b.ts", "old.ts"] });
   await writeFile(join(r.root, "a.ts"), "a2\n"); await writeFile(join(r.root, "b.ts"), "b\n"); await unlink(join(r.root, "old.ts"));
   await writeFile(join(r.root, "staged.ts"), "s\n"); r.git("add", "staged.ts");
-  const result = JSON.parse((await run(tool, { paths: ["a.ts", "b.ts", "old.ts"], message: "task-1: 完成登录" })).content[0]!.text);
+  const submitted = await run(tool, { paths: ["a.ts", "b.ts", "old.ts"], message: "task-1: 完成登录" });
+  const result = JSON.parse(submitted.content[0]!.text);
+  const details = submitted.details;
   expect(result.commit).toBe(r.git("rev-parse", "HEAD"));
+  expect(result).toStrictEqual({ commit: r.git("rev-parse", "HEAD") });
+  expect(details).toEqual({ commit: r.git("rev-parse", "HEAD"), branch: "refs/heads/req-branch", paths: ["a.ts", "b.ts", "old.ts"] });
   expect(r.git("show", "--name-status", "--format=", "HEAD").split("\n").sort()).toEqual(["A\tb.ts", "D\told.ts", "M\ta.ts"]);
   expect(r.git("diff", "--cached", "--name-only")).toBe("staged.ts");
   expect(r.git("log", "-1", "--format=%s")).toBe("task-1: 完成登录");

@@ -6,6 +6,7 @@ import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { classifyManagedWritePath, type ManagedWritePathClass } from "../../core/policy/core-permissions.ts";
 import { overlaps } from "../../core/policy/ranges.ts";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 
 const exec = promisify(execFile);
@@ -78,7 +79,7 @@ export function createPmCommitTool(options: PmCommitOptions): ToolDefinition {
     if (present.length) await git(["add", "--", ...present]);
     await git(["commit", "--only", "-m", params.message, "-m", `Requirement: ${options.requirementId}`, "--", ...params.paths]);
     const sha = (await git(["rev-parse", "HEAD"])).stdout.trim();
-    return { content: [{ type: "text", text: JSON.stringify({ commit: sha, branch: options.branch, paths: params.paths }) }], details: {} };
+    return leanToolResult({ commit: sha, branch: options.branch, paths: params.paths }, { commit: sha });
   }
   return {
     name: "one_company_git_commit", label: "git_commit",

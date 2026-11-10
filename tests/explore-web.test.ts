@@ -83,6 +83,29 @@ test("M7-AC15/AC16/AC17：PM 派出联网 explore，会话可按需搜索与抓�
   expect(run.ok && run.run).toMatchObject({ role: "one-company.explore", state: "completed" });
 });
 
+test("explore 会话里 web_search 发给模型的结果带 retrievedAt，供引用网页来源时回填；web_fetch 的结果也带 retrievedAt", async () => {
+  const net = fakeDeps({ hits: [{ title: "Vitest 文档", url: "https://vitest.dev/guide/" }] });
+  const w = await createPmRunWorld(cleanups, { web: { deps: net.deps, getPage: async () =>
+    ({ status: 200, headers: { "content-type": "text/plain" }, body: Buffer.from("pool: 'threads' 控制并行") }) } });
+  const research = { conclusions: ["用 pool 配置并行"], sources: [{ kind: "web", indexBaseline: "not_applicable", url: "http://wiki.intranet.local/vitest", retrievedAt: Date.now(), quote: "pool: 'threads' 控制并行" }],
+    searchedScope: { kind: "web", queries: ["vitest 并行 worker 配置"] }, notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] };
+  w.provider.queue.push(
+    { type: "toolcall", name: "web_search", input: { query: "vitest pool" } },
+    { type: "toolcall", name: "web_fetch", input: { url: "http://wiki.intranet.local/vitest" } },
+    { type: "toolcall", name: "one_company_result_submit", input: { action: "research", result: research } },
+    { type: "text", text: "PM 收到联网检索结果" });
+  await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "vitest 如何并行", clues: [], source: { kind: "web", query: "vitest 并行 worker 配置" } }, maxTurns: 6 });
+  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  const last = w.provider.requests.filter((request) => request.systemPrompt?.includes("检索来源：联网搜索")).at(-1)!;
+  const resultText = (name: string) => {
+    const message = last.messages.find((entry) => entry.role === "toolResult" && (entry as { toolName: string }).toolName === name) as { content: Array<{ text: string }> };
+    return message.content[0]!.text;
+  };
+  expect(JSON.parse(resultText("web_search"))).toEqual({ provider: "exa", hits: [{ url: "https://vitest.dev/guide/", title: "Vitest 文档", snippet: expect.stringContaining("Vitest 文档") }], failures: [], retrievedAt: expect.any(Number) });
+  expect(JSON.parse(resultText("web_fetch"))).toMatchObject({ url: "http://wiki.intranet.local/vitest", retrievedAt: expect.any(Number) });
+});
+
 test("M7-AC16：main 在无需求、索引未初始化时派出纯网页检索成功，index 基线 not_applicable；结果只交给派出连接，不创建需求、运行记录或工作区", async () => {
   const net = fakeDeps({ hits: [{ title: "Node 文档", url: "https://nodejs.org/api/" }] });
   const w = await createPmRunWorld(cleanups, { review: false, web: { deps: net.deps, getPage: async () =>

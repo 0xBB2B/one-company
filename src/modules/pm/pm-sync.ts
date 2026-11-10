@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 import type { DeliveryMode } from "../../core/exec/git-host.ts";
 import { fetchTargetBranch, gitIn, includesCommit } from "../../core/exec/target-branch.ts";
@@ -63,7 +64,8 @@ export function createPmSyncTool(options: PmSyncOptions): ToolDefinition {
         if (options.checkPhaseActive()) throw new AdvisedError("check_phase_active", { why: "检查阶段进行中，不能同步", next: "等检查轮结束后再同步" });
         if (!options.quiescent()) throw new AdvisedError("writers_active", { why: "子代理执行或受管写入还没结束", next: "等子代理结束后再同步" });
         const result = await syncTargetBranch(options);
-        return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
+        const { head: _head, ...view } = result;
+        return leanToolResult(result, view);
       } catch (error) { throw toolFailure(toolStep("one_company_git_sync", {}), error); }
     },
   } as unknown as ToolDefinition;

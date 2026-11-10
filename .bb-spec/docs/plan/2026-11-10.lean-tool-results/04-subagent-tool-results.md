@@ -28,7 +28,7 @@ PM、worker、reviewer、qa、explore 调 verification_run、change_apply、plan
    - agent_manage（PM）的 catalog：items 每项的 name、description、source、role，nextCursor。去掉 total。
    - git_commit：commit。去掉 branch、paths。
    - git_sync：status、target，以及该状态下有的 previousHead、changed、conflicted。去掉 head。
-   - web_search：provider、hits 每项的 url、title、snippet，failures。去掉 retrievedAt。
+   - web_search：发给模型的内容不变（retrievedAt 是引用网页来源时要回填的值，用户 2026-11-10 决定保留）。
 3. 表里没列的动作（workflow_manage 的 status、escalate；agent_manage 的 pause、resume、stop），`content` 与改前逐字相同，`details` 是完整结果。
 4. 工具失败时发给模型的报错文字（"X 失败。原因：…建议：…"）不变：失败在取视图之前就抛出，走原来的 toolFailure。
 5. result_submit 成功时发给模型的内容不变（不给视图）；web_fetch 不在表里，整份返回不变。
@@ -54,7 +54,6 @@ PM、worker、reviewer、qa、explore 调 verification_run、change_apply、plan
 - 修改 src/app/daemon/pm-tools.ts
 - 修改 src/modules/pm/pm-commit.ts
 - 修改 src/modules/pm/pm-sync.ts
-- 修改 src/app/daemon/run-manager.ts（只改 webTools 里 web_search 的返回）
 - 新建 tests/subagent-tool-results.test.ts
 - 修改 tests/pm-commit.test.ts
 - 修改 tests/pm-sync.test.ts
@@ -100,7 +99,6 @@ PM、worker、reviewer、qa、explore 调 verification_run、change_apply、plan
 |---|---|
 | `createPmCommitTool`（修改） | 成功返回改用 `leanToolResult`，视图只含 commit，完整结果含 commit、branch、paths |
 | `createPmSyncTool`（修改） | 成功返回改用 `leanToolResult`，视图是同步结果去掉 head |
-| `RunManager.webTools`（修改） | web_search 成功返回改用 `leanToolResult`，视图去掉 retrievedAt；web_fetch 的 reply 不动 |
 
 ## 协作关系
 
@@ -124,7 +122,7 @@ PM、worker、reviewer、qa、explore 调 verification_run、change_apply、plan
 - [ ] workflow_manage（PM）的 advance、finish、check-decision：content 没有 baseline、requirementId，其余检查轮字段都在；delivery-check：content 只有 deliverable、blockers、suggestions；report 成功：content 有 status，没有 reportId；report 被拒、status、escalate：content 与 `JSON.stringify(完整结果)` 逐字相同。
 - [ ] agent_manage（PM）：dispatch 三种结果的 content 没有 maxTurns，runId 或 runIds、failed 照有；status 的 content 只有 ok 和 run 的 state、stateReason、stopCause、turns、log，`{ ok: false, reason }` 原样；catalog 的 content 有 items（name、description、source、role）和 nextCursor，没有 total；pause、stop 的 content 与完整结果 JSON 逐字相同；details 都是完整结果。
 - [ ] git_commit：content 只有 commit，details 有 commit、branch、paths；git_sync 的 up_to_date、rebased、reapplied、conflicts：content 没有 head，其余字段照有，details 有 head。
-- [ ] web_search：explore 会话里 provider 收到的 web_search toolResult 文本不含 retrievedAt，含 provider、hits 的 url/title/snippet、failures；web_fetch 的 toolResult 文本仍含 retrievedAt。
+- [ ] web_search：explore 会话里 provider 收到的 web_search toolResult 文本含 provider、hits 的 url/title/snippet、failures 和 retrievedAt（与改前相同）；web_fetch 的 toolResult 文本仍含 retrievedAt。
 - [ ] 失败时报错文字与改前逐字相同（tests/pm-tools-failure.test.ts、tests/tool-failure.test.ts、tests/pm-sync.test.ts 现有失败断言不改仍通过）。
 - [ ] result_submit 成功时 content 与改前逐字相同。
 - [ ] 现有断言 content 的位置核对通过：tests/pm-sync.test.ts:133、190、192（status、target 仍在 content），tests/pm-commit.test.ts:45-46（commit 仍在），tests/pm-intake-runtime.test.ts:47（接手理解提交不在本计划范围，不变），tests/integration/agent-gates.test.ts:113-123（catalog 的名字仍在 content）。

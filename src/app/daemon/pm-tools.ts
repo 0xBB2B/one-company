@@ -11,11 +11,12 @@ import { uuidv7 } from "../../core/storage/database.ts";
 import type { PmLease, WorkspaceBinding } from "../../modules/requirement/requirement-contracts.ts";
 import { createRequirementReadTool, REQUIREMENT_READ_PARAMETERS } from "../../modules/pm/requirement-read-tool.ts";
 import { toPiTool } from "../../modules/agents/role-tools.ts";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 import type { CoreToolRuntime } from "../../modules/agents/role-tools.ts";
-import { createPlanManageTool, PLAN_MANAGE_PARAMETERS } from "../../modules/pm/plan-manage.ts";
-import { createVerificationRunTool, VERIFICATION_RUN_PARAMETERS } from "../../modules/pm/verification-run.ts";
-import { createWorkflowManageTool, WORKFLOW_MANAGE_PARAMETERS, type WorkflowManageToolOptions } from "../../modules/delivery/workflow-manage.ts";
+import { createPlanManageTool, PLAN_MANAGE_PARAMETERS, planManageView } from "../../modules/pm/plan-manage.ts";
+import { createVerificationRunTool, VERIFICATION_RUN_PARAMETERS, verificationRunView } from "../../modules/pm/verification-run.ts";
+import { createWorkflowManageTool, pmWorkflowView, WORKFLOW_MANAGE_PARAMETERS, type WorkflowManageToolOptions } from "../../modules/delivery/workflow-manage.ts";
 import { EXPLORE_WEB_QUERY, exploreSource } from "../../modules/explore/explore-dispatch.ts";
 import type { ExploreSourceRequest } from "../../modules/explore/explore-dispatch.ts";
 
@@ -92,9 +93,9 @@ export async function createPmTools(input: PmToolsInput): Promise<PmTools> {
     return {
       tools: [
         toPiTool("requirement_manage", "读取本需求已批准的 PRD 正文、章节（read）或两个批准版本之间的准确差异（diff，按 fromRevision/toRevision 查，可重复查）；metadata 看状态；结果的 coverage.nextCursor 不为空时用 next 带上它读下一页；不能读取草稿、其他需求或已关闭需求。", REQUIREMENT_READ_PARAMETERS, read),
-        toPiTool("workflow_manage", "查看状态、进入/退出检查阶段、提交中断或等待决策、交付核对；交付核对通过后以 report 提交完成报告（note 写给用户的说明）等待用户验收；等待你处置的任务自己处理不了时，以 escalate（taskId 与 note：卡在哪、需要用户决定什么）交用户裁决；还没派出的任务遇到需要用户决定的问题（如缺原型、要用新技术：用户同意后写进需求「实现」板块才能用）也可以 escalate；需求更新后受影响、已执行没完成的任务想拆分时，也用 escalate 请用户决定；审查中缺条件、本轮没有审查在跑时也可以。关闭需求只能由用户经主代理决定。", WORKFLOW_MANAGE_PARAMETERS, workflow),
-        toPiTool("verification_run", "在绑定工作区的受控沙箱里运行正式检查命令，或查询、停止运行；status 也能查看本需求子代理提交里引用的验证记录（命令、退出码和输出末尾）。子代理 worker、reviewer 只能跑调试检查（debug），它们提交里引用的都是调试检查记录。", VERIFICATION_RUN_PARAMETERS, verification),
-        toPiTool("plan_manage", "维护本需求计划：propose 提出、update 修改、confirm 冻结为可执行基线（AI 决策，不是用户授权）、read 读取、assess-update 逐任务影响复核。接手核对通过且有实施授权才能提出或修改。", PLAN_MANAGE_PARAMETERS, plan),
+        toPiTool("workflow_manage", "查看状态、进入/退出检查阶段、提交中断或等待决策、交付核对；交付核对通过后以 report 提交完成报告（note 写给用户的说明）等待用户验收；等待你处置的任务自己处理不了时，以 escalate（taskId 与 note：卡在哪、需要用户决定什么）交用户裁决；还没派出的任务遇到需要用户决定的问题（如缺原型、要用新技术：用户同意后写进需求「实现」板块才能用）也可以 escalate；需求更新后受影响、已执行没完成的任务想拆分时，也用 escalate 请用户决定；审查中缺条件、本轮没有审查在跑时也可以。关闭需求只能由用户经主代理决定。", WORKFLOW_MANAGE_PARAMETERS, { ...workflow, view: pmWorkflowView }),
+        toPiTool("verification_run", "在绑定工作区的受控沙箱里运行正式检查命令，或查询、停止运行；status 也能查看本需求子代理提交里引用的验证记录（命令、退出码和输出末尾）。子代理 worker、reviewer 只能跑调试检查（debug），它们提交里引用的都是调试检查记录。", VERIFICATION_RUN_PARAMETERS, { ...verification, view: verificationRunView }),
+        toPiTool("plan_manage", "维护本需求计划：propose 提出、update 修改、confirm 冻结为可执行基线（AI 决策，不是用户授权）、read 读取、assess-update 逐任务影响复核。接手核对通过且有实施授权才能提出或修改。", PLAN_MANAGE_PARAMETERS, { ...plan, view: planManageView }),
         intakeSubmitTool(input),
         agentManageTool(input),
       ],
@@ -168,6 +169,20 @@ export function agentManageTool(input: PmToolsInput): ToolDefinition {
       : params.action === "dispatch"
       ? await input.agents.dispatch(params.taskId!, { retry: params.retry ?? null, rework: params.rework ?? null, review: params.review })
       : await input.agents.control(params.action as "status" | "pause" | "resume" | "stop", params.runId!);
-    return { content: [{ type: "text", text: JSON.stringify(result) }], details: {} };
+    return leanToolResult(result, pmAgentManageView(result, params));
+  }
+}
+
+function pmAgentManageView(result: unknown, params: { action: string }): unknown {
+  const full = result as Record<string, any>;
+  switch (params.action) {
+    case "dispatch": { const { maxTurns: _maxTurns, ...kept } = full; return kept; }
+    case "status": {
+      if (!full.ok) return full;
+      const { state, stateReason, stopCause, turns, log } = full.run;
+      return { ok: true, run: { state, stateReason, stopCause, turns, log } };
+    }
+    case "catalog": return { items: full.items.map(({ name, description, source, role }: Record<string, unknown>) => ({ name, description, source, role })), nextCursor: full.nextCursor };
+    default: return full;
   }
 }
