@@ -4,13 +4,13 @@ import type { ApprovalManifestReference } from "../../src/modules/requirement/ap
 import { uuidv7 } from "../../src/core/storage/database.ts";
 import { loadInteractionContinuity } from "../../src/modules/requirement/interaction-continuity.ts";
 import type { RequirementDocSpec } from "../../src/modules/requirement/requirement-doc.ts";
-import type { ConfirmUpdateInput, RequirementReceipt } from "../../src/modules/requirement/requirement-manage-contracts.ts";
+import type { ApprovalReceipt, ConfirmUpdateInput } from "../../src/modules/requirement/requirement-manage-contracts.ts";
 import { RequirementService } from "../../src/modules/requirement/requirement-service.ts";
 import { decisionDigest } from "../../src/modules/requirement/short-decision-format.ts";
 import type { InteractionContext } from "../../src/modules/requirement/user-interaction-format.ts";
 import { UserInteractionCore } from "../../src/modules/interaction/user-interaction.ts";
 
-export interface ApprovalConfig { repositoryRoot: string; dataRoot: string; repoId: string }
+export interface ApprovalConfig { repositoryRoot: string; dataRoot: string; repoId: string; lines?: Record<string, string[]> }
 export interface ManifestApprovalRequest {
   requirementId: string;
   /** 当前保存版本对应的 create/updateDraft 操作编号。 */
@@ -35,7 +35,7 @@ export async function manifestConfirmInput(config: ApprovalConfig, request: Mani
       context = await load();
       const document = { candidate: context.candidate, title: context.title, body: context.body, partition: context.partition };
       const result: InteractionContext = { basis: context.basis, currentGoal: "", candidates: [{ ...context.candidate, diff: context.difference.text || "无差异" }],
-        document, savedOperationId: context.savedOperationId, ...loadInteractionContinuity(config.dataRoot, config.repoId, context.basis, document) };
+        document, savedOperationId: context.savedOperationId, ...loadInteractionContinuity(config.dataRoot, config.repoId, context.basis, document, undefined, config.lines?.[request.requirementId]) };
       return result;
     },
     interpreter: {
@@ -75,7 +75,7 @@ export async function manifestConfirmInput(config: ApprovalConfig, request: Mani
 }
 
 /** 登记清单并用一个带 authorizeManifest 的服务实例批准当前保存版本。 */
-export async function approveWithManifest(config: ApprovalConfig, request: ManifestApprovalRequest & { docSpec?: RequirementDocSpec }): Promise<RequirementReceipt> {
+export async function approveWithManifest(config: ApprovalConfig, request: ManifestApprovalRequest & { docSpec?: RequirementDocSpec }): Promise<ApprovalReceipt> {
   const confirm = await manifestConfirmInput(config, request);
   const approver = await RequirementService.open({ ...config, authorize: () => true, authorizeManifest: () => true });
   return approver.confirmUpdate({ ...confirm, ...(request.docSpec ? { docSpec: request.docSpec } : {}) });
@@ -89,7 +89,7 @@ export type WriteGrant = (request: { action: "updateDraft" | "confirmUpdate"; op
 export function draftApprover(config: ApprovalConfig, service: RequirementService,
   saved: { requirementId: string; operationId: string; title: string; body: string }, grant: WriteGrant = () => {}, implement = true) {
   let last = { operationId: saved.operationId, body: saved.body };
-  return async (body = last.body, docSpec?: RequirementDocSpec): Promise<RequirementReceipt> => {
+  return async (body = last.body, docSpec?: RequirementDocSpec): Promise<ApprovalReceipt> => {
     if (body !== last.body) {
       const draft = { requirementId: saved.requirementId, operationId: uuidv7(), version: (await service.metadata(saved.requirementId)).version, title: saved.title, body };
       grant({ action: "updateDraft", ...draft });

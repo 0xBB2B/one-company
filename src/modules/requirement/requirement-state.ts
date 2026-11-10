@@ -15,7 +15,7 @@ import { promoteOnApprovalIn, readBoardIn } from "./requirement-prototypes.ts";
 import { writePrototypeRevision } from "./requirement-prototype-revisions.ts";
 import { readGit } from "../../core/exec/git-read.ts";
 import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn, releaseDeadRequirementWriteIn } from "./requirement-coordination.ts";
-import { createLineAnchorIn } from "./line-anchors.ts";
+import { createLineAnchorIn, linedRequirementIn } from "./line-anchors.ts";
 
 import { APPROVAL_MANIFEST_NAMESPACE, registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
 import { manifestAuthorizesImplement } from "./approval-manifest.ts";
@@ -405,8 +405,10 @@ export class RequirementStateStore {
       if (record.data.workspace) this.checkClaims(db, record.data.workspace);
       assertNoUnfinishedRequirementOperationsIn(db, record.id);
       assertNoRequirementWriteClaimIn(db, this.options.repoId, record.id);
-      if (!equal(record.data.saved, request.reference)) throw new RequirementStateError("saved_version_mismatch");
-      const digest = createHash("sha256").update(canonicalJson(request)).digest("hex");
+      const lined = linedRequirementIn(db, record, request.line ?? []);
+      if (!equal(lined.data.saved, request.reference)) throw new RequirementStateError("saved_version_mismatch");
+      const { line: _line, ...identity } = request;
+      const digest = createHash("sha256").update(canonicalJson(identity)).digest("hex");
       const consumed = db.read("requirement_approval_uses", request.receiptId);
       if (consumed) {
         const use = checked(Operation, consumed.data);
@@ -414,10 +416,10 @@ export class RequirementStateStore {
           !equal(record.data.approvalManifest?.reference ?? null, request.manifest)) throw new RequirementStateError("approval_conflict");
         return record;
       }
-      this.version(record, request.version);
+      this.version(lined, request.version);
       const final = this.get(db, request.requirementId);
       if (final.version !== record.version || !equal(final.data, record.data)) throw new RequirementStateError("manifest_stale");
-      const approvalManifest = summarizeApprovalManifest(registeredApprovalManifestIn(db, this.options.repoId, request.manifest, final, request.receiptId));
+      const approvalManifest = summarizeApprovalManifest(registeredApprovalManifestIn(db, this.options.repoId, request.manifest, linedRequirementIn(db, final, request.line ?? []), request.receiptId, request.line));
       const revision = increment(record.data.revision);
       if (readBoardIn(db, record.id)?.data.entries.length) {
         if (!request.prototypes) throw new RequirementStateError("prototype_digest_required");
@@ -426,8 +428,9 @@ export class RequirementStateStore {
         if (prototypes.length) writePrototypeRevision(db, { requirementId: record.id, revision, prototypes });
       }
       const result = this.write(db, record, { ...record.data, approvalManifest,
-        ...(!record.data.docSpec && request.docSpec ? { docSpec: request.docSpec } : {}), lifecycle: "active", revision, approved: request.reference, approvalReceiptId: request.receiptId,
+        ...(!record.data.docSpec && request.docSpec ? { docSpec: request.docSpec } : {}), lifecycle: "active", revision, saved: request.reference, approved: request.reference, approvalReceiptId: request.receiptId,
         pendingRevision: record.data.lifecycle === "active" ? revision : null }, "prd.approved", record.data.approved, request.reference, request.receiptId, approvalTime);
+      createLineAnchorIn(db, { repoId: this.options.repoId, requirementId: record.id, anchor: uuidv7(), kind: "approval", line: request.line ?? [], now: approvalTime });
       db.create("requirement_approval_uses", request.receiptId, { requirementId: record.id, digest, sequence: result.event.sequence });
       return result.record;
     }, authorizeManifest);

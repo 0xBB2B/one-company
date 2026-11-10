@@ -28,7 +28,7 @@ import type { InteractionContext, InteractionInterpretation, InteractionAction }
 import { RequirementStateStore } from "../requirement/requirement-state.ts";
 import { decisionDigest } from "../requirement/short-decision-format.ts";
 import { parseStrictJson } from "../../core/storage/strict-json.ts";
-import { ApprovalManifestStore, summarizeApprovalManifest, assertApprovalScopeReturnIn, assertRegisteredScopeReturnIn, registeredApprovalManifestIn, APPROVAL_MANIFEST_NAMESPACE } from "../requirement/approval-manifest-store.ts";
+import { ApprovalManifestStore, registeredApprovalManifestIn, summarizeApprovalManifest, assertApprovalScopeReturnIn, assertRegisteredScopeReturnIn, APPROVAL_MANIFEST_NAMESPACE } from "../requirement/approval-manifest-store.ts";
 import type { RegisteredScopeReturnProof } from "../requirement/approval-manifest-store.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
@@ -40,7 +40,8 @@ import type { ApprovalManifestReference } from "../requirement/approval-manifest
 import { approvalManifestReference, confirmed, implementGoalUnitIds, manifestAuthorizesImplement, supplementImplementAction } from "../requirement/approval-manifest.ts";
 import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from "../panel/adjudication.ts";
 import { requirementSummary, saveRequirementSummary } from "../requirement/requirement-summary.ts";
-import { draftLineViewIn } from "../requirement/line-anchors.ts";
+import { linedRequirementIn } from "../requirement/line-anchors.ts";
+import type { WorkingLines } from "../requirement/line-anchors.ts";
 import { currentLine, recordLineAnchor, recordSaveStart, startedSaves } from "./conversation-line.ts";
 import { askWindow, confirmWindow, mutedLines } from "../../core/host/question-window.ts";
 import type { WindowAnswer } from "../../core/host/question-window.ts";
@@ -87,7 +88,7 @@ interface Delivery { sessionId: string; windowId: string; generation: number; re
 interface RecordProof { namespace: string; key: string; id: string; version: number; hash: string }
 type ResultScope = { kind: "registered"; proof: RegisteredScopeReturnProof } | { kind: "approved"; scope: RequirementApprovalScope } | { kind: "none" };
 interface HostResultProof {
-  repoId: string; record: StoredRecord<RequirementRecord>; line: readonly string[] | undefined; resultHash: string; rows: RecordProof[]; scope: ResultScope;
+  repoId: string; record: StoredRecord<RequirementRecord>; line: readonly string[]; settled: boolean; resultHash: string; rows: RecordProof[]; scope: ResultScope;
   sessionId: string; windowId: string; manager: object; repositoryPath: string;
   generation: number; authorizationGeneration: number;
 }
@@ -155,6 +156,8 @@ export class MainRequirementInteraction {
   #ctx: ExtensionContext | undefined;
   readonly #deliveries = new Map<string, Delivery>();
   readonly #cursors = new Map<string, Cursor>();
+  /** 交给解释核心和清单存储的工作对话线：它们新建的锚点追加在这里，由 #recordNewAnchors 写进对话。 */
+  readonly #lines: WorkingLines = {};
   readonly #proofs = new WeakMap<object, HostResultProof>();
   constructor(options: MainRequirementInteractionOptions) {
     this.#options = { ...options }; this.#authorization = options.authorization;
@@ -266,6 +269,16 @@ export class MainRequirementInteraction {
       [...host.repositories.keys()].some((repoId) => !principal.repoIds.includes(repoId))) denied("stale_host");
     return { ...host, lines: () => currentLine(ctx.sessionManager), started: () => startedSaves(ctx.sessionManager) };
   }
+  #syncLines(host: HostView): void {
+    for (const requirementId of Object.keys(this.#lines)) delete this.#lines[requirementId];
+    Object.assign(this.#lines, host.lines());
+  }
+  #recordNewAnchors(ctx: ExtensionContext, repoId: string): void {
+    const recorded = this.#host(ctx).lines();
+    for (const [requirementId, line] of Object.entries(this.#lines)) {
+      for (const anchor of line.slice(recorded[requirementId]?.length ?? 0)) recordLineAnchor(this.#options.pi, { repoId, requirementId, anchor });
+    }
+  }
   #live(ctx: ExtensionContext, host: RequirementManageHostContext, generation: number): void {
     const current = this.#host(ctx);
     if (current.windowId !== host.windowId || current.sessionId !== host.sessionId || this.#generation !== generation ||
@@ -282,8 +295,8 @@ export class MainRequirementInteraction {
       throw error;
     }
   }
-  #snapshot(host: HostView, repoId: string, requirementId: string, active = true, onLine = true) {
-    const record = this.#authorization.snapshot(repoId, requirementId, host.sessionId, onLine ? host.lines()[requirementId] ?? [] : undefined);
+  #snapshot(host: HostView, repoId: string, requirementId: string, active = true) {
+    const record = this.#authorization.snapshot(repoId, requirementId, host.sessionId, host.lines()[requirementId] ?? []);
     if (active && (!["draft", "active"].includes(record.data.lifecycle) || record.data.recovery !== "ready")) denied("lifecycle_denied");
     return record;
   }
@@ -300,26 +313,33 @@ export class MainRequirementInteraction {
     }));
   }
   #lined(db: LocalDatabase, row: StoredRecord<RequirementRecord>, line: readonly string[]): StoredRecord<RequirementRecord> {
-    const view = draftLineViewIn(db, row, line);
-    return { ...row, version: view.version, data: { ...row.data, saved: view.saved, updatedAt: view.updatedAt } };
+    return linedRequirementIn(db, row, line);
   }
   #checkProof(db: LocalDatabase, proof: HostResultProof): void {
     const stored = db.read<RequirementRecord>("requirements", proof.record.id);
-    const current = stored && proof.line ? this.#lined(db, stored, proof.line) : stored;
-    if (!current || current.id !== proof.record.id || current.version !== proof.record.version || !same(current.data, proof.record.data)) denied("stale_result");
+    const current = stored && this.#lined(db, stored, proof.line);
+    // 批准结果只说明那一次批准：批准后别人改修订草稿不使它过期，批准本身变了才算过期
+    const unchanged = current && current.id === proof.record.id && (proof.settled
+      ? current.data.epoch === proof.record.data.epoch && current.data.approvalReceiptId === proof.record.data.approvalReceiptId && same(current.data.approved, proof.record.data.approved)
+      : current.version === proof.record.version && same(current.data, proof.record.data));
+    if (!unchanged) denied("stale_result");
     for (const row of proof.rows) if (!same(this.#row(db, row.namespace, row.key), row)) denied("result_records_changed");
-    if (proof.scope.kind === "approved") assertApprovalScopeReturnIn(db, proof.repoId, proof.record, proof.scope.scope);
-    if (proof.scope.kind === "registered") assertRegisteredScopeReturnIn(db, proof.repoId, proof.record, proof.scope.proof);
+    if (proof.scope.kind === "approved") {
+      if (proof.settled) {
+        if (!same(summarizeApprovalManifest(registeredApprovalManifestIn(db, proof.repoId, proof.scope.scope.summary.reference, current)), proof.scope.scope.summary)) denied("manifest_scope_changed");
+      } else assertApprovalScopeReturnIn(db, proof.repoId, proof.record, proof.scope.scope);
+    }
+    if (proof.scope.kind === "registered") assertRegisteredScopeReturnIn(db, proof.repoId, proof.record, proof.scope.proof, proof.line);
   }
-  #prove<T extends object>(ctx: ExtensionContext, repoId: string, result: T, scope?: ResultScope, rows: RecordProof[] = [], onLine = true): T {
+  #prove<T extends object>(ctx: ExtensionContext, repoId: string, result: T, scope?: ResultScope, rows: RecordProof[] = [], settled = false): T {
     const generation = this.#generation, authorizationGeneration = this.#authorization.generation;
     const host = this.#host(ctx);
     const r = result as Record<string, unknown>, requirementId = String(r.requirementId);
-    const before = this.#snapshot(host, repoId, requirementId, false, onLine), line = onLine ? host.lines()[requirementId] ?? [] : undefined;
+    const before = this.#snapshot(host, repoId, requirementId, false), line = host.lines()[requirementId] ?? [];
     const material = this.#resultCheck(result, ctx, host, repoId);
     withDatabase(repositoryDatabase(this.#options.dataRoot, repoId), (db) => db.transaction(() => {
       const stored = db.read<RequirementRecord>("requirements", requirementId);
-      const current = stored && line ? this.#lined(db, stored, line) : stored;
+      const current = stored && this.#lined(db, stored, line);
       if (!current || current.id !== requirementId || current.version !== before.version || !same(current.data, before.data) ||
         current.version !== r.version || before.data.epoch !== r.epoch) denied("stale_result");
       const record = { ...current, data: checkRequirement(current.data, requirementId, repoId) };
@@ -335,7 +355,7 @@ export class MainRequirementInteraction {
         const snapshots = (manifestRow.data as { decisionRecords: Array<{ id: string }> }).decisionRecords;
         for (const d of snapshots) allRows.push(this.#row(db, "short_decisions", d.id));
       }
-      const proof: HostResultProof = { repoId, record: structuredClone(record), line, resultHash: material.resultHash, rows: allRows, scope: structuredClone(actualScope),
+      const proof: HostResultProof = { repoId, record: structuredClone(record), line, settled, resultHash: material.resultHash, rows: allRows, scope: structuredClone(actualScope),
         sessionId: material.sessionId, windowId: material.windowId, manager: material.manager,
         repositoryPath: material.repositoryPath ?? "", generation, authorizationGeneration };
       this.#checkProof(db, proof);
@@ -392,11 +412,12 @@ export class MainRequirementInteraction {
     const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === "readSaved" || r.action === "metadata");
     const loaded = await service.loadConfirmationContext({ requirementId: request.requirementId, savedOperationId: request.savedOperationId, operationId: request.operationId });
     if (loaded.version !== request.version || loaded.requirementId !== request.requirementId || loaded.repoId !== request.repoId) denied("stale_candidate");
-    const actual = this.#snapshot(this.#host(ctx), request.repoId, request.requirementId, true, false);
+    const actual = this.#snapshot(this.#host(ctx), request.repoId, request.requirementId);
     if (actual.version !== loaded.version || actual.data.epoch !== loaded.epoch || !same(actual.data.saved, loaded.saved)) denied("stale_candidate");
     return loaded;
   }
   async #ensureCore(ctx: ExtensionContext, repoId: string, requirementId: string): Promise<UserInteractionCore> {
+    this.#syncLines(this.#host(ctx));
     if (this.#core && this.#coreRepo === repoId && this.#coreRequirement === requirementId) return this.#core;
     // 解释核心与输入凭据只对一个需求有效；同一句话轮到另一个需求时换一个，用同一句原话重新签发凭据
     if (this.#core) {
@@ -417,7 +438,7 @@ export class MainRequirementInteraction {
       } catch { return false; }
     };
     const core = await UserInteractionCore.open({ dataRoot: this.#options.dataRoot, repositoryRoot: repository.path, repoId,
-      interpreter, authorize, now: this.#options.now,
+      interpreter, authorize, now: this.#options.now, lines: this.#lines,
       authorizeAction: (request: InteractionAuthorization) => {
         try { this.#live(ctx, host, generation); this.#snapshot(host, repoId, requirementId);
           return request.repoId === repoId && request.basis.requirementId === requirementId;
@@ -428,8 +449,8 @@ export class MainRequirementInteraction {
         const adjudication = this.#adjudication;
         if (adjudication) {
           if (adjudication.requirementId !== id) return denied("adjudication_mismatch");
-          const record = this.#authorization.snapshot(repoId, id, host.sessionId);
-          const records = this.#authorization.interactionRecords(repoId, id, host.sessionId);
+          const record = this.#authorization.snapshot(repoId, id, host.sessionId, host.lines()[id] ?? []);
+          const records = this.#authorization.interactionRecords(repoId, id, host.sessionId, undefined, host.lines()[id] ?? []);
           const basis = { requirementId: id, version: record.version, epoch: record.data.epoch, prd: record.data.approved };
           // 裁决只针对面板事项；基于旧版本提的问题早已随批准处理，带上会让整次登记因版本不符被拒
           return { basis, currentGoal: "", candidates: [], ...records, questions: records.questions.filter((question) => digest(question.basis) === digest(basis)),
@@ -438,7 +459,7 @@ export class MainRequirementInteraction {
         const implement = this.#implementAuthorization;
         if (implement && implement.requirementId === id) {
           const record = this.#authorization.snapshot(repoId, id, host.sessionId);
-          const records = this.#authorization.interactionRecords(repoId, id, host.sessionId);
+          const records = this.#authorization.interactionRecords(repoId, id, host.sessionId, undefined, host.lines()[id] ?? []);
           const basis = { requirementId: id, version: record.version, epoch: record.data.epoch, prd: record.data.approved };
           return { basis, currentGoal: "", candidates: [], ...records, questions: records.questions.filter((question) => digest(question.basis) === digest(basis)),
             implementAuthorization: { revision: implement.revision, manifest: implement.manifest } };
@@ -447,7 +468,7 @@ export class MainRequirementInteraction {
         if (!request || request.requirementId !== id || !this.#ctx) return denied("candidate_required");
         const loaded = await this.#load(this.#ctx, request);
         const document = { candidate: loaded.candidate, title: loaded.title, body: loaded.body, partition: loaded.partition };
-        const records = this.#authorization.interactionRecords(repoId, id, host.sessionId, { basis: loaded.basis, document });
+        const records = this.#authorization.interactionRecords(repoId, id, host.sessionId, { basis: loaded.basis, document }, host.lines()[id] ?? []);
         signal.throwIfAborted();
         const how = this.#addressed.get(id), otherDrafts = how ? await this.#otherDrafts(ctx, repoId, id) : [];
         return { basis: loaded.basis, currentGoal: loaded.approved ? "当前批准基线由candidate.from与真实差异绑定。" : "尚无已批准目标；full_candidate.from=null。",
@@ -533,7 +554,7 @@ export class MainRequirementInteraction {
       ...(action === "create" ? { requestId: unfinished?.requestId ?? uuidv7() } : {}) } as CreateRequirementInput | UpdateDraftInput;
     const host = this.#host(ctx), generation = this.#generation;
     const questions = action === "updateDraft" ? (this.#snapshot(host, repoId, (input as UpdateDraftInput).requirementId),
-      this.#authorization.interactionRecords(repoId, (input as UpdateDraftInput).requirementId, host.sessionId).questions
+      this.#authorization.interactionRecords(repoId, (input as UpdateDraftInput).requirementId, host.sessionId, undefined, host.lines()[(input as UpdateDraftInput).requirementId] ?? []).questions
         .map((q) => ({ question: q.proposal.conclusion, scope: q.proposal.scope }))) : [];
     let previous: { title: string; body: string } | undefined;
     if (action === "updateDraft") {
@@ -622,7 +643,7 @@ export class MainRequirementInteraction {
       proofs.push(...withDatabase(repositoryDatabase(this.#options.dataRoot, request.repoId), (db) => [this.#row(db, "tasks", task.taskId)]));
       return this.#prove(ctx, request.repoId, { ...base, status: "recorded", decisionId, choice: task.userDecision!.choice,
         maxTurns: task.userDecision!.maxTurns, taskStatus: task.status }, undefined, proofs);
-    } finally { this.#adjudication = undefined; }
+    } finally { this.#adjudication = undefined; this.#recordNewAnchors(ctx, request.repoId); }
   }
   async authorizeImplement(ctx: ExtensionContext, request: { repoId: string; requirementId: string }): Promise<Record<string, unknown>> {
     const { repoId, requirementId } = request;
@@ -695,7 +716,7 @@ export class MainRequirementInteraction {
     if (this.#capability && this.#interpreted?.repoId === request.repoId && this.#interpreted.requirementId === request.requirementId) request = { ...request, operationId: this.#interpreted.operationId };
     this.#candidate = { ...request };
     const loaded = await this.#load(ctx, request), core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
-    const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId, true, false);
+    const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);
     let docSpec = record.data.docSpec;
     try { docSpec ??= (await resolveRepositoryRequirementDoc(this.#options.dataRoot, host.repositories.get(request.repoId)!.path)).spec; }
     catch (error) { if (error instanceof RequirementDocError) throw new HostAuthorizationError(error.code, error.message); throw error; }
@@ -737,54 +758,58 @@ export class MainRequirementInteraction {
       this.#capability = undefined; this.#interpretation = undefined;
       return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
         version: loaded.version, epoch: loaded.epoch, targetRecorded: false, prdActivated: false, decisionIds: [], blockedBy: "candidate_requires_revision_or_clarification",
-        blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, []) }, undefined, [], false);
+        blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, host.lines()[request.requirementId] ?? [], []) }, undefined, []);
     }
-    const saved = core.save(capability);
-    const decisionProofs = this.#decisionProofs(request.repoId, saved.decisionIds, saved.operationId);
-    const document = core.authorizeDocument(capability, loaded);
-    const targetRecorded = interpretation.entries.some((e) => e.kind === "target" && e.basis === "explicit" && !["defer", "unclear"].includes(e.resolution)) ||
-      Boolean(document?.manifest.retainedSources?.some((source) => source.kind === "target"));
-    const base = { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
-      version: loaded.version, epoch: loaded.epoch, targetRecorded, prdActivated: false, decisionIds: saved.decisionIds };
-    if (!document) return this.#prove(ctx, request.repoId, { ...base, blockedBy: "candidate_requires_revision_or_clarification",
-      blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, saved.decisionIds) }, undefined, decisionProofs, false);
-    const reference = approvalManifestReference(document.manifest);
-    const authorizeManifest: NonNullable<RequirementServiceOptions["authorizeManifest"]> = (r) => {
-      const current = core.authorizeDocument(capability, loaded);
-      return Boolean(current && r.requirementId === loaded.requirementId && r.version === loaded.version &&
-        r.receiptId === current.authorization.receiptId && same(r.manifest, approvalManifestReference(current.manifest)));
-    };
-    const store = new ApprovalManifestStore({ dataRoot: this.#options.dataRoot, repoId: request.repoId,
-      authorize: (r) => { this.#snapshot(this.#host(ctx), request.repoId, request.requirementId); return r.action === "register" && same(r.reference, reference); },
-      loadExpected: async (ref) => { const actual = await this.#load(ctx, request);
-        if (!same(ref, reference)) return denied("manifest_mismatch"); return { requirementId: actual.requirementId, candidate: actual.candidate, partition: actual.partition }; },
-      admit: (r) => { const current = core.authorizeDocument(capability, loaded);
-        return current && same(r.reference, approvalManifestReference(current.manifest))
-          ? { receiptId: current.authorization.receiptId, version: loaded.version, epoch: loaded.epoch, inputProof: current.authorization.inputProof } : null; } });
-    const summary = summarizeApprovalManifest(document.manifest);
-    await store.register(document.manifest);
-    const registered: ResultScope = { kind: "registered", proof: { reference, admission: { receiptId: document.authorization.receiptId, version: loaded.version, epoch: loaded.epoch, inputProof: document.authorization.inputProof }, summary } };
-    if (!targetRecorded) return this.#prove(ctx, request.repoId, { ...base,
-      scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "explicit_target_required" }, registered, decisionProofs, false);
-    if (input.fromQuestionWindow) return this.#prove(ctx, request.repoId, { ...base,
-      scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "window_answer_not_decision" }, registered, decisionProofs, false);
-    const receiptId = document.authorization.receiptId;
-    const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === "confirmUpdate" &&
-      r.operationId === request.operationId && r.version === loaded.version && r.intentHash === loaded.candidate.intentHash &&
-      r.receiptId === receiptId && (r.epoch === undefined || r.epoch === loaded.epoch) && same(r.manifest, reference), authorizeManifest);
-    await verifyDraftFiles(prototypeRef, request.requirementId);
-    const receipt = await service.confirmUpdate({ requirementId: request.requirementId, operationId: request.operationId, version: loaded.version,
-      title: loaded.title, body: loaded.body, receiptId, manifest: reference, docSpec, prototypes: draft.digest })
-      .catch((error: unknown) => {
-        if (error instanceof PrototypeBoardError && error.code === "digest_changed") throw new HostAuthorizationError("prototype_changed");
-        throw error;
-      });
-    // 这些只是该次决定的元数据，不是可转交worker的能力；激活不启动PM。
-    const authorized = manifestAuthorizesImplement(document.manifest);
-    return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prdActivated: true,
-      implementAuthorization: authorized ? "已授权实施" : "没有授权实施",
-      ...(authorized ? {} : { next: "需求已生效但没有授权实施：不建工作区、不派 PM；告诉用户要开始实施就说'授权实施'；等用户说了，再用 authorizeImplement 登记" }) },
-      { kind: "approved", scope: { status: "available", summary } }, decisionProofs, false);
+    try {
+      const saved = core.save(capability);
+      this.#recordNewAnchors(ctx, request.repoId);
+      const decisionProofs = this.#decisionProofs(request.repoId, saved.decisionIds, saved.operationId);
+      const document = core.authorizeDocument(capability, loaded);
+      const targetRecorded = interpretation.entries.some((e) => e.kind === "target" && e.basis === "explicit" && !["defer", "unclear"].includes(e.resolution)) ||
+        Boolean(document?.manifest.retainedSources?.some((source) => source.kind === "target"));
+      const base = { requirementId: request.requirementId, operationId: request.operationId, savedOperationId: request.savedOperationId,
+        version: loaded.version, epoch: loaded.epoch, targetRecorded, prdActivated: false, decisionIds: saved.decisionIds };
+      if (!document) return this.#prove(ctx, request.repoId, { ...base, blockedBy: "candidate_requires_revision_or_clarification",
+        blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, host.lines()[request.requirementId] ?? [], saved.decisionIds) }, undefined, decisionProofs);
+      const reference = approvalManifestReference(document.manifest);
+      const authorizeManifest: NonNullable<RequirementServiceOptions["authorizeManifest"]> = (r) => {
+        const current = core.authorizeDocument(capability, loaded);
+        return Boolean(current && r.requirementId === loaded.requirementId && r.version === loaded.version &&
+          r.receiptId === current.authorization.receiptId && same(r.manifest, approvalManifestReference(current.manifest)));
+      };
+      const store = new ApprovalManifestStore({ dataRoot: this.#options.dataRoot, repoId: request.repoId, lines: this.#lines,
+        authorize: (r) => { this.#snapshot(this.#host(ctx), request.repoId, request.requirementId); return r.action === "register" && same(r.reference, reference); },
+        loadExpected: async (ref) => { const actual = await this.#load(ctx, request);
+          if (!same(ref, reference)) return denied("manifest_mismatch"); return { requirementId: actual.requirementId, candidate: actual.candidate, partition: actual.partition }; },
+        admit: (r) => { const current = core.authorizeDocument(capability, loaded);
+          return current && same(r.reference, approvalManifestReference(current.manifest))
+            ? { receiptId: current.authorization.receiptId, version: loaded.version, epoch: loaded.epoch, inputProof: current.authorization.inputProof } : null; } });
+      const summary = summarizeApprovalManifest(document.manifest);
+      await store.register(document.manifest);
+      this.#recordNewAnchors(ctx, request.repoId);
+      const registered: ResultScope = { kind: "registered", proof: { reference, admission: { receiptId: document.authorization.receiptId, version: loaded.version, epoch: loaded.epoch, inputProof: document.authorization.inputProof }, summary } };
+      if (!targetRecorded) return this.#prove(ctx, request.repoId, { ...base,
+        scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "explicit_target_required" }, registered, decisionProofs);
+      if (input.fromQuestionWindow) return this.#prove(ctx, request.repoId, { ...base,
+        scopeStatus: "registered", approvalScope: { status: "available", summary }, blockedBy: "window_answer_not_decision" }, registered, decisionProofs);
+      const receiptId = document.authorization.receiptId;
+      const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === "confirmUpdate" &&
+        r.operationId === request.operationId && r.version === loaded.version && r.intentHash === loaded.candidate.intentHash &&
+        r.receiptId === receiptId && (r.epoch === undefined || r.epoch === loaded.epoch) && same(r.manifest, reference), authorizeManifest);
+      await verifyDraftFiles(prototypeRef, request.requirementId);
+      const receipt = await service.confirmUpdate({ requirementId: request.requirementId, operationId: request.operationId, version: loaded.version,
+        title: loaded.title, body: loaded.body, receiptId, manifest: reference, docSpec, prototypes: draft.digest })
+        .catch((error: unknown) => {
+          if (error instanceof PrototypeBoardError && error.code === "digest_changed") throw new HostAuthorizationError("prototype_changed");
+          throw error;
+        });
+      // 这些只是该次决定的元数据，不是可转交worker的能力；激活不启动PM。
+      const authorized = manifestAuthorizesImplement(document.manifest);
+      return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prdActivated: true,
+        implementAuthorization: authorized ? "已授权实施" : "没有授权实施",
+        ...(authorized ? {} : { next: "需求已生效但没有授权实施：不建工作区、不派 PM；告诉用户要开始实施就说'授权实施'；等用户说了，再用 authorizeImplement 登记" }) },
+        { kind: "approved", scope: { status: "available", summary } }, decisionProofs, true);
+    } finally { this.#recordNewAnchors(ctx, request.repoId); }
   }
   #prototypeLines(items: DraftItem[], revision: number): WindowLine[] {
     const order = { new: 0, kept: 1, removed: 2 } as const;
@@ -824,23 +849,26 @@ export class MainRequirementInteraction {
     const loaded = await this.#load(ctx, request);
     if (!request.unitIds.length || request.unitIds.some((id) => !loaded.partition.units.some((u) => u.id === id))) denied("question_scope_mismatch");
     const records = this.#authorization.interactionRecords(request.repoId, request.requirementId, this.#host(ctx).sessionId,
-      { basis: loaded.basis, document: { candidate: loaded.candidate, title: loaded.title, body: loaded.body, partition: loaded.partition } });
+      { basis: loaded.basis, document: { candidate: loaded.candidate, title: loaded.title, body: loaded.body, partition: loaded.partition } }, this.#host(ctx).lines()[request.requirementId] ?? []);
     if (records.questions.length >= 20) denied("question_limit");
     const core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
     if (!ctx.hasUI) denied("question_display_unavailable");
-    const question = core.ask(JSON.stringify({ basis: loaded.basis, candidate: loaded.candidate,
-      proposal: { conclusion, scope: request.scope, references: [], supersedes: [] }, unitIds: request.unitIds, actions: request.actions, partition: loaded.partition }));
+    let question;
+    try {
+      question = core.ask(JSON.stringify({ basis: loaded.basis, candidate: loaded.candidate,
+        proposal: { conclusion, scope: request.scope, references: [], supersedes: [] }, unitIds: request.unitIds, actions: request.actions, partition: loaded.partition }));
+    } finally { this.#recordNewAnchors(ctx, request.repoId); }
     // 新问题改变解释范围；只能由之后真实收到的输入回答，不能沿用提问前能力。
     core.revoke(); this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined;
-    const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId, true, false);
+    const host = this.#host(ctx), record = this.#snapshot(host, request.repoId, request.requirementId);
     const caption = `${loaded.title}（第 ${record.data.revision + 1} 版）`;
     const answer = toAnswer(await open(caption));
     if (answer) this.#adoptQuestionAnswer(answer.text, host, ctx);
     return this.#prove(ctx, request.repoId, { requirementId: request.requirementId, version: loaded.version, epoch: loaded.epoch, requestId: question.requestId,
-      caption, question: questionText, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false }, undefined, [], false);
+      caption, question: questionText, scope: request.scope, unitIds: request.unitIds, actions: request.actions, status: answer ? "answered" : "pending", answer, authorized: false }, undefined, []);
   }
   /** 整份草稿没能确认时，由程序按记录写明挡住的段落：以前登记的决定对不上的，和这次解读仍待定的；待定段落附上解读模型写的理由，供主代理决定问用户什么。 */
-  #blockedReason(request: ConfirmationRequest, loaded: ConfirmationContext, interpretation: InteractionInterpretation, sessionId: string, justSaved: string[]): string {
+  #blockedReason(request: ConfirmationRequest, loaded: ConfirmationContext, interpretation: InteractionInterpretation, sessionId: string, line: readonly string[], justSaved: string[]): string {
     // 分区位置按完整需求文档（元数据在前）计，正文从末尾往前数
     const body = Buffer.from(loaded.body), bodyStart = loaded.partition.totalBytes - body.length;
     const title = (id: string) => {
@@ -851,7 +879,7 @@ export class MainRequirementInteraction {
     };
     const list = (ids: string[]) => [...new Set(ids.map(title))].join("、");
     const records = this.#authorization.interactionRecords(request.repoId, request.requirementId, sessionId,
-      { basis: loaded.basis, document: { candidate: loaded.candidate, title: loaded.title, body: loaded.body, partition: loaded.partition } });
+      { basis: loaded.basis, document: { candidate: loaded.candidate, title: loaded.title, body: loaded.body, partition: loaded.partition } }, line);
     // 这一次解读刚存下的待定记录不算"以前登记的决定"
     const stale = ((records as { continuityIssues?: Array<{ unitId: string; decision: { id: string }; originDecision: { id: string } }> }).continuityIssues ?? [])
       .filter((issue) => !justSaved.includes(issue.decision.id) && !justSaved.includes(issue.originDecision.id)).map((issue) => issue.unitId);
@@ -1007,7 +1035,7 @@ export class MainRequirementInteraction {
       signal?.throwIfAborted();
       this.#live(ctx, host, generation);
       const result = value as Record<string, unknown>, requirementId = String(result.requirementId);
-      const current = this.#snapshot(host, repoId, requirementId, params.action !== "metadata", this.#proofs.get(result)?.line !== undefined);
+      const current = this.#snapshot(host, repoId, requirementId, params.action !== "metadata");
       if (current.version !== result.version || current.data.epoch !== result.epoch) denied("stale_result");
       const content = [{ type: "text" as const, text: JSON.stringify(result) }], response = { content, details: result };
       if (Buffer.byteLength(JSON.stringify(response)) > TRANSPORT_BYTES) denied("response_limit");

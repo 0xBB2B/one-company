@@ -14,7 +14,7 @@ import type { PrdRepositoryIdentity, PrdStorageConfig, PrdStorageWriteResult } f
 import { RequirementOperations } from "./requirement-operations.ts";
 import type { PrepareRequirementOperation, RequirementOperation, RequirementOperationAction } from "./requirement-operations.ts";
 import { uuidv7, repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
-import { draftLineViewIn, latestSaveAnchorIn, readAnchorIn, RESTORE_FAILURE } from "./line-anchors.ts";
+import { draftLineViewIn, latestSaveAnchorIn, lineOf, linedRequirementIn, readAnchorIn, RESTORE_FAILURE } from "./line-anchors.ts";
 import type { DraftLineView } from "./line-anchors.ts";
 import { decisionDigest } from "./short-decision-format.ts";
 import { partitionPrdDocument } from "./prd-view.ts";
@@ -171,6 +171,12 @@ export class RequirementService {
       if (!isGitReadFailure(error)) throw error;
       return RESTORE_FAILURE.gitUnreadable;
     }
+  }
+
+  /** 需求自己仓库的工作副本始终是最近一次保存，可能来自别的对话线。 */
+  private latestSaved(record: { version: number; data: RequirementRecord }): PrdReference {
+    const view = withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => draftLineViewIn(db, record, [], true));
+    return view.saved ?? record.data.saved!;
   }
 
   private canRetreat(view: DraftLineView): boolean {
@@ -388,15 +394,16 @@ export class RequirementService {
     );
     this.authorize(authorization);
     const ref = input.manifest;
+    const lineView = this.lineDraftState(before);
     if (ref.requirementId !== input.requirementId || ref.candidate.operationId !== input.operationId ||
-      ref.candidate.intentHash !== intentHash || !sameReference(ref.candidate.to, before.data.saved) ||
+      ref.candidate.intentHash !== intentHash || !sameReference(ref.candidate.to, lineView.saved) ||
       ref.candidate.to.hash !== document.prdHash) throw new RequirementServiceError("manifest_candidate_mismatch");
     const identity = this.operations.repositoryIdentity(input.requirementId);
     if (!identity) throw new RequirementServiceError("repository_identity_missing");
     const validate = () => {
       const current = initialState.read(input.requirementId); available(current.data);
       if (current.version !== before.version || current.data.epoch !== before.data.epoch ||
-        !sameReference(current.data.saved, ref.candidate.to)) throw new RequirementServiceError("manifest_stale");
+        !sameReference(this.lineDraftState(current).saved, ref.candidate.to)) throw new RequirementServiceError("manifest_stale");
     };
     const saved = await readVersion({ ...this.storageConfig(authorization, input.requirementId, identity, validate),
       commit: ref.candidate.to.commit, expectedHash: storageHash(ref.candidate.to.hash) });
@@ -411,12 +418,13 @@ export class RequirementService {
     if (isPromise(allowed)) void Promise.prototype.then.call(allowed, () => undefined, () => undefined);
     if (allowed !== true) throw new RequirementServiceError("manifest_authorization_required");
     validate();
+    const line = lineOf(this.options.lines, input.requirementId);
     withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) =>
-      registeredApprovalManifestIn(db, this.options.repoId, ref, before, input.receiptId));
+      registeredApprovalManifestIn(db, this.options.repoId, ref, linedRequirementIn(db, before, line ?? []), input.receiptId, line));
     if (before.data.workspace) await verifyRequirementWorkspace(this.options.dataRoot, before.data.workspace);
     await this.verifyWorkingCopy({
       repositoryRoot: prdRequirementPath({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId: input.requirementId }),
-      targetHash: document.prdHash,
+      targetHash: this.latestSaved(before).hash,
     });
     this.authorize(authorization);
     const approved = await (await this.state(authorization)).recordApprovedVersion({
@@ -427,6 +435,7 @@ export class RequirementService {
       manifest: ref,
       ...(input.docSpec ? { docSpec: input.docSpec } : {}),
       ...(input.prototypes ? { prototypes: input.prototypes } : {}),
+      ...(line ? { line: [...line] } : {}),
     });
     this.authorize(authorization);
     return this.approvedReceipt(input, approved, document.archivePath);
@@ -876,13 +885,14 @@ export class RequirementService {
     const state = await this.state(authorization);
     const before = state.read(request.requirementId); available(before.data);
     await this.assertNoObservedArchive(state, request.requirementId);
+    const view = this.lineDraftState(before);
     const operation = this.operations.read(request.savedOperationId);
     if (!operation || operation.data.requirementId !== request.requirementId || !operation.data.git || operation.data.finalVersion === null ||
-      operation.data.epoch !== before.data.epoch || !sameReference(before.data.saved, { commit: operation.data.git.commit, hash: operation.data.git.hash })) {
+      operation.data.epoch !== before.data.epoch || !sameReference(view.saved, { commit: operation.data.git.commit, hash: operation.data.git.hash })) {
       throw new RequirementServiceError("saved_operation_mismatch");
     }
-    const saved = before.data.saved!;
-    const bound = { ...authorization, version: before.version, epoch: before.data.epoch, prdHash: storageHash(saved.hash) };
+    const saved = view.saved!;
+    const bound = { ...authorization, version: view.version, epoch: before.data.epoch, prdHash: storageHash(saved.hash) };
     const validate = () => {
       const current = state.read(request.requirementId); available(current.data);
       const actual = this.operations.read(request.savedOperationId);
@@ -896,7 +906,7 @@ export class RequirementService {
     if (before.data.workspace) await verifyRequirementWorkspace(this.options.dataRoot, before.data.workspace);
     const config = this.storageConfig(bound, request.requirementId, operation.data.git.repositoryIdentity, validate);
     const result = await readVersion({ ...config, commit: saved.commit, expectedHash: storageHash(saved.hash) });
-    await this.verifyWorkingCopy(operation.data);
+    await this.verifyWorkingCopy({ repositoryRoot: operation.data.repositoryRoot, targetHash: this.latestSaved(before).hash });
     const parsed = parsePrdDocument(result.bytes, request.requirementId);
     const intentHash = requirementIntentHash({ title: parsed.title, body: parsed.body });
     if (intentHash !== operation.data.intentHash) throw new RequirementServiceError("saved_operation_mismatch");
@@ -914,8 +924,8 @@ export class RequirementService {
     this.authorize(bound); validate();
     // Core的basis是当前生命周期依据；初次无approved的差异以difference.from=null明确表示。
     const prd = before.data.lifecycle === "active" ? before.data.approved : saved;
-    return { requirementId: request.requirementId, repoId: this.options.repoId, version: before.version, epoch: before.data.epoch,
-      basis: { requirementId: request.requirementId, version: before.version, epoch: before.data.epoch, prd },
+    return { requirementId: request.requirementId, repoId: this.options.repoId, version: view.version, epoch: before.data.epoch,
+      basis: { requirementId: request.requirementId, version: view.version, epoch: before.data.epoch, prd },
       candidate: { candidateId: request.operationId, operationId: request.operationId, intentHash, from: prd, to: saved },
       savedOperationId: request.savedOperationId, saved, approved: before.data.approved, workspace: before.data.workspace,
       title: parsed.title, body: parsed.body, partition, difference };

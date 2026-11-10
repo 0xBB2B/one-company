@@ -1,3 +1,5 @@
+import type { DatabaseSync } from "node:sqlite";
+import { uuidv7 } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { checked, LineAnchorMemberRecord, LineAnchorRecord } from "./requirement-contracts.ts";
 import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
@@ -119,7 +121,7 @@ export function draftLineView(
   if (!tip) return { version: row.version, saved: rowSaved, fileCommit: rowSaved?.commit ?? null, tip: null, updatedAt: row.data.updatedAt, ...restore };
   const commit = tip.fileCommit;
   const hash = hashOf(tip);
-  return { version: tip.lineVersion, saved: commit !== null && hash !== undefined ? { commit, hash } : null, fileCommit: commit, tip, updatedAt: tip.createdAt, ...restore };
+  return { version: tip.lineVersion, saved: commit !== null && hash !== undefined ? { commit, hash } : null, fileCommit: commit, tip, updatedAt: Math.max(row.data.createdAt, tip.createdAt), ...restore };
 }
 
 export function draftLineViewIn(
@@ -133,4 +135,57 @@ export function draftLineViewIn(
 
 export function readAnchorIn(db: LocalDatabase, anchor: string): LineAnchorRecord | null {
   return db.read<LineAnchorRecord>(ANCHORS, anchor)?.data ?? null;
+}
+
+export function rawLinedRequirement(db: RawDb, row: StoredRecord<RequirementRecord>, line: readonly string[]): StoredRecord<RequirementRecord> {
+  const view = rawLineView(db, row, line);
+  return { ...row, version: view.version, data: { ...row.data, saved: view.saved, updatedAt: view.updatedAt } };
+}
+
+export function linedRequirementIn(db: LocalDatabase, row: StoredRecord<RequirementRecord>, line: readonly string[]): StoredRecord<RequirementRecord> {
+  const view = draftLineViewIn(db, row, line);
+  return { ...row, version: view.version, data: { ...row.data, saved: view.saved, updatedAt: view.updatedAt } };
+}
+
+type RawDb = Pick<DatabaseSync, "prepare">;
+
+function rawAnchors(db: RawDb, requirementId: string): LineAnchorRecord[] {
+  return db.prepare("SELECT data FROM records WHERE namespace='line_anchors' AND json_extract(data,'$.requirementId')=?").all(requirementId)
+    .map((row) => checked(LineAnchorRecord, JSON.parse(String(row.data))));
+}
+
+export function rawLineView(db: RawDb, row: Pick<StoredRecord<RequirementRecord>, "version" | "data">, line: readonly string[]): DraftLineView {
+  const requirementId = row.data.requirementId;
+  if (row.data.lifecycle !== "draft") return { version: row.version, saved: row.data.saved, fileCommit: row.data.saved?.commit ?? null, tip: null, updatedAt: row.data.updatedAt };
+  const operations = db.prepare("SELECT data FROM records WHERE namespace=? AND json_extract(data,'$.requirementId')=?").all(REQUIREMENT_OPERATION_NAMESPACE, requirementId)
+    .map((operation) => JSON.parse(String(operation.data)) as { requirementId: string; git: { commit: string; hash: string } | null });
+  return draftLineView(row, rawAnchors(db, requirementId), line, (commit) => savedHashAt(operations, requirementId, commit));
+}
+
+export function rawLineCounter(db: RawDb, requirementId: string, line: readonly string[]): (namespace: string, key: string) => boolean {
+  const counted = viewOf(rawAnchors(db, requirementId), line).counted;
+  return (namespace, key) => {
+    const member = db.prepare("SELECT json_extract(data,'$.anchor') AS anchor FROM records WHERE namespace='line_anchor_members' AND record_key=?").get(`${namespace}:${key}`);
+    return member === undefined || counted.has(String(member.anchor));
+  };
+}
+
+/** 当前对话线上每个需求的锚点编号；新建的过程记录锚点追加在末尾。后台进程不传，不按对话线筛选。 */
+export type WorkingLines = Record<string, string[]>;
+
+export function lineOf(lines: Readonly<Record<string, readonly string[]>> | undefined, requirementId: string): readonly string[] | undefined {
+  return lines ? lines[requirementId] ?? [] : undefined;
+}
+
+export function createProcessAnchorIn(db: LocalDatabase, input: {
+  repoId: string; requirementId: string; kind: "decision" | "question" | "manifest"; lines: WorkingLines; now: number; members: Array<{ namespace: string; key: string }>;
+}): string {
+  const anchor = uuidv7();
+  createLineAnchorIn(db, { repoId: input.repoId, requirementId: input.requirementId, anchor, kind: input.kind, line: input.lines[input.requirementId] ?? [], now: input.now });
+  for (const member of input.members) attachRecordIn(db, { ...member, requirementId: input.requirementId, anchor });
+  return anchor;
+}
+
+export function extendLine(lines: WorkingLines, requirementId: string, anchor: string): void {
+  (lines[requirementId] ??= []).push(anchor);
 }

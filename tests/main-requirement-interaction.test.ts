@@ -523,8 +523,7 @@ describe("主窗口共享控制器的真实服务路径", () => {
         sections: [{ id: "background", title: "背景" }, { id: "requirements", title: "需求" }, { id: "features", title: "功能" },
           { id: "implementation", title: "实现", record: "implementation" }, { id: "acceptance", title: "验收", record: "acceptance" }] } });
     });
-    const version = withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.read("requirements", first.input.requirementId)!.version);
-    const error = await w.call({ action: "confirmUpdate", ...first.input, version }).catch((caught: Error) => caught);
+    const error = await w.call({ action: "confirmUpdate", ...first.input }).catch((caught: Error) => caught);
     expect((error as Error).message).toContain("实施目标板块");
     expect(w.provider.requests).toHaveLength(before);
   });
@@ -570,7 +569,8 @@ describe("主窗口共享控制器的真实服务路径", () => {
     const bound = await state.bindWorkspace({ requirementId: String(created.requirementId), version: Number(created.version), path: worktree,
       baseCommit: await git(w.repositoryRoot, ["rev-parse", "HEAD"]), prepareOperationId: uuidv7() });
     w.capture("现在直接实施手机号登录并保留邮箱。微信排除。短信期限暂时只列待定。");
-    const { input } = await w.request({ ...created, version: bound.version });
+    expect(bound.version).toBeGreaterThan(Number(created.version));
+    const { input } = await w.request(created);
     scriptReview(w.provider, (c) => phoneReview(c, "implement"));
     const result = await w.call({ action: "confirmUpdate", ...input });
     expect(result).toMatchObject({ targetRecorded: true, prdActivated: true, lifecycle: "active" });
@@ -1031,9 +1031,9 @@ test("M8D-AC9：批准被挡时写明原因：以前登记的决定挡住了哪�
   const w = await world(), created = await w.create(), first = await w.request(created);
   w.capture("手机号登录要改一下"); scriptReview(w.provider, modifyReview);
   expect(await w.call({ action: "reply", ...first.input }, true)).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
-  const resaveOperation = uuidv7();
-  const resaved = await w.service.updateDraft({ requirementId: first.input.requirementId, version: first.input.version, operationId: resaveOperation, title: "登录", body: BODY + "补充一句。\n" });
-  const next = await w.request({ ...created, operationId: resaveOperation, version: resaved.version });
+  w.capture("补充一句"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+  const resaved = await w.call({ action: "updateDraft", requirementId: first.input.requirementId, version: first.input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充一句。\n" });
+  const next = await w.request(resaved);
   w.capture("内容正确，批准这一版"); scriptReview(w.provider, allPending);
   const again = await w.call({ action: "confirmUpdate", ...next.input }).then((r) => r, (e: unknown) => e);
   expect(again).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
@@ -1047,10 +1047,10 @@ test("M9-AC12：某段被记为要修改后，草稿改了这一段再请批准�
   const w = await world(), created = await w.create(), first = await w.request(created);
   w.capture("手机号登录要改一下"); scriptReview(w.provider, modifyReview);
   expect(await w.call({ action: "reply", ...first.input }, true)).toMatchObject({ blockedBy: "candidate_requires_revision_or_clarification" });
-  const resaveOperation = uuidv7();
-  const resaved = await w.service.updateDraft({ requirementId: first.input.requirementId, version: first.input.version, operationId: resaveOperation, title: "登录",
+  w.capture("手机号须先验证"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+  const resaved = await w.call({ action: "updateDraft", requirementId: first.input.requirementId, version: first.input.version, summary: "手机号登录，保留邮箱登录", title: "登录",
     body: BODY.replace("增加手机号登录，保留邮箱登录。", "增加手机号登录，保留邮箱登录，手机号须先验证。") });
-  const next = await w.request({ ...created, operationId: resaveOperation, version: resaved.version });
+  const next = await w.request(resaved);
   w.capture("内容正确，批准这一版"); scriptReview(w.provider, phoneReview);
   expect(await w.call({ action: "confirmUpdate", ...next.input })).toMatchObject({ prdActivated: true });
   expect((interpreterContext(w).continuityIssues as Array<{ unitId: string }>).map((issue) => issue.unitId)).toEqual(["SMS"]);
@@ -2583,3 +2583,111 @@ describe("需求草稿跟着对话线：钉住、保存开始记录与半路保�
     expect(anchors.at(-1)!.data).toEqual({ repoId: w.repoId, requirementId: created.requirementId, anchor: v3.anchor });
   });
 });
+
+async function saveInOtherWindow(w: Awaited<ReturnType<typeof world>>, requirementId: string, line: string[], title: string, body: string) {
+  const script = join(w.root, `other-window-${uuidv7()}.mjs`);
+  const options = { dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, lines: { [requirementId]: line } };
+  await writeFile(script, `import {RequirementService} from ${JSON.stringify(new URL("../src/modules/requirement/requirement-service.ts", import.meta.url).href)};
+const service=await RequirementService.open({...${JSON.stringify(options)},authorize:()=>true});
+await service.updateDraft({requirementId:${JSON.stringify(requirementId)},operationId:${JSON.stringify(uuidv7())},version:(await service.metadata(${JSON.stringify(requirementId)})).version,title:${JSON.stringify(title)},body:${JSON.stringify(body)}});
+`);
+  await exec(process.execPath, [script]);
+}
+
+describe("过程记录跟着对话线：主窗口的批准结果", () => {
+  test("线 B 上批准成功后，另一个窗口在线 A 上保存，线 B 的批准结果照常送达，不报 stale_result", async () => {
+    const w = await world(), created = await w.create(), requirementId = String(created.requirementId);
+    w.provider.awaitReply = async () => ({ type: "text", text: '{"allow":true}' });
+    for (const body of [BODY + "第三版。\n", BODY + "第四版。\n"]) {
+      w.capture("改一下");
+      const metadata = await w.call({ action: "metadata", requirementId });
+      await w.call({ action: "updateDraft", requirementId, version: metadata.version, summary: "手机号登录，保留邮箱登录", title: "登录", body });
+    }
+    const lineA = currentLineOf(w.branch, requirementId);
+    expect(lineA.length).toBeGreaterThan(2);
+    const cut = w.branch.findIndex((entry) => entry.customType === "one-company.line-anchor" && entry.data.anchor === created.anchor);
+    w.branch.splice(cut + 1);
+
+    const { input } = await w.request(created);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
+    const resultId = uuidv7();
+    await w.manage.execute(resultId, { request: { repoId: w.repoId, action: "confirmUpdate", ...input } } as never, undefined, undefined, w.ctx);
+
+    await saveInOtherWindow(w, requirementId, lineA, "别的窗口", BODY + "线 A 上的新内容。\n");
+    expect(() => w.interaction.assertDelivery(resultId, w.ctx)).not.toThrow();
+  });
+});
+
+describe("过程记录跟着对话线：主窗口的提问与重试", () => {
+  const askParams = (requirementId: string, version: unknown, savedOperationId: unknown) =>
+    ({ action: "ask", requirementId, version, savedOperationId, ...SMS_ASK, unitIds: ["background"] });
+  const anchorsOf = (w: Awaited<ReturnType<typeof world>>, requirementId: string) =>
+    w.branch.filter((entry) => entry.customType === "one-company.line-anchor" && entry.data.requirementId === requirementId).map((entry) => entry.data.anchor);
+  const databaseAnchors = (w: Awaited<ReturnType<typeof world>>, requirementId: string) =>
+    withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list<{ requirementId: string; anchor: string; kind: string }>("line_anchors"))
+      .map((row) => row.data).filter((row) => row.requirementId === requirementId);
+
+  test("线 B 上提问：结果版本号是线 B 线尖的版本号，对话里多一条 question 锚点，另一个窗口随后在线 A 上保存也不报 stale_result", async () => {
+    const w = await world(), created = await w.create(), requirementId = String(created.requirementId);
+    w.provider.awaitReply = async () => ({ type: "text", text: '{"allow":true}' });
+    for (const body of [BODY + "第三版。\n", BODY + "第四版。\n"]) {
+      w.capture("改一下");
+      const metadata = await w.call({ action: "metadata", requirementId });
+      await w.call({ action: "updateDraft", requirementId, version: metadata.version, summary: "手机号登录，保留邮箱登录", title: "登录", body });
+    }
+    const lineA = anchorsOf(w, requirementId);
+    w.branch.splice(w.branch.findIndex((entry) => entry.customType === "one-company.line-anchor" && entry.data.anchor === created.anchor) + 1);
+    const before = anchorsOf(w, requirementId);
+
+    w.capture(); w.answerWindows(false);
+    const resultId = uuidv7();
+    const result = await createUserInteractTool({ interaction: w.interaction }).execute(resultId, { request: { repoId: w.repoId, ...askParams(requirementId, created.version, created.operationId) } } as never, undefined, undefined, w.ctx);
+    expect(result.details!.version).toBe(created.version);
+    const after = anchorsOf(w, requirementId);
+    expect(after).toHaveLength(before.length + 1);
+    expect(databaseAnchors(w, requirementId).find((row) => row.anchor === after.at(-1))?.kind).toBe("question");
+
+    await saveInOtherWindow(w, requirementId, lineA, "别的窗口", BODY + "线 A 上的新内容。\n");
+    expect(() => w.interaction.assertDelivery(resultId, w.ctx)).not.toThrow();
+  });
+
+  test("一次确认里决定和清单锚点已写进库、后续步骤出错：库里的锚点全进了对话，用户再说一句话后重试确认成功", async () => {
+    const w = await world(), created = await w.create(), requirementId = String(created.requirementId), { input } = await w.request(created);
+    const register = ApprovalManifestStore.prototype.register;
+    const spy = vi.spyOn(ApprovalManifestStore.prototype, "register").mockImplementationOnce(async function (this: ApprovalManifestStore, ...args: Parameters<typeof register>) {
+      await register.apply(this, args);
+      throw new Error("injected failure after register");
+    });
+    try {
+      w.capture("同意"); scriptReview(w.provider, phoneReview);
+      await expect(w.manage.execute(uuidv7(), { request: { repoId: w.repoId, action: "confirmUpdate", ...input } } as never, undefined, undefined, w.ctx)).rejects.toThrow();
+    } finally { spy.mockRestore(); }
+    const stored = databaseAnchors(w, requirementId).map((row) => row.anchor);
+    expect(stored.length).toBeGreaterThan(1);
+    const inConversation = anchorsOf(w, requirementId);
+    for (const anchor of stored) expect(inConversation).toContain(anchor);
+
+    w.capture("再说一遍，同意"); scriptReview(w.provider, phoneReview);
+    const retried = await w.call({ action: "confirmUpdate", ...input }).then((r) => r, (e: unknown) => e);
+    expect(retried).not.toMatchObject({ code: "manifest_decision_missing" });
+    expect(retried).toMatchObject({ prdActivated: true });
+  });
+
+  test("线 A 上提了个没回答的问题后回到线 B：线 B 上改草稿时，草稿核验器看不到线 A 的那个问题", async () => {
+    const w = await world(), created = await w.create(), requirementId = String(created.requirementId);
+    w.capture(); w.answerWindows(false);
+    await w.call(askParams(requirementId, created.version, created.operationId), true);
+    const askedOnA = anchorsOf(w, requirementId);
+    expect(askedOnA).toHaveLength(2);
+    w.branch.splice(w.branch.findIndex((entry) => entry.customType === "one-company.line-anchor" && entry.data.anchor === created.anchor) + 1);
+
+    w.capture("改一下"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call({ action: "updateDraft", requirementId, version: created.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "线 B 的内容。\n" });
+    const verifier = w.provider.requests.filter((request) => request.systemPrompt?.includes("草拟意图核验器")).at(-1)!;
+    expect(JSON.parse(String((verifier.messages[0] as { content: string }).content)).questions ?? []).toEqual([]);
+  });
+});
+
+function currentLineOf(branch: Array<{ customType: string; data: { requirementId: string; anchor: string } }>, requirementId: string): string[] {
+  return branch.filter((entry) => entry.customType === "one-company.line-anchor" && entry.data.requirementId === requirementId).map((entry) => entry.data.anchor);
+}

@@ -55,6 +55,7 @@ const SHORT_DECISION_ADVICE: Record<string, FailureAdvice> = {
   operation_conflict: { why: "同一操作编号已用于内容不同的请求", next: "同一批决定的内容不一致，把这段原因告诉用户" },
   prd_reference_changed: { why: "决定所基于的需求版本已变化", next: "重新读取需求后按最新版本再试" },
   request_limit: { why: "请求内容超出大小上限", next: "精简内容后重试" },
+  superseded_off_line: { why: "要取代的决定不在当前对话线上", next: "先读取当前线上的决定再取代" },
   supersede_denied: { why: "这个决定不能被取代（状态不允许）", next: "重新读取需求后按最新版本再试" },
   text_limit: { why: "文字超出长度上限", next: "精简文字后重试" },
   trusted_admission_required: { why: "登记决定需要宿主确认用户原话", next: "等用户在主窗口说出新的一句话后再操作" },

@@ -3,12 +3,14 @@ import { DatabaseSync } from "node:sqlite";
 import { repositoryDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { checkRequirement, object } from "./requirement-contracts.ts";
+import type { RequirementRecord } from "./requirement-contracts.ts";
 import { decisionDigest, checkDecisionRecord } from "./short-decision-format.ts";
 import { InteractionBasis, CandidateBinding, ApprovalPartition, ContinuityRecordRef, InteractionEntry, PendingQuestion, checkInteraction, interpreterView, UserInteractionError, resolvesContinuityIssue } from "./user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, DocumentAnalysis, RetainedUnitEvidence, EffectiveQuestion, ContinuityIssue, RevisionSource } from "./user-interaction-format.ts";
 import type { ShortDecisionRecord } from "./short-decision-format.ts";
 import { REQUIREMENT_OPERATION_NAMESPACE } from "./requirement-coordination.ts";
 import type { RequirementOperation } from "./requirement-operations.ts";
+import { attachRecordIn, isRecordCountedIn, memberAnchorIn, rawLineCounter, rawLineView } from "./line-anchors.ts";
 
 export const INTERACTION_CONTINUITY_NAMESPACE = "interaction_resolution_facts_v1";
 const id = CandidateBinding.properties.candidateId;
@@ -80,7 +82,11 @@ export function recordInteractionResolutionIn(db: LocalDatabase, repoId: string,
   checkInteraction(Fact, fact); savedMatches(savedOperation, fact);
   const old = db.read(INTERACTION_CONTINUITY_NAMESPACE, saved.operationId);
   if (old && (old.version !== 1 || !same(old.data, fact))) deny("continuity_fact_conflict");
-  if (!old) db.create(INTERACTION_CONTINUITY_NAMESPACE, saved.operationId, fact, saved.operationId);
+  if (!old) {
+    db.create(INTERACTION_CONTINUITY_NAMESPACE, saved.operationId, fact, saved.operationId);
+    const anchor = memberAnchorIn(db, "short_decisions", saved.decisionIds[0]!);
+    if (anchor) attachRecordIn(db, { namespace: INTERACTION_CONTINUITY_NAMESPACE, key: saved.operationId, requirementId: context.basis.requirementId, anchor });
+  }
 }
 function acceptedUnit(fact: FactData, unitId: string, kind?: string): boolean {
   const unit = fact.byteReview.units.find((u) => u.id === unitId);
@@ -111,10 +117,12 @@ function collectionProof(facts: ProofRow[], questions: ProofRow[], read: Pick<Lo
   }) });
 }
 /** 在调用方现有SQLite快照中核对整个输入集合，覆盖新增/删除；不向调用方返回其他需求元数据。 */
-export function continuityInputProofIn(db: LocalDatabase, requirementId: string, inputCheck?: { excludeOperationId: string; originals: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>> }): string {
+export function continuityInputProofIn(db: LocalDatabase, requirementId: string, inputCheck?: { excludeOperationId: string; originals: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>> },
+  line?: readonly string[]): string {
   const belongs = (row: StoredRecord) => (row.data as { basis?: { requirementId?: unknown } } | null)?.basis?.requirementId === requirementId;
-  const facts = db.list(INTERACTION_CONTINUITY_NAMESPACE).filter((row) => belongs(row) && row.id !== inputCheck?.excludeOperationId);
-  const questions = db.list("interaction_questions_v1").filter(belongs);
+  const counted = (namespace: string, key: string) => line === undefined || isRecordCountedIn(db, { namespace, key, requirementId, line });
+  const facts = db.list(INTERACTION_CONTINUITY_NAMESPACE).filter((row) => belongs(row) && row.id !== inputCheck?.excludeOperationId && counted(INTERACTION_CONTINUITY_NAMESPACE, row.key));
+  const questions = db.list("interaction_questions_v1").filter((row) => belongs(row) && counted("interaction_questions_v1", row.key));
   const read = <T = unknown>(namespace: string, key: string): StoredRecord<T> | null => {
     const original = namespace === "short_decisions" ? inputCheck?.originals.get(key) : undefined;
     return original ? original as unknown as StoredRecord<T> : db.read<T>(namespace, key);
@@ -124,7 +132,7 @@ export function continuityInputProofIn(db: LocalDatabase, requirementId: string,
 /** 查询只读取有界元数据。超过扫描预算拒绝，绝不截掉未答问题。 */
 export function loadInteractionContinuity(dataRoot: string, repoId: string, basis: InteractionBasis, doc: DocumentAnalysis,
   inputCheck?: { excludeOperationId: string; originals: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>>;
-    replacements: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>> }) {
+    replacements: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>> }, line?: readonly string[]) {
   const db = new DatabaseSync(repositoryDatabase(dataRoot, repoId), { readOnly: true, timeout: 5_000 });
   try {
     db.exec("BEGIN");
@@ -145,17 +153,20 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
         !same(actualRead("short_decisions", replacement.id), replacement)) deny("continuity_revision_changed");
       return original as unknown as StoredRecord<T>;
     };
-    const current = read("requirements", basis.requirementId);
-    if (!current || current.version !== basis.version) deny("continuity_state_changed");
+    const current = read<RequirementRecord>("requirements", basis.requirementId);
+    if (!current) return deny("continuity_state_changed");
     const requirement = checkRequirement(current.data, basis.requirementId, repoId);
-    if (requirement.epoch !== basis.epoch || requirement.recovery !== "ready" || !["draft", "active"].includes(requirement.lifecycle) || !same(requirement.saved, doc.candidate.to)) deny("continuity_state_changed");
+    const view = rawLineView(db, { version: current.version, data: requirement }, line ?? []);
+    if (view.version !== basis.version) deny("continuity_state_changed");
+    if (requirement.epoch !== basis.epoch || requirement.recovery !== "ready" || !["draft", "active"].includes(requirement.lifecycle) || !same(view.saved, doc.candidate.to)) deny("continuity_state_changed");
+    const counted = line === undefined ? () => true : rawLineCounter(db, basis.requirementId, line);
     const scan = (namespace: string, jsonPath: string, max: number) => {
       const rows = db.prepare("SELECT record_key,id,version,data FROM records WHERE namespace=? AND json_extract(data,?)=? ORDER BY id LIMIT ?").all(namespace, jsonPath, basis.requirementId, max + 1);
       if (rows.length > max || rows.reduce((n, r) => n + Buffer.byteLength(String(r.data)), 0) > 1_048_576) deny("continuity_scan_limit");
       return rows.map((r) => ({ id: String(r.id), key: String(r.record_key), version: Number(r.version), data: JSON.parse(String(r.data)) }));
     };
     const facts = scan(INTERACTION_CONTINUITY_NAMESPACE, "$.basis.requirementId", 128)
-      .filter((row) => row.id !== inputCheck?.excludeOperationId).map((row) => ({ row, fact: checkedFact(row) }));
+      .filter((row) => row.id !== inputCheck?.excludeOperationId && counted(INTERACTION_CONTINUITY_NAMESPACE, row.key)).map((row) => ({ row, fact: checkedFact(row) }));
     type Source = { row: StoredRecord; fact: FactData; decision: FactData["decisions"][number] };
     const sources = facts.flatMap(({ row, fact }) => fact.decisions.map((decision) => ({ row, fact, decision })));
     const byDecision = new Map(sources.map((source) => [source.decision.record.id, source]));
@@ -250,7 +261,7 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
         try { assertRetainedEvidenceIn({ read }, repoId, basis, doc, e); retainedEvidence.push(e); } catch { /* 无效来源不授予字节许可 */ }
       }
     }
-    const questionRows = scan("interaction_questions_v1", "$.basis.requirementId", 256);
+    const questionRows = scan("interaction_questions_v1", "$.basis.requirementId", 256).filter((row) => counted("interaction_questions_v1", row.key));
     for (const row of questionRows) {
       const q = checkInteraction(PendingQuestion, row.data);
       if (row.version !== 1 || row.id !== q.requestId || q.repoId !== repoId || !q.unitIds?.length || q.basis.epoch !== basis.epoch) deny("continuity_question_identity");

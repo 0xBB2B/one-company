@@ -107,7 +107,7 @@ export const commands = {
   reserve: object({ requestId: id, intentHash: hash }),
   save: object({ requirementId: id, version: positive, operationId: id, reference: PrdReference, anchor: id, line: Type.Array(id) }),
   approve: object({ requirementId: id, version: positive, receiptId: id, reference: PrdReference,
-    manifest: ApprovalManifestReferenceSchema, docSpec: Type.Optional(RequirementDocSpecSchema), prototypes: Type.Optional(hash) }),
+    manifest: ApprovalManifestReferenceSchema, docSpec: Type.Optional(RequirementDocSpecSchema), prototypes: Type.Optional(hash), line: Type.Optional(Type.Array(id)) }),
   authorizeImplement: object({ requirementId: id, version: positive, receiptId: id, manifest: ApprovalManifestReferenceSchema }),
   bind: object({ requirementId: id, version: positive, path: Type.String({ minLength: 1, maxLength: 4096 }), prepareOperationId: id, baseCommit: commit }),
   acquire: object({ requirementId: id, version: positive, runId: id, expectedFence: counter }),

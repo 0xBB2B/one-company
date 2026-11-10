@@ -74,7 +74,7 @@ description: 短决定、待答提问、连续性事实、批准清单挂上锚�
 ### src/modules/interaction/main-requirement-interaction.ts
 | 函数名 | 职责 |
 |---|---|
-| `confirm`、`ask`、`askTech`、`adjudicate`、`#load`、`#ensureCore`、`#decisionProofs` | 改：带上 `currentLine`；成功后 `recordLineAnchor` |
+| `confirm`、`ask`、`askTech`、`adjudicate`、`#load`、`#ensureCore`、`#decisionProofs` | 改：带上 `currentLine`；成功后 `recordLineAnchor`；结果核对（`#snapshot`、`#prove` 的 onLine 参数）改按线视图，去掉计划 03 里这条链路用 requirements 行版本号的写法 |
 
 ## 协作关系
 - 主窗口 → `currentLine` → `UserInteractionCore`（interpret / save / ask）→ `ShortDecisionStore`、`recordInteractionResolutionIn`、`ApprovalManifestStore` → 各自同事务调 `attachRecordIn`。

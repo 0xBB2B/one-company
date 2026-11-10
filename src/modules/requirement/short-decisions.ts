@@ -9,6 +9,8 @@ import { checkRequirement, object, id, hash, positive, counter, checked } from "
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { parseDecisionBatch, decisionDigest, checkDecisionRecord, DecisionAdmission, ShortDecisionError } from "./short-decision-format.ts";
 import type { DecisionBatch, ShortDecisionRecord } from "./short-decision-format.ts";
+import { createProcessAnchorIn, extendLine, isRecordCountedIn, lineOf, linedRequirementIn } from "./line-anchors.ts";
+import type { WorkingLines } from "./line-anchors.ts";
 
 export interface DecisionAdmissionRequest {
   readonly repoId: string;
@@ -18,6 +20,7 @@ export interface DecisionAdmissionRequest {
 export interface ShortDecisionStoreOptions extends RequirementStoreOptions {
   /** 可信交互服务同步核对实际主体、归纳内容及适用范围；未接入时拒绝写入，不能由工具参数填充。 */
   admit?: (request: DecisionAdmissionRequest) => DecisionAdmission | null;
+  lines?: WorkingLines;
 }
 const Operation = object({ requirementId: id, requestHash: hash, admissionHash: hash, decisionIds: Type.Array(id, { minItems: 1, maxItems: 20, uniqueItems: true }) });
 const Event = object({ requirementId: id, repoId: hash, operationId: id, decisionId: id, decisionHash: hash, requirementVersion: positive, epoch: positive, recordedAt: counter });
@@ -72,7 +75,9 @@ export class ShortDecisionStore {
     const admission = this.admit(batch, requestHash), admissionHash = decisionDigest(admission);
     const now = checked(counter, this.options.now?.() ?? Date.now());
     const ids = batch.decisions.map(() => uuidv7());
-    return withDatabase(this.path(), (db) => db.transaction(() => {
+    const line = lineOf(this.options.lines, batch.requirementId);
+    let anchor: string | undefined;
+    const result = withDatabase(this.path(), (db) => db.transaction(() => {
       this.access("record-decisions", batch);
       const stored = db.read("requirements", batch.requirementId);
       if (!stored || stored.id !== batch.requirementId) throw new ShortDecisionError("unknown_requirement");
@@ -90,8 +95,10 @@ export class ShortDecisionStore {
         }
         return { operationId: batch.operationId, decisionIds: existing.decisionIds };
       }
-      if (stored.version !== batch.version) throw new StaleVersionError();
-      if (decisionDigest(batch.prd) !== decisionDigest(requirement.lifecycle === "active" ? requirement.approved : requirement.saved)) throw new ShortDecisionError("prd_reference_changed");
+      const lined = linedRequirementIn(db, { ...stored, data: requirement }, line ?? []);
+      if (lined.version !== batch.version) throw new StaleVersionError();
+      if (decisionDigest(batch.prd) !== decisionDigest(requirement.lifecycle === "active" ? requirement.approved : lined.data.saved)) throw new ShortDecisionError("prd_reference_changed");
+      const counted = line && ((key: string) => isRecordCountedIn(db, { namespace: "short_decisions", key, requirementId: batch.requirementId, line }));
       for (const [index, item] of batch.decisions.entries()) {
         const subject = admission.subjects[index]!, decisionId = ids[index]!;
         const record: ShortDecisionRecord = { format: "short-decision/v1", decisionId, operationId: batch.operationId,
@@ -100,6 +107,7 @@ export class ShortDecisionStore {
         checkDecisionRecord(record);
         for (const target of item.supersedes) {
           const old = this.record(db, target, batch.requirementId);
+          if (counted && !counted(target)) throw new ShortDecisionError("superseded_off_line");
           if (old.status === "superseded" || (subject.actor === "ai" && old.actor === "user") ||
             (subject.status === "pending" && old.status !== "pending")) throw new ShortDecisionError("supersede_denied");
           const version = db.read("short_decisions", target)!.version;
@@ -110,19 +118,28 @@ export class ShortDecisionStore {
           operationId: batch.operationId, decisionId, decisionHash: decisionDigest(record), requirementVersion: batch.version, epoch: batch.epoch, recordedAt: now }));
       }
       db.create("short_decision_operations", batch.operationId, { requirementId: batch.requirementId, requestHash, admissionHash, decisionIds: ids });
+      if (this.options.lines) anchor = createProcessAnchorIn(db, { repoId: this.options.repoId, requirementId: batch.requirementId, kind: "decision", lines: this.options.lines, now,
+        members: ids.map((key) => ({ namespace: "short_decisions", key })) });
       if (decisionDigest(this.admit(batch, requestHash)) !== admissionHash) throw new ShortDecisionError("admission_changed");
       this.access("record-decisions", batch);
       const after = db.read("requirements", batch.requirementId);
       if (!after || after.version !== stored.version || decisionDigest(after.data) !== decisionDigest(requirement)) throw new StaleVersionError();
       return { operationId: batch.operationId, decisionIds: ids };
     }));
+    if (anchor && this.options.lines) extendLine(this.options.lines, batch.requirementId, anchor);
+    return result;
   }
 
   read(requirementId: string, decisionId: string): ShortDecisionRecord {
     checked(id, decisionId);
     this.access("read-decisions", { requirementId, decisionId });
     const before = this.state.read(requirementId); available(before.data);
-    const result = withDatabase(this.path(), (db) => this.record(db, decisionId, requirementId));
+    const line = lineOf(this.options.lines, requirementId);
+    const result = withDatabase(this.path(), (db) => {
+      const record = this.record(db, decisionId, requirementId);
+      if (line && !isRecordCountedIn(db, { namespace: "short_decisions", key: decisionId, requirementId, line })) throw new ShortDecisionError("unknown_decision");
+      return record;
+    });
     const after = this.state.read(requirementId); available(after.data);
     if (after.version !== before.version || decisionDigest(after.data) !== decisionDigest(before.data)) throw new StaleVersionError();
     this.access("read-decisions", { requirementId, decisionId });
