@@ -33,7 +33,7 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
   const layerLabel: Record<SettingsLayerName, string> = { user: "用户层", project: "项目层" };
   const readSettings = () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: readProjectTrust(agentDir, repositoryRoot) === "trusted" });
   const models = ctx.modelRegistry.getAll().filter((model) => ctx.modelRegistry.hasConfiguredAuth(model));
-  type Picked = { state: PageState } & ({ copy: CopyRequest } | { save: SaveSettingRequest } | { clear: ClearSettingRequest } | { saveSwitch: SaveSwitchRequest } | { clearSwitch: ClearSwitchRequest } | { toggle: RoleCatalogEntry });
+  type Picked = { state: PageState } & ({ copy: CopyRequest } | { save: SaveSettingRequest } | { clear: ClearSettingRequest } | { saveSwitch: SaveSwitchRequest } | { clearSwitch: ClearSwitchRequest } | { toggle: RoleCatalogEntry } | { trust: true });
   const claimProjectLayer = (): string => {
     const now = readProjectTrust(agentDir, repositoryRoot);
     if (now === "denied") throw new Error("你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust");
@@ -42,7 +42,7 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     return TRUSTED_NOTE;
   };
   let claimedNote = "";
-  const applyChange = async (picked: Exclude<Picked, { copy: CopyRequest }>): Promise<{ text: string; fresh: string; tone?: PageNotice["tone"] }> => {
+  const applyChange = async (picked: Exclude<Picked, { copy: CopyRequest } | { trust: true }>): Promise<{ text: string; fresh: string; tone?: PageNotice["tone"] }> => {
     if ("toggle" in picked) {
       const { name, source } = picked.toggle, layer: SettingsLayerName = source === "project" ? "project" : "user";
       const disabled = (await readSettings()).disabledAgents, names = disabled[layer];
@@ -87,6 +87,18 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     const now = settings.mergeMethods;
     return { fresh: key, text: `✓ 已清除${layerLabel[layer]}的合并方式 设定，现在用${now.source === "default" ? "内置默认值" : `${layerLabel[now.source]}的值`}：${methodsText(now.methods)}` };
   };
+  const confirmProjectTrust = async (): Promise<{ kind: "trusted" | "denied" | "cancelled" } | { kind: "failed"; reason: string }> => {
+    const choice = await chooseWindow(ctx, { title: "把这个项目设为受信任？",
+      lines: [{ text: `项目：${tilde(repositoryRoot)}` }, { text: "设为受信任后，项目里的 .pi 设置和角色定义都会生效。" }, ...mutedLines(["和在 pi 里输入 /trust 选 Trust 一样，会记进 pi 的授信记录。"])],
+      choices: [{ label: "设为受信任", description: "记进授信记录，项目层马上生效" }, { label: "取消", description: "不改授信记录，回到设置页" }], cancelNote: "不改授信记录" });
+    if (choice !== "设为受信任") return { kind: "cancelled" };
+    const now = readProjectTrust(agentDir, repositoryRoot);
+    if (now === "denied") return { kind: "denied" };
+    if (now === "unset") {
+      try { trustProject(agentDir, repositoryRoot); } catch (error) { return { kind: "failed", reason: (error instanceof Error ? error.message : String(error)).split("\n")[0] }; }
+    }
+    return { kind: "trusted" };
+  };
   let state: PageState | undefined;
   for (;;) {
     const projectTrust = readProjectTrust(agentDir, repositoryRoot), projectTrusted = projectTrust === "trusted";
@@ -98,12 +110,27 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
       const view: SettingsPageView = new SettingsPageView({ catalog, theme: theme as unknown as PageTheme, projectTrust, untrustedProjectCount, nameTaken,
         settings, models, mainModel: ctx.model, mainThinking: options.mainThinking(), ...(state ? { state } : {}),
         onCopy: (copy) => done({ copy, state: view.state() }), onSaveSetting: (save) => done({ save, state: view.state() }), onClearSetting: (clear) => done({ clear, state: view.state() }),
-        onSaveSwitch: (saveSwitch) => done({ saveSwitch, state: view.state() }), onClearSwitch: (clearSwitch) => done({ clearSwitch, state: view.state() }), onToggleAgent: (toggle) => done({ toggle, state: view.state() }),
+        onSaveSwitch: (saveSwitch) => done({ saveSwitch, state: view.state() }), onClearSwitch: (clearSwitch) => done({ clearSwitch, state: view.state() }), onToggleAgent: (toggle) => done({ toggle, state: view.state() }), onTrustProject: () => done({ trust: true, state: view.state() }),
         onClose: () => done(undefined) });
       return { render: (width: number) => view.render(width), invalidate: () => view.invalidate(),
         handleInput: (data: string) => { view.handleInput(data); tui.requestRender(); } };
     });
     if (!picked) return;
+    if ("trust" in picked) {
+      const result = await confirmProjectTrust();
+      if (result.kind === "trusted") {
+        const reloaded = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted: true });
+        state = { section: "worker", focus: "nav", fresh: reloaded.roles.filter((role) => role.source === "project").map((role) => role.name),
+          notice: { tone: "ok", text: `✓ 已把本项目设为受信任${untrustedProjectCount ? `，项目层的 ${untrustedProjectCount} 份定义已生效` : ""}` } };
+      } else if (result.kind === "denied") {
+        state = { ...picked.state, notice: { tone: "error", text: "✗ 没有设为受信任：你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust" } };
+      } else if (result.kind === "failed") {
+        state = { ...picked.state, notice: { tone: "error", text: `✗ 没有设为受信任：${result.reason}` } };
+      } else {
+        state = { ...picked.state, notice: { tone: "muted", text: "已取消，授信记录没有改" } };
+      }
+      continue;
+    }
     if (!("copy" in picked)) {
       claimedNote = "";
       try {

@@ -4,6 +4,8 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:f
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import { tilde } from "../src/modules/settings/settings-page-ui.ts";
 import { openSettingsPage } from "../src/modules/settings/settings-extension.ts";
 import type { SettingsExtensionContext } from "../src/modules/settings/settings-extension.ts";
 import { projectSettingsPath, readAgentSettings, userSettingsPath } from "../src/modules/settings/agent-settings.ts";
@@ -63,7 +65,9 @@ async function run(ctx: SettingsExtensionContext, mainThinking = "high") {
 }
 
 /** 页面与程序窗口每次出现，按顺序交给下一步处理；两者都走 ui.custom。 */
-function scripted(steps: Step[], options: { trust?: "unset" | "denied"; models?: unknown[]; authorized?: string[] } = {}): SettingsExtensionContext {
+let scriptedSteps: Step[] = [];
+function scripted(steps: Step[], options: { trust?: "unset" | "denied"; models?: unknown[]; authorized?: string[]; width?: number } = {}): SettingsExtensionContext {
+  scriptedSteps = steps;
   const trustFile = join(agentDir(), "trust.json");
   if (options.trust !== "unset" && !existsSync(trustFile)) { mkdirSync(agentDir(), { recursive: true }); writeFileSync(trustFile, JSON.stringify({ [repoDir()]: options.trust !== "denied" })); }
   const models = options.models ?? [SOL, LUNA];
@@ -74,7 +78,7 @@ function scripted(steps: Step[], options: { trust?: "unset" | "denied"; models?:
         const component = factory({ requestRender() {} }, theme, undefined, resolve) as { render(width: number): string[]; handleInput(data: string): void };
         const step = steps.shift();
         if (!step) throw new Error("脚本步骤用完了");
-        const raw = () => component.render(200).map((line) => line.trimEnd()).join("\n");
+        const raw = () => component.render(options.width ?? 200).map((line) => line.trimEnd()).join("\n");
         try { step({ raw, now: () => plain(raw()), press: (...keys) => { for (const key of keys) component.handleInput(key); } }); } catch (error) { failures.push(error); resolve(undefined as T); }
       });
     },
@@ -1426,3 +1430,293 @@ test("项目层定义 acme-worker 同时被用户层关闭：开启后项目层�
   expect(project ?? []).not.toContain("acme-worker");
   expect(await disabledOf(userFile())).toEqual(["acme-worker"]);
 }, 5000);
+
+async function runAll(ctx: SettingsExtensionContext) {
+  await run(ctx);
+  expect(scriptedSteps.length, "有脚本步骤没用到：该出现的页面或窗口没有出现").toBe(0);
+}
+
+const TRUST_DEFS = [["api-dev", "worker"], ["ui-dev", "worker"], ["code-check", "reviewer"], ["regression", "qa"], ["scout", "explore"]] as const;
+async function seedProjectDefs(count = 5) {
+  const dir = join(repoDir(), ".pi", "agents");
+  await mkdir(dir, { recursive: true });
+  for (const [name, role] of TRUST_DEFS.slice(0, count)) await writeFile(join(dir, `${name}.md`), `---\nname: ${name}\ndescription: d\nrole: ${role}\n---\n正文\n`);
+}
+async function seedBrokenUserDef() {
+  await mkdir(agentsDir(), { recursive: true });
+  await writeFile(join(agentsDir(), "broken.md"), "---\nname: broken\ndescription: 坏\nrole: worker\nthinking: extreme\n---\n正文\n");
+}
+const trustPath = () => join(agentDir(), "trust.json");
+const TRUST_HINT = "←/Esc 回左栏  ↑↓ 选择  回车 设为受信任";
+const TRUST_FOOT = (n: number) => `按回车把本项目设为受信任，项目层的${n ? ` ${n} 份` : ""}定义就会生效`;
+const toTrustEntry = (s: Screen) => goTo(s, "problems");
+const expectTrustedPage = (s: Screen, n: number) => {
+  expect(s.now()).toMatch(/▸ worker +\d/u);
+  expect(s.now()).toContain("↑↓ 选分类  → 进右栏  Esc 退出");
+  expect(s.now()).not.toContain("项目还没设为受信任");
+  expect(s.now()).not.toContain("! 项目");
+  expect(s.raw()).toContain(`<success>✓ 已把本项目设为受信任${n ? `，项目层的 ${n} 份定义已生效` : ""}</>`);
+};
+
+test("记录为空、5 份项目层定义：授信那一条的按键提示是回车 设为受信任，底部说明写 5 份定义就会生效", async () => {
+  await seedProjectDefs();
+  const ctx = scripted([
+    (s) => {
+      toTrustEntry(s);
+      expect(selectedLine(s)).toContain("项目还没设为受信任，项目层的定义和设定没有生效");
+      expect(s.now()).toContain(TRUST_HINT);
+      expect(squeeze(s.now())).toContain(squeeze(TRUST_FOOT(5)));
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(existsSync(trustPath())).toBe(false);
+});
+
+test("记录为空、0 份项目层定义：底部说明没有 N 份", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      toTrustEntry(s);
+      expect(squeeze(s.now())).toContain(squeeze("按回车把本项目设为受信任，项目层的定义就会生效"));
+      expect(s.now()).not.toMatch(/项目层的 \d+ 份/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+});
+
+test("记录为空时问题分类里另一行（写错的定义文件）按键提示仍是回车 详情，回车展开详情不弹窗", async () => {
+  await seedBrokenUserDef();
+  const ctx = scripted([
+    (s) => {
+      toTrustEntry(s);
+      s.press(DOWN);
+      expect(selectedLine(s)).toContain("broken.md");
+      expect(s.now()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 详情");
+      expect(s.now()).not.toContain("回车 设为受信任");
+      s.press(ENTER);
+      expect(s.now()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 收起");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+});
+
+test("记录为空时在授信那一条按回车：设置页关闭，弹出确认窗口，标题、三行正文、两个选项和提示行齐全，不出现定义名", async () => {
+  await seedProjectDefs();
+  let window = "";
+  const ctx = scripted([
+    (s) => { toTrustEntry(s); s.press(ENTER); },
+    (s) => { window = s.now(); s.press(ESC); },
+    (s) => s.press(ESC, ESC),
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(window).toContain("把这个项目设为受信任？");
+  expect(window).toContain(`项目：${tilde(repoDir())}`);
+  expect(window).toContain("设为受信任后，项目里的 .pi 设置和角色定义都会生效。");
+  expect(window).toContain("和在 pi 里输入 /trust 选 Trust 一样，会记进 pi 的授信记录。");
+  expect(window).toMatch(/设为受信任 +记进授信记录，项目层马上生效/u);
+  expect(window).toMatch(/取消 +不改授信记录，回到设置页/u);
+  expect(window).toContain("↑↓ 选择 · 回车确认 · Esc 取消（不改授信记录）");
+  expect(window).not.toContain("推荐");
+  for (const [name] of TRUST_DEFS) expect(window).not.toContain(name);
+});
+
+test("确认窗口选设为受信任（光标默认在它）：trust.json 记为 true，重开页面无黄字、无问题分区、选中 worker、项目层定义名是绿色，按一个键后恢复，底部绿字写 5 份定义已生效", async () => {
+  await seedProjectDefs();
+  const ctx = scripted([
+    (s) => { toTrustEntry(s); s.press(ENTER); },
+    (s) => s.press(ENTER),
+    (s) => {
+      expectTrustedPage(s, 5);
+      expect(s.now()).not.toContain("问题");
+      expect(s.raw()).toMatch(/<success>api-dev\s*<\/>/u);
+      expect(s.raw()).toMatch(/<success>ui-dev\s*<\/>/u);
+      s.press(DOWN);
+      expect(s.raw()).not.toMatch(/<success>(api|ui)-dev/u);
+      s.press(ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect((await readJson(trustPath()))[repoDir()]).toBe(true);
+});
+
+test("0 份定义时设为受信任：底部绿字没有 N 份", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => { toTrustEntry(s); s.press(ENTER); },
+    (s) => s.press(ENTER),
+    (s) => { expectTrustedPage(s, 0); s.press(ESC); },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect((await readJson(trustPath()))[repoDir()]).toBe(true);
+});
+
+test("设为受信任后另有写错的定义：问题分区还在，授信那一条消失", async () => {
+  await seedProjectDefs();
+  await seedBrokenUserDef();
+  const ctx = scripted([
+    (s) => { toTrustEntry(s); s.press(ENTER); },
+    (s) => s.press(ENTER),
+    (s) => {
+      expect(s.now()).toMatch(/问题 +1\b/u);
+      expect(s.now()).not.toContain("项目还没设为受信任");
+      goTo(s, "problems");
+      expect(selectedLine(s)).toContain("broken.md");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect((await readJson(trustPath()))[repoDir()]).toBe(true);
+});
+
+test("窗口打开期间 trust.json 被改成 true：确认后不写文件，页面同设为受信任成功", async () => {
+  await seedProjectDefs();
+  const written = JSON.stringify({ [repoDir()]: true }, null, 1);
+  const ctx = scripted([
+    (s) => { toTrustEntry(s); s.press(ENTER); },
+    (s) => { mkdirSync(agentDir(), { recursive: true }); writeFileSync(trustPath(), written); s.press(ENTER); },
+    (s) => { expectTrustedPage(s, 5); s.press(ESC); },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(await readFile(trustPath(), "utf8")).toBe(written);
+});
+
+test("窗口打开期间 trust.json 被改成 false：确认后不写文件，回到问题里授信那一条，底部红字写先输入 /trust 选 Trust", async () => {
+  await seedProjectDefs();
+  const written = JSON.stringify({ [repoDir()]: false }, null, 1);
+  const ctx = scripted([
+    (s) => { toTrustEntry(s); s.press(ENTER); },
+    (s) => { mkdirSync(agentDir(), { recursive: true }); writeFileSync(trustPath(), written); s.press(ENTER); },
+    (s) => {
+      expect(selectedLine(s)).toMatch(/\.pi\/agents\/ +项目/u);
+      expect(s.now()).toMatch(/! 项目未受信任/u);
+      expect(s.raw()).toContain("<error>✗ 没有设为受信任：你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust</>");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(await readFile(trustPath(), "utf8")).toBe(written);
+});
+
+test("trust.json 所在目录只读写不进去：记录仍为空，回到授信那一条，黄字还在，底部红字以没有设为受信任开头", async (context) => {
+  if (process.getuid?.() === 0) context.skip();
+  await seedProjectDefs();
+  mkdirSync(agentDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => { toTrustEntry(s); s.press(ENTER); },
+    (s) => { chmodSync(agentDir(), 0o555); s.press(ENTER); },
+    (s) => {
+      expect(selectedLine(s)).toMatch(/\.pi\/agents\/ +项目/u);
+      expect(s.now()).toContain("! 项目还没设为受信任");
+      expect(s.raw()).toMatch(/<error>✗ 没有设为受信任：\S[^\n]*<\/>/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(existsSync(trustPath())).toBe(false);
+});
+
+test("确认窗口选取消：trust.json 不变，回到授信那一条，底部灰字写已取消，授信记录没有改", async () => {
+  await seedProjectDefs();
+  const ctx = scripted([
+    (s) => { toTrustEntry(s); s.press(ENTER); },
+    (s) => s.press(DOWN, ENTER),
+    (s) => {
+      expect(selectedLine(s)).toMatch(/\.pi\/agents\/ +项目/u);
+      expect(s.raw()).toContain("<muted>已取消，授信记录没有改</>");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(existsSync(trustPath())).toBe(false);
+});
+
+test("确认窗口按 Esc：trust.json 不变，回到授信那一条，底部灰字写已取消，授信记录没有改", async () => {
+  await seedProjectDefs();
+  const ctx = scripted([
+    (s) => { toTrustEntry(s); s.press(ENTER); },
+    (s) => s.press(ESC),
+    (s) => {
+      expect(selectedLine(s)).toMatch(/\.pi\/agents\/ +项目/u);
+      expect(s.raw()).toContain("<muted>已取消，授信记录没有改</>");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(existsSync(trustPath())).toBe(false);
+});
+
+test("记录为不信任时授信那一条回车展开详情、再回车收起，不弹窗，提示和底部说明是原来的写法", async () => {
+  await seedProjectDefs();
+  const ctx = scripted([
+    (s) => {
+      toTrustEntry(s);
+      expect(selectedLine(s)).toMatch(/\.pi\/agents\/ +项目/u);
+      expect(s.now()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 详情");
+      expect(s.now()).not.toContain("回车 设为受信任");
+      expect(squeeze(s.now())).toContain(squeeze("在 pi 里把这个项目设为受信任后，项目层的 5 份定义就会生效"));
+      s.press(ENTER);
+      expect(s.now()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 收起");
+      s.press(ENTER);
+      expect(s.now()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 详情");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "denied" });
+  await runAll(ctx);
+  expect(await readJson(trustPath())).toEqual({ [repoDir()]: false });
+});
+
+test("记录为不信任、0 份定义：底部说明没有 N 份", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      toTrustEntry(s);
+      expect(squeeze(s.now())).toContain(squeeze("在 pi 里把这个项目设为受信任后，项目层的定义就会生效"));
+      s.press(ESC, ESC);
+    },
+  ], { trust: "denied" });
+  await runAll(ctx);
+});
+
+const within = (s: Screen, width: number) => { for (const row of s.now().split("\n")) expect(visibleWidth(row), row).toBeLessThanOrEqual(width); };
+for (const width of [36, 44, 60, 80]) {
+  test(`${width} 列：按键提示、底部说明、确认窗口、成功、取消、失败提示每行都不超宽`, async () => {
+    await seedProjectDefs();
+    const hint = width < 60 ? TRUST_HINT.replace("回左栏", "回目录") : TRUST_HINT;
+    const windowLines = ["把这个项目设为受信任？", `项目：${tilde(repoDir())}`, "设为受信任后，项目里的 .pi 设置和角色定义都会生效。",
+      "和在 pi 里输入 /trust 选 Trust 一样，会记进 pi 的授信记录。", "记进授信记录，项目层马上生效", "不改授信记录，回到设置页", "↑↓ 选择 · 回车确认 · Esc 取消（不改授信记录）"];
+    const openWindow = (s: Screen) => { toTrustEntry(s); within(s, width); expect(squeeze(s.now())).toContain(squeeze(hint)); expect(squeeze(s.now())).toContain(squeeze(TRUST_FOOT(5))); s.press(ENTER); };
+    const checkWindow = (s: Screen) => { within(s, width); for (const line of windowLines) expect(squeeze(s.now())).toContain(squeeze(line)); };
+    const options = { trust: "unset" as const, width };
+
+    await runAll(scripted([
+      openWindow,
+      (s) => { checkWindow(s); s.press(ENTER); },
+      (s) => { within(s, width); expect(squeeze(s.now())).toContain(squeeze("✓ 已把本项目设为受信任，项目层的 5 份定义已生效")); s.press(ESC); },
+    ], options));
+    expect((await readJson(trustPath()))[repoDir()]).toBe(true);
+
+    rmSync(trustPath());
+    await runAll(scripted([
+      openWindow,
+      (s) => { checkWindow(s); s.press(ESC); },
+      (s) => { within(s, width); expect(squeeze(s.now())).toContain(squeeze("已取消，授信记录没有改")); s.press(ESC, ESC); },
+    ], options));
+
+    await runAll(scripted([
+      openWindow,
+      (s) => { writeFileSync(trustPath(), JSON.stringify({ [repoDir()]: false })); s.press(ENTER); },
+      (s) => { within(s, width); expect(squeeze(s.now())).toContain(squeeze("✗ 没有设为受信任：你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust")); s.press(ESC, ESC); },
+    ], options));
+
+    if (process.getuid?.() === 0) return;
+    rmSync(trustPath());
+    await runAll(scripted([
+      openWindow,
+      (s) => { chmodSync(agentDir(), 0o555); s.press(ENTER); },
+      (s) => { within(s, width); expect(s.raw()).toMatch(/<error>✗ 没有设为受信任：/u); chmodSync(agentDir(), 0o755); s.press(ESC, ESC); },
+    ], options));
+  }, 10000);
+}

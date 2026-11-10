@@ -81,7 +81,7 @@ async function page(options: PageOptions = {}) {
   }
   const toggles: string[] = [];
   const copies: Array<{ name: string; entry: string }> = [], saves: unknown[] = [], clears: unknown[] = [], switchSaves: unknown[] = [], switchClears: unknown[] = [];
-  let closed = false;
+  let closed = false, trustRequests = 0;
   const view = new SettingsPageView({
     catalog, theme, projectTrust: trust, untrustedProjectCount: 1, settings, models: options.models ?? [SOL, LUNA],
     mainModel: "mainModel" in options ? options.mainModel : SOL, mainThinking: options.mainThinking ?? "high",
@@ -91,6 +91,7 @@ async function page(options: PageOptions = {}) {
     onSaveSetting: (request: unknown) => saves.push(request), onClearSetting: (request: unknown) => clears.push(request),
     onSaveSwitch: (request: unknown) => switchSaves.push(request), onClearSwitch: (request: unknown) => switchClears.push(request),
     onToggleAgent: (entry: { name: string }) => toggles.push(entry.name),
+    onTrustProject: () => { trustRequests++; },
     onClose: () => { closed = true; },
   });
   const lines = (width = 80) => view.render(width);
@@ -99,7 +100,7 @@ async function page(options: PageOptions = {}) {
   const pane = (width = 80) => paneParts(rows(width)).join("\n");
   const right = (width = 80) => rightParts(rows(width)).join("\n");
   const press = (...keys: string[]) => { for (const key of keys) view.handleInput(key); };
-  return { view, root, toggles, right, lines, rows, text, pane, press, copies, saves, clears, switchSaves, switchClears, closed: () => closed };
+  return { view, root, toggles, right, lines, rows, text, pane, press, copies, saves, clears, switchSaves, switchClears, closed: () => closed, trustRequests: () => trustRequests };
 }
 type Page = Awaited<ReturnType<typeof page>>;
 
@@ -514,7 +515,8 @@ test("授信记录为空时问题分类第一条灰字写项目还没设为受�
   expect(u.lines().join("\n")).toMatch(/<muted>项目还没设为受信任，/u);
   expect(u.text()).not.toContain("项目未受信任");
   u.press(ENTER);
-  expect(squeeze(u.pane().replaceAll("┊", ""))).toContain(squeeze("原因 项目还没设为受信任，项目层的定义和设定不会加载"));
+  expect(u.trustRequests()).toBe(1);
+  expect(u.pane()).not.toContain("┊");
 });
 
 test("设置文件里 git-delivery 写成 yes：展开依次是原因、现在是 \"yes\"、影响“这一项没有生效，改用下一层”、文件", async () => {
