@@ -11,7 +11,12 @@ export type CardRow = Readonly<Record<string, any>>;
 const fit = (line: string, width: number): string => (visibleWidth(line) <= width ? line : `${truncateToWidth(line, width - 1, "")}…`);
 
 export class CardText implements Component {
-  constructor(private lines: string[], private readonly expanded = "") {}
+  private lines: string[];
+  private readonly expanded: string;
+  constructor(lines: string[], expanded = "") {
+    this.lines = lines;
+    this.expanded = expanded;
+  }
   setLines(lines: string[]): void { this.lines = lines; }
   invalidate(): void {}
   render(width: number): string[] {

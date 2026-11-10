@@ -91,7 +91,7 @@ for (const action of ["read", "diff"] as const) for (const boundary of ["service
     const tool = await f.tool(() => { if (pageBuilt && ++hostAfterPage === 3 && boundary === "last-host") inject(); return true; });
     const stringify = JSON.stringify;
     vi.spyOn(JSON, "stringify").mockImplementation(((value: any, ...args: any[]) => {
-      if (value?.coverage && value?.source?.approvalScope?.status === "available") {
+      if (value?.coverage && value?.source?.approvalScope) {
         pageBuilt = true; if (boundary === "page") inject();
       }
       return (stringify as any)(value, ...args);
