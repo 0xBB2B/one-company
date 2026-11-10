@@ -15,10 +15,30 @@ import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { shapeIssue } from "../../core/exec/tool-request.ts";
 import { windowContext } from "../../core/host/extension-lifecycle.ts";
 import { chooseWindow, confirmWindow } from "../../core/host/question-window.ts";
+import { requirementLabel, summaryLine, toolCard } from "../../core/host/tool-card.ts";
+import type { CardSpec } from "../../core/host/tool-card.ts";
 
 export const GIT_DELIVER_TOOL = "one_company_git_deliver";
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 const PARAMETERS = Type.Object({ repoId: Type.String({ pattern: "^[0-9a-f]{64}$" }), requirementId: Type.String({ pattern: UUID_V7 }) }, { additionalProperties: false });
+
+const MERGE_STATE_TEXT: Record<string, string> = { merged: "已合并", queued: "已排队合并", review: "等审查", failed: "合并没成功" };
+const DELIVER_CARDS = {
+  actionOf: () => "deliver",
+  cards: {
+    deliver: { title: "交付", object: (request) => requirementLabel(request.requirementId),
+      summary: (details, theme) => {
+        switch (details.status) {
+          case "delivered": return [summaryLine(theme, MERGE_STATE_TEXT[details.merge.state] ?? details.merge.state, details.url)];
+          case "merged-locally": return [`已合进 ${details.target}`];
+          case "not-merged": return [summaryLine(theme, "没合并", details.reason)];
+          case "cancelled": return ["已取消"];
+          case "conflict": return [summaryLine(theme, "有冲突", details.reason)];
+          default: return [summaryLine(theme, "没交付", details.reason)];
+        }
+      } },
+  },
+} satisfies { actionOf: (args: unknown) => string | undefined; cards: Record<string, CardSpec> };
 
 interface CloseStatus {
   status: string; reason?: string;
@@ -44,12 +64,15 @@ function result(value: Record<string, unknown>) {
 
 /** 业务 Git 交付：主窗口始终有交付工具；确认与合并方式都由界面直接问用户。 */
 export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDeps): void {
+  const card = toolCard(DELIVER_CARDS);
   pi.registerTool({
     name: GIT_DELIVER_TOOL,
     label: "git_deliver",
     description: "按 Git 交付档位交付已完成并归档的需求：核对归档已在需求分支中后，远程档位推送并建立或复用 PR/MR，仅本地档位在本机合进主仓库当前分支；推送前和合并方式由界面直接询问用户。",
     parameters: PARAMETERS,
     executionMode: "sequential",
+    renderCall: (args, theme, context) => card.renderCall(args, theme, context),
+    renderResult: (result, options, theme, context) => card.renderResult(result, options, theme, context),
     async execute(_toolCallId, rawParams, _signal, _update, ctx: ExtensionContext) {
       const fail: (why: string, next: string) => never = (why, next) => { throw toolFailure(GIT_DELIVER_TOOL, new AdvisedError("git_deliver_failed", { why, next })); };
       if (!Value.Check(PARAMETERS, rawParams)) fail(`参数不符合本工具的格式（${shapeIssue(PARAMETERS, rawParams)}）`, "按字段要求改正参数后重试");

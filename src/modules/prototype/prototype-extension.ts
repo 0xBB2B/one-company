@@ -17,6 +17,8 @@ import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { requestParameters } from "../../core/exec/tool-request.ts";
 import { revokeCapturedInput, windowReady as defaultWindowReady } from "../../core/host/extension-lifecycle.ts";
 import type { WindowContextValue } from "../../core/host/extension-lifecycle.ts";
+import { requirementLabel, shortId, summaryLine, toolCard } from "../../core/host/tool-card.ts";
+import type { CardRow, CardSpec } from "../../core/host/tool-card.ts";
 
 const TOOL_NAME = "one_company_prototype";
 const ENTRY_TYPE = "one-company.prototype-record";
@@ -32,6 +34,37 @@ const PARAMETERS = requestParameters([
   object({ action: Type.Literal("confirm"), repoId, requirementId: id, name }),
   object({ action: Type.Literal("remove"), repoId, requirementId: id, name }),
 ]);
+
+function prototypeLine(entry: CardRow): string {
+  const { inFlight, draft, approved, lastEnded } = entry;
+  const status = entry.removed ? "已从草稿移除"
+    : inFlight ? `第 ${inFlight.version} 版${inFlight.status === "awaiting" ? "等你确认" : "设计中"}`
+    : draft ? `第 ${draft.version} 版已通过`
+    : approved ? `第 ${approved.version} 版已随需求批准`
+    : lastEnded ? `第 ${lastEnded.version} 版没交稿：${lastEnded.reason}`
+    : "还没交稿";
+  return `${entry.name}：${status}`;
+}
+
+const said: CardSpec["summary"] = (details) => [details as unknown as string];
+const PROTOTYPE_CARDS = {
+  actionOf: (args: unknown) => (args as { request?: { action?: string } } | undefined)?.request?.action,
+  cards: {
+    designers: { title: "列出原型设计师", object: () => undefined, summary: (details) => [`${details.items.length} 位设计师`] },
+    dispatch: { title: "派出原型设计", object: (request) => request.name,
+      summary: (details, theme) => [summaryLine(theme, "已派出", `第 ${details.version} 版`, `编号 ${shortId(details.runId)}`)] },
+    status: { title: "原型状态", object: (request) => requirementLabel(request.requirementId),
+      summary: (details, theme) => {
+        const entries = details.entries as CardRow[];
+        if (entries.length === 0) return ["还没有原型"];
+        const lines = entries.slice(0, 2).map(prototypeLine);
+        if (entries.length > 2) lines[1] = summaryLine(theme, lines[1]!, `还有 ${entries.length - 2} 个原型`);
+        return lines;
+      } },
+    confirm: { title: "确认原型", object: (request) => request.name, summary: said },
+    remove: { title: "删除原型", object: (request) => request.name, summary: said },
+  },
+} satisfies { actionOf: (args: unknown) => string | undefined; cards: Record<string, CardSpec> };
 
 export interface PrototypeDeps {
   windowReady?: () => Promise<WindowContextValue>;
@@ -152,12 +185,15 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     return "decided";
   }
 
+  const card = toolCard(PROTOTYPE_CARDS);
   pi.registerTool({
     name: TOOL_NAME,
     label: "prototype",
     description: "澄清阶段为有界面的需求出原型。designers 列出可用的原型设计师；dispatch 派一个设计师（名称、要画什么、轮数上限，可点名设计师定义），立即返回；交稿后程序自动打开文件并弹窗请用户确认，用户的决定只认窗口；status 查看该需求的原型看板；confirm 让程序重开某份待确认原型的确认窗口；remove 弹出窗口请用户确认把某份原型从草稿移除。",
     parameters: PARAMETERS,
     executionMode: "sequential",
+    renderCall: (args, theme, context) => card.renderCall(args, theme, context),
+    renderResult: (result, options, theme, context) => card.renderResult(result, options, theme, context),
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
       const step = toolStep(TOOL_NAME, rawParams);
       const fail = (code: string, why: string, next: string): never => { throw toolFailure(step, new AdvisedError(code, { why, next })); };

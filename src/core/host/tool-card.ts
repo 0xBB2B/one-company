@@ -59,6 +59,16 @@ export function requirementLabel(requirementId: unknown): string {
   return requirementTitles.get(id) ?? `需求 ${shortId(id)}`;
 }
 
+const exploreQuestions = new Map<string, string>();
+
+export function noteExploreQuestion(runId: unknown, question: unknown): void {
+  if (typeof runId === "string" && typeof question === "string" && question !== "") exploreQuestions.set(runId, question);
+}
+
+export function exploreLabel(runId: string): string {
+  return exploreQuestions.get(runId) ?? `编号 ${shortId(runId)}`;
+}
+
 export function repoLabel(repoId: string): string {
   try {
     const repo = windowContext().workspace.repos.find((item) => item.repoId === repoId);
@@ -86,7 +96,7 @@ export function toolCard(table: CardTable) {
     if (key === undefined || !Object.hasOwn(table.cards, key)) throw new Error("not_card");
     return table.cards[key]!;
   };
-  const requestOf = (args: unknown): CardRow => (unwrapRequest(args) ?? {}) as CardRow;
+  const requestOf = (args: unknown): CardRow => (unwrapRequest(args) ?? args ?? {}) as CardRow;
   return {
     renderCall(args: unknown, theme: CardTheme, context: CardContext): CardText {
       const spec = specOf(args);

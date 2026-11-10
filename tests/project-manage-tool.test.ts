@@ -381,6 +381,23 @@ describe("扫描确认、启动前与结束后核对、有限输出", () => {
     await runtime.shutdown();
   });
 
+  test("跳过和诊断超过结果条数上限时，skippedCount、diagnosticCount 仍是截断前的总数", async () => {
+    const world = await fixture();
+    const workspace = { workspaceId: "d".repeat(64), repoId: world.repoId, root: world.repositoryRoot, branch: "refs/heads/main" };
+    const built = async () => ({
+      action: "init", workspace, head: "a".repeat(40), status: "partial", generation: 4, parsedFiles: 2, reusedFiles: 3, readBytes: 4096, sourceCodepoints: 2048,
+      files: 400, symbols: 8, codeEdges: 2,
+      diagnostics: Array.from({ length: 150 }, (_, i) => ({ code: "unsupported_language", path: `d${i}.py` })),
+      skipped: Array.from({ length: 120 }, (_, i) => ({ path: `s${i}.bin`, reason: "binary" })),
+      archives: { metadata: [], issues: [] }, budget: budgetResult(),
+    });
+    const runtime = runtimeFor(world, async () => ({ preview: async () => ({}), status: async () => ({}), init: built, refresh: built }));
+    const result = await call(runtime, { action: "init", repoId: world.repoId }, context("session-main", async () => true));
+    const content = JSON.parse((result.content[0] as { text: string }).text) as Record<string, unknown>;
+    expect(content).toMatchObject({ skippedCount: 120, diagnosticCount: 150 });
+    await runtime.shutdown();
+  });
+
   test("init 和 refresh 的 content 只有 status、partial、files、skippedCount、diagnosticCount、truncation，清单和预算只在 details", async () => {
     const world = await fixture();
     const workspace = { workspaceId: "d".repeat(64), repoId: world.repoId, root: world.repositoryRoot, branch: "refs/heads/main" };

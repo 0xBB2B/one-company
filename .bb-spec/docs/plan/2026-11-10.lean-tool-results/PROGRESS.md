@@ -9,9 +9,10 @@
 | 06 | 05-explore-main | done | 2026-11-10 |
 | 07 | 06-explore-pm | done | 2026-11-10 |
 | 08 | 08-card-renderer | done | 2026-11-10 |
-| 09 | 09-tool-cards | in-progress | — |
+| 09 | 09-tool-cards | done | 2026-11-10 |
 ## 当前
-正在执行 `09-tool-cards.md`：Red（测试工程师写测试）。
+9 份计划全部完成，进入收尾：全量测试、真实模型验收、界面对比、文档同步。
+自修记录：09 审查发现 init、refresh 的跳过数和诊断数按截到 100 条后的清单数，发给模型的数量和卡片都会偏小；补测试后改为截断前数好放进 content 和 details，一次通过。
 自修记录：08 审查发现读需求卡片按 coverage.complete 判断是否读完（next 读到最后一页会写成"还有下一页"）、模型填的标题带换行会把卡片撑过 3 行；补测试后改为看 nextCursor、收起时换行换成空格，一次通过。
 自修记录：06 审查发现写库失败会让 PM 收不到检索结果、读写记录没核对形状；补测试后改为写库失败时把完整报告直接给 PM，读写都按 ExploreResearchRecord 核对，一次通过。
 改 PRD 记录：04 审查发现 web_search 去掉 retrievedAt 会让检索代理引用网页来源时自己编取回时间，用户 2026-11-10 决定保留，web_search 发给模型的内容不变，PRD 02 与计划 04 已同步。
