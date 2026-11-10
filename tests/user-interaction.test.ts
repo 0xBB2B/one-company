@@ -6,11 +6,12 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { adviceOf } from "../src/core/exec/tool-failure.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { ShortDecisionStore } from "../src/modules/requirement/short-decisions.ts";
-import { decisionDigest } from "../src/modules/requirement/short-decision-format.ts";
+import { decisionDigest, ShortDecisionError } from "../src/modules/requirement/short-decision-format.ts";
 import { UserInteractionCore } from "../src/modules/interaction/user-interaction.ts";
 import type { InteractionInterpreter, InteractionAuthorization } from "../src/modules/interaction/user-interaction.ts";
 import { candidateBinding, checkInterpretation, checkContext, interpreterView, UserInteractionError } from "../src/modules/requirement/user-interaction-format.ts";
@@ -983,4 +984,79 @@ test("写决定前的检查碰到数据库或程序出错时如实报错，不�
   try { other.core.save(next.capability); } catch (error) { denied = error; }
   expect(denied).not.toBeInstanceOf(UserInteractionError);
   expect(denied).toMatchObject({ code: expect.stringMatching(/authoriz/u) });
+});
+
+const VOIDED_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户在主窗口重新说一句后再登记";
+async function voidedFailure(w: Awaited<ReturnType<typeof world>>) {
+  const ticket = w.capture(); let thrown: unknown;
+  try { await w.core.interpret(ticket, w.basis.requirementId); } catch (error) { thrown = error; }
+  await expect(w.core.interpret(ticket, w.basis.requirementId)).rejects.toThrow();
+  return thrown as UserInteractionError | ShortDecisionError;
+}
+test("解读开始后模型回答格式错：错误码与原因不变，建议改为原话已作废", async () => {
+  const w = await world(); w.setImplementation(async () => { throw new UserInteractionError("model_response_denied"); });
+  const error = await voidedFailure(w);
+  expect(error).toBeInstanceOf(UserInteractionError);
+  expect(error.code).toBe("model_response_denied");
+  expect(error.advice.why).toBe(new UserInteractionError("model_response_denied").advice.why);
+  expect(error.advice.next).toBe(VOIDED_NEXT);
+  expect(adviceOf(error)).toEqual(error.advice);
+});
+test("解读结果核验不通过且两次都被拒：原因保留首次被拒的细节，建议改为原话已作废", async () => {
+  const w = await world(); const detail = "标成全局约束的段落里混入了目标；首次回答被拒的原因：解读带了授权动作但没标成授权类决定";
+  w.setImplementation(async () => { throw new UserInteractionError("global_constraint_kind", detail); });
+  const error = await voidedFailure(w);
+  expect(error).toBeInstanceOf(UserInteractionError);
+  expect(error.code).toBe("global_constraint_kind");
+  expect(error.advice.why).toBe(new UserInteractionError("global_constraint_kind", detail).advice.why);
+  expect(error.advice.why).toContain("首次回答被拒的原因：解读带了授权动作但没标成授权类决定");
+  expect(error.advice.next).toBe(VOIDED_NEXT);
+});
+test("程序自己核验解读结果不通过（action_kind_required）：建议改为原话已作废", async () => {
+  const w = await world(); w.setOutput(result([entry({ candidateId: w.candidate.candidateId, actions: ["analyze"] })]));
+  const error = await voidedFailure(w);
+  expect(error).toBeInstanceOf(UserInteractionError);
+  expect(error.code).toBe("action_kind_required");
+  expect(error.advice.why).toBe(new UserInteractionError("action_kind_required").advice.why);
+  expect(error.advice.next).toBe(VOIDED_NEXT);
+});
+test("解读中出现意外错误（interpretation_denied）：建议改为原话已作废，原因不变且不回显原话", async () => {
+  const w = await world(); w.setImplementation(async () => { throw new Error(PHONE); });
+  const error = await voidedFailure(w);
+  expect(error).toBeInstanceOf(UserInteractionError);
+  expect(error.code).toBe("interpretation_denied");
+  expect(error.advice.why).toBe(new UserInteractionError("interpretation_denied").advice.why);
+  expect(error.advice.why).not.toContain(PHONE);
+  expect(error.advice.next).toBe(VOIDED_NEXT);
+});
+test("解读期间模型被切换（model_changed）：建议改为原话已作废", async () => {
+  const w = await world(); w.setImplementation(async () => { w.setModel({ ...model, configurationHash: "b".repeat(64) }); return JSON.stringify(w.output()); });
+  const error = await voidedFailure(w);
+  expect(error.code).toBe("model_changed");
+  expect(error.advice.why).toBe(new UserInteractionError("model_changed").advice.why);
+  expect(error.advice.next).toBe(VOIDED_NEXT);
+});
+test("原建议本不是重试类（model_unavailable）：开始用原话后同样改为原话已作废", async () => {
+  const w = await world(); w.setModel({ ...model, configurationHash: "bad" });
+  const error = await voidedFailure(w);
+  expect(error).toBeInstanceOf(UserInteractionError);
+  expect(error.code).toBe("model_unavailable");
+  expect(error.advice.why).toBe(new UserInteractionError("model_unavailable").advice.why);
+  expect(error.advice.next).toBe(VOIDED_NEXT);
+});
+test("解读中抛出短决定格式错误：仍是 ShortDecisionError，错误码与原因不变，建议改为原话已作废", async () => {
+  const w = await world(); w.setImplementation(async () => { throw new ShortDecisionError("invalid_record"); });
+  const error = await voidedFailure(w);
+  expect(error).toBeInstanceOf(ShortDecisionError);
+  expect(error.code).toBe("invalid_record");
+  expect(error.advice.why).toBe(new ShortDecisionError("invalid_record").advice.why);
+  expect(error.advice.next).toBe(VOIDED_NEXT);
+  expect(adviceOf(error)).toEqual(error.advice);
+});
+test("票据无效发生在使用原话之前：建议保持原样", async () => {
+  const w = await world(); const ticket = w.capture(); await w.core.interpret(ticket, w.basis.requirementId);
+  const error = await w.core.interpret(ticket, w.basis.requirementId).catch((caught: unknown) => caught) as UserInteractionError;
+  expect(error.code).toBe("invalid_input_ticket");
+  expect(error.advice).toEqual(new UserInteractionError("invalid_input_ticket").advice);
+  expect(error.advice.next).not.toBe(VOIDED_NEXT);
 });

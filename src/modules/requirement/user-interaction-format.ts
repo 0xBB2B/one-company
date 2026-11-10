@@ -236,7 +236,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
 export class UserInteractionError extends Error {
   readonly code: string;
   readonly advice: FailureAdvice;
-  constructor(code: string, detail?: string) { super(`用户交互被拒绝：${code}`); this.name = "UserInteractionError"; this.code = code; this.advice = adviceIn(USER_INTERACTION_ADVICE, code, detail); }
+  constructor(code: string, detail?: string, advice?: FailureAdvice) { super(`用户交互被拒绝：${code}`); this.name = "UserInteractionError"; this.code = code; this.advice = advice ?? adviceIn(USER_INTERACTION_ADVICE, code, detail); }
 }
 export function parseInteraction<T extends TSchema>(schema: T, source: string, maxBytes: number = SHORT_DECISION_LIMITS.requestBytes): Static<T> {
   if (typeof source !== "string" || Buffer.byteLength(source) > maxBytes) throw new UserInteractionError("request_limit");

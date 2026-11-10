@@ -59,6 +59,7 @@ const QuestionInput = object({ basis: InteractionBasis, candidate: Type.Union([C
   actions: Type.Array(InteractionAction, { maxItems: 5, uniqueItems: true }), unitIds: Type.Optional(ApprovalUnitIds), partition: Type.Optional(ApprovalPartition) });
 const Input = object({ source: Type.Literal("interactive"), text: Type.String({ minLength: 1 }) });
 const Session = object({ sessionId: Type.String({ minLength: 1, maxLength: 128 }), windowId: Type.String({ minLength: 1, maxLength: 128 }) });
+const VOIDED_INPUT_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户在主窗口重新说一句后再登记";
 const QUESTIONS = "interaction_questions_v1";
 interface ActiveInput {
   ticket: InputTicket; text: string; controller: AbortController; used: boolean; reconsiderations: number;
@@ -227,9 +228,10 @@ export class UserInteractionCore {
       return { interpretation: structuredClone(result), capability, notRecorded };
     } catch (error) {
       if (this.#input === input) this.clearInput();
-      // 本模块与短决定格式的核验错误只含程序生成的原因，原样交给主代理；其余可能带原文、PRD片段或供应商响应正文，只报笼统原因
-      if (error instanceof UserInteractionError || error instanceof ShortDecisionError) throw error;
-      throw new UserInteractionError("interpretation_denied");
+      // 本模块与短决定格式的核验错误只含程序生成的原因，错误码与原因原样交给主代理；其余可能带原文、PRD片段或供应商响应正文，只报笼统原因
+      const denied = error instanceof UserInteractionError || error instanceof ShortDecisionError ? error : new UserInteractionError("interpretation_denied");
+      const advice = { ...denied.advice, next: VOIDED_INPUT_NEXT };
+      throw denied instanceof ShortDecisionError ? new ShortDecisionError(denied.code, advice) : new UserInteractionError(denied.code, undefined, advice);
     }
   }
   /** 保存前先撤掉行为能力，原输入只留作本次准确重存的重解释材料。 */
