@@ -42,10 +42,14 @@ function checkedFact(row: StoredRecord): FactData {
     (f.byteReview.units.length !== f.partition.units.length || f.byteReview.units.some((u, i) => u.id !== f.partition.units[i]!.id || u.hash !== f.partition.units[i]!.hash))) deny("continuity_fact_identity");
   return f;
 }
-function savedMatches(row: StoredRecord, f: FactData): void {
+type Read = Pick<LocalDatabase, "read">["read"];
+function savedMatches(read: Read, row: StoredRecord, f: FactData): void {
   const op = row.data as RequirementOperation;
+  const draft = read<RequirementRecord>("requirements", f.basis.requirementId)?.data.lifecycle === "draft";
+  const anchors = draft ? read<{ anchor: string; unchangedTip: string | null }>("line_operation_anchors", op.operationId)?.data : undefined;
+  const savedVersion = anchors ? read<{ lineVersion: number }>("line_anchors", anchors.unchangedTip ?? anchors.anchor)?.data.lineVersion : op.finalVersion;
   if (op.format !== "requirement-service-operation/v1" || op.repoId !== f.repoId || op.requirementId !== f.basis.requirementId ||
-    op.epoch !== f.basis.epoch || !op.finalVersion || op.finalVersion > f.basis.version || op.git?.hash !== f.candidate.to.hash ||
+    op.epoch !== f.basis.epoch || !op.finalVersion || !savedVersion || savedVersion > f.basis.version || op.git?.hash !== f.candidate.to.hash ||
     op.git.commit !== f.candidate.to.commit) deny("continuity_version_source");
 }
 /** 只在真实Core短决定保存后调用；仅保存来源元数据，固定operation使失败补登记不再写决定。 */
@@ -79,7 +83,7 @@ export function recordInteractionResolutionIn(db: LocalDatabase, repoId: string,
         result.entries[i]?.requestId === q.requestId && result.entries[i]?.resolution === "modify"));
       return { requestId: q.requestId, originalHash: decisionDigest(q), accepted: units(accepted), modified: units(modified), pending: units(mapped.pendingIds) };
     }) };
-  checkInteraction(Fact, fact); savedMatches(savedOperation, fact);
+  checkInteraction(Fact, fact); savedMatches((ns, key) => db.read(ns, key), savedOperation, fact);
   const old = db.read(INTERACTION_CONTINUITY_NAMESPACE, saved.operationId);
   if (old && (old.version !== 1 || !same(old.data, fact))) deny("continuity_fact_conflict");
   if (!old) {
@@ -105,7 +109,7 @@ export function assertRetainedEvidenceIn(db: Pick<LocalDatabase, "read">, repoId
   if (decision.actor !== "user" || decision.status !== "confirmed" || decision.basisReceiptId !== fact.receiptId ||
     decision.requirementId !== basis.requirementId || decision.requirementVersion !== fact.basis.version || decision.epoch !== basis.epoch ||
     !same(decision.prd, fact.basis.prd)) deny("continuity_decision_changed");
-  savedMatches(checkRef(db.read(REQUIREMENT_OPERATION_NAMESPACE, fact.savedOperation.id), fact.savedOperation), fact);
+  savedMatches((ns, key) => db.read(ns, key), checkRef(db.read(REQUIREMENT_OPERATION_NAMESPACE, fact.savedOperation.id), fact.savedOperation), fact);
 }
 type ProofRow = StoredRecord & { key?: string };
 function collectionProof(facts: ProofRow[], questions: ProofRow[], read: Pick<LocalDatabase, "read">["read"]): string {
@@ -173,7 +177,7 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
     const currentSource = (source: Source) => {
       const { fact, decision: d } = source;
       if (fact.repoId !== repoId || fact.basis.requirementId !== basis.requirementId || fact.basis.epoch !== basis.epoch || fact.basis.version > basis.version) return null;
-      savedMatches(checkRef(read(REQUIREMENT_OPERATION_NAMESPACE, fact.savedOperation.id), fact.savedOperation), fact);
+      savedMatches(read, checkRef(read(REQUIREMENT_OPERATION_NAMESPACE, fact.savedOperation.id), fact.savedOperation), fact);
       const row = read("short_decisions", d.record.id); if (!row) return null;
       const value = checkDecisionRecord(row.data);
       if (value.repoId !== repoId || value.requirementId !== basis.requirementId || value.epoch !== basis.epoch || value.operationId !== fact.operationId ||

@@ -60,6 +60,7 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   result_decision_superseded: { why: "结果依据的用户决定已被新的决定取代", next: "重新读取需求，按用户最新的决定处理" },
   stale_result: { why: "返回结果前需求已被改动，这次结果作废", next: REREAD },
   result_records_changed: { why: "返回结果前依据的记录已被改动", next: REREAD },
+  manifest_scope_changed: { why: "返回结果前这次批准的范围已被改动，这次结果作废", next: REREAD },
   result_scope_changed: { why: "返回结果前批准范围已变化", next: REREAD },
   manifest_unregistered: { why: "批准清单没有登记", next: "先按用户原话确认批准范围" },
   unproven_result: { why: "结果不是本工具刚生成的", next: STOP },

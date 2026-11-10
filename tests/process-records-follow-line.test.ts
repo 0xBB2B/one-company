@@ -219,3 +219,39 @@ test("篡改线 B 上一条算数的决定后批准，照旧报 manifest_decisio
   const approver = await w.open(w.lineB);
   await expect(approver.confirmUpdate(confirm)).rejects.toMatchObject({ code: expect.stringMatching(/^(manifest_decisions_changed|continuity_source_changed)$/) });
 });
+
+async function saveAgainOnB(w: World) {
+  const saved = await (await w.open(w.lineB)).updateDraft({ requirementId: w.requirementId, operationId: uuidv7(), version: 5, title: "需求标题", body: "线 B 再保存" });
+  const lineB2: Lines = { [w.requirementId]: [...w.lineB[w.requirementId]!, saved.anchor] };
+  const rowVersion = (await w.state()).read(w.requirementId).version;
+  expect(saved.version).toBe(6);
+  expect(rowVersion).toBeGreaterThan(6);
+  return { saved, lineB2 };
+}
+
+test("线 B 上照版本 5 再保存成版本 6 后，在线 B 上确认并批准成功，approved 是这次保存的提交", async () => {
+  const w = await world();
+  const { saved, lineB2 } = await saveAgainOnB(w);
+  const ctx = await w.context(lineB2, saved);
+  expect(ctx.version).toBe(6);
+  const confirm = await manifestConfirmInput({ ...w.config, lines: lineB2 }, { requirementId: w.requirementId, savedOperationId: saved.operationId });
+  await (await w.open(lineB2)).confirmUpdate(confirm);
+  const row = (await w.state()).read(w.requirementId).data;
+  expect(row.approved?.commit).toBe(ctx.saved.commit);
+});
+
+test("线 B 上再保存成版本 6 后先做一次短决定再批准，成功且不报 continuity_version_source", async () => {
+  const w = await world();
+  const { saved, lineB2 } = await saveAgainOnB(w);
+  const ctx = await w.context(lineB2, saved);
+  await w.appendDecision(lineB2, { version: 6, epoch: ctx.epoch, prd: ctx.basis.prd });
+  const approved = async () => {
+    const confirm = await manifestConfirmInput({ ...w.config, lines: lineB2 }, { requirementId: w.requirementId, savedOperationId: saved.operationId });
+    return (await w.open(lineB2)).confirmUpdate(confirm);
+  };
+  const error = await approved().then(() => null, (caught: unknown) => caught);
+  expect(error).not.toMatchObject({ code: "continuity_version_source" });
+  expect(error).toBeNull();
+  const row = (await w.state()).read(w.requirementId).data;
+  expect(row.approved?.commit).toBe(ctx.saved.commit);
+});
