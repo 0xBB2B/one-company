@@ -404,7 +404,7 @@ export class RunManager {
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition: PM_DEFINITION, roleRules: loadRoleRules("pm"),
         context: await this.withConventions(pmContext(record.data, lease, pmSourceDirectory({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
           pmDecisionNotes({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId),
-          await prototypesAtRevision({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId, record.data.revision))), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ requirementId: input.requirementId, worktree: workspace.path, branch: workspace.branch, alive,
+          await prototypesAtRevision({ dataRoot: this.options.dataRoot, repoId: this.repoId }, input.requirementId, record.data.revision)), false, workspace.path), coreTools: [...tools.tools, ...this.knowledgeTool(run.id), createPmCommitTool({ requirementId: input.requirementId, worktree: workspace.path, branch: workspace.branch, alive,
           checkPhaseActive, writeScope: () => withDatabase(this.database, (db) => readPlanIn(db, input.requirementId)?.tasks ?? []).flatMap((task) => task.writePaths) }), createPmSyncTool({ repositoryRoot: this.options.repositoryRoot, worktree: workspace.path, branch: workspace.branch, deliveryMode: () => this.deliveryMode(), alive, checkPhaseActive,
           quiescent: () => this.metadataRows().every((row) => row.requirement !== input.requirementId || row.kind !== "role" || isTerminalState(row.state)) &&
             withDatabase(this.database, (db) => { try { assertWritersQuiescentIn(db, this.repoId, input.requirementId); return true; } catch { return false; } }) })],
@@ -599,7 +599,7 @@ export class RunManager {
         ? [loadRoleRules("worker"), "", ...implementationLines(implementationSectionText(record, await this.approvedBody(task.requirementId)))].join("\n") : null;
       handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId: run.id, cwd: workspace.path, definition,
         roleRules: review ? reviewRulesFor(definition.name) : workerRules ?? loadRoleRules(role as "worker" | "qa"),
-        context: withSkills(await this.withConventions(context, role === "worker" || role === "reviewer"), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
+        context: withSkills(await this.withConventions(context, role === "worker" || role === "reviewer", workspace.path), resolved.skillsContext), coreTools: [...tools.tools, ...(role === "qa" ? [] : this.knowledgeTool(run.id))], runtime: this.options.runtime,
         ...(role === "qa" && prototypePaths.length ? { hostTools: [...QA_PROTOTYPE_HOST_TOOLS], readRoots: prototypePaths } : {}),
         modelRef, thinking, maxTurns, completion: { kind: "on-result", resultTool: coreToolName("result_submit") }, clock: this.options.clock, networkGate: this.options.networkGate });
     } catch (error) {
@@ -680,9 +680,9 @@ export class RunManager {
     }
   }
 
-  private async withConventions(context: string, withDesignSpec = false): Promise<string> {
-    const conventions = await agentConventionsContext({ agentDir: dirname(this.options.dataRoot), repositoryRoot: this.options.repositoryRoot });
-    const design = withDesignSpec ? await designSpecContext({ repositoryRoot: this.options.repositoryRoot }) : null;
+  private async withConventions(context: string, withDesignSpec = false, projectRoot = this.options.repositoryRoot): Promise<string> {
+    const conventions = await agentConventionsContext({ agentDir: dirname(this.options.dataRoot), repositoryRoot: projectRoot });
+    const design = withDesignSpec ? await designSpecContext({ repositoryRoot: projectRoot }) : null;
     return [context, conventions, design].filter((part) => part !== null).join("\n\n");
   }
 
@@ -869,7 +869,7 @@ export class RunManager {
       exploreSession: { dataRoot: this.options.dataRoot, repoId: this.repoId }, authorize: () => alive(), verify: sourceHashesMatch, onResearch: (value) => { captured = value; } });
     let handle: AgentSessionHandle;
     try {
-      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: root, definition, roleRules: loadRoleRules("explore"), context: withSkills(await this.withConventions(exploreContext(explore, input.maxTurns)), resolved.skillsContext),
+      handle = await createAgentRoleSession({ dataRoot: this.options.dataRoot, repoId: this.repoId, runId, cwd: root, definition, roleRules: loadRoleRules("explore"), context: withSkills(await this.withConventions(exploreContext(explore, input.maxTurns), false, root), resolved.skillsContext),
         coreTools: [toPiTool("result_submit", "提交 research（action=research）：结论、来源、检索范围、未找到、失败、截断与未知项；research 不是 PASS。", RESULT_SUBMIT_PARAMETERS, result),
           ...(source.kind === "web" ? this.webTools(alive) : this.knowledgeTool(runId))],
         readRoots: source.kind === "local_file" ? [source.root] : [], hostTools: source.kind === "local_file" ? ["read", "grep"] : [],

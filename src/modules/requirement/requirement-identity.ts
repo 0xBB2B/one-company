@@ -84,6 +84,8 @@ function filenameFor(requirementId: string, title: string): string {
   return filename;
 }
 
+export const IMPLEMENTATION_RECORD_HEADING = "### 实现记录（关闭时由程序生成）";
+
 export function archivePathFor(requirementId: string, title: string): string {
   assertRequirementId(requirementId);
   assertString(title, "title");

@@ -338,6 +338,14 @@ export class RequirementStateStore {
     this.authorize("read", { requirementId }); return record;
   }
 
+  approvedHashes(requirementId: string): Set<string> {
+    checked(id, requirementId); this.authorize("read", { requirementId });
+    const path = this.path();
+    if (!pathExists(path)) throw new RequirementStateError("unknown_requirement");
+    const hashes = withDatabase(path, (db) => new Set(this.approvedEvents(db, requirementId).map((event) => event.data.to.hash)));
+    this.authorize("read", { requirementId }); return hashes;
+  }
+
   pmOwner(requirementId: string): PmRecord | null {
     checked(id, requirementId); this.authorize("read", { requirementId });
     if (!pathExists(this.path())) throw new RequirementStateError("unknown_requirement");

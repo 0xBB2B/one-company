@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open } from "node:fs/promises";
+import { lstat, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isPromise } from "node:util/types";
 import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn, releaseDeadRequirementWriteIn } from "./requirement-coordination.ts";
@@ -8,7 +8,7 @@ import { RequirementStateStore } from "./requirement-state.ts";
 import type { RequirementAction, RequirementStoreOptions } from "./requirement-state.ts";
 import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
 import { verifyRequirementWorkspace } from "./requirement-workspace.ts";
-import { createPrdDocument, inspectPrdArchives, parsePrdDocument } from "./requirement-identity.ts";
+import { createPrdDocument, IMPLEMENTATION_RECORD_HEADING, inspectPrdArchives, parsePrdDocument } from "./requirement-identity.ts";
 import { PRD_FILE, PrdStorageError, create as createStorage, diffVersions, prdRequirementPath, readVersion, save as saveStorage, verifyVersion } from "./prd-storage.ts";
 import type { PrdRepositoryIdentity, PrdStorageConfig, PrdStorageWriteResult } from "./prd-storage.ts";
 import { RequirementOperations } from "./requirement-operations.ts";
@@ -252,13 +252,17 @@ export class RequirementService {
     const before = state.read(requirementId);
     available(before.data);
     const roots = new Set([this.options.repositoryRoot, before.data.workspace?.path].filter((value): value is string => Boolean(value)));
+    const approvedHashes = state.approvedHashes(requirementId);
     let reason: "archive_found" | "identity_conflict" | null = null;
     const paths = new Set<string>();
     try {
       for (const root of roots) {
         const inspection = await inspectPrdArchives(root, requirementId);
-        if (inspection.conflict) reason = "identity_conflict";
-        for (const path of inspection.paths) paths.add(path);
+        for (const path of inspection.paths) {
+          const bytes = await readFile(join(root, path));
+          const programWritten = approvedHashes.size > 0 && (!bytes.includes(IMPLEMENTATION_RECORD_HEADING) || approvedHashes.has(createHash("sha256").update(bytes).digest("hex")));
+          if (!programWritten) paths.add(path);
+        }
       }
       if (paths.size > 1) reason = "identity_conflict";
       else if (paths.size === 1 && reason === null) reason = "archive_found";

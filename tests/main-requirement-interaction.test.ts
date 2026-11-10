@@ -1,3 +1,4 @@
+import { IMPLEMENTATION_RECORD_HEADING } from "../src/modules/requirement/requirement-identity.ts";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -17,7 +18,7 @@ import { HostAuthorizationError, HostAuthorizationManager } from "../src/modules
 import { MainRequirementInteraction } from "../src/modules/interaction/main-requirement-interaction.ts";
 import { UserInteractionCore, UserInteractionError } from "../src/modules/interaction/user-interaction.ts";
 import { RequirementOperations } from "../src/modules/requirement/requirement-operations.ts";
-import { prdRequirementPath } from "../src/modules/requirement/prd-storage.ts";
+import { prdRequirementPath, readDraftFiles } from "../src/modules/requirement/prd-storage.ts";
 import { REQUIREMENT_OPERATION_NAMESPACE } from "../src/modules/requirement/requirement-coordination.ts";
 import type { MainRequirementInteractionOptions } from "../src/modules/interaction/main-requirement-interaction.ts";
 import { createRequirementManageTool } from "../src/modules/interaction/requirement-manage-tool.ts";
@@ -51,6 +52,9 @@ import { RunStore } from "../src/modules/agents/run-store.ts";
 import { defaultRoleDir, loadRoleCatalog } from "../src/modules/agents/roles.ts";
 import { readAgentSettings } from "../src/modules/settings/agent-settings.ts";
 import { implementAuthorized } from "../src/modules/pm/pm-intake-runtime.ts";
+import { addDraftFiles, AGENTS_BASE, AGENTS_DRAFT, approvedPrdBytes, DESIGN_BASE, DESIGN_DRAFT, SCENARIO_CHANGES } from "./helpers/approved-files-fixture.ts";
+import { setLocalIdentity, withoutGitIdentity } from "./helpers/git-identity.ts";
+import { WorkspaceManageService, workspaceLocation } from "../src/modules/delivery/workspace-manage.ts";
 
 
 const exec = promisify(execFile), cleanup: Array<() => Promise<void>> = [];
@@ -2708,3 +2712,320 @@ describe("过程记录跟着对话线：主窗口的提问与重试", () => {
 function currentLineOf(branch: Array<{ customType: string; data: { requirementId: string; anchor: string } }>, requirementId: string): string[] {
   return branch.filter((entry) => entry.customType === "one-company.line-anchor" && entry.data.requirementId === requirementId).map((entry) => entry.data.anchor);
 }
+
+describe("批准的文件随批准提交进需求分支", () => {
+  type Saved = { requirementId: string; operationId: string; version: number };
+  const mdPath = (requirementId: string, title: string) => `docs/prd/${requirementId}.${title}.md`;
+  const htmlPath = (requirementId: string) => `docs/prd/${requirementId}.设置页.html`;
+  const V2_BODY = BODY.replace("增加手机号登录，保留邮箱登录。", "增加手机号登录，保留邮箱登录，验证码六位。");
+
+  type World = Awaited<ReturnType<typeof world>>;
+  const approveOn = (w: World, target: Saved) => {
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
+    return w.call({ action: "confirmUpdate", requirementId: target.requirementId, savedOperationId: target.operationId, version: target.version });
+  };
+  const saveDraftOn = async (w: World, requirementId: string, title: string, body: string): Promise<Saved> => {
+    w.capture("改一下"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    const metadata = await w.call({ action: "metadata", requirementId });
+    const updated = await w.call({ action: "updateDraft", requirementId, version: metadata.version, summary: "手机号登录，保留邮箱登录", title, body });
+    return { requirementId, operationId: String(updated.operationId), version: Number(updated.version) };
+  };
+
+  async function boundWorld() {
+    const w = await world();
+    await writeFile(join(w.repositoryRoot, "DESIGN.md"), DESIGN_BASE); await writeFile(join(w.repositoryRoot, "AGENTS.md"), AGENTS_BASE);
+    await git(w.repositoryRoot, ["config", "user.name", "test"]); await git(w.repositoryRoot, ["config", "user.email", "test@localhost"]);
+    await git(w.repositoryRoot, ["add", "."]); await git(w.repositoryRoot, ["commit", "-m", "底稿"]);
+    const created = await w.create(), requirementId = String(created.requirementId);
+    const worktree = join(w.root, "worktree"), branch = `req/${requirementId}`;
+    await git(w.repositoryRoot, ["worktree", "add", "-b", branch, worktree, "HEAD"]);
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    const baseCommit = await git(worktree, ["rev-parse", "HEAD"]);
+    await state.bindWorkspace({ requirementId, version: Number(created.version), path: worktree, baseCommit, prepareOperationId: uuidv7() });
+    const addFiles = async (changes: Record<string, string | null>) => {
+      const anchor = await addDraftFiles({ dataRoot: w.dataRoot, repoId: w.repoId }, { requirementId, line: currentLineOf(w.branch, requirementId), changes });
+      w.branch.push({ type: "custom", customType: "one-company.line-anchor", data: { repoId: w.repoId, requirementId, anchor }, id: uuidv7(), parentId: w.branch.at(-1)?.id ?? null });
+    };
+    const saved: Saved = { requirementId, operationId: String(created.operationId), version: Number(created.version) };
+    const approve = (target: Saved) => approveOn(w, target);
+    const saveDraft = (title: string, body: string) => saveDraftOn(w, requirementId, title, body);
+    const workerCommit = async (path: string, content: string) => {
+      await writeFile(join(worktree, path), content);
+      await git(worktree, ["add", path]); await git(worktree, ["commit", "-m", `改 ${path}`]);
+    };
+    const commits = async () => Number(await git(worktree, ["rev-list", "--count", `${baseCommit}..${branch}`]));
+    const tipChanges = async () => (await git(worktree, ["-c", "core.quotePath=false", "show", "--no-renames", "--name-status", "--format=", branch])).split("\n").sort();
+    const approvedState = () => { const data = state.read(requirementId).data; return { revision: data.revision, approved: data.approved, lifecycle: data.lifecycle }; };
+    return { w, requirementId, worktree, branch, baseCommit, state, addFiles, saved, approve, saveDraft, workerCommit, commits, tipChanges, approvedState };
+  }
+
+  test("已有工作区时批准：批准之前分支和工作区文件不变，批准后分支多一个提交，装着正文、原型、DESIGN.md、AGENTS.md，说明末尾单独一行 Requirement，主仓库根目录文件不变", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    expect(await b.commits()).toBe(0);
+    expect(await readFile(join(b.worktree, "DESIGN.md"), "utf8")).toBe(DESIGN_BASE);
+    expect(await readFile(join(b.worktree, "AGENTS.md"), "utf8")).toBe(AGENTS_BASE);
+    expect(await b.approve(b.saved)).toMatchObject({ prdActivated: true });
+    expect(await b.commits()).toBe(1);
+    expect(await b.tipChanges()).toEqual([`A\t${mdPath(b.requirementId, "登录")}`, `A\t${htmlPath(b.requirementId)}`, "M\tAGENTS.md", "M\tDESIGN.md"].sort());
+    expect(await git(b.worktree, ["show", `${b.branch}:DESIGN.md`])).toBe(DESIGN_DRAFT.trimEnd());
+    expect(await git(b.worktree, ["show", `${b.branch}:AGENTS.md`])).toBe(AGENTS_DRAFT.trimEnd());
+    const message = (await git(b.worktree, ["log", "-1", "--format=%B", b.branch])).split("\n");
+    expect(message.at(-1)).toBe(`Requirement: ${b.requirementId}`);
+    expect(await readFile(join(b.w.repositoryRoot, "DESIGN.md"), "utf8")).toBe(DESIGN_BASE);
+    expect(await readFile(join(b.w.repositoryRoot, "AGENTS.md"), "utf8")).toBe(AGENTS_BASE);
+  });
+
+  test("批准新版本改了标题并去掉一份原型：旧标题的正文文件和被去掉的原型文件从分支删掉，新标题的正文写入，没改的 DESIGN.md、AGENTS.md 不进这次提交", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    const v2 = await b.saveDraft("登录二期", V2_BODY);
+    await b.addFiles({ "prototypes/设置页.v1.html": null });
+    await b.approve(v2);
+    expect(await b.commits()).toBe(2);
+    expect(await b.tipChanges()).toEqual([`A\t${mdPath(b.requirementId, "登录二期")}`, `D\t${mdPath(b.requirementId, "登录")}`, `D\t${htmlPath(b.requirementId)}`].sort());
+    expect(await git(b.worktree, ["show", `${b.branch}:DESIGN.md`])).toBe(DESIGN_DRAFT.trimEnd());
+  });
+
+  test("只改了正文的批准：提交里只有正文文件的改动，不含 DESIGN.md、AGENTS.md", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    await b.approve(await b.saveDraft("登录", V2_BODY));
+    expect(await b.commits()).toBe(2);
+    expect(await b.tipChanges()).toEqual([`M\t${mdPath(b.requirementId, "登录")}`]);
+  });
+
+  test("批准新版本改了 DESIGN.md：按底稿三方合并，分支里已有的改动和新版本的改动都在", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    await b.addFiles({ "DESIGN.md": DESIGN_DRAFT.replace("- 文字：#1f2933", "- 文字：#111111") });
+    await b.approve(await b.saveDraft("登录", V2_BODY));
+    expect(await b.tipChanges()).toEqual(["M\tDESIGN.md", `M\t${mdPath(b.requirementId, "登录")}`].sort());
+    expect(await git(b.worktree, ["show", `${b.branch}:DESIGN.md`])).toBe(DESIGN_BASE.replace("- 按钮：圆角 4px", "- 按钮：圆角 8px").replace("- 文字：#1f2933", "- 文字：#111111").trimEnd());
+  });
+
+  test("批准新版本把 DESIGN.md 同一章再改一次、分支里没人改过：批准成功，分支里是新版本的内容", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    const v2 = await b.saveDraft("登录", V2_BODY);
+    const twelve = DESIGN_BASE.replace("- 按钮：圆角 4px", "- 按钮：圆角 12px");
+    await b.addFiles({ "DESIGN.md": twelve });
+    expect(await b.approve(v2)).toMatchObject({ prdActivated: true });
+    expect(await b.commits()).toBe(2);
+    expect(await git(b.worktree, ["show", `${b.branch}:DESIGN.md`])).toBe(twelve.trimEnd());
+  });
+
+  test("批准新版本把上一版对 DESIGN.md 的改动改回原样：分支里回到原样", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    const v2 = await b.saveDraft("登录", V2_BODY);
+    await b.addFiles({ "DESIGN.md": DESIGN_BASE });
+    await b.approve(v2);
+    expect(await git(b.worktree, ["show", `${b.branch}:DESIGN.md`])).toBe(DESIGN_BASE.trimEnd());
+  });
+
+  test("批准新版本只改了正文，分支里 DESIGN.md 被 worker 提交改过上一版改过的同一处：不冲突，DESIGN.md 不动", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    const workerDesign = DESIGN_BASE.replace("- 按钮：圆角 4px", "- 按钮：圆角 2px");
+    await b.workerCommit("DESIGN.md", workerDesign);
+    const v2 = await b.saveDraft("登录", V2_BODY);
+    expect(await b.approve(v2)).toMatchObject({ prdActivated: true });
+    expect(await b.tipChanges()).toEqual([`M\t${mdPath(b.requirementId, "登录")}`]);
+    expect(await git(b.worktree, ["show", `${b.branch}:DESIGN.md`])).toBe(workerDesign.trimEnd());
+  });
+
+  test("批准新版本改了 DESIGN.md 的某一章，分支里这一章被 worker 改过：冲突，批准不生效，需求的版本号、已批准版本和生命周期不变，分支没有新提交，原因写明文件和章名", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    await b.workerCommit("DESIGN.md", DESIGN_BASE.replace("- 按钮：圆角 4px", "- 按钮：圆角 2px"));
+    const v2 = await b.saveDraft("登录", V2_BODY);
+    await b.addFiles({ "DESIGN.md": DESIGN_BASE.replace("- 按钮：圆角 4px", "- 按钮：圆角 12px") });
+    const before = b.approvedState(), commits = await b.commits();
+    const error = await b.approve(v2).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    const advice = adviceOf(error)!;
+    expect(advice.why).toContain("DESIGN.md");
+    expect(advice.why).toContain("组件");
+    expect(advice.next).toContain("让设计师按最新的 DESIGN.md 重做一版");
+    expect(b.approvedState()).toEqual(before);
+    expect(await b.commits()).toBe(commits);
+  });
+
+  test("批准的内容和分支 HEAD 完全相同（worker 已提交了同样的正文）：不报错，分支不多提交", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    const v2 = await b.saveDraft("登录", V2_BODY);
+    const commit = (await b.w.service.metadata(b.requirementId)).saved!.commit;
+    const files = await readDraftFiles({ dataRoot: b.w.dataRoot, repoId: b.w.repoId, requirementId: b.requirementId, commit, authorize: () => true });
+    await b.workerCommit(mdPath(b.requirementId, "登录"), Buffer.from(files.prd).toString("utf8"));
+    const commits = await b.commits();
+    expect(await b.approve(v2)).toMatchObject({ prdActivated: true });
+    expect(await b.commits()).toBe(commits);
+  });
+
+  test("worktree 里 DESIGN.md 有未提交改动时批准新版本按冲突处理：不覆盖这份改动，批准不生效，分支没有新提交", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    const v2 = await b.saveDraft("登录", V2_BODY);
+    await b.addFiles({ "DESIGN.md": DESIGN_DRAFT.replace("- 文字：#1f2933", "- 文字：#111111") });
+    await writeFile(join(b.worktree, "DESIGN.md"), "用户手改的内容\n");
+    const before = b.approvedState(), commits = await b.commits();
+    const error = await b.approve(v2).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(adviceOf(error)!.why).toContain("DESIGN.md");
+    expect(adviceOf(error)!.next).toContain("先提交或丢弃工作区里这些文件的改动，再批准");
+    expect(adviceOf(error)!.next).not.toContain("设计师");
+    expect(await readFile(join(b.worktree, "DESIGN.md"), "utf8")).toBe("用户手改的内容\n");
+    expect(b.approvedState()).toEqual(before);
+    expect(await b.commits()).toBe(commits);
+  });
+
+  async function expectDirtyBlocked(b: Awaited<ReturnType<typeof boundWorld>>, target: Saved, path: string, content: string) {
+    const before = b.approvedState(), commits = await b.commits();
+    const error = await b.approve(target).then(() => null, (caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    const advice = adviceOf(error)!;
+    expect(advice.why).toContain(path);
+    expect(advice.next).toContain("先提交或丢弃工作区里这些文件的改动，再批准");
+    expect(advice.next).not.toContain("设计师");
+    expect(await readFile(join(b.worktree, path), "utf8")).toBe(content);
+    expect(b.approvedState()).toEqual(before);
+    expect(await b.commits()).toBe(commits);
+  }
+
+  test("要写的正文文件在工作区里有未提交的改动：按冲突处理，不覆盖", async () => {
+    const b = await boundWorld();
+    await b.approve(b.saved);
+    const v2 = await b.saveDraft("登录", V2_BODY);
+    const path = mdPath(b.requirementId, "登录");
+    await writeFile(join(b.worktree, path), "用户手改的正文\n");
+    await expectDirtyBlocked(b, v2, path, "用户手改的正文\n");
+  });
+
+  test("要写的原型文件在工作区里已经有同名的未跟踪文件：按冲突处理，不覆盖", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    const path = htmlPath(b.requirementId);
+    await mkdir(join(b.worktree, "docs", "prd"), { recursive: true });
+    await writeFile(join(b.worktree, path), "<html>用户自己的</html>\n");
+    await expectDirtyBlocked(b, b.saved, path, "<html>用户自己的</html>\n");
+  });
+
+  test("要删的旧标题正文文件在工作区里有未提交的改动：按冲突处理，不删除", async () => {
+    const b = await boundWorld();
+    await b.approve(b.saved);
+    const v2 = await b.saveDraft("登录二期", V2_BODY);
+    const path = mdPath(b.requirementId, "登录");
+    await writeFile(join(b.worktree, path), "用户手改的旧正文\n");
+    await expectDirtyBlocked(b, v2, path, "用户手改的旧正文\n");
+  });
+
+  test("要写的 AGENTS.md 在工作区里有未提交的改动：按冲突处理，不覆盖", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    const v2 = await b.saveDraft("登录", V2_BODY);
+    await b.addFiles({ "AGENTS.md": `${AGENTS_DRAFT}## 提交\n- 提交说明用中文。\n` });
+    await writeFile(join(b.worktree, "AGENTS.md"), "用户手改的规范\n");
+    await expectDirtyBlocked(b, v2, "AGENTS.md", "用户手改的规范\n");
+  });
+
+  test("要写的 DESIGN.md 在工作区里已暂存但没提交：按冲突处理，不覆盖", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    const v2 = await b.saveDraft("登录", V2_BODY);
+    await b.addFiles({ "DESIGN.md": DESIGN_DRAFT.replace("- 文字：#1f2933", "- 文字：#111111") });
+    await writeFile(join(b.worktree, "DESIGN.md"), "暂存的手改内容\n");
+    await git(b.worktree, ["add", "DESIGN.md"]);
+    await expectDirtyBlocked(b, v2, "DESIGN.md", "暂存的手改内容\n");
+  });
+
+  test("没有要写的 DESIGN.md 时，工作区里该文件的未提交改动不挡批准，改动原样保留", async () => {
+    const b = await boundWorld();
+    await b.addFiles(SCENARIO_CHANGES);
+    await b.approve(b.saved);
+    const v2 = await b.saveDraft("登录", V2_BODY);
+    await writeFile(join(b.worktree, "DESIGN.md"), "用户手改的内容\n");
+    expect(await b.approve(v2)).toMatchObject({ prdActivated: true });
+    expect(await readFile(join(b.worktree, "DESIGN.md"), "utf8")).toBe("用户手改的内容\n");
+  });
+
+  test("批准已生效、之后往分支提交失败：结果写明批准已生效、文件还没进需求分支，下一步是处理好 Git 问题后调 workspace-prepare 补提交；随后调 prepare 补上提交", async () => {
+    const w = await world();
+    await setLocalIdentity(w.repositoryRoot);
+    const created = await w.create(), requirementId = String(created.requirementId);
+    await approveOn(w, { requirementId, operationId: String(created.operationId), version: Number(created.version) });
+    const location = workspaceLocation(w.repositoryRoot, requirementId);
+    cleanup.push(() => rm(join(location.path, "..", ".."), { recursive: true, force: true }));
+    const workspace = await WorkspaceManageService.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, confirm: async () => true });
+    const ready = await workspace.prepare({ requirementId });
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    const commits = async () => Number(await git(w.repositoryRoot, ["rev-list", "--count", `${ready.baseCommit}..req/${requirementId}`]));
+    expect(await commits()).toBe(1);
+    const v2 = await saveDraftOn(w, requirementId, "登录二期", V2_BODY);
+    const before = state.read(requirementId).data.approved;
+    const outcome = await withoutGitIdentity(w.repositoryRoot, () => approveOn(w, v2).then((result) => ({ result, error: undefined as unknown }), (error: unknown) => ({ result: undefined, error })));
+    const shown = outcome.error === undefined ? JSON.stringify(outcome.result)
+      : [(outcome.error as Error).message, adviceOf(outcome.error)?.why, adviceOf(outcome.error)?.next].join("\n");
+    expect(shown).toContain("批准已生效，文件还没进需求分支");
+    expect(shown).toContain("处理好 Git 问题后调 workspace-prepare 补提交");
+    expect(state.read(requirementId).data.approved).not.toEqual(before);
+    expect(await commits()).toBe(1);
+    await workspace.prepare({ requirementId });
+    expect(await commits()).toBe(2);
+    expect(await git(w.repositoryRoot, ["show", `req/${requirementId}:${mdPath(requirementId, "登录二期")}`])).toBe(Buffer.from(await approvedPrdBytes({ dataRoot: w.dataRoot, repoId: w.repoId }, requirementId)).toString("utf8").trimEnd());
+  });
+
+  describe("发现归档检查", () => {
+    const archiveText = async (b: Awaited<ReturnType<typeof boundWorld>>) =>
+      `${await readFile(join(b.worktree, mdPath(b.requirementId, "登录")), "utf8")}\n${IMPLEMENTATION_RECORD_HEADING}\n\n已实现手机号登录。\n`;
+    const readSaved = (b: Awaited<ReturnType<typeof boundWorld>>) => b.w.service.read({ requirementId: b.requirementId, source: "saved" });
+
+    test("批准后分支里有正文文件，之后再保存一版草稿、再读：不报发现归档", async () => {
+      const b = await boundWorld();
+      await b.approve(b.saved);
+      expect(existsSync(join(b.worktree, mdPath(b.requirementId, "登录")))).toBe(true);
+      await b.saveDraft("登录", V2_BODY);
+      await expect(readSaved(b)).resolves.toBeDefined();
+      expect(b.state.read(b.requirementId).data.recovery).toBe("ready");
+    });
+
+    test("关闭前把需求分支快进合进主仓库，主仓库根目录有正文文件，再保存草稿：不报发现归档", async () => {
+      const b = await boundWorld();
+      await b.approve(b.saved);
+      await git(b.w.repositoryRoot, ["merge", "--ff-only", b.branch]);
+      expect(existsSync(join(b.w.repositoryRoot, mdPath(b.requirementId, "登录")))).toBe(true);
+      await b.saveDraft("登录", V2_BODY);
+      await expect(readSaved(b)).resolves.toBeDefined();
+      expect(b.state.read(b.requirementId).data.recovery).toBe("ready");
+    });
+
+    test("工作区里该路径是归档内容（正文加实现记录）而需求还在进行中：照旧报发现归档、转恢复", async () => {
+      const b = await boundWorld();
+      await b.approve(b.saved);
+      await writeFile(join(b.worktree, mdPath(b.requirementId, "登录")), await archiveText(b));
+      await expect(readSaved(b)).rejects.toMatchObject({ code: "recovery_required" });
+      expect(b.state.read(b.requirementId).data).toMatchObject({ recovery: "needs_review", recoveryReason: "archive_found" });
+    });
+
+    test("主仓库根目录该路径是归档内容而需求还在进行中：照旧报发现归档、转恢复", async () => {
+      const b = await boundWorld();
+      await b.approve(b.saved);
+      await mkdir(join(b.w.repositoryRoot, "docs", "prd"), { recursive: true });
+      await writeFile(join(b.w.repositoryRoot, mdPath(b.requirementId, "登录")), await archiveText(b));
+      await expect(readSaved(b)).rejects.toMatchObject({ code: "recovery_required" });
+      expect(b.state.read(b.requirementId).data).toMatchObject({ recovery: "needs_review", recoveryReason: "archive_found" });
+    });
+  });
+});

@@ -17,7 +17,7 @@ description: data.db 从版本 10 迁到 11：原型看板转成按锚点记的�
 - 升级前已有的需求保存操作记录（`requirement_service_operations`）都补一条 `line_operation_anchors`（新 UUIDv7 锚点，parent 为这个需求的起点锚点或 null，unchangedTip 为 null），否则续完或重放这些操作时找不到锚点记录。
 - 每个需求文件仓库（不论需求状态）的 main 如果不能从任何 `refs/lines/*` 到达，补一个 `refs/lines/<新 UUIDv7>` 指向它，之后才能在旧版本上分叉保存（02 的不变量要求）。
 - 草稿需求里已通过、未移除的原型（看板 entry.draft），把 HTML 文件从 `repos/<仓库>/prototypes/<需求>/<名>.v<N>.html` 搬进这个需求的文件仓库：在 `main` 上加一个 kind 为 migration 的提交，`main` 前移到它（02 的规则已写明这个例外）。原文件保留。DESIGN.md 已在升级前写进主仓库根目录，不进文件状态。
-- 已批准、正在关闭、已关闭的需求，迁移不改它们的任何记录和文件。
+- 已批准、正在关闭、已关闭的需求，迁移不改它们已有的记录和文件；只为它们补锚点：一个起点 save 锚点（lineVersion 等于 requirements 行版本号、fileCommit 等于需求文件仓库 main）和一个以它为父的 approval 锚点（fileCommit 同上），否则 08 建工作区、再批准时找不到批准锚点。
 - 主仓库根目录的 DESIGN.md、AGENTS.md 迁移不碰。
 - 升级前的对话里没有锚点记录，回退到升级前的保存点时线尖就是最近一次保存，不插"已恢复"消息（01、07 的规则自然满足，迁移不用为此做事）。
 - 迁移框里"会丢掉的数据"这一项，这一步写"这次迁移不会丢数据。"

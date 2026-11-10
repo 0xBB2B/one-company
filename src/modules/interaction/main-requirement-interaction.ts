@@ -40,7 +40,9 @@ import type { ApprovalManifestReference } from "../requirement/approval-manifest
 import { approvalManifestReference, confirmed, implementGoalUnitIds, manifestAuthorizesImplement, supplementImplementAction } from "../requirement/approval-manifest.ts";
 import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from "../panel/adjudication.ts";
 import { requirementSummary, saveRequirementSummary } from "../requirement/requirement-summary.ts";
-import { linedRequirementIn } from "../requirement/line-anchors.ts";
+import { linedRequirementIn, lineViewIn } from "../requirement/line-anchors.ts";
+import { AdvisedError } from "../../core/exec/tool-failure.ts";
+import { commitApprovedFiles, planApprovedFromDraft } from "../delivery/approved-files.ts";
 import type { WorkingLines } from "../requirement/line-anchors.ts";
 import { recordSaveStart, startedSaves } from "./conversation-line.ts";
 import { currentLine, recordLineAnchor } from "../requirement/line-anchors.ts";
@@ -809,12 +811,21 @@ export class MainRequirementInteraction {
         r.operationId === request.operationId && r.version === loaded.version && r.intentHash === loaded.candidate.intentHash &&
         r.receiptId === receiptId && (r.epoch === undefined || r.epoch === loaded.epoch) && same(r.manifest, reference), authorizeManifest);
       await verifyDraftFiles(prototypeRef, request.requirementId, line);
+      const workspace = this.#snapshot(this.#host(ctx), request.repoId, request.requirementId).data.workspace;
+      const approvedPlan = workspace ? await planApprovedFromDraft({ dataRoot: this.#options.dataRoot, repoId: request.repoId, requirementId: request.requirementId,
+        fileCommit: withDatabase(repositoryDatabase(this.#options.dataRoot, request.repoId), (db) => lineViewIn(db, request.requirementId, line).tip?.fileCommit)!,
+        cwd: workspace.path, rev: "HEAD", checkDirty: true }) : null;
       const receipt = await service.confirmUpdate({ requirementId: request.requirementId, operationId: request.operationId, version: loaded.version,
         title: loaded.title, body: loaded.body, receiptId, manifest: reference, docSpec, prototypes: draft.digest })
         .catch((error: unknown) => {
           if (error instanceof PrototypeBoardError && error.code === "digest_changed") throw new HostAuthorizationError("prototype_changed");
           throw error;
         });
+      if (workspace && approvedPlan) {
+        await commitApprovedFiles({ worktree: workspace.path, requirementId: request.requirementId, writes: approvedPlan.writes, deletes: approvedPlan.deletes }).catch((error: unknown) => {
+          throw new AdvisedError("approved_files_not_committed", { why: `批准已生效，文件还没进需求分支：${adviceOf(error)?.why ?? (error as Error).message}`, next: "处理好 Git 问题后调 workspace-prepare 补提交" });
+        });
+      }
       // 这些只是该次决定的元数据，不是可转交worker的能力；激活不启动PM。
       const authorized = manifestAuthorizesImplement(document.manifest);
       return this.#prove(ctx, request.repoId, { ...base, ...receipt, targetRecorded: true, prdActivated: true,

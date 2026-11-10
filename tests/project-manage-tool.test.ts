@@ -919,6 +919,7 @@ describe("operationId 由程序生成：模型不填，中断后的续做由程�
   test("workspace-recycle 不填 operationId 成功且结果带 UUIDv7；带 operationId 被参数校验拒绝", async () => {
     const w = await requirementWorld();
     await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx);
+    await promisify(execFile)("git", ["merge", "-q", "--ff-only", `req/${w.requirementId}`], { cwd: w.repositoryRoot });
     await w.close();
     await expect(call(w.runtime, { action: "workspace-recycle", repoId: w.repoId, requirementId: w.requirementId, operationId: uuidv7() }, w.ctx))
       .rejects.toMatchObject({ code: "invalid_shape" });

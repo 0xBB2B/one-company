@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { commandOutputTail, withDetail } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { lstat, mkdir, realpath } from "node:fs/promises";
@@ -15,6 +16,8 @@ import { mutedLines } from "../../core/host/question-window.ts";
 import type { ProgramWindow } from "../../core/host/question-window.ts";
 import { verifyRequirementWorkspace } from "../requirement/requirement-workspace.ts";
 import { RequirementCloseService } from "./workflow-close.ts";
+import { approvalFileCommit, commitApprovedFiles, onlyApprovedFilesCommits, planApprovedFromDraft, readBranchFiles } from "./approved-files.ts";
+import { gitIn } from "../../core/exec/target-branch.ts";
 
 const execFileAsync = promisify(execFile);
 export const MANAGED_WORKSPACES = "managed_workspaces";
@@ -131,12 +134,13 @@ export class WorkspaceManageService {
     const record = this.state.read(input.requirementId);
     if (record.data.lifecycle !== "active") throw new WorkspaceManageError("requirement_not_active", ["需求批准生效后才能创建工作区"]);
     const existing = this.read(input.requirementId);
-    if (existing?.status === "ready") return existing;
+    if (existing?.status === "ready") { await this.commitApproved(existing); return existing; }
     const operationId = existing?.operationId ?? uuidv7();
     const location = workspaceLocation(this.options.repositoryRoot, input.requirementId);
     let baseCommit = existing?.baseCommit ?? await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
     const unbornBranch = baseCommit ? null : await gitOutput(this.options.repositoryRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
     if (!baseCommit && !unbornBranch) throw new WorkspaceManageError("git_failed", ["rev-parse HEAD"]);
+    if (!(await exists(location.path))) await this.planApproved(input.requirementId, this.options.repositoryRoot, baseCommit, false);
     if (!existing) {
       const title = await this.approvedTitle(input.requirementId);
       const approved = await this.options.confirm({ title: "确认创建需求工作区", lines: [{ text: `需求：${title}` }, ...mutedLines([
@@ -170,7 +174,25 @@ export class WorkspaceManageService {
       prepareOperationId: plan.operationId, baseCommit: plan.baseCommit });
     const ready = { ...plan, status: "ready" as const };
     this.save(ready);
+    await this.commitApproved(ready);
     return ready;
+  }
+
+  private planApproved(requirementId: string, cwd: string, rev: string | null, checkDirty: boolean) {
+    return planApprovedFromDraft({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId,
+      fileCommit: approvalFileCommit(this.options.dataRoot, this.options.repoId, requirementId), cwd, rev, checkDirty });
+  }
+
+  // 分支里已有当前批准的正文就不重复提交；否则合并后提交，合不上或有未提交改动时报冲突。空仓库没有基线提交，建工作区之前没有可合并的文件
+  private async commitApproved(workspace: ManagedWorkspace): Promise<void> {
+    const { requirementId } = workspace;
+    const approvedHash = this.state.read(requirementId).data.approved?.hash;
+    for (const path of (await readBranchFiles(workspace.path, "HEAD", requirementId)).existingPaths.filter((item) => item.endsWith(".md"))) {
+      const blob = await gitIn(workspace.path, ["cat-file", "blob", `HEAD:${path}`]).then((out) => out.stdout, () => null);
+      if (blob !== null && createHash("sha256").update(blob, "utf8").digest("hex") === approvedHash) return;
+    }
+    const plan = await this.planApproved(requirementId, workspace.path, "HEAD", true);
+    await commitApprovedFiles({ worktree: workspace.path, requirementId, writes: plan.writes, deletes: plan.deletes });
   }
 
   // 用空树建提交并只在分支仍无提交时写入，不碰用户的暂存区和工作目录
@@ -263,7 +285,7 @@ export class WorkspaceManageService {
       if (!versionAtLeast(version, "2.38")) {
         tooOldGit = version;
         blockers.push(`本机 Git 版本 ${version} 低于 2.38，判断不了需求是否已合并`);
-      } else if (!(await this.mergedInto(tip))) {
+      } else if (!(await this.mergedInto(tip)) && !(await onlyApprovedFilesCommits(this.options.repositoryRoot, tip, plan.requirementId))) {
         unmerged = true;
         const mainBranch = await gitOutput(this.options.repositoryRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
         const target = mainBranch ? `主仓库当前分支 ${mainBranch}` : `主仓库当前提交 ${mainHead.slice(0, 7)}`;

@@ -164,7 +164,9 @@ export function draftLineViewIn(
   db: LocalDatabase, row: Pick<StoredRecord<RequirementRecord>, "version" | "data">, line: readonly string[], anyLifecycle = false, forcedFailure?: string,
 ): DraftLineView {
   const requirementId = row.data.requirementId;
-  if (!anyLifecycle && row.data.lifecycle !== "draft") return { version: row.version, saved: row.data.saved, fileCommit: row.data.saved?.commit ?? null, tip: null, updatedAt: row.data.updatedAt };
+  if (!anyLifecycle && row.data.lifecycle !== "draft") {
+    return { version: row.version, saved: row.data.saved, fileCommit: viewOf(anchorsOf(db, requirementId), line).tip?.fileCommit ?? row.data.saved?.commit ?? null, tip: null, updatedAt: row.data.updatedAt };
+  }
   return draftLineView(row, anchorsOf(db, requirementId), line, (commit) =>
     savedHashAt(db.list<{ requirementId: string; git: { commit: string; hash: string } | null }>(REQUIREMENT_OPERATION_NAMESPACE).map((stored) => stored.data), requirementId, commit), forcedFailure);
 }

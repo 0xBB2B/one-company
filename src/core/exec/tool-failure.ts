@@ -87,9 +87,11 @@ export function failureText(step: string, error: unknown): string {
 /** 交给模型的工具错误：消息只含哪一步失败、为什么、建议下一步；内部错误码留在 code 上供程序分支，不进消息。 */
 export class ToolFailure extends Error {
   readonly code: string | undefined;
+  readonly advice: FailureAdvice | undefined;
   constructor(step: string, error: unknown) {
     super(failureText(step, error), { cause: error });
     this.name = "ToolFailure";
+    this.advice = adviceOf(error);
     const code = error !== null && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
     this.code = typeof code === "string" ? code : undefined;
   }

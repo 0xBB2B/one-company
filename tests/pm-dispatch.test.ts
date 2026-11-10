@@ -130,7 +130,7 @@ test("M7-AC13、M8A-AC7：PM 只在工作区 ready、需求 active 且有实施�
   expect(await w.runStore.get(runId)).toMatchObject({ ok: true, run: { kind: "requirement", state: "running", requirement: w.requirementId } });
 }, 30000);
 
-test("M8D2-AC2：派 PM 时上下文含用户级与项目 AGENTS.md 此刻的磁盘内容并标明来源；两份都没有时照常启动、不带规范", async () => {
+test("M8D2-AC2：派 PM 时上下文含用户级 AGENTS.md 与需求工作区里 AGENTS.md 此刻的磁盘内容并标明来源，不读主仓库根目录的；两份都没有时照常启动、不带规范", async () => {
   const plain = await world();
   scriptReplies(plain.provider, [{ type: "text", text: "等待" }]);
   await plain.dispatch();
@@ -139,7 +139,8 @@ test("M8D2-AC2：派 PM 时上下文含用户级与项目 AGENTS.md 此刻的磁
 
   const w = await world();
   await writeFile(join(dirname(w.dataRoot), "AGENTS.md"), "# 用户规范\n- 说明用白话写。\n");
-  await writeFile(join(w.repositoryRoot, "AGENTS.md"), "# 项目规范\n- 导出常量用大写下划线命名。\n");
+  await writeFile(join(w.repositoryRoot, "AGENTS.md"), "# 项目规范\n- 主仓库的旧规范。\n");
+  await writeFile(join(w.state.read(w.requirementId).data.workspace!.path, "AGENTS.md"), "# 项目规范\n- 导出常量用大写下划线命名。\n");
   scriptReplies(w.provider, [{ type: "text", text: "等待" }]);
   await w.dispatch();
   await until(() => w.provider.requests.length === 1);
@@ -147,11 +148,12 @@ test("M8D2-AC2：派 PM 时上下文含用户级与项目 AGENTS.md 此刻的磁
   expect(prompt).toContain("用户规范（来源：用户级 AGENTS.md；必须遵守）：\n# 用户规范\n- 说明用白话写。");
   expect(prompt).toContain("项目规范（来源：仓库根目录 AGENTS.md；本任务的改动必须遵守）：\n# 项目规范\n- 导出常量用大写下划线命名。");
   expect(prompt.indexOf("用户规范（来源")).toBeLessThan(prompt.indexOf("项目规范（来源"));
+  expect(prompt).not.toContain("主仓库的旧规范");
 }, 60000);
 
-test("仓库根目录有 DESIGN.md 时派出的 PM 任务说明不含界面设计规范", async () => {
+test("需求工作区里有 DESIGN.md 时派出的 PM 任务说明不含界面设计规范", async () => {
   const w = await world();
-  await writeFile(join(w.repositoryRoot, "DESIGN.md"), "# 风格\n- 主题：明亮\n");
+  await writeFile(join(w.state.read(w.requirementId).data.workspace!.path, "DESIGN.md"), "# 风格\n- 主题：明亮\n");
   scriptReplies(w.provider, [{ type: "text", text: "等待" }]);
   await w.dispatch();
   await until(() => w.provider.requests.length === 1);

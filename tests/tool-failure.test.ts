@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { promisify } from "node:util";
 import { Type } from "typebox";
-import { AdvisedError, commandOutputTail, failureText, toolFailure, toolStep } from "../src/core/exec/tool-failure.ts";
+import { AdvisedError, adviceOf, commandOutputTail, failureText, ToolFailure, toolFailure, toolStep } from "../src/core/exec/tool-failure.ts";
 import { DaemonCallError } from "../src/core/host/daemon-client.ts";
 import { toPiTool } from "../src/modules/agents/role-tools.ts";
 import { errorData } from "../src/app/daemon/server.ts";
@@ -23,6 +23,11 @@ test("经守护进程转发的错误从 data.advice 取原因与建议", () => {
 
 test("没有原因与建议的错误也给出三段，原因带原始消息", () => {
   expect(failureText("读取", new Error("磁盘已满"))).toBe("读取失败。\n原因：未归类的错误（磁盘已满）\n建议：可以重试一次；仍然失败就把这段原因告诉用户");
+});
+
+test("被包装的错误带原因与建议时，包装后的 ToolFailure 上仍取得到，没带时取不到", () => {
+  expect(adviceOf(new ToolFailure("派出 PM", new AdvisedError("stale_pm_lease", advice)))).toEqual(advice);
+  expect(adviceOf(new ToolFailure("读取", new Error("磁盘已满")))).toBeUndefined();
 });
 
 test("步骤名取工具名与动作，参数包在 request 里或平铺都能取到", () => {
