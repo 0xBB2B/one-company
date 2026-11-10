@@ -4,7 +4,7 @@ import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { ApprovalManifestReferenceSchema, checkRequirement, checked, object, positive, hash, id } from "./requirement-contracts.ts";
 import type { ApprovalSummary, RequirementRecord } from "./requirement-contracts.ts";
-import { ApprovalManifest, approvalDependencyClosure, approvalManifestReference, checkApprovalManifest } from "./approval-manifest.ts";
+import { ApprovalManifest, approvalDependencyClosure, approvalManifestReference, checkApprovalManifest, checkImplementSupplement } from "./approval-manifest.ts";
 import type { ApprovalManifestExpected, ApprovalManifestReference } from "./approval-manifest.ts";
 import { checkDecisionRecord, decisionDigest } from "./short-decision-format.ts";
 import { ApprovalPartition } from "./user-interaction-format.ts";
@@ -26,11 +26,13 @@ export interface ApprovalManifestStoreOptions {
 const Admission = object({ receiptId: id, version: positive, epoch: positive, inputProof: Type.Optional(hash) });
 const Stored = object({ format: Type.Literal("stored-approval-manifest/v1"), repoId: hash,
   admission: Admission, partition: ApprovalPartition,
-  decisionRecords: Type.Array(object({ id, version: positive, hash }), { minItems: 1, maxItems: 40 }),
+  supplement: Type.Optional(object({ baseManifestHash: hash, decisionId: id, admission: Admission })),
+  decisionRecords: Type.Array(object({ id, version: positive, hash }), { minItems: 1, maxItems: 41 }),
   manifest: ApprovalManifest });
+interface ImplementSupplement { baseManifestHash: string; decisionId: string; admission: ManifestAdmission }
 interface StoredManifest {
   format: "stored-approval-manifest/v1"; repoId: string; admission: ManifestAdmission;
-  partition: ApprovalManifestExpected["partition"]; manifest: ApprovalManifest;
+  partition: ApprovalManifestExpected["partition"]; manifest: ApprovalManifest; supplement?: ImplementSupplement;
   decisionRecords: Array<{ id: string; version: number; hash: string }>;
 }
 function deny(code: RequirementServiceErrorCode): never { throw new RequirementServiceError(code); }
@@ -50,8 +52,19 @@ function current(db: LocalDatabase, repoId: string, requirementId: string): Stor
   if (data.recovery !== "ready" || !["draft", "active"].includes(data.lifecycle)) deny("lifecycle_denied");
   return { ...stored, data };
 }
-function decisionSnapshots(db: LocalDatabase, manifest: ApprovalManifest, admission: ManifestAdmission, repoId: string) {
-  const ids = [...new Set([...manifest.units, ...manifest.actions, ...manifest.questions].flatMap((u) => u.decisionIds))];
+function supplementDecisionSnapshot(db: LocalDatabase, manifest: ApprovalManifest, supplement: ImplementSupplement, repoId: string) {
+  const stored = db.read("short_decisions", supplement.decisionId);
+  if (!stored || stored.id !== supplement.decisionId) deny("manifest_decision_missing");
+  const d = checkDecisionRecord(stored.data), { admission } = supplement;
+  if (d.decisionId !== supplement.decisionId || d.requirementId !== manifest.requirementId || d.repoId !== repoId || d.basisReceiptId !== admission.receiptId ||
+    d.epoch !== admission.epoch || d.requirementVersion !== admission.version || !same(d.prd, manifest.candidate.to) || d.supersedes.length ||
+    ![manifest.candidate.to.commit, manifest.candidate.to.hash].every((ref) => d.references.includes(ref))) deny("manifest_decision_mismatch");
+  if (d.actor !== "user") deny("manifest_action_not_user");
+  if (d.status !== "confirmed") deny("manifest_decision_not_confirmed");
+  return { id: d.decisionId, version: stored.version, hash: decisionDigest(d) };
+}
+function decisionSnapshots(db: LocalDatabase, manifest: ApprovalManifest, admission: ManifestAdmission, repoId: string, supplement?: ImplementSupplement) {
+  const ids = [...new Set([...manifest.units, ...manifest.actions, ...manifest.questions].flatMap((u) => u.decisionIds))].filter((decisionId) => decisionId !== supplement?.decisionId);
   if (ids.length > 40) deny("manifest_store_limit");
   const records = ids.map((decisionId) => {
     const stored = db.read("short_decisions", decisionId);
@@ -88,7 +101,7 @@ function decisionSnapshots(db: LocalDatabase, manifest: ApprovalManifest, admiss
         copy.conclusion === d.conclusion && copy.scope === d.scope);
       if (d.actor !== "user" || d.status !== "confirmed" || !d.basisReceiptId || !units.length || actions.length ||
         manifest.questions.some((q) => q.decisionIds.includes(d.decisionId)) || units.some((u) => u.disposition !== "confirmed" ||
-          manifest.actions.some((a) => a.goalIds.includes(u.id)) ||
+          manifest.actions.some((a) => a.goalIds.includes(u.id) && !(supplement && a.decisionIds.includes(supplement.decisionId))) ||
           !copies.some(({ d: copy }) => u.decisionIds.includes(copy.decisionId) &&
             !manifest.actions.some((a) => a.decisionIds.includes(copy.decisionId)) &&
             !manifest.questions.some((q) => q.decisionIds.includes(copy.decisionId))))) deny("manifest_decision_not_confirmed");
@@ -101,7 +114,8 @@ function decisionSnapshots(db: LocalDatabase, manifest: ApprovalManifest, admiss
   }
   // 单次短决定仍限20条；额外20条仅容纳Core核验的独立约束原来源。
   if (sources > 20 || records.length - sources > 20) deny("manifest_store_limit");
-  return records.map(({ stored, d }) => ({ id: d.decisionId, version: stored.version, hash: decisionDigest(d) }));
+  const snapshots = records.map(({ stored, d }) => ({ id: d.decisionId, version: stored.version, hash: decisionDigest(d) }));
+  return supplement ? [...snapshots, supplementDecisionSnapshot(db, manifest, supplement, repoId)] : snapshots;
 }
 export function summarizeApprovalManifest(m: ApprovalManifest): ApprovalSummary {
   return { reference: approvalManifestReference(m),
@@ -126,10 +140,11 @@ export function registeredApprovalManifestIn(db: LocalDatabase, repoId: string, 
   if (s.repoId !== repoId || !same(approvalManifestReference(m), ref) || record.id !== ref.requirementId ||
     record.data.recovery !== "ready" || !["draft", "active"].includes(record.data.lifecycle) || s.admission.epoch !== record.data.epoch) deny("manifest_binding_mismatch");
   if (receiptId !== undefined) {
-    if (s.admission.receiptId !== receiptId || record.version !== s.admission.version || !same(record.data.saved, ref.candidate.to)) deny("manifest_stale");
-    if (!s.admission.inputProof || continuityInputProofIn(db, ref.requirementId) !== s.admission.inputProof) deny("manifest_input_changed");
+    const admission = s.supplement?.admission ?? s.admission;
+    if (admission.receiptId !== receiptId || record.version !== admission.version || !same(record.data.saved, ref.candidate.to)) deny("manifest_stale");
+    if (!admission.inputProof || continuityInputProofIn(db, ref.requirementId) !== admission.inputProof) deny("manifest_input_changed");
   } else if (!same(record.data.approvalManifest?.reference ?? null, ref) || !same(record.data.approved, ref.candidate.to)) deny("manifest_not_approved");
-  if (!same(decisionSnapshots(db, m, s.admission, repoId), s.decisionRecords)) deny("manifest_decisions_changed");
+  if (!same(decisionSnapshots(db, m, s.admission, repoId, s.supplement), s.decisionRecords)) deny("manifest_decisions_changed");
   return m;
 }
 
@@ -204,6 +219,44 @@ export class ApprovalManifestStore {
         const after = current(db, this.#options.repoId, ref.requirementId);
         if (after.version !== before.version || !same(after.data, before.data) ||
           !same(decisionSnapshots(db, manifest, admission, this.#options.repoId), stored.decisionRecords)) deny("manifest_stale");
+        return ref;
+      }));
+    } finally { this.#busy = false; }
+  }
+  async registerImplementSupplement(input: { base: ApprovalManifestReference; manifest: ApprovalManifest; decisionId: string }): Promise<ApprovalManifestReference> {
+    if (this.#busy) deny("manifest_reentry");
+    this.#busy = true;
+    try {
+      const base = checked(ApprovalManifestReferenceSchema, input.base);
+      const raw = input.manifest;
+      const ref = checked(ApprovalManifestReferenceSchema, { requirementId: raw?.requirementId, candidate: raw?.candidate, manifestHash: raw?.manifestHash });
+      const request = this.#request("register", ref); this.#access(request);
+      const admission = this.#admit(request);
+      const expected = await this.#options.loadExpected(ref);
+      const manifest = checkApprovalManifest(input.manifest, expected);
+      this.#access(request);
+      if (!same(this.#admit(request), admission)) deny("manifest_admission_changed");
+      const path = repositoryDatabase(this.#options.dataRoot, this.#options.repoId);
+      return withDatabase(path, (db) => db.transaction(() => {
+        const before = current(db, this.#options.repoId, ref.requirementId);
+        if (base.requirementId !== ref.requirementId || !same(base.candidate, ref.candidate)) deny("manifest_binding_mismatch");
+        if (before.version !== admission.version || before.data.epoch !== admission.epoch || !same(before.data.saved, ref.candidate.to) ||
+          !same(before.data.approved, ref.candidate.to)) deny("manifest_stale");
+        if (continuityInputProofIn(db, ref.requirementId) !== admission.inputProof) deny("manifest_input_changed");
+        const baseManifest = registeredApprovalManifestIn(db, this.#options.repoId, base, before);
+        checkImplementSupplement({ base: baseManifest, next: manifest, decisionId: input.decisionId });
+        const baseRow = checked(Stored, db.read(APPROVAL_MANIFEST_NAMESPACE, base.manifestHash)!.data) as StoredManifest;
+        const supplement: ImplementSupplement = { baseManifestHash: base.manifestHash, decisionId: input.decisionId, admission };
+        const stored: StoredManifest = { format: "stored-approval-manifest/v1", repoId: this.#options.repoId, admission: baseRow.admission,
+          partition: baseRow.partition, supplement, manifest, decisionRecords: decisionSnapshots(db, manifest, baseRow.admission, this.#options.repoId, supplement) };
+        checked(Stored, stored);
+        if (Buffer.byteLength(JSON.stringify(stored)) > 65_536) deny("manifest_store_limit");
+        const old = db.read(APPROVAL_MANIFEST_NAMESPACE, ref.manifestHash);
+        if (old && !same(old.data, stored)) deny("manifest_conflict");
+        if (!old) db.create(APPROVAL_MANIFEST_NAMESPACE, ref.manifestHash, stored);
+        const after = current(db, this.#options.repoId, ref.requirementId);
+        if (after.version !== before.version || !same(after.data, before.data) ||
+          !same(decisionSnapshots(db, manifest, baseRow.admission, this.#options.repoId, supplement), stored.decisionRecords)) deny("manifest_stale");
         return ref;
       }));
     } finally { this.#busy = false; }
