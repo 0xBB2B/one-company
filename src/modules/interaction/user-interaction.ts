@@ -2,6 +2,7 @@ import { Type } from "typebox";
 import { isPromise } from "node:util/types";
 import { uuidv7, repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
+import { HostAuthorizationError } from "../requirement/host-authorization.ts";
 import { RequirementStateStore } from "../requirement/requirement-state.ts";
 import { createHash } from "node:crypto";
 import { RequirementOperations } from "../requirement/requirement-operations.ts";
@@ -59,9 +60,11 @@ const QuestionInput = object({ basis: InteractionBasis, candidate: Type.Union([C
   actions: Type.Array(InteractionAction, { maxItems: 5, uniqueItems: true }), unitIds: Type.Optional(ApprovalUnitIds), partition: Type.Optional(ApprovalPartition) });
 const Input = object({ source: Type.Literal("interactive"), text: Type.String({ minLength: 1 }) });
 const Session = object({ sessionId: Type.String({ minLength: 1, maxLength: 128 }), windowId: Type.String({ minLength: 1, maxLength: 128 }) });
-function withVoidedAdvice<T extends UserInteractionError | ShortDecisionError>(error: T): T {
+function withVoidedAdvice<T extends UserInteractionError | ShortDecisionError | HostAuthorizationError>(error: T): T {
   const advice = { ...error.advice, next: VOIDED_INPUT_NEXT_BY_CODE[error.code] ?? VOIDED_INPUT_NEXT };
-  return (error instanceof ShortDecisionError ? new ShortDecisionError(error.code, advice) : new UserInteractionError(error.code, undefined, advice)) as T;
+  if (error instanceof ShortDecisionError) return new ShortDecisionError(error.code, advice) as T;
+  if (error instanceof HostAuthorizationError) return new HostAuthorizationError(error.code, undefined, advice) as T;
+  return new UserInteractionError(error.code, undefined, advice) as T;
 }
 const QUESTIONS = "interaction_questions_v1";
 interface ActiveInput {
@@ -231,8 +234,8 @@ export class UserInteractionCore {
       return { interpretation: structuredClone(result), capability, notRecorded };
     } catch (error) {
       if (this.#input === input) this.clearInput();
-      // 本模块与短决定格式的核验错误只含程序生成的原因，错误码与原因原样交给主代理；其余可能带原文、PRD片段或供应商响应正文，只报笼统原因
-      const denied = error instanceof UserInteractionError || error instanceof ShortDecisionError ? error : new UserInteractionError("interpretation_denied");
+      // 本模块与短决定格式的核验错误、加载材料时主窗口报的无细节拒绝只含程序生成的原因，错误码与原因原样交给主代理；其余可能带原文、PRD片段或供应商响应正文，只报笼统原因
+      const denied = error instanceof UserInteractionError || error instanceof ShortDecisionError || error instanceof HostAuthorizationError ? error : new UserInteractionError("interpretation_denied");
       throw withVoidedAdvice(denied);
     }
   }
