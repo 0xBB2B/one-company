@@ -652,6 +652,23 @@ describe("主窗口共享控制器的真实服务路径", () => {
     await rejected; await new Promise((r) => setTimeout(r, 510));
     expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"))).toEqual(before);
   });
+  test("批准时解读模型还在跑、用户又说了新话：失败原因是处理期间用户又说了新的话，新话仍可用于再次批准", async () => {
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    w.capture("同意"); scriptReview(w.provider, phoneReview, { chunkDelayMs: 500 });
+    const count = w.provider.requests.length, pending = w.call({ action: "confirmUpdate", ...input }).catch((caught: unknown) => caught);
+    const deadline = Date.now() + 3000;
+    while (w.provider.requests.length === count && Date.now() < deadline) await new Promise((r) => setTimeout(r, 1));
+    expect(w.provider.requests.length).toBe(count + 1);
+    w.capture("换个说法，同意");
+    const error = await pending;
+    expect(error).toMatchObject({ code: "input_changed" });
+    expect((error as Error).message).toContain(`原因：${new HostAuthorizationError("input_changed").advice.why}`);
+    expect((error as Error).message).toContain(`建议：${new HostAuthorizationError("input_changed").advice.next}`);
+    expect((error as Error).message).not.toContain("已作废");
+    await new Promise((r) => setTimeout(r, 510));
+    scriptReview(w.provider, phoneReview);
+    expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ targetRecorded: true, prdActivated: true });
+  });
   const VOIDED_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户在主窗口重新说一句后再登记";
   async function resavedThenConfirm(hook: (w: Awaited<ReturnType<typeof world>>) => void) {
     const w = await world(), created = await w.create(), first = await w.request(created);

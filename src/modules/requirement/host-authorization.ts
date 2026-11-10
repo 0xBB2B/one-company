@@ -90,10 +90,10 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
 export class HostAuthorizationError extends Error {
   readonly code: string;
   readonly advice: FailureAdvice;
-  constructor(code: string, hint?: string) {
+  constructor(code: string, hint?: string, advice?: FailureAdvice) {
     super(`requirement_host_denied:${code}${hint ? `（${hint}）` : ""}`); this.name = "HostAuthorizationError"; this.code = code;
     const base = HOST_ADVICE[code];
-    this.advice = base ? withDetail(base, hint) : { why: hint ?? `需求操作被拒绝（${code}）`, next: "按原因改正后重试；仍然失败就把这段原因告诉用户" };
+    this.advice = advice ?? (base ? withDetail(base, hint) : { why: hint ?? `需求操作被拒绝（${code}）`, next: "按原因改正后重试；仍然失败就把这段原因告诉用户" });
   }
 }
 /** 宿主身份与资源门槛；不签发目标批准，不读取聊天历史，不持久化用户输入。 */

@@ -9,6 +9,7 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { adviceOf } from "../src/core/exec/tool-failure.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import { HostAuthorizationError } from "../src/modules/requirement/host-authorization.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { ShortDecisionStore } from "../src/modules/requirement/short-decisions.ts";
 import { decisionDigest, ShortDecisionError } from "../src/modules/requirement/short-decision-format.ts";
@@ -1132,6 +1133,57 @@ test("票据无效发生在使用原话之前：建议保持原样", async () =>
   expect(error.code).toBe("invalid_input_ticket");
   expect(error.advice).toEqual(new UserInteractionError("invalid_input_ticket").advice);
   expect(error.advice.next).not.toBe(VOIDED_NEXT);
+});
+
+test("原话被撤销且没有新话：建议仍是原话已作废", async () => {
+  const w = await world(); w.setImplementation(async () => { w.core.revoke(); throw new UserInteractionError("model_response_denied"); });
+  const error = await voidedFailure(w);
+  expect(error.code).toBe("model_response_denied");
+  expect(error.advice.next).toBe(VOIDED_NEXT);
+});
+async function hostFailure(w: Awaited<ReturnType<typeof world>>, failure: HostAuthorizationError) {
+  w.loader.mockRejectedValueOnce(failure);
+  return voidedFailure(w);
+}
+test("加载材料时主窗口报上下文太多（interaction_context_limit）：错误类型与原因不变，建议是先处理已有问题再重说", async () => {
+  const w = await world(); const expected = new HostAuthorizationError("interaction_context_limit");
+  const error = await hostFailure(w, expected);
+  expect(error).toBeInstanceOf(HostAuthorizationError);
+  expect(error.code).toBe("interaction_context_limit");
+  expect(error.advice.why).toBe(expected.advice.why);
+  expect(error.advice.next).toBe(CONTEXT_LIMIT_NEXT);
+  expect(adviceOf(error)).toEqual(error.advice);
+});
+test("加载材料时主窗口报需求状态不对（lifecycle_denied，带细节）：原因含细节，建议改为原话已作废", async () => {
+  const w = await world(); const hint = "需求已取消";
+  const error = await hostFailure(w, new HostAuthorizationError("lifecycle_denied", hint));
+  expect(error).toBeInstanceOf(HostAuthorizationError);
+  expect(error.code).toBe("lifecycle_denied");
+  expect(error.advice.why).toBe(new HostAuthorizationError("lifecycle_denied", hint).advice.why);
+  expect(error.advice.why).toContain(hint);
+  expect(error.advice.next).toBe(VOIDED_NEXT);
+  expect(adviceOf(error)).toEqual(error.advice);
+});
+test("加载材料时主窗口报需求被改动（state_changed）：建议改为原话已作废", async () => {
+  const w = await world();
+  const error = await hostFailure(w, new HostAuthorizationError("state_changed"));
+  expect(error).toBeInstanceOf(HostAuthorizationError);
+  expect(error.code).toBe("state_changed");
+  expect(error.advice.why).toBe(new HostAuthorizationError("state_changed").advice.why);
+  expect(error.advice.next).toBe(VOIDED_NEXT);
+});
+test("加载材料时抛普通错误：报 interpretation_denied，原因不回显错误文本，建议是原话已作废", async () => {
+  const w = await world(); w.loader.mockRejectedValueOnce(new Error(PHONE));
+  const error = await voidedFailure(w);
+  expect(error).toBeInstanceOf(UserInteractionError);
+  expect(error.code).toBe("interpretation_denied");
+  expect(error.advice.why).toBe(new UserInteractionError("interpretation_denied").advice.why);
+  expect(error.advice.why).not.toContain(PHONE);
+  expect(error.advice.next).toBe(VOIDED_NEXT);
+});
+test("主窗口错误在原话没作废的地方抛出：建议保持错误表原样", () => {
+  expect(new HostAuthorizationError("interaction_context_limit").advice.next).toBe("先处理已有的问题和决定，再继续");
+  expect(new HostAuthorizationError("lifecycle_denied").advice.next).toBe("重新读取需求后按最新版本再试");
 });
 
 async function preparedResave(w: Awaited<ReturnType<typeof documentWorld>>) {

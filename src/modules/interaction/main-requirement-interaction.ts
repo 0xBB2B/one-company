@@ -269,6 +269,12 @@ export class MainRequirementInteraction {
     if (!input || input.sessionId !== this.#host(ctx).sessionId || input.abort.signal.aborted) denied("current_input_required");
     return input;
   }
+  async #unlessSuperseded<T>(input: CapturedInput, run: () => Promise<T>): Promise<T> {
+    try { return await run(); } catch (error) {
+      if (this.#input && this.#input !== input) denied("input_changed");
+      throw error;
+    }
+  }
   #snapshot(host: RequirementManageHostContext, repoId: string, requirementId: string, active = true) {
     const record = this.#authorization.snapshot(repoId, requirementId, host.sessionId);
     if (active && (!["draft", "active"].includes(record.data.lifecycle) || record.data.recovery !== "ready")) denied("lifecycle_denied");
@@ -570,7 +576,7 @@ export class MainRequirementInteraction {
     try {
       const core = await this.#ensureCore(ctx, request.repoId, request.requirementId);
       if (!this.#ticket) return denied("current_input_required");
-      const { capability, interpretation, notRecorded } = await core.interpret(this.#ticket, request.requirementId);
+      const { capability, interpretation, notRecorded } = await this.#unlessSuperseded(windowInput, () => core.interpret(this.#ticket!, request.requirementId));
       const index = interpretation.entries.length === 1 && interpretation.entries[0]!.kind === "adjudication" ? 0 : -1;
       const record = this.#snapshot(host, request.repoId, request.requirementId);
       const base = { requirementId: request.requirementId, version: record.version, epoch: record.data.epoch, itemId: request.itemId,
@@ -629,7 +635,8 @@ export class MainRequirementInteraction {
     if (!this.#capability) {
       const pending = this.#resave;
       if (pending && (!pending.complete || pending.requirementId !== request.requirementId || pending.operationId !== request.savedOperationId)) denied("resave_request_mismatch");
-      const result = pending ? await core.reconsiderSavedCandidate(this.#ticket, request.requirementId, pending.permit) : await core.interpret(this.#ticket, request.requirementId);
+      const ticket = this.#ticket;
+      const result = await this.#unlessSuperseded(input, () => pending ? core.reconsiderSavedCandidate(ticket, request.requirementId, pending.permit) : core.interpret(ticket, request.requirementId));
       this.#resave = undefined;
       this.#capability = result.capability; this.#interpretation = result.interpretation; this.#interpreted = { repoId: request.repoId, requirementId: request.requirementId, operationId: request.operationId };
     }
