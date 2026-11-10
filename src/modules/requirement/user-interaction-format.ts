@@ -233,6 +233,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   unknown_supersedes: { why: "要取代的决定不存在或已被取代", next: "重新读取需求后按最新版本再试" },
   untrusted_session: { why: "当前会话不是登记的会话", next: "在当前主窗口会话里重新发起" },
 };
+export const VOIDED_INPUT_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户在主窗口重新说一句后再登记";
 export class UserInteractionError extends Error {
   readonly code: string;
   readonly advice: FailureAdvice;

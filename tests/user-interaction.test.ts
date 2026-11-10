@@ -13,7 +13,7 @@ import { RequirementStateStore } from "../src/modules/requirement/requirement-st
 import { ShortDecisionStore } from "../src/modules/requirement/short-decisions.ts";
 import { decisionDigest, ShortDecisionError } from "../src/modules/requirement/short-decision-format.ts";
 import { UserInteractionCore } from "../src/modules/interaction/user-interaction.ts";
-import type { InteractionInterpreter, InteractionAuthorization } from "../src/modules/interaction/user-interaction.ts";
+import type { InteractionInterpreter, InputTicket, InteractionAuthorization } from "../src/modules/interaction/user-interaction.ts";
 import { candidateBinding, checkInterpretation, checkContext, interpreterView, UserInteractionError } from "../src/modules/requirement/user-interaction-format.ts";
 import type { InteractionContext, InteractionEntry, InteractionInterpretation } from "../src/modules/requirement/user-interaction-format.ts";
 import { createPiInteractionInterpreter } from "../src/modules/interaction/user-interaction-model.ts";
@@ -1058,5 +1058,58 @@ test("票据无效发生在使用原话之前：建议保持原样", async () =>
   const error = await w.core.interpret(ticket, w.basis.requirementId).catch((caught: unknown) => caught) as UserInteractionError;
   expect(error.code).toBe("invalid_input_ticket");
   expect(error.advice).toEqual(new UserInteractionError("invalid_input_ticket").advice);
+  expect(error.advice.next).not.toBe(VOIDED_NEXT);
+});
+
+async function preparedResave(w: Awaited<ReturnType<typeof documentWorld>>) {
+  const ticket = w.capture("A只对内测用户，B仍未决");
+  w.output().documentReview!.faithful = false; w.output().documentReview!.actions = [];
+  w.output().entries[0]!.resolution = "modify"; w.output().entries.splice(3, 1);
+  const first = await w.core.interpret(ticket, w.basis.requirementId); w.core.save(first.capability);
+  const permit = w.core.prepareCandidateResave(ticket, { origin: {}, operationId: uuidv7(), intentHash: "a".repeat(64), targetHash: "b".repeat(64) });
+  return { ticket, permit };
+}
+async function expectVoided(w: Awaited<ReturnType<typeof documentWorld>>, ticket: InputTicket, error: unknown, code: string) {
+  expect(error).toBeInstanceOf(UserInteractionError);
+  const failure = error as UserInteractionError;
+  expect(failure.code).toBe(code);
+  expect(failure.advice.why).toBe(new UserInteractionError(code).advice.why);
+  expect(failure.advice.next).toBe(VOIDED_NEXT);
+  await expect(w.core.interpret(ticket, w.basis.requirementId)).rejects.toThrow();
+}
+test("重存的来源核对不通过（resave_origin_mismatch）：建议改为原话已作废，原话不可再用", async () => {
+  const w = await documentWorld(), { ticket, permit } = await preparedResave(w);
+  let thrown: unknown;
+  try { w.core.observeCandidateResave(permit, { origin: {} } as never); } catch (error) { thrown = error; }
+  await expectVoided(w, ticket, thrown, "resave_origin_mismatch");
+});
+test("重存还没收到保存通知就完成（reconsideration_denied）：建议改为原话已作废，原话不可再用", async () => {
+  const w = await documentWorld(), { ticket, permit } = await preparedResave(w);
+  let thrown: unknown;
+  try { w.core.completeCandidateResave(permit); } catch (error) { thrown = error; }
+  await expectVoided(w, ticket, thrown, "reconsideration_denied");
+});
+test("重存的permit不对：完成重存抛 reconsideration_denied 并作废原话，核对失败的建议也是原话已作废", async () => {
+  const w = await documentWorld(), { ticket } = await preparedResave(w);
+  let thrown: unknown;
+  try { w.core.completeCandidateResave({ kind: "candidate-resave-permit" }); } catch (error) { thrown = error; }
+  await expectVoided(w, ticket, thrown, "reconsideration_denied");
+});
+test("重解读前置检查不通过（permit不对）：原话不作废，建议保持错误表原样", async () => {
+  const w = await documentWorld(), { ticket } = await preparedResave(w);
+  const error = await w.core.reconsiderSavedCandidate(ticket, w.basis.requirementId, { kind: "candidate-resave-permit" }).catch((caught: unknown) => caught) as UserInteractionError;
+  expect(error).toBeInstanceOf(UserInteractionError);
+  expect(error.code).toBe("reconsideration_denied");
+  expect(error.advice).toEqual(new UserInteractionError("reconsideration_denied").advice);
+  expect(error.advice.next).not.toBe(VOIDED_NEXT);
+});
+test("准备重存的前置检查不通过（candidate_not_resaved）：建议保持错误表原样", async () => {
+  const w = await documentWorld(), ticket = w.capture();
+  w.output().documentReview!.faithful = false; w.output().documentReview!.actions = [];
+  w.output().entries[0]!.resolution = "modify"; w.output().entries.splice(3, 1);
+  const first = await w.core.interpret(ticket, w.basis.requirementId); w.core.save(first.capability);
+  const error = (() => { try { w.core.prepareCandidateResave(ticket, { origin: {}, operationId: uuidv7(), intentHash: "not-a-hash", targetHash: "b".repeat(64) }); } catch (caught) { return caught; } })() as UserInteractionError;
+  expect(error.code).toBe("candidate_not_resaved");
+  expect(error.advice).toEqual(new UserInteractionError("candidate_not_resaved").advice);
   expect(error.advice.next).not.toBe(VOIDED_NEXT);
 });

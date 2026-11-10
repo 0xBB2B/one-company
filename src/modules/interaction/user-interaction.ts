@@ -18,7 +18,7 @@ import {
   checkInteraction, checkContext, checkProposal, checkInterpretation, interpreterView, parseInteraction,
 } from "../requirement/user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "../requirement/user-interaction-format.ts";
-import { ApprovalUnitIds, ApprovalPartition } from "../requirement/user-interaction-format.ts";
+import { ApprovalUnitIds, ApprovalPartition, VOIDED_INPUT_NEXT } from "../requirement/user-interaction-format.ts";
 import { adviceOf } from "../../core/exec/tool-failure.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE, recordInteractionResolutionIn, loadInteractionContinuity, assertRetainedEvidenceIn, continuityInputProofIn } from "../requirement/interaction-continuity.ts";
 import { validateDocumentReview, createApprovalManifest, checkApprovalManifest, approvalManifestReference } from "../requirement/approval-manifest.ts";
@@ -59,7 +59,10 @@ const QuestionInput = object({ basis: InteractionBasis, candidate: Type.Union([C
   actions: Type.Array(InteractionAction, { maxItems: 5, uniqueItems: true }), unitIds: Type.Optional(ApprovalUnitIds), partition: Type.Optional(ApprovalPartition) });
 const Input = object({ source: Type.Literal("interactive"), text: Type.String({ minLength: 1 }) });
 const Session = object({ sessionId: Type.String({ minLength: 1, maxLength: 128 }), windowId: Type.String({ minLength: 1, maxLength: 128 }) });
-const VOIDED_INPUT_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户在主窗口重新说一句后再登记";
+function withVoidedAdvice<T extends UserInteractionError | ShortDecisionError>(error: T): T {
+  const advice = { ...error.advice, next: VOIDED_INPUT_NEXT };
+  return (error instanceof ShortDecisionError ? new ShortDecisionError(error.code, advice) : new UserInteractionError(error.code, undefined, advice)) as T;
+}
 const QUESTIONS = "interaction_questions_v1";
 interface ActiveInput {
   ticket: InputTicket; text: string; controller: AbortController; used: boolean; reconsiderations: number;
@@ -230,8 +233,7 @@ export class UserInteractionCore {
       if (this.#input === input) this.clearInput();
       // 本模块与短决定格式的核验错误只含程序生成的原因，错误码与原因原样交给主代理；其余可能带原文、PRD片段或供应商响应正文，只报笼统原因
       const denied = error instanceof UserInteractionError || error instanceof ShortDecisionError ? error : new UserInteractionError("interpretation_denied");
-      const advice = { ...denied.advice, next: VOIDED_INPUT_NEXT };
-      throw denied instanceof ShortDecisionError ? new ShortDecisionError(denied.code, advice) : new UserInteractionError(denied.code, undefined, advice);
+      throw withVoidedAdvice(denied);
     }
   }
   /** 保存前先撤掉行为能力，原输入只留作本次准确重存的重解释材料。 */
@@ -265,14 +267,14 @@ export class UserInteractionCore {
         !a.data.saved || a.data.saved.hash !== r.expected.targetHash || change.after.pmLeaseHash !== change.before.pmLeaseHash ||
         decisionDigest({ ...a.data, saved: b.data.saved, updatedAt: b.data.updatedAt }) !== decisionDigest(b.data)) throw new UserInteractionError("resave_state_mismatch");
       r.change = change;
-    } catch (error) { this.clearInput(); throw error; }
+    } catch (error) { this.clearInput(); throw error instanceof UserInteractionError ? withVoidedAdvice(error) : error; }
   }
   completeCandidateResave(permit: CandidateResavePermit): void {
     const r = this.#resave;
     try {
       if (!r || r.permit !== permit || !r.change || r.completed) throw new UserInteractionError("reconsideration_denied");
       this.#checkResave(r); r.completed = true;
-    } catch (error) { this.clearInput(); throw error; }
+    } catch (error) { this.clearInput(); throw error instanceof UserInteractionError ? withVoidedAdvice(error) : error; }
   }
   cancelCandidateResave(permit: CandidateResavePermit): void { if (this.#resave?.permit === permit) this.clearInput(); }
   #checkResave(r: CandidateResave): void {
@@ -294,7 +296,7 @@ export class UserInteractionCore {
     const r = this.#resave, input = this.#currentInput();
     if (!r || permit !== r.permit || !r.completed || ticket !== input.ticket || r.previous.context.basis.requirementId !== requirementId ||
       r.previous.input !== input || input.reconsiderations >= 3) throw new UserInteractionError("reconsideration_denied");
-    try { this.#checkResave(r); } catch (error) { this.clearInput(); throw error; }
+    try { this.#checkResave(r); } catch (error) { this.clearInput(); throw error instanceof UserInteractionError ? withVoidedAdvice(error) : error; }
     this.#resave = undefined; input.reconsiderations++; input.used = false;
     return this.interpret(ticket, requirementId);
   }
