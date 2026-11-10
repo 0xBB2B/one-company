@@ -14,7 +14,7 @@ import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { UUID_V7_PATTERN, uuidv7, repositoryDatabase, withDatabase } from "../src/core/storage/database.ts";
 import { HostAuthorizationError, HostAuthorizationManager } from "../src/modules/requirement/host-authorization.ts";
 import { MainRequirementInteraction } from "../src/modules/interaction/main-requirement-interaction.ts";
-import { UserInteractionCore } from "../src/modules/interaction/user-interaction.ts";
+import { UserInteractionCore, UserInteractionError } from "../src/modules/interaction/user-interaction.ts";
 import { RequirementOperations } from "../src/modules/requirement/requirement-operations.ts";
 import { prdRequirementPath } from "../src/modules/requirement/prd-storage.ts";
 import { REQUIREMENT_OPERATION_NAMESPACE } from "../src/modules/requirement/requirement-coordination.ts";
@@ -651,6 +651,50 @@ describe("主窗口共享控制器的真实服务路径", () => {
     if (change === "resave") await w.service.updateDraft({ requirementId: next.input.requirementId, version: next.input.version, operationId: uuidv7(), title: "登录", body: BODY + "外部更新。\n" });
     await rejected; await new Promise((r) => setTimeout(r, 510));
     expect(withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"))).toEqual(before);
+  });
+  const VOIDED_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户在主窗口重新说一句后再登记";
+  async function resavedThenConfirm(hook: (w: Awaited<ReturnType<typeof world>>) => void) {
+    const w = await world(), created = await w.create(), first = await w.request(created);
+    scriptReview(w.provider, modifyReview); await w.call({ action: "confirmUpdate", ...first.input });
+    hook(w);
+    scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    const update = { action: "updateDraft", requirementId: first.input.requirementId, version: first.input.version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充邮箱约束。\n" };
+    return { w, first, update };
+  }
+  test("重新保存成功后发现重新保存的状态已被作废：resave_state_mismatch 的建议改为原话已作废", async () => {
+    const spy = vi.spyOn(UserInteractionCore.prototype, "observeCandidateResave").mockImplementation(() => { throw new Error("state_changed_during_save"); });
+    try {
+      const { w, update } = await resavedThenConfirm(() => {});
+      const error = await w.call(update).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: "resave_state_mismatch" });
+      expect((error as Error).message).toContain("原因：重新保存的状态已变化");
+      expect((error as Error).message).toContain(`建议：${VOIDED_NEXT}`);
+    } finally { spy.mockRestore(); }
+  });
+  test("HostAuthorizationError 的 resave_state_mismatch 建议是原话已作废", () => {
+    const error = new HostAuthorizationError("resave_state_mismatch");
+    expect(error.advice.next).toBe(VOIDED_NEXT);
+    expect(error.advice.why).toBe("重新保存的状态已变化");
+  });
+  test("重新保存完成后、重解读前复核失败：UserInteractionError 建议改为原话已作废", async () => {
+    const original = UserInteractionCore.prototype.reconsiderSavedCandidate;
+    let dataRootOf = "", repoIdOf = "";
+    const spy = vi.spyOn(UserInteractionCore.prototype, "reconsiderSavedCandidate").mockImplementation(function (this: UserInteractionCore, ...args) {
+      withDatabase(repositoryDatabase(dataRootOf, repoIdOf), (db) => {
+        const row = db.read<Record<string, unknown>>("requirements", args[1])!;
+        db.update("requirements", row.id, row.version, { ...row.data, updatedAt: (row.data.updatedAt as number) + 1 });
+      });
+      return original.apply(this, args);
+    });
+    try {
+      const { w, update } = await resavedThenConfirm((world) => { dataRootOf = world.dataRoot; repoIdOf = world.repoId; });
+      const updated = await w.call(update), next = await w.request(updated);
+      scriptReview(w.provider, phoneReview);
+      const error = await w.call({ action: "confirmUpdate", ...next.input }).catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ code: "resave_state_mismatch" });
+      expect((error as Error).message).toContain(`原因：${new UserInteractionError("resave_state_mismatch").advice.why}`);
+      expect((error as Error).message).toContain(`建议：${VOIDED_NEXT}`);
+    } finally { spy.mockRestore(); }
   });
   test("服务层带原因的失败原样交出原因，普通异常只说被拒、不回显原始消息", async () => {
     for (const [thrown, code] of [[new RequirementServiceError("stale_version", "详细说明"), "stale_version"], [new Error("fixture_plain_failure"), "interaction_denied"]] as const) {

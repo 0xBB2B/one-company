@@ -64,7 +64,7 @@ const SHORT_DECISION_ADVICE: Record<string, FailureAdvice> = {
 export class ShortDecisionError extends Error {
   readonly code: string;
   readonly advice: FailureAdvice;
-  constructor(code: string) { super(`短决策操作被拒绝：${code}`); this.name = "ShortDecisionError"; this.code = code; this.advice = adviceIn(SHORT_DECISION_ADVICE, code); }
+  constructor(code: string, advice?: FailureAdvice) { super(`短决策操作被拒绝：${code}`); this.name = "ShortDecisionError"; this.code = code; this.advice = advice ?? adviceIn(SHORT_DECISION_ADVICE, code); }
 }
 
 export function decisionDigest(value: unknown): string {

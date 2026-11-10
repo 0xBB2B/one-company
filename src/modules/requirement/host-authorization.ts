@@ -6,7 +6,7 @@ import { repositoryDatabase, UUID_V7_PATTERN, withDatabase } from "../../core/st
 import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "../../core/storage/database-paths.ts";
 import { checkRequirement } from "./requirement-contracts.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
-import { checkInteraction, PendingQuestion } from "./user-interaction-format.ts";
+import { checkInteraction, PendingQuestion, VOIDED_INPUT_NEXT } from "./user-interaction-format.ts";
 import { checkDecisionRecord, decisionDigest } from "./short-decision-format.ts";
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { approvalManifestReference } from "./approval-manifest.ts";
@@ -67,7 +67,7 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   draft_not_requested: { why: "核验模型的回答格式不对，无法判断用户是否要求这份草稿", next: "重试一次；仍然失败就请用户换一个模型" },
   draft_check_failed: { why: "调用核验模型失败，没有得到核验结果（不是核验不通过）", next: "稍后重试；反复失败就请用户检查模型或网络" },
   draft_interpretation_denied: { why: "核验器认为草稿与用户原话不符", next: "按核验器说明改正草稿中与用户原话不符的部分后重试" },
-  resave_state_mismatch: { why: "重新保存的状态已变化", next: REREAD },
+  resave_state_mismatch: { why: "重新保存的状态已变化", next: VOIDED_INPUT_NEXT },
   item_changed: { why: "事项在用户做决定后已变化", next: "重新读取待裁决事项，请用户按当前情况重新决定" },
   item_not_pending: { why: "这个事项已经不在待处理之列", next: "请用户重新打开面板查看当前事项" },
   prototype_changed: { why: "原型在批准过程中变了", next: "请重新批准" },
