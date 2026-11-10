@@ -11,3 +11,7 @@ export function readProjectTrust(agentDir: string, repositoryRoot: string): Proj
 export function trustProject(agentDir: string, repositoryRoot: string): void {
   new ProjectTrustStore(agentDir).set(repositoryRoot, true);
 }
+
+export function distrustProject(agentDir: string, repositoryRoot: string): void {
+  new ProjectTrustStore(agentDir).set(repositoryRoot, false);
+}
