@@ -201,6 +201,8 @@ export class UserInteractionCore {
       const implement = context.implementAuthorization
         ? interpreted.entries.find((e) => e.kind === "action" && e.basis === "explicit" && e.resolution === "direct" && e.actions.includes("implement")) : undefined;
       if (context.implementAuthorization && !implement) throw new UserInteractionError("implement_not_explicit");
+      if (implement && interpreted.entries.some((e) => e !== implement && (["target", "constraint", "exclusion", "future", "unresolved"].includes(e.kind) ||
+        e.kind === "action" && e.actions.includes("implement")))) throw new UserInteractionError("implement_scope_restricted");
       const only = implement ? undefined : context.adjudication && interpreted.entries.some((e) => e.kind === "adjudication") ? "adjudication" : undefined;
       const kept = implement ? [{ ...implement, actions: ["implement" as const] }] : only ? interpreted.entries.filter((e) => e.kind === only) : interpreted.entries;
       const notRecorded = implement ? interpreted.entries.filter((e) => e !== implement).map((e) => e.conclusion)

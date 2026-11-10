@@ -120,6 +120,7 @@ export const VOIDED_INPUT_NEXT = "这句用户原话已作废，不能直接重�
 const MODEL_CONFIG_VOIDED_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户先检查模型配置或改选模型，再在主窗口重新说一句后登记";
 export const VOIDED_INPUT_NEXT_BY_CODE: Readonly<Record<string, string>> = {
   implement_not_explicit: "这句用户原话已作废，不能直接重试；请用户在主窗口说清楚是否要实施，再用 authorizeImplement 登记",
+  implement_scope_restricted: "这句用户原话已作废，不能直接重试；把原因告诉用户：补授权只能整版授权实施，要缩小范围就先改需求草稿，再请用户连同'实施'一起批准",
   interaction_context_limit: "这句用户原话已作废，重试结果相同；先请用户回答或处理掉已有的问题和待定事项，再请用户在主窗口重新说一句后登记",
   model_auth_unavailable: MODEL_CONFIG_VOIDED_NEXT,
   model_unavailable: MODEL_CONFIG_VOIDED_NEXT,
@@ -177,6 +178,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   implement_action_invalid: { why: "补授权的动作条目不能带候选、问题、引用或取代", next: "去掉这些字段；拿不准用户是否要实施时不要输出动作条目，改列未决条目" },
   implement_context_mismatch: { why: "授权实施的上下文和需求当前已批准的版本对不上", next: "重新读取需求后按最新版本再试" },
   implement_not_explicit: { why: "这句话没有明确说要实施", next: VOIDED_INPUT_NEXT },
+  implement_scope_restricted: { why: "这句话除了授权实施，还带了范围限制或修改，补授权只能整版授权", next: VOIDED_INPUT_NEXT },
   interaction_context_limit: { why: "本需求累积的待答问题、以往决定或原依据太多，发给解释器的材料超出上限", next: "不要重试，重试结果相同；先回答或处理掉已有的问题和待定事项，仍不行就把这段原因告诉用户" },
   interpretation_denied: { why: "解读用户原话时出了意外错误，没有得到解读结果（不是用户的话说得不清楚）", next: VOIDED_INPUT_NEXT },
   invalid_capability: { why: "确认能力无效或已用过", next: "重新读取需求后按最新版本再试" },

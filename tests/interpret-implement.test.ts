@@ -136,12 +136,17 @@ test("实施授权上下文下动作条目带 requestId，报 implement_action_i
   await expect(w.interpret()).rejects.toMatchObject({ code: "implement_action_invalid" });
 });
 
-test("实施授权上下文下出现两条动作条目：只保留第一条明确实施的，另一条的结论进 notRecorded", async () => {
+test("实施授权上下文下出现两条明确实施的动作条目：报 implement_scope_restricted", async () => {
   const w = await world(); w.setOutput(result([entry(), entry({ conclusion: "再次开始实施" })]));
-  const { interpretation, notRecorded } = await w.interpret();
-  expect(interpretation.entries).toHaveLength(1);
-  expect(interpretation.entries[0]!.conclusion).toBe("开始实施");
-  expect(notRecorded).toEqual(["再次开始实施"]);
+  await expect(w.interpret()).rejects.toMatchObject({ code: "implement_scope_restricted" });
+  expect(w.records()).toHaveLength(w.baseline);
+});
+
+test("实施授权上下文下实施动作带一条暂缓的推送动作条目：不算范围限制，登记成功，只保存 1 条决定", async () => {
+  const w = await world(); w.setOutput(result([entry(), entry({ actions: ["push"], resolution: "defer", conclusion: "推送以后再说", scope: "推送" })]));
+  const { capability } = await w.interpret();
+  expect(w.core.save(capability).decisionIds).toHaveLength(1);
+  expect(w.records()).toHaveLength(w.baseline + 1);
 });
 
 test("实施授权上下文下动作条目没有实施（只有分析），报 implement_not_explicit", async () => {
@@ -275,13 +280,52 @@ test("实施授权上下文下动作条目带 references，报 implement_action_
   await expect(w.interpret()).rejects.toMatchObject({ code: "implement_action_invalid" });
 });
 
-test("实施授权上下文下夹带的非动作条目进入 notRecorded，不被保存", async () => {
-  const w = await world(); w.setOutput(result([entry(), entry({ kind: "target", actions: [], conclusion: "顺便增加微信登录", scope: "登录" })]));
-  const { interpretation, capability, notRecorded } = await w.interpret();
-  expect(interpretation.entries).toHaveLength(1);
-  expect(notRecorded).toEqual(["顺便增加微信登录"]);
-  w.core.save(capability);
+const SCOPE_WHY = "这句话除了授权实施，还带了范围限制或修改，补授权只能整版授权";
+const SCOPE_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户：补授权只能整版授权实施，要缩小范围就先改需求草稿，再请用户连同'实施'一起批准";
+const SCOPE_CASES: Array<[string, Partial<InteractionEntry>]> = [
+  ["future", { kind: "future", basis: "proposed", actions: [], conclusion: "账单以后再说", scope: "账单功能" }],
+  ["exclusion", { kind: "exclusion", actions: [], conclusion: "账单这次不做", scope: "账单功能" }],
+  ["unresolved", { kind: "unresolved", basis: "uncertain", resolution: "unclear", actions: [], conclusion: "账单是否实施没说清", scope: "账单功能" }],
+  ["constraint", { kind: "constraint", actions: [], conclusion: "必须保留邮箱登录", scope: "登录" }],
+  ["target 修改", { kind: "target", actions: [], conclusion: "只实施手机号登录", scope: "登录" }],
+];
+for (const [name, extra] of SCOPE_CASES) test(`实施授权上下文下实施动作带一条${name}条目：报 implement_scope_restricted，不保存，原话作废`, async () => {
+  const w = await world(); w.setOutput(result([entry(), entry(extra)]));
+  const ticket = w.capture();
+  const error = await w.core.interpret(ticket, w.requirementId).catch((e: unknown) => e) as { code: string; advice: { why: string; next: string } };
+  expect(error.code).toBe("implement_scope_restricted");
+  expect(error.advice.why).toBe(SCOPE_WHY);
+  expect(error.advice.next).toBe(SCOPE_NEXT);
+  expect(w.records()).toHaveLength(w.baseline);
+  await expect(w.core.interpret(ticket, w.requirementId)).rejects.toThrow();
+});
+
+test("实施授权上下文下实施动作带一条暂缓的实施动作条目：报 implement_scope_restricted", async () => {
+  const w = await world();
+  w.setOutput(result([entry(), entry({ resolution: "defer", conclusion: "账单以后再实施", scope: "账单功能" })]));
+  await expect(w.interpret()).rejects.toMatchObject({ code: "implement_scope_restricted" });
+  expect(w.records()).toHaveLength(w.baseline);
+});
+
+const NOT_RESTRICTIONS: Array<[string, Partial<InteractionEntry>]> = [
+  ["suggestion", { kind: "suggestion", basis: "proposed", actions: [], conclusion: "建议先做手机号", scope: "实施顺序" }],
+  ["ai-choice", { kind: "ai-choice", basis: "proposed", actions: [], conclusion: "短信有效期选5分钟", scope: "技术选择" }],
+  ["delegation", { kind: "delegation", actions: [], conclusion: "细节由代理决定", scope: "实施细节" }],
+];
+for (const [name, extra] of NOT_RESTRICTIONS) test(`实施授权上下文下实施动作带一条${name}条目：不算范围限制，登记成功，只保存实施这一条决定`, async () => {
+  const w = await world(); w.setOutput(result([entry(), entry(extra)]));
+  const { capability } = await w.interpret();
+  expect(w.core.save(capability).decisionIds).toHaveLength(1);
   expect(w.records()).toHaveLength(w.baseline + 1);
+  expect(w.core.authorizeImplement(capability)).not.toBeNull();
+});
+
+test("真实重答循环：实施动作带一条 future 条目，不重答，报 implement_scope_restricted", async () => {
+  const loop = realLoop([result([entry(), entry(SCOPE_CASES[0]![1])]), result([entry()])]);
+  const w = await world({ interpreter: loop.interpreter });
+  await expect(w.interpret()).rejects.toMatchObject({ code: "implement_scope_restricted" });
+  expect(loop.providerCalls()).toBe(1);
+  expect(w.records()).toHaveLength(w.baseline);
 });
 
 test("真实重答循环：首答是带 references 的拿不准实施动作条目，不重答，报 implement_not_explicit", async () => {
@@ -367,4 +411,12 @@ test("解读模型提示词的实施授权段说明未决条目的 actions 为�
   const section = prompt.slice(prompt.indexOf("context.implementAuthorization")).split("\n")[0]!;
   expect(section).toContain("未决条目");
   expect(section).toContain("actions为空");
+});
+
+test("解读模型提示词的实施授权段要求暂缓、排除、未决或修改另列条目且不得省略", async () => {
+  const prompt = await systemPromptOf();
+  const section = prompt.slice(prompt.indexOf("context.implementAuthorization")).split("\n")[0]!;
+  expect(section).not.toContain("只输出一条");
+  expect(section).toContain("另列");
+  expect(section).toContain("不得省略");
 });
