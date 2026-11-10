@@ -8,7 +8,6 @@ import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { agentSwitchOf, readDisabledAgents } from "./agent-settings.ts";
 import { copyExampleFiles, ExampleCopyError, examplesDir, inspectExample, layerTargets, listExamples } from "./spec-examples.ts";
 import type { ExampleInspection, ExampleTargets } from "./spec-examples.ts";
-import { readProjectTrust, trustFilePath, trustProject } from "../../core/host/project-trust.ts";
 import { tilde } from "./settings-page-ui.ts";
 
 export type ExamplesContext = Pick<ExtensionContext, "hasUI" | "cwd" | "ui" | "mode">;
@@ -18,10 +17,6 @@ type LayerKey = "user" | "project";
 const LAYER_NAME: Record<LayerKey, string> = { user: "用户层", project: "项目层" };
 const COPY = "复制", SKIP_COPY = "不复制";
 const CANCELLED = "已取消，没有复制任何文件";
-
-export function layerStatusText(inspection: ExampleInspection | null, unreadable = false): string {
-  return unreadable ? "读不了授信记录" : inspection === null ? "未受信任" : inspection.overall;
-}
 
 const workerFirst = (a: { name: string }, b: { name: string }) => Number(b.name.endsWith("-worker")) - Number(a.name.endsWith("-worker"));
 
@@ -82,10 +77,6 @@ export function copyFailureText(error: ExampleCopyError): string {
 export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
   const agentDir = dirname(dataRoot(process.env));
   const repoRoot = await primaryWorktreeRoot(ctx.cwd);
-  const { trust } = readProjectTrust(agentDir, repoRoot);
-  const trustFile = tilde(trustFilePath(agentDir));
-  const unreadable = trust === "unreadable";
-  const projectDenied = trust === "denied" || unreadable;
   const root = examplesDir();
   const targetsOf: Record<LayerKey, ExampleTargets> = { user: layerTargets("user", { agentDir, repoRoot }), project: layerTargets("project", { agentDir, repoRoot }) };
   const inspect = (example: string, layer: LayerKey) => inspectExample({ examplesDir: root, example, targets: targetsOf[layer] });
@@ -94,21 +85,20 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
   const rows = await Promise.all((await listExamples()).map(async (item) => ({
     ...item,
     user: await inspect(item.name, "user"),
-    project: projectDenied ? null : await inspect(item.name, "project"),
+    project: await inspect(item.name, "project"),
   })));
   const chosen = await chooseWindow(ctx, {
     title: "要用哪套设计规范样例？",
     lines: mutedLines(["选中后再选复制到哪一层；skills 和角色定义一起复制。"]),
-    choices: rows.map((row) => ({ label: row.name, description: `${row.label} · 用户层：${layerStatusText(row.user)} · 项目层：${layerStatusText(row.project, unreadable)}` })),
+    choices: rows.map((row) => ({ label: row.name, description: `${row.label} · 用户层：${row.user.overall} · 项目层：${row.project.overall}` })),
     cancelNote: SKIP_COPY,
   });
   const row = rows.find((item) => item.name === chosen);
   if (!row) return cancelled();
 
-  const userDone = row.user.overall === "已复制", projectDone = row.project?.overall === "已复制";
-  if (userDone && (projectDone || projectDenied)) {
-    ctx.ui.notify(projectDone ? `${row.label}样例在用户层和项目层都已全部复制，和样例一致。`
-      : `${row.label}样例在用户层已全部复制，和样例一致；${unreadable ? "读不了授信记录" : "项目未受信任"}，不能复制到项目层。`);
+  const userDone = row.user.overall === "已复制", projectDone = row.project.overall === "已复制";
+  if (userDone && projectDone) {
+    ctx.ui.notify(`${row.label}样例在用户层和项目层都已全部复制，和样例一致。`);
     return;
   }
   const layerChoice = await chooseWindow(ctx, {
@@ -116,8 +106,7 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
     lines: [],
     choices: [
       { label: LAYER_NAME.user, description: `${tilde(agentDir)}${sep} · 对你的所有项目生效`, ...(userDone ? { disabled: "已全部复制，和样例一致" } : {}) },
-      { label: LAYER_NAME.project, description: `${tilde(repoRoot)}${sep} · 只对这个项目生效${trust === "unset" ? " · 选它会把本项目设为受信任" : ""}`,
-        ...(unreadable ? { disabled: `读不了授信记录 ${trustFile}，改好这个文件后才能复制到项目层` } : projectDenied ? { disabled: "你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust" } : projectDone ? { disabled: "已全部复制，和样例一致" } : {}) },
+      { label: LAYER_NAME.project, description: `${tilde(repoRoot)}${sep} · 只对这个项目生效`, ...(projectDone ? { disabled: "已全部复制，和样例一致" } : {}) },
     ],
     cancelNote: SKIP_COPY,
   });
@@ -127,46 +116,24 @@ export async function openExamplesPage(ctx: ExamplesContext): Promise<void> {
   const targets = targetsOf[layer];
   // 第一个窗口之后可能已有别处写入，按此刻的文件重新判定，避免覆盖
   const inspection = await inspect(row.name, layer);
-  const disabled = readDisabledAgents({ agentDir, repositoryRoot: repoRoot, projectTrusted: trust === "trusted" || layer === "project" });
+  const disabled = readDisabledAgents({ agentDir, repositoryRoot: repoRoot, projectTrusted: true });
   const decision = await chooseWindow(ctx, {
     title: `把 ${row.label}样例复制到${LAYER_NAME[layer]}？`,
-    lines: confirmLines({ inspection, layerDir: dirname(targets.skillsDir), layer, userAgentsDir: targetsOf.user.agentsDir, projectAgentsDir: trust === "trusted" || layer === "project" ? targetsOf.project.agentsDir : null, disabled }),
+    lines: confirmLines({ inspection, layerDir: dirname(targets.skillsDir), layer, userAgentsDir: targetsOf.user.agentsDir, projectAgentsDir: targetsOf.project.agentsDir, disabled }),
     choices: [{ label: COPY }, { label: SKIP_COPY }],
     cancelNote: SKIP_COPY,
   });
   if (decision !== COPY) return cancelled();
-
-  let trustWritten = false;
-  if (layer === "project") {
-    const { trust: current, reason } = readProjectTrust(agentDir, repoRoot);
-    if (current === "unreadable") {
-      ctx.ui.notify(`✗ 复制没有完成：读不了授信记录 ${trustFile}：${reason}`, "error");
-      return;
-    }
-    if (current === "denied") {
-      ctx.ui.notify("✗ 复制没有完成：你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust", "error");
-      return;
-    }
-    if (current === "unset") {
-      try {
-        trustProject(agentDir, repoRoot);
-      } catch (error) {
-        ctx.ui.notify(`✗ 复制没有完成：${(error as Error).message.split("\n")[0]}`, "error");
-        return;
-      }
-      trustWritten = true;
-    }
-  }
 
   let written: string[];
   try {
     written = await copyExampleFiles({ examplesDir: root, example: row.name, targets, inspection });
   } catch (error) {
     if (!(error instanceof ExampleCopyError)) throw error;
-    ctx.ui.notify(copyFailureText(error) + (trustWritten ? "\n  · 已把本项目设为受信任" : ""), "error");
+    ctx.ui.notify(copyFailureText(error), "error");
     return;
   }
 
   const skipped = [...inspection.skills.flatMap((skill) => skill.files), ...inspection.agents].filter((file) => file.state === "changed").map((file) => file.path);
-  ctx.ui.notify(resultText({ label: row.label, layer, written: written.length, skipped }) + (trustWritten ? " · 已把本项目设为受信任" : ""));
+  ctx.ui.notify(resultText({ label: row.label, layer, written: written.length, skipped }));
 }
