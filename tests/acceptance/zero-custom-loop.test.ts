@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { expect, test } from "vitest";
+import { repositoryDatabase, withDatabase } from "../../src/core/storage/database.ts";
+import { readDraftFiles } from "../../src/modules/requirement/prd-storage.ts";
 import { repositoryIdentity, daemonSocketPath } from "../../src/core/storage/identity.ts";
 import { RunStore } from "../../src/modules/agents/run-store.ts";
 import { sessionFilePath } from "../../src/modules/agents/session-records.ts";
@@ -153,8 +155,16 @@ test.skipIf(!config || process.platform !== "darwin")("M9-AC12：安装产物、
     expect(archives.some((name) => name.endsWith(".md"))).toBe(true);
     expectInOrder(archive, ["{#background}", "{#requirements}", "{#features}", "{#implementation}", "\n### 实现记录（关闭时由程序生成）\n", "{#acceptance}", "\n### 验收记录（关闭时由程序生成）\n"]);
     await expectArchiveDelivered({ agentDir, repoId, repo, worktree, archive, archives });
-    expect(host.dialogs.some((dialog) => dialog.title === "把这些改动写入项目规范 AGENTS.md？" && dialog.answer === "写入")).toBe(true);
-    expect(await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null)).toMatch(/大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i);
+    expect(host.dialogs.some((dialog) => dialog.title.startsWith("把这些改动写进需求「") && dialog.title.endsWith("」的草稿？") && dialog.answer === "写进草稿")).toBe(true);
+    expect(await readFile(join(repo, "AGENTS.md"), "utf8").catch(() => null)).toBeNull();
+    const draftDataRoot = join(agentDir, "one-company");
+    const conventionsAnchors = withDatabase(repositoryDatabase(draftDataRoot, repoId), (db) =>
+      db.list<{ kind: string; requirementId: string; fileCommit: string | null }>("line_anchors").map((row) => row.data).filter((record) => record.kind === "conventions" && record.fileCommit !== null));
+    const draftAgents = await Promise.all(conventionsAnchors.map(async (record) => {
+      const files = await readDraftFiles({ dataRoot: draftDataRoot, repoId, requirementId: record.requirementId, commit: record.fileCommit!, authorize: () => true });
+      return files.agents === null ? null : Buffer.from(files.agents).toString("utf8");
+    }));
+    expect(draftAgents.some((agents) => agents !== null && /大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i.test(agents)), JSON.stringify(draftAgents)).toBe(true);
     // worker 遵守规范：交付的源码里导出的常量全是大写字母加下划线
     const sources = (await readdir(join(worktree!, "src"), { recursive: true })).filter((name) => name.endsWith(".ts"));
     const exported = (await Promise.all(sources.map((name) => readFile(join(worktree!, "src", name), "utf8")))).flatMap((text) => [...text.matchAll(/^export const (\w+)/gm)].map((match) => match[1]!));

@@ -3,7 +3,6 @@ import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { writeFileAtomic } from "../../core/storage/store.ts";
 import { DESIGN_SPEC_FILE } from "../requirement/design-spec.ts";
 
 export const CONVENTIONS_FILE = "AGENTS.md";
@@ -12,7 +11,6 @@ export const MAX_CONVENTIONS_BYTES = 16 * 1024;
 
 const CONVENTIONS_ADVICE = {
   too_large: { why: "项目规范内容超出大小上限", next: "精简 AGENTS.md 内容后再提交" },
-  changed_concurrently: { why: "确认期间 AGENTS.md 被别处改动", next: "重新读取仓库根目录的 AGENTS.md，在最新内容上修改后再提交" },
 } as const satisfies Record<string, FailureAdvice>;
 export class ProjectConventionsError extends Error {
   readonly code: keyof typeof CONVENTIONS_ADVICE;
@@ -20,7 +18,7 @@ export class ProjectConventionsError extends Error {
   constructor(code: ProjectConventionsError["code"]) { super(code); this.name = "ProjectConventionsError"; this.code = code; this.advice = CONVENTIONS_ADVICE[code]; }
 }
 
-async function readOptional(path: string): Promise<string | null> {
+export async function readOptional(path: string): Promise<string | null> {
   try { return await readFile(path, "utf8"); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 }
@@ -92,16 +90,16 @@ async function symlinkTarget(file: string): Promise<string | null> {
   } catch { return null; }
 }
 
-const WRITE = "写入", SKIP = "不写入";
-export type ConventionsWindow = ProgramWindow & { choices: WindowChoice[]; otherLabel: string; cancelNote: string };
+const WRITE = "写进草稿", SKIP = "不写";
+export type ConventionsWindow = ProgramWindow & { choices: WindowChoice[]; otherLabel: string; cancelNote: string; escapeHint: string };
 export type ConventionsUpdateResult = { status: "unchanged" | "cancelled" | "written" } | { status: "revise"; feedback: string };
 
-// 写入只凭用户在窗口里选"写入"，模型参数里没有任何字段能代替它
-export async function updateConventions(input: { repositoryRoot: string; content: string;
-  decide: (window: ConventionsWindow) => Promise<WindowAnswer | undefined> }): Promise<ConventionsUpdateResult> {
+// 记进草稿只凭用户在窗口里选"写进草稿"，模型参数里没有任何字段能代替它
+export async function updateConventions(input: { repositoryRoot: string; content: string; requirementTitle: string; draftBase: string | null;
+  writeDraft: (content: string) => Promise<void>; decide: (window: ConventionsWindow) => Promise<WindowAnswer | undefined> }): Promise<ConventionsUpdateResult> {
   if (Buffer.byteLength(input.content, "utf8") > MAX_CONVENTIONS_BYTES) throw new ProjectConventionsError("too_large");
   const file = join(input.repositoryRoot, CONVENTIONS_FILE);
-  const before = await readOptional(file);
+  const before = input.draftBase ?? await readOptional(file);
   if (before === input.content) return { status: "unchanged" };
   const linkTarget = await symlinkTarget(file);
   const lines: WindowLine[] = [
@@ -110,13 +108,12 @@ export async function updateConventions(input: { repositoryRoot: string; content
     ...lineDiff((before ?? "").replace(/\r\n/g, "\n"), input.content.replace(/\r\n/g, "\n")).map((line): WindowLine =>
       ({ text: line, tone: line.startsWith("+ ") ? "added" : line.startsWith("- ") ? "removed" : "muted" })),
     { text: "" },
-    { text: "写入后，此后派出的 PM、worker、reviewer 都按新内容工作。", tone: "muted" },
+    { text: "批准需求后随需求分支写入，此后这个需求派出的 PM、worker、reviewer 都按新内容工作。", tone: "muted" },
   ];
-  const answer = await input.decide({ title: `把这些改动写入项目规范 ${CONVENTIONS_FILE}？`, lines,
-    choices: [{ label: WRITE }, { label: SKIP }], otherLabel: "其他（自己输入修改意见）", cancelNote: SKIP });
+  const answer = await input.decide({ title: `把这些改动写进需求「${input.requirementTitle}」的草稿？`, lines,
+    choices: [{ label: WRITE }, { label: SKIP }], otherLabel: "其他（自己输入修改意见）", cancelNote: SKIP, escapeHint: `Esc ${SKIP}` });
   if (answer?.other) return { status: "revise", feedback: answer.other };
   if (answer?.choices[0] !== WRITE) return { status: "cancelled" };
-  if (await readOptional(file) !== before) throw new ProjectConventionsError("changed_concurrently");
-  await writeFileAtomic(file, input.content, { followSymlink: true });
+  await input.writeDraft(input.content);
   return { status: "written" };
 }

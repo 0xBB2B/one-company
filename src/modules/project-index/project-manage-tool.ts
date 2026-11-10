@@ -3,10 +3,10 @@ import { chooseOrWriteWindow, confirmWindow, mutedLines } from "../../core/host/
 import type { ProgramWindow } from "../../core/host/question-window.ts";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, join, posix, resolve } from "node:path";
-import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { Value } from "typebox/value";
-import { uuidv7 } from "../../core/storage/database.ts";
+import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import { assertDataRootOutsideWorktrees, assertRegularDatabaseFiles } from "../../core/storage/database-paths.ts";
 import { listWorktrees, repositoryIdentity } from "../../core/storage/identity.ts";
 import type { ProjectIndexOperationOptions, ProjectIndexServiceOptions } from "./project-index-service.ts";
@@ -17,7 +17,12 @@ import { backup, ProjectMaintenanceError, recoveryCheck, restore } from "./proje
 import { requestParameters, shapeIssue, unwrapRequest } from "../../core/exec/tool-request.ts";
 import { adviceOf, commandOutputTail, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
-import { MAX_CONVENTIONS_BYTES, ProjectConventionsError, updateConventions } from "../verification/project-conventions.ts";
+import { CONVENTIONS_FILE, MAX_CONVENTIONS_BYTES, ProjectConventionsError, readOptional, updateConventions } from "../verification/project-conventions.ts";
+import { createLineAnchorIn, currentLine, draftLineViewIn, recordLineAnchor } from "../requirement/line-anchors.ts";
+import { claimRequirementWriteIn, releaseDeadRequirementWriteIn, releaseRequirementWriteIn } from "../requirement/requirement-coordination.ts";
+import { commitDraftFiles, readDraftFiles } from "../requirement/prd-storage.ts";
+import { parsePrdDocument } from "../requirement/requirement-identity.ts";
+import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
 
 const REPO_ID_PATTERN = "^[0-9a-f]{64}$";
 const REQUIREMENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -62,6 +67,7 @@ const actionSchemas = {
   "conventions-update": Type.Object({
     action: Type.Literal("conventions-update"),
     repoId: Type.String({ pattern: REPO_ID_PATTERN }),
+    requirementId: Type.String({ pattern: UUID_V7 }),
     content: Type.String({ maxLength: MAX_CONVENTIONS_BYTES }),
   }, { additionalProperties: false }),
   restore: Type.Object({
@@ -84,7 +90,7 @@ type ProjectManageParams =
   | { action: "recovery-check"; repoId: string }
   | { action: "backup"; repoId: string }
   | { action: "restore"; repoId: string; backupOperationId: string; backupManifestHash: string }
-  | { action: "conventions-update"; repoId: string; content: string };
+  | { action: "conventions-update"; repoId: string; requirementId: string; content: string };
 
 export interface ProjectManageHostContext {
   readonly windowId: string;
@@ -108,6 +114,7 @@ export interface CreateProjectManageToolOptions {
   readonly resolveHost: (ctx: ExtensionContext) => Promise<ProjectManageHostContext>;
   readonly currentHost: (ctx: ExtensionContext) => ProjectManageHostContext;
   readonly openService: OpenProjectIndexService;
+  readonly appendEntry: ExtensionAPI["appendEntry"];
 }
 
 export interface ProjectManageToolRuntime {
@@ -133,7 +140,7 @@ const PROJECT_MANAGE_NEXT: Record<ProjectManageToolError["code"], string> = {
   workspace_confirmation_required: "在有界面的主窗口里再做，这个操作要用户确认",
   workspace_failed: "按原因处理；需要改动仓库时请用户介入",
   maintenance_failed: "按原因处理；仍然失败就把原因告诉用户",
-  conventions_confirmation_required: "在有界面的主窗口里再做，写入项目规范要用户在窗口里选择",
+  conventions_confirmation_required: "在有界面的主窗口里再做；提交时要带一个草稿需求的编号，用户在窗口里选「写进草稿」后，新内容记进这个需求的草稿",
   conventions_failed: "按原因处理；仍然失败就把原因告诉用户",
 };
 export class ProjectManageToolError extends Error {
@@ -762,7 +769,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
   const tool: ToolDefinition<typeof publicParameters, Record<string, unknown>> = {
     name: "one_company_project_manage",
     label: "管理项目（索引、工作区、规范）",
-    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requirementId 取自需求工具结果，不要自编；初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认；结果里的 version 是需求的新版本号，后续需求操作要用它。conventions-update 以 content 给出仓库根目录 AGENTS.md 的完整新内容，界面显示与现有文件的差异，用户选「写入」后才写文件，此后派出的子代理按新内容工作；用户输入修改意见时结果为 status=revise。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
+    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requirementId 取自需求工具结果，不要自编；初始化、查看或刷新当前 lifecycle 已接入仓库的本机索引；workspace-prepare/workspace-recycle 为指定需求创建或回收独立分支与 worktree，均需用户在界面确认；结果里的 version 是需求的新版本号，后续需求操作要用它。conventions-update 以 content 给出 AGENTS.md 的完整新内容，要带 requirementId（一个草稿需求），界面显示与现有内容的差异，用户选「写进草稿」后内容记进这个需求的草稿，批准需求、工作区建好后随需求分支写入，此后这个需求派出的子代理按新内容工作；用户输入修改意见时结果为 status=revise。init 可传 preview=true 仅预览；不接受路径、角色、主体、SQL、正文或 Git 命令。输出最多 32KiB/100 项并明确标记截断。",
     promptSnippet: "预览、初始化、查看或刷新当前项目索引；为需求建立或回收独立工作区；更新项目规范 AGENTS.md",
     parameters: publicParameters,
     executionMode: "sequential",
@@ -804,8 +811,42 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
 
         if (params.action === "conventions-update") {
           if (!ctx.hasUI) throw new ProjectManageToolError("conventions_confirmation_required", "更新项目规范需要当前 session 的真实宿主 UI 确认");
+          const db = repositoryDatabase(options.dataRoot, params.repoId);
+          const row = withDatabase(db, (d) => d.read<RequirementRecord>("requirements", params.requirementId));
+          if (!row || row.data.lifecycle !== "draft") return textResult({ action: params.action, status: "blocked", reason: "要先指定一个草稿需求", next: "用需求工具建一个草稿需求，或改用已有草稿需求的编号再提交" });
+          const originalLine = currentLine(ctx.sessionManager)[params.requirementId] ?? [];
+          const originalView = withDatabase(db, (d) => draftLineViewIn(d, row, originalLine));
+          const restored = originalView.restoreFailure !== undefined ? originalView.tip : null;
+          const line = restored ? [...originalLine, restored.anchor] : originalLine;
+          const view = restored ? withDatabase(db, (d) => draftLineViewIn(d, row, line)) : originalView;
+          if (view.fileCommit === null || view.saved === null) return textResult({ action: params.action, status: "blocked", reason: "这个需求还没有保存过正文", next: "先保存一次需求草稿，再提交 conventions-update" });
+          const expectedParent = view.fileCommit;
+          const draftFiles = await readDraftFiles({ dataRoot: options.dataRoot, repoId: params.repoId, requirementId: params.requirementId, commit: expectedParent, authorize: () => true });
+          const onLine = draftFiles.agents === null ? null : Buffer.from(draftFiles.agents).toString("utf8");
+          const compareBase = onLine ?? await readOptional(join(root.path, CONVENTIONS_FILE));
+          const writeDraft = async (content: string): Promise<void> => {
+            const anchor = uuidv7();
+            const owner = { ownerToken: uuidv7(), pid: process.pid };
+            const ref = { repoId: params.repoId, requirementId: params.requirementId };
+            withDatabase(db, (d) => d.transaction(() => {
+              if (d.read<RequirementRecord>("requirements", params.requirementId)?.data.lifecycle !== "draft") {
+                throw new ProjectManageToolError("conventions_failed", "要先指定一个草稿需求：这个需求已经不是草稿了");
+              }
+              releaseDeadRequirementWriteIn(d, ref.repoId, ref.requirementId);
+              claimRequirementWriteIn(d, { ...owner, ...ref, operationId: anchor, acquiredAt: Date.now() }, { allowDeadOriginalOperationRecovery: false });
+            }));
+            try {
+              if (restored) recordLineAnchor(options, { ...ref, anchor: restored.anchor });
+              const { commit } = await commitDraftFiles({ dataRoot: options.dataRoot, ...ref, operationId: anchor, anchor, kind: "conventions", expectedParent,
+                changes: { [CONVENTIONS_FILE]: Buffer.from(content), ...(onLine === null && compareBase !== null ? { "AGENTS.base.md": Buffer.from(compareBase) } : {}) }, authorize: () => true });
+              withDatabase(db, (d) => createLineAnchorIn(d, { ...ref, anchor, kind: "conventions", line, now: Date.now(), fileCommit: commit }));
+              recordLineAnchor(options, { ...ref, anchor });
+            } finally {
+              withDatabase(db, (d) => d.transaction(() => { releaseRequirementWriteIn(d, ref.repoId, ref.requirementId, anchor, owner); }));
+            }
+          };
           try {
-            const result = await updateConventions({ repositoryRoot: root.path, content: params.content,
+            const result = await updateConventions({ repositoryRoot: root.path, content: params.content, requirementTitle: parsePrdDocument(draftFiles.prd, params.requirementId).title, draftBase: compareBase, writeDraft,
               decide: (window) => chooseOrWriteWindow(ctx, window, operation.signal) });
             return textResult({ action: params.action, ...result,
               ...(result.status === "revise" ? { next: "feedback 是用户的修改意见原话；按它改好 AGENTS.md 全文后重新提交 conventions-update" } : {}) });

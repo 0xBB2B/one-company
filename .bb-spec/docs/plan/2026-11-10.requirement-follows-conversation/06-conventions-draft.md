@@ -11,6 +11,8 @@ description: 修改 AGENTS.md 必须跟着一个草稿需求，写进这条对�
 - `conventions-update` 必须带一个草稿需求编号（从需求工具结果里抄来的引用编号），不带或需求不是草稿时被拒，给模型的原因写清"要先指定一个草稿需求"。
 - 用户在窗口选「写进草稿」后，用 02-requirement-file-repo 的 `commitDraftFiles` 把 AGENTS.md 记进这条线上这个需求的文件状态；这条线第一次改 AGENTS.md 时同时存 `AGENTS.base.md`（当时主仓库根目录的内容，没有就不存）。生成一个 conventions 锚点（父 = 线尖），写进对话。
 - 主仓库根目录的 AGENTS.md 字节不变。
+- AGENTS.base.md 存的是窗口弹出时作为对比对象的主仓库根目录内容（用户看到的那份）。确认期间主仓库根目录 AGENTS.md 被别处改动不拦，批准后进需求分支时由 08 三方合并处理。
+- 窗口 Esc 提示行写 `Esc 不写`（用窗口组件的 escapeHint）。
 - 窗口里的改动对比：这条线上草稿里已有 AGENTS.md 时和它比，没有时和主仓库根目录的比。和对比对象相同时返回 unchanged，不弹窗。
 - 窗口文字：
   - 标题：`把这些改动写进需求「<需求标题>」的草稿？`
