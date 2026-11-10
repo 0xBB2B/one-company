@@ -249,6 +249,7 @@ export class InstalledProjectFixture {
       await writeFile(join(path, "source.ts"), "export const initial = 1;\n");
       await this.git(path, ["add", "."]); await this.git(path, ["commit", "-m", "fixture"]);
     }
+    await writeFile(join(agentDir, "trust.json"), JSON.stringify({ [path]: true }));
     const identity = await this.product<typeof import("../../src/core/storage/identity.ts")>("src/core/storage/identity.ts");
     const { repoId, commonDir } = await identity.repositoryIdentity(path);
     const dataRoot = join(agentDir, "one-company");

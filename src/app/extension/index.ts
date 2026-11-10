@@ -15,11 +15,12 @@ import searchExclusionExtension from "../../modules/agents/search-exclusion-exte
 import gitDeliveryExtension from "../../modules/delivery/git-delivery-extension.ts";
 import { prototypeRecordsV8Step, prototypeRecordsV9Step } from "../../modules/requirement/prototype-record-migration.ts";
 import conventionsGuardExtension from "../../modules/verification/conventions-guard-extension.ts";
-import startupTrustExtension from "../../modules/settings/startup-trust-extension.ts";
+import { createTrustGate } from "./trust-gate.ts";
 
 // pi 对目录内每个扩展文件各起一次 jiti 导入、模块实例互不共享；
 // 单一入口用同一个 pi 依次调用各子扩展，才能让 lifecycle 等模块级共享状态在子扩展间保持同一份实例。
-export default function registerExtensions(pi: ExtensionAPI): void {
+export default function registerExtensions(realPi: ExtensionAPI): void {
+  const pi = createTrustGate(realPi);
   lifecycleExtension(pi, { databaseMigrationSteps: [prototypeRecordsV8Step, prototypeRecordsV9Step] });
   projectManageExtension(pi);
   knowledgeQueryExtension(pi);
@@ -35,5 +36,4 @@ export default function registerExtensions(pi: ExtensionAPI): void {
   conventionsGuardExtension(pi);
   gitDeliveryExtension(pi);
   commandsExtension(pi);
-  startupTrustExtension(pi);
 }
