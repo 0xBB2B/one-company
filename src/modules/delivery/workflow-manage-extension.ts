@@ -4,6 +4,7 @@ import type { Static } from "typebox";
 import { Value } from "typebox/value";
 import type { WorkspaceClientsHandle } from "../../core/host/daemon-client.ts";
 import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { windowContext } from "../../core/host/extension-lifecycle.ts";
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
@@ -19,8 +20,18 @@ type Params = Static<typeof MAIN_WORKFLOW_MANAGE_PARAMETERS>;
 
 export interface WorkflowManageContext { clients: WorkspaceClientsHandle }
 
-function result(value: Record<string, unknown>) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} };
+function pickKeys(source: unknown, keys: string[]): Record<string, unknown> {
+  const from = (source ?? {}) as Record<string, unknown>;
+  return Object.fromEntries(keys.filter((key) => from[key] !== undefined).map((key) => [key, from[key]]));
+}
+
+function workflowManageView(action: Params["action"], value: Record<string, unknown>): unknown {
+  if (action === "status") return value;
+  const inner = (value.result ?? {}) as Record<string, unknown>;
+  if (action === "delivery-check") return { result: pickKeys(inner, ["deliverable", "blockers"]) };
+  const view = pickKeys(inner, ["status", "next", "message", "missing", "pending"]);
+  if (inner.archive !== undefined) view.archive = inner.archive === null ? null : pickKeys(inner.archive, ["status", "reason", "next"]);
+  return { result: view };
 }
 
 /** 主会话的 workflow_manage：经守护进程查看状态、交付核对与关闭需求；关闭须以用户决定的 decisionId 作为 receiptId。 */
@@ -38,7 +49,7 @@ export function registerWorkflowManageTool(pi: ExtensionAPI, context: () => Work
       const { repoId, requirementId, ...request } = rawParams as Params;
       const client = context().clients.forRepo(repoId);
       if (!client) throw toolFailure(step, new AdvisedError("foreign_repo", { why: "repoId 不是当前窗口工作区里的仓库", next: "改用当前工作区列出的仓库编号" }));
-      try { return result(await client.call("workflow.manage", { requirementId, request })); }
+      try { const value = await client.call("workflow.manage", { requirementId, request }); return leanToolResult(value, workflowManageView(request.action, value)); }
       catch (error) { throw toolFailure(step, error); }
     },
   });

@@ -11,6 +11,7 @@ import { dataRoot } from "../../core/storage/data-root.ts";
 import { readAgentSettings } from "../settings/agent-settings.ts";
 import type { DeliveryFacts } from "./git-delivery.ts";
 import { AdvisedError, toolFailure } from "../../core/exec/tool-failure.ts";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { shapeIssue } from "../../core/exec/tool-request.ts";
 import { windowContext } from "../../core/host/extension-lifecycle.ts";
 import { chooseWindow, confirmWindow } from "../../core/host/question-window.ts";
@@ -26,8 +27,19 @@ interface CloseStatus {
 }
 export interface GitDeliveryDeps { clients: () => WorkspaceClientsHandle }
 
+function gitDeliverView(value: Record<string, unknown>): Record<string, unknown> {
+  const view: Record<string, unknown> = {};
+  for (const key of ["status", "url", "reason", "next", "target"]) if (value[key] !== undefined) view[key] = value[key];
+  const merge = value.merge as Record<string, unknown> | undefined;
+  if (merge) {
+    view.merge = {};
+    for (const key of ["state", "reason", "next"]) if (merge[key] !== undefined) (view.merge as Record<string, unknown>)[key] = merge[key];
+  }
+  return view;
+}
+
 function result(value: Record<string, unknown>) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} };
+  return leanToolResult(value, gitDeliverView(value));
 }
 
 /** 业务 Git 交付：主窗口始终有交付工具；确认与合并方式都由界面直接问用户。 */

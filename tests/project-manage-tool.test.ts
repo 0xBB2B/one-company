@@ -381,6 +381,44 @@ describe("扫描确认、启动前与结束后核对、有限输出", () => {
     await runtime.shutdown();
   });
 
+  test("init 和 refresh 的 content 只有 status、partial、files、skippedCount、diagnosticCount、truncation，清单和预算只在 details", async () => {
+    const world = await fixture();
+    const workspace = { workspaceId: "d".repeat(64), repoId: world.repoId, root: world.repositoryRoot, branch: "refs/heads/main" };
+    const built = (action: string) => async () => ({
+      action, workspace, head: "a".repeat(40), status: "partial", generation: 4, parsedFiles: 2, reusedFiles: 3, readBytes: 4096, sourceCodepoints: 2048,
+      files: 5, symbols: 8, codeEdges: 2,
+      diagnostics: [{ code: "unsupported_language", path: "a.py" }, { code: "unsupported_language", path: "b.py" }, { code: "unknown", path: "c.json" }],
+      skipped: [{ path: ".env", reason: "sensitive" }, { path: "id_rsa", reason: "sensitive" }],
+      archives: { metadata: [], issues: [] }, budget: budgetResult(),
+    });
+    const runtime = runtimeFor(world, async () => ({ preview: async () => ({}), status: async () => ({}), init: built("init"), refresh: built("refresh") }));
+    const ctx = context("session-main", async () => true);
+    for (const action of ["init", "refresh"]) {
+      const result = await call(runtime, { action, repoId: world.repoId }, ctx);
+      const content = JSON.parse((result.content[0] as { text: string }).text) as Record<string, unknown>;
+      expect(Object.keys(content).sort(), action).toEqual(["diagnosticCount", "files", "partial", "skippedCount", "status", "truncation"]);
+      expect(content, action).toMatchObject({ status: "partial", partial: true, files: 5, skippedCount: 2, diagnosticCount: 3 });
+      expect(result.details, action).toMatchObject({ action, status: "partial", generation: 4, files: 5, budget: budgetResult(),
+        skipped: [{ path: ".env" }, { path: "id_rsa" }], diagnostics: [{ path: "a.py" }, { path: "b.py" }, { path: "c.json" }] });
+    }
+    await runtime.shutdown();
+  });
+
+  test("status 和 init 加 preview 的 content 与 JSON.stringify(details) 逐字相同", async () => {
+    const world = await fixture();
+    const runtime = runtimeFor(world, async () => ({
+      preview: async () => ({ action: "preview", partial: false, databaseCreated: false, skipped: [{ path: ".env", reason: "sensitive" }],
+        archives: { issues: [], metadata: [] }, files: [{ path: "a.ts", kind: "code", language: "ts", size: 1 }], budget: budgetResult() }),
+      init: async () => ({}), refresh: async () => ({}), status: async () => statusResult(world.repoId),
+    }));
+    const ctx = context("session-main", async () => true);
+    for (const request of [{ action: "status", repoId: world.repoId }, { action: "init", repoId: world.repoId, preview: true }]) {
+      const result = await call(runtime, request, ctx);
+      expect((result.content[0] as { text: string }).text, request.action).toBe(JSON.stringify(result.details));
+    }
+    await runtime.shutdown();
+  });
+
   test("真实确认后操作期间切换HEAD分支，结束后核对拒绝返回结果", async () => {
     const world = await fixture();
     const runtime = runtimeFor(world, async () => ({
@@ -743,6 +781,55 @@ describe("operationId 由程序生成：模型不填，中断后的续做由程�
     expect(restored).toMatchObject({ status: "needs_review" });
     expect(restored.operationId).toMatch(UUID_V7_PATTERN);
     expect(restored.operationId).not.toBe(backup.operationId);
+    await w.runtime.shutdown();
+  }, 30000);
+
+  const contentOf = (result: { content: Array<{ text?: string }> }) => JSON.parse(result.content[0]!.text!) as Record<string, unknown>;
+
+  test("workspace-prepare 成功时 content 只有 status、version、branch、path，details 另有 baseCommit、operationId", async () => {
+    const w = await requirementWorld();
+    const result = await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx);
+    const full = details(result);
+    expect(Object.keys(contentOf(result)).sort()).toEqual(["branch", "path", "status", "version"]);
+    expect(contentOf(result)).toEqual({ status: full.status, version: full.version, branch: full.branch, path: full.path });
+    expect(full.version).toEqual(expect.any(Number));
+    expect(full.baseCommit).toEqual(expect.any(String));
+    expect(full.operationId).toMatch(UUID_V7_PATTERN);
+    await w.runtime.shutdown();
+  }, 30000);
+
+  test("workspace-recycle 成功时 content 只有 status、version、branch、path，details 另有 baseCommit、operationId", async () => {
+    const w = await requirementWorld();
+    await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx);
+    await w.close();
+    const result = await call(w.runtime, { action: "workspace-recycle", repoId: w.repoId, requirementId: w.requirementId }, w.ctx);
+    const full = details(result);
+    expect(full.status).toBe("recycled");
+    expect(Object.keys(contentOf(result)).sort()).toEqual(["branch", "path", "status", "version"]);
+    expect(contentOf(result)).toEqual({ status: full.status, version: full.version, branch: full.branch, path: full.path });
+    expect(full.baseCommit).toEqual(expect.any(String));
+    expect(full.operationId).toMatch(UUID_V7_PATTERN);
+    await w.runtime.shutdown();
+  }, 30000);
+
+  test("workspace-recycle 被服务拒绝时 content 正好是 status blocked、reason、next，details 与 content 一致", async () => {
+    const w = await requirementWorld();
+    await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx);
+    const result = await call(w.runtime, { action: "workspace-recycle", repoId: w.repoId, requirementId: w.requirementId }, w.ctx);
+    const content = contentOf(result);
+    expect(Object.keys(content).sort()).toEqual(["next", "reason", "status"]);
+    expect(content.status).toBe("blocked");
+    expect(content.reason).toEqual(expect.any(String));
+    expect(content.next).toEqual(expect.any(String));
+    expect(details(result)).toMatchObject(content);
+    await w.runtime.shutdown();
+  }, 30000);
+
+  test("backup、recovery-check 的 content 与 JSON.stringify(details) 逐字相同", async () => {
+    const w = await requirementWorld();
+    const same = (result: { content: Array<{ text?: string }>; details?: unknown }) => expect(result.content[0]!.text).toBe(JSON.stringify(result.details));
+    same(await call(w.runtime, { action: "backup", repoId: w.repoId }, w.ctx) as never);
+    same(await call(w.runtime, { action: "recovery-check", repoId: w.repoId }, w.ctx) as never);
     await w.runtime.shutdown();
   }, 30000);
 

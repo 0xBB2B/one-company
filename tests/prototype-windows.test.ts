@@ -75,7 +75,7 @@ async function harness(options: Options = {}) {
     for (const handler of listeners.get(event)!) void handler(data);
   };
   const tool = () => (fake.registeredTools() as unknown as Array<{ name: string; parameters: unknown;
-    execute(id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: unknown): Promise<{ content: Array<{ text: string }> }> }>)
+    execute(id: string, params: unknown, signal: AbortSignal | undefined, onUpdate: undefined, ctx: unknown): Promise<{ content: Array<{ text: string }>; details: unknown }> }>)
     .find((candidate) => candidate.name === "one_company_prototype")!;
   const run = (request: Record<string, unknown>, signal?: AbortSignal) => tool().execute("t1", { request }, signal as never, undefined, ctx);
   const outcome = async (request: Record<string, unknown>): Promise<string> => {
@@ -361,11 +361,12 @@ test("remove 动作遇到草稿里没有的名字，直接返回原因，不弹�
   expect(h.called("prototypes.remove")).toEqual([]);
 });
 
-test("designers 动作调用 prototypes.designers 并原样返回", async () => {
-  const designers = { items: [{ name: "prototype", description: "默认原型设计师" }, { name: "brand-designer", description: "按品牌规范出原型" }] };
+test("designers 动作调用 prototypes.designers，content 的每项只有 name、description，details 是守护进程原样返回", async () => {
+  const designers = { items: [{ name: "prototype", description: "默认原型设计师", source: "builtin" }, { name: "brand-designer", description: "按品牌规范出原型", source: "/p/brand.md" }] };
   const h = await harness({ responses: { "prototypes.designers": () => designers } });
-  const text = await h.outcome({ action: "designers", repoId: REPO });
-  expect(JSON.parse(text)).toEqual(designers);
+  const result = await h.run({ action: "designers", repoId: REPO });
+  expect(JSON.parse(result.content[0]!.text)).toEqual({ items: [{ name: "prototype", description: "默认原型设计师" }, { name: "brand-designer", description: "按品牌规范出原型" }] });
+  expect(result.details).toEqual(designers);
   expect(h.called("prototypes.designers")).toEqual([{}]);
 });
 
@@ -377,6 +378,13 @@ test("dispatch 动作带上主窗口当前模型和思考等级调用 prototypes
     model: { provider: "prov", id: "mod" }, thinking: "high" }]);
 });
 
+test("dispatch 动作的 content 与守护进程返回的 JSON 逐字相同", async () => {
+  const dispatched = { runId: "run-3", version: 1 };
+  const h = await harness({ responses: { "prototypes.dispatch": () => dispatched } });
+  const result = await h.run({ action: "dispatch", repoId: REPO, requirementId: REQ, name: "设置页", brief: "出原型", maxTurns: 20 });
+  expect(result.content[0]!.text).toBe(JSON.stringify(dispatched));
+});
+
 test("dispatch 动作没点名设计师时不带 agent", async () => {
   const h = await harness({ responses: { "prototypes.dispatch": () => ({ runId: "run-2", version: 1 }) } });
   await h.outcome({ action: "dispatch", repoId: REPO, requirementId: REQ, name: "设置页", brief: "出原型", maxTurns: 20 });
@@ -384,12 +392,54 @@ test("dispatch 动作没点名设计师时不带 agent", async () => {
   expect(params).toEqual({ requirementId: REQ, name: "设置页", brief: "出原型", maxTurns: 20, model: { provider: "prov", id: "mod" }, thinking: "high" });
 });
 
-test("status 动作调用 prototypes.board 并原样返回", async () => {
-  const board = { inFlight: [{ name: "设置页", version: 2 }], draft: [], approved: [] };
-  const h = await harness({ responses: { "prototypes.board": () => board } });
-  const text = await h.outcome({ action: "status", repoId: REPO, requirementId: REQ });
-  expect(JSON.parse(text)).toEqual(board);
+const SHA = "f".repeat(64);
+const RUN_ID = "01900000-0000-7000-8000-0000000000aa";
+const file = (version: number, note: string, options: string[], picked: { letter: string; name: string } | null) => ({ version, hash: SHA, bytes: 1234, note, options, picked });
+const board = () => ({
+  requirementId: REQ, updatedAt: 1_750_000_000_000,
+  entries: [
+    { name: "设置页", lastVersion: 3,
+      draft: file(1, "草稿说明", ["顶部分栏", "左侧导航"], { letter: "B", name: "左侧导航" }),
+      approved: file(2, "通过说明", ["卡片网格"], null),
+      removed: false,
+      inFlight: { version: 3, runId: RUN_ID, agent: "prototype", status: "awaiting", file: file(3, "在途说明", ["甲", "乙"], null), designBase: SHA, designs: [{ letter: "A", hash: SHA, bytes: 99 }] },
+      lastOpinion: { version: 2, opinion: "导航再窄一点" },
+      lastEnded: { version: 2, reason: "设计师没交稿就结束" } },
+    { name: "旧弹窗", lastVersion: 1, draft: null, approved: null, removed: true,
+      inFlight: { version: 1, runId: RUN_ID, agent: "prototype", status: "designing", file: null, designBase: null, designs: null },
+      lastOpinion: null, lastEnded: null },
+  ],
+});
+const FORBIDDEN_KEYS = ["requirementId", "updatedAt", "hash", "bytes", "runId", "agent", "file"];
+const keysDeep = (value: unknown): string[] => (value && typeof value === "object"
+  ? Object.entries(value).flatMap(([key, inner]) => [key, ...keysDeep(inner)]) : []);
+
+test("status 动作调用 prototypes.board，content 只有 entries 里的保留字段，details 是守护进程原样返回", async () => {
+  const full = board();
+  const h = await harness({ responses: { "prototypes.board": () => full } });
+  const result = await h.run({ action: "status", repoId: REPO, requirementId: REQ });
+  const content = JSON.parse(result.content[0]!.text) as { entries: Array<Record<string, unknown>> };
+  expect(Object.keys(content)).toEqual(["entries"]);
+  for (const key of FORBIDDEN_KEYS) expect(keysDeep(content), key).not.toContain(key);
+  expect(content.entries[0]).toMatchObject({
+    name: "设置页", lastVersion: 3, removed: false,
+    draft: { version: 1, note: "草稿说明", options: ["顶部分栏", "左侧导航"], picked: { letter: "B", name: "左侧导航" } },
+    approved: { version: 2, note: "通过说明", options: ["卡片网格"], picked: null },
+    inFlight: { version: 3, status: "awaiting", note: "在途说明", options: ["甲", "乙"], picked: null },
+    lastOpinion: { version: 2, opinion: "导航再窄一点" },
+  });
+  expect((content.entries[0]!.lastEnded as { reason: string }).reason).toBe("设计师没交稿就结束");
+  expect(content.entries[0]!.inFlight).toEqual({ version: 3, status: "awaiting", note: "在途说明", options: ["甲", "乙"], picked: null });
+  expect(result.details).toEqual(full);
   expect(h.called("prototypes.board")).toEqual([{ requirementId: REQ }]);
+});
+
+test("status 动作里在途版本还没有文件时，inFlight 只有 version、status，不写 note、options、picked", async () => {
+  const h = await harness({ responses: { "prototypes.board": () => board() } });
+  const result = await h.run({ action: "status", repoId: REPO, requirementId: REQ });
+  const content = JSON.parse(result.content[0]!.text) as { entries: Array<Record<string, unknown>> };
+  expect(content.entries[1]).toMatchObject({ name: "旧弹窗", lastVersion: 1, removed: true });
+  expect(content.entries[1]!.inFlight).toEqual({ version: 1, status: "designing" });
 });
 
 test("repoId 不在当前工作区时返回原因，不调用守护进程", async () => {

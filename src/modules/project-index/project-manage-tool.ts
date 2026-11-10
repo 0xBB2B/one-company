@@ -14,6 +14,7 @@ import { DEFAULT_INDEX_LIMITS } from "./project-index-policy.ts";
 import { readGit } from "../../core/exec/git-read.ts";
 import { WorkspaceManageError, WorkspaceManageService } from "../delivery/workspace-manage.ts";
 import { backup, ProjectMaintenanceError, recoveryCheck, restore } from "./project-maintenance.ts";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { requestParameters, shapeIssue, unwrapRequest } from "../../core/exec/tool-request.ts";
 import { adviceOf, commandOutputTail, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
@@ -728,8 +729,16 @@ function sanitizeResult(value: unknown): Record<string, unknown> {
   return fallback;
 }
 
+function projectManageView(value: Record<string, unknown>): Record<string, unknown> {
+  const keep = (keys: string[]) => Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]]));
+  if (value.action === "workspace-prepare" || value.action === "workspace-recycle") return keep(["status", "version", "branch", "path", "reason", "next"]);
+  if (value.action !== "init" && value.action !== "refresh") return value;
+  const count = (list: unknown) => Array.isArray(list) ? list.length : 0;
+  return { ...keep(["status", "partial", "files", "truncation"]), skippedCount: count(value.skipped), diagnosticCount: count(value.diagnostics) };
+}
+
 function textResult(value: Record<string, unknown>) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value };
+  return { ...leanToolResult(value, projectManageView(value)), details: value };
 }
 
 function isCancellation(error: unknown, signal: AbortSignal): boolean {

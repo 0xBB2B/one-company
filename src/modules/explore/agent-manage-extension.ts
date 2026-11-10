@@ -6,6 +6,7 @@ import type { WorkspaceClientsHandle } from "../../core/host/daemon-client.ts";
 import { revokeCapturedInput, windowContext, windowReady } from "../../core/host/extension-lifecycle.ts";
 import { EXPLORE_WEB_QUERY, exploreSource } from "./explore-dispatch.ts";
 import { AdvisedError, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { PM_MESSAGE_MAX_CHARS } from "../../core/host/protocol.ts";
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
@@ -28,8 +29,11 @@ type Params = Static<typeof MAIN_AGENT_MANAGE_PARAMETERS>;
 
 export interface AgentManageContext { clients: WorkspaceClientsHandle }
 
-function result(value: Record<string, unknown>) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: {} };
+function agentManageView(action: Params["action"], value: Record<string, unknown>): unknown {
+  if (action === "dispatch") return { runId: value.runId };
+  if (action !== "status") return value;
+  const run = (value.run ?? {}) as Record<string, unknown>;
+  return { run: Object.fromEntries(["state", "stateReason", "turns", "log"].filter((key) => run[key] !== undefined).map((key) => [key, run[key]])) };
 }
 
 /** 主会话的 agent_manage：经守护进程派出唯一 PM 或 explore、查询或控制运行、向 PM 转述说明；模型与思考等级取派工时主会话的当前值。 */
@@ -49,18 +53,19 @@ export function registerAgentManageTool(pi: ExtensionAPI, context: () => AgentMa
       if (!client) fail("foreign_repo", "repoId 不是当前窗口工作区里的仓库", "改用当前工作区列出的仓库编号");
       const model = ctx.model;
       if (params.action === "dispatch" && !model) fail("model_unavailable", "主会话当前没有选定模型，派出的运行要沿用主会话的模型", "请用户先选定模型再派");
+      const result = (action: Params["action"], value: Record<string, unknown>) => leanToolResult(value, agentManageView(action, value));
       try {
         if (params.action === "dispatch") {
           const selected = { provider: model!.provider, id: model!.id }, thinking = pi.getThinkingLevel();
           if (params.role === "explore") {
-            return result(await client.call("agents.dispatchExplore", { request: { question: params.question, clues: params.clues ?? [],
+            return result(params.action, await client.call("agents.dispatchExplore", { request: { question: params.question, clues: params.clues ?? [],
               source: exploreSource(params) }, maxTurns: params.maxTurns, model: selected, thinking }));
           }
-          return result(await client.call("agents.dispatchPm", { requirementId: params.requirementId, model: selected, thinking }));
+          return result(params.action, await client.call("agents.dispatchPm", { requirementId: params.requirementId, model: selected, thinking }));
         }
-        if (params.action === "message") return result(await client.call("pm.message", { requirementId: params.requirementId, text: params.text }));
+        if (params.action === "message") return result(params.action, await client.call("pm.message", { requirementId: params.requirementId, text: params.text }));
         const method = params.action === "status" ? "runs.get" : `runs.${params.action}`;
-        return result(await client.call(method, { runId: params.runId }));
+        return result(params.action, await client.call(method, { runId: params.runId }));
       } catch (error) { throw toolFailure(step, error); }
     },
   });
