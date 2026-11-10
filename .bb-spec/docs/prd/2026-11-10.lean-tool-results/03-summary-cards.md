@@ -45,7 +45,7 @@ date: 2026-11-10
 
 ## 约束
 
-1. 主窗口里所有 one_company 工具（requirement_manage、user_interact、agent_manage、prototype、workflow_manage、git_deliver、project_manage、knowledge_query）的卡片，以及检索结果卡片，都按本节显示。pi 自带工具的卡片不变。「提问」卡片（user_interact 的 ask、ask-tech）保持现在的样子。
+1. 主窗口里所有 one_company 工具（requirement_manage、user_interact、agent_manage、prototype、workflow_manage、git_deliver、project_manage、knowledge_query）的卡片，以及检索结果卡片，都按本节显示。pi 自带工具的卡片不变。「提问」卡片（user_interact 的 ask、ask-tech，含面板事项 panel-item 的提问）保持现在的样子。
 2. 标题行 = 粗体动作名 + 两个空格 + 次要灰（muted）色的对象名。对象名：涉及需求的写需求标题，还没拿到标题时写"需求 <编号前 8 位>"，拿到后换成标题；涉及原型的写原型名；涉及运行的写"编号 <前 8 位>"；初始化索引写仓库目录名；查代码写"搜索「<文字>」"或"<路径或符号>"；检索写问题本身。
 3. 各卡片的动作名和收起时的摘要如下表。摘要里多项信息用次要灰色的"· "隔开；运行编号只写前 8 位。
 
@@ -58,7 +58,7 @@ date: 2026-11-10
 | requirement_manage · metadata | 需求状态 | 草稿 / 已生效 · 第 N 版 · 还有 K 段没确认（K 为 0 时不写这一项） |
 | requirement_manage · confirmUpdate；user_interact · reply | 确认更新 | 需求已生效（成功绿）· 第 N 版；没生效时写 blockedReason |
 | requirement_manage · list | 列出需求 | N 个需求 |
-| user_interact · panel-item、adjudicate、pm-intake 各动作 | 处理事项 / 登记决定 / 接手复核 | 状态和用户的回答或登记结果，一行 |
+| user_interact · adjudicate 的 reply、pm-intake 各动作 | 登记决定 / 接手复核 | 状态和登记结果，一行 |
 | agent_manage · dispatch（explore） | 派出检索 | 已派出 · 编号 xxxxxxxx · 最多 N 轮 |
 | agent_manage · dispatch（pm） | 派出 PM | 已派出 · 编号 xxxxxxxx |
 | agent_manage · 取检索来源 | 检索来源 | 取到 N 条来源 · 搜索词 M 个（本地检索写"读过 M 个文件"） |

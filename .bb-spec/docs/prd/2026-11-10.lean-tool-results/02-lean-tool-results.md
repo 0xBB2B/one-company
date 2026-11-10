@@ -44,7 +44,7 @@ pi 的工具结果分两部分：`content` 发给模型，进上下文；`detail
 ## 约束
 
 1. 主代理和子代理的 one_company 工具成功时，留存部分是完整结果，包含发给模型的所有字段和下表移除的字段。
-2. 发给模型的内容仍是 JSON，字段名和取值与改前相同，只是少了字段。
+2. 发给模型的内容仍是 JSON，保留字段的名字和取值与改前相同；只有 project_manage init、refresh 新加 skippedCount、diagnosticCount 两个数量字段。
 3. 下表"移除"列的字段不在发给模型的内容里，在留存部分里；"保留"列的字段在发给模型的内容里。表里没列的动作，发给模型的内容不变。
 
 **主代理的工具**
@@ -63,11 +63,11 @@ pi 的工具结果分两部分：`content` 发给模型，进上下文；`detail
 | agent_manage · status | run.state、run.stateReason、run.turns、run.log | run 的其余字段（usage、pausedMs、pausedAt、startedAt、updatedAt、endedAt、parentRunId、requirement、kind、id）、delivery |
 | prototype · designers | items 的 name、description | items 的 source |
 | prototype · status | entries 的 name、lastVersion、removed；draft / approved / inFlight 的 version、status、note、options、picked；lastOpinion；lastEnded.reason | requirementId、updatedAt、各版本的 hash、bytes、runId、agent、file 外层 |
-| workflow_manage · close | status、next、message、missing、pending | operationId、reason、archive |
+| workflow_manage · close | status、next、message、missing、pending、archive 的 status / reason / next | operationId、reason、archive 的 path |
 | workflow_manage · delivery-check | deliverable、blockers | receiptId、各种哈希、codeHead、epoch、verificationIds、verdictIds |
-| git_deliver | status、url、reason、next | 其余字段 |
+| git_deliver | status、url、reason、next、target、merge 的 state / reason / next | head、provider、reused、rebasedAfterAcceptance、method、merge 的 method |
 | project_manage · workspace-prepare、recycle | status、version、branch、path | baseCommit、operationId |
-| project_manage · init、refresh | status、partial、files（数量）、skipped 的数量、diagnostics 的数量、truncation | skipped 清单、diagnostics 清单、budget、archives、generation、parsedFiles、symbols 等其余字段 |
+| project_manage · init、refresh | status、partial、files（数量）、skippedCount（skipped 清单的条数）、diagnosticCount（diagnostics 清单的条数）、truncation | skipped 清单、diagnostics 清单、budget、archives、generation、parsedFiles、symbols 等其余字段 |
 
 **子代理的工具**
 
@@ -98,7 +98,7 @@ pi 的工具结果分两部分：`content` 发给模型，进上下文；`detail
 | facts 每一项 | id、kind、complete、source 的 path / startLine / endLine、data 里的正文和名字、路径、行号、符号编号、关系的确定程度 | source 的 fileHash、parserVersion、rangeKind；符号的列号和偏移；文件的 hash、parserVersion；关系的列号和 evidence |
 
 4. 工具失败时，发给模型的报错文字不变（"X 失败。原因：…建议：…"）。
-5. 子代理交结果工具 result_submit 成功时的返回不变。
+5. 子代理交结果工具 result_submit 成功时，发给模型的内容不变。
 6. 分页和大小上限（需求正文每页、知识查询每页和单次结果）的数值不变，计算时只算发给模型的内容。同一份需求正文、同一个知识查询，改后每页发给模型的正文（需求正文的 text、知识查询的 facts 条数）不少于改前。
 7. 程序对工具结果的核对（主代理需求工具和接手复核在结果送达前的核对）照常生效：留存部分或程序内存里的完整结果被改动时，仍然拒绝送达。
 
@@ -108,10 +108,10 @@ pi 的工具结果分两部分：`content` 发给模型，进上下文；`detail
 - [ ] 2：同上，保留字段的名字和取值与改前对同一调用的结果相同。
 - [ ] 1：表里没列的动作（如 requirement_manage list、prototype dispatch、project_manage backup），发给模型的内容与改前相同。
 - [ ] 4：任一工具失败时，发给模型的报错文字与改前逐字相同。
-- [ ] 5：result_submit 成功时返回与改前相同。
+- [ ] 5：result_submit 成功时发给模型的内容与改前相同。
 - [ ] 6：用一份 60 KB 的需求正文分页读，每页发给模型的内容不超过原上限，且每页正文字节数不少于改前；知识查询每页 facts 条数不少于改前，单次结果不超过原上限。
 - [ ] 7：在主代理需求工具和接手复核的结果送达前改动完整结果，送达被拒绝，与改前行为相同。
-- [ ] 真实模型验收：全部单点测试（P1–P21）、零自定义完整流程（M9-AC12）、渐进需求完整流程（M9-AC2/AC3/AC11）通过。
+- [ ] 真实模型验收：全部单点测试（P1–P22）、零自定义完整流程（M9-AC12）、渐进需求完整流程（M9-AC2/AC3/AC11）通过。
 
 ## 验证路径
 

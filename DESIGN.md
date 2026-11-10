@@ -62,9 +62,9 @@ OneCompany 是 pi（终端里的编码代理）的扩展包，所有界面都画
 
 ### 对话卡片（工具调用卡片、自定义消息卡片）
 
-- 写法：工具用 `renderCall` 返回标题行、`renderResult` 返回结果行；自定义消息用 `pi.registerMessageRenderer(<customType>, …)`。都返回 `new Text(<文字>, 0, 0)`，背景由 pi 按状态铺 toolPendingBg / toolSuccessBg / toolErrorBg / customMessageBg。
+- 写法：工具用 `renderCall` 返回标题行、`renderResult` 返回结果行；自定义消息用 `pi.registerMessageRenderer(<customType>, …)`。都返回 `new Text(<文字>, 0, 0)`。工具卡片的背景由 pi 按状态铺 toolPendingBg / toolSuccessBg / toolErrorBg；自定义消息渲染器的背景 pi 不铺，由渲染器自己用 customMessageBg 铺满整块。
 - 标题行：`theme.bold(<卡片名>)` + 两个空格 + `theme.fg("muted", <对象名>)`。现有样例：「提问」卡片 `src/modules/interaction/user-interact-tool.ts:63-64`。
-- 结果行：空一行后写正文；标签用 muted（如"你的回答  "），推荐标记用 success（"（推荐）"）。
+- 结果行：简短卡片的摘要紧接在标题行下面，不空行；「提问」卡片在标题和问题之间空一行。标签用 muted（如"你的回答  "），推荐标记用 success（"（推荐）"）。
 - 失败：结果行只写一行 `theme.fg("error", "<结论>：<原因>")`（现有样例："没有登记：<原因>"，`user-interact-tool.ts:78`）。
 - 收起 / 展开：按 pi 的展开键（`app.tools.expand`）切换；收起时最多 3 行；展开后在摘要下面依次写灰色"调用参数"和排好版的参数 JSON、灰色"完整结果"和排好版的完整结果 JSON。
 - 摘要里多项信息用 muted 色的 `· ` 隔开，如 `已派出  · 编号 01a1bdf1  · 最多 18 轮`；运行编号只写前 8 位。
@@ -134,6 +134,6 @@ OneCompany 是 pi（终端里的编码代理）的扩展包，所有界面都画
 | 更次要的信息 | dim | 浅 #879095 / 深 #7e888e |
 
 - 符号：成功 `✓`，失败 `✗`，暂停 `⏸`，运行中转圈，已停止 `■`，启动中 `○`，进行中的需求 `●`，等用户处理 `⚑`，光标 `▸`，可展开行 `›`，省略 `…`。
-- 间距：卡片内左右不留空（`new Text(…, 0, 0)`）；卡片内标题与正文之间空 1 行；同一行里标签和内容之间空 2 个字符。
+- 间距：卡片内左右不留空（`new Text(…, 0, 0)`）；简短卡片的标题与摘要之间不空行，「提问」卡片的标题与问题之间空 1 行，展开后「调用参数」「完整结果」两段前各空 1 行；同一行里标签和内容之间空 2 个字符。
 - 表格：不画表格线，用树形 `├─`、`└─`、`│ ` 和对齐的空格分列。
 - 进度条：不使用；进度写成文字，如"第 3 轮 / 18 轮"。
