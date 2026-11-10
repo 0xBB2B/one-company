@@ -10,6 +10,7 @@ import { REQUIREMENT_OPERATION_NAMESPACE } from "../requirement/requirement-coor
 import type { RequirementAccessChange, RequirementAccessState } from "../requirement/requirement-state.ts";
 import type { RequirementStoreOptions, StateAuthorizationRequest } from "../requirement/requirement-state.ts";
 import { object, id, counter, checked } from "../requirement/requirement-contracts.ts";
+import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
 import { ShortDecisionStore } from "../requirement/short-decisions.ts";
 import type { DecisionAdmissionRequest } from "../requirement/short-decisions.ts";
 import { DecisionItem, decisionDigest, parseDecisionBatch, checkDecisionRecord, ShortDecisionError } from "../requirement/short-decision-format.ts";
@@ -50,7 +51,7 @@ export interface InteractionAuthorization {
   readonly repoId: string;
   readonly basis: InteractionBasis;
   readonly candidate: CandidateBinding;
-  readonly action: "authorize-document";
+  readonly action: "authorize-document" | "authorize-implement";
   readonly manifest: ApprovalManifestReference;
   readonly receiptId: string;
   readonly scope: string;
@@ -189,16 +190,22 @@ export class UserInteractionCore {
       this.#assertBasis(context.basis);
       if (context.document && decisionDigest(this.#state.read(requirementId).data.saved) !== decisionDigest(context.document.candidate.to)) throw new UserInteractionError("candidate_not_saved");
       this.#checkQuestions(context, true);
-      const inputProof = context.document ? context.inputProof ?? withDatabase(this.#path(), (db) => continuityInputProofIn(db, requirementId)) : undefined;
+      const inputProof = context.document || context.implementAuthorization ? context.inputProof ?? withDatabase(this.#path(), (db) => continuityInputProofIn(db, requirementId)) : undefined;
       for (const old of context.priorDecisions) if (decisionDigest(this.readDecision(requirementId, old.decisionId)) !== decisionDigest(old)) throw new UserInteractionError("decision_changed");
       if (Buffer.byteLength(JSON.stringify({ text: input.text, context: interpreterView(context) })) > 65_536) throw new UserInteractionError("request_limit");
       const source = await this.#options.interpreter.interpret({ text: input.text, context, model, signal: input.controller.signal });
       this.#assertInput(input); this.#assertBasis(context.basis); this.#assertModel(model);
       const interpreted = checkInterpretation(source, context);
       // 裁决入口只登记裁决条目：同一句里夹带的其他内容不能借裁决入口成为已确认的用户决定，原样交回主代理另行处理
-      const adjudicating = Boolean(context.adjudication) && interpreted.entries.some((e) => e.kind === "adjudication");
-      const notRecorded = adjudicating ? interpreted.entries.filter((e) => e.kind !== "adjudication").map((e) => e.conclusion) : [];
-      const result = frozen(adjudicating ? { ...interpreted, entries: interpreted.entries.filter((e) => e.kind === "adjudication") } : interpreted);
+      // 补授权入口同理，其他动作补了也不起作用
+      const implement = context.implementAuthorization
+        ? interpreted.entries.find((e) => e.kind === "action" && e.basis === "explicit" && e.resolution === "direct" && e.actions.includes("implement")) : undefined;
+      if (context.implementAuthorization && !implement) throw new UserInteractionError("implement_not_explicit");
+      const only = implement ? undefined : context.adjudication && interpreted.entries.some((e) => e.kind === "adjudication") ? "adjudication" : undefined;
+      const kept = implement ? [{ ...implement, actions: ["implement" as const] }] : only ? interpreted.entries.filter((e) => e.kind === only) : interpreted.entries;
+      const notRecorded = implement ? interpreted.entries.filter((e) => e !== implement).map((e) => e.conclusion)
+        : only ? interpreted.entries.filter((e) => e.kind !== only).map((e) => e.conclusion) : [];
+      const result = frozen({ ...interpreted, entries: kept });
       if (context.document) {
         validateDocumentReview(context, result);
         for (const [index, entry] of result.entries.entries()) for (const oldId of entry.supersedes) {
@@ -220,7 +227,8 @@ export class UserInteractionCore {
       const batch = parseDecisionBatch(JSON.stringify({ ...context.basis, operationId, decisions: result.entries.map((e) => {
         const candidate = context.candidates.find((c) => c.candidateId === e.candidateId);
         const references = [...new Set([...e.references, ...(e.requestId ? [e.requestId] : []),
-          ...(candidate ? [candidate.candidateId, candidate.intentHash, candidate.to.commit, candidate.to.hash] : [])])];
+          ...(candidate ? [candidate.candidateId, candidate.intentHash, candidate.to.commit, candidate.to.hash] : []),
+          ...(context.implementAuthorization ? [context.implementAuthorization.manifest.candidate.to.commit, context.implementAuthorization.manifest.candidate.to.hash] : [])])];
         return { conclusion: e.conclusion, scope: e.scope, references, supersedes: e.supersedes };
       }) }));
       const admission: DecisionAdmission = { requestHash: decisionDigest({ repoId: this.#options.repoId, batch }),
@@ -469,6 +477,31 @@ export class UserInteractionCore {
       throw error;
     } finally { this.#authorizing = false; }
   }
+  authorizeImplement(capability: InteractionCapability): { receiptId: string; version: number; epoch: number; inputProof: string; decisionId: string } | null {
+    if (this.#authorizing) return null;
+    this.#authorizing = true;
+    try {
+      const v = this.#requireVerified(capability), subject = v.context.implementAuthorization;
+      if (!subject || !v.saved || !v.savedRecords || v.savedRecords.length !== 1 || !v.inputProof) return null;
+      const { basis } = v.context, { version, record } = v.savedRecords[0]!;
+      const request: InteractionAuthorization = frozen({ repoId: this.#options.repoId, basis: structuredClone(basis), candidate: structuredClone(subject.manifest.candidate),
+        action: "authorize-implement", manifest: structuredClone(subject.manifest), receiptId: v.receiptId, scope: "implement-supplement", inputProof: v.inputProof });
+      if (!synchronousPermission(this.#options.authorizeAction?.(request)) || this.#requireVerified(capability) !== v) return null;
+      const unchanged = withDatabase(this.#path(), (db) => db.transaction(() => {
+        this.#assertSavedRevisions(db, v);
+        const state = db.read<RequirementRecord>("requirements", basis.requirementId), stored = db.read("short_decisions", record.decisionId);
+        return state !== null && state.version === basis.version && state.data.epoch === basis.epoch && state.data.recovery === "ready" && state.data.lifecycle === "active" &&
+          decisionDigest(state.data.saved) === decisionDigest(basis.prd) && decisionDigest(state.data.approved) === decisionDigest(basis.prd) &&
+          continuityInputProofIn(db, basis.requirementId) === v.inputProof &&
+          stored?.version === version && record.status !== "superseded" && decisionDigest(stored.data) === decisionDigest(record);
+      }));
+      if (!unchanged || this.#verified !== v || this.#input !== v.input || !this.#session || v.input.controller.signal.aborted) return null;
+      return { receiptId: v.receiptId, version: basis.version, epoch: basis.epoch, inputProof: v.inputProof, decisionId: v.saved.decisionIds[0]! };
+    } catch (error) {
+      if (error instanceof UserInteractionError || error instanceof ShortDecisionError) return null;
+      throw error;
+    } finally { this.#authorizing = false; }
+  }
   #path(): string { return repositoryDatabase(this.#options.dataRoot, this.#options.repoId); }
   #now(): number { return checked(counter, this.#options.now?.() ?? Date.now()); }
   #requireSession(sessionId?: string): void {
@@ -502,7 +535,7 @@ export class UserInteractionCore {
     this.#assertInput(v.input); this.#assertBasis(v.context.basis); this.#assertModel(v.model);
     if (v.saved && !v.savedRecords) this.#captureSavedRecords(v);
     this.#checkQuestions(v.context, !v.saved, v);
-    if (!v.saved && v.context.document && withDatabase(this.#path(), (db) => continuityInputProofIn(db, v.context.basis.requirementId)) !== v.inputProof) throw new UserInteractionError("continuity_changed");
+    if (!v.saved && (v.context.document || v.context.implementAuthorization) && withDatabase(this.#path(), (db) => continuityInputProofIn(db, v.context.basis.requirementId)) !== v.inputProof) throw new UserInteractionError("continuity_changed");
     if (!v.saved) for (const old of v.context.priorDecisions) if (decisionDigest(this.readDecision(v.context.basis.requirementId, old.decisionId)) !== decisionDigest(old)) throw new UserInteractionError("decision_changed");
     this.#assertInput(v.input);
     if (this.#verified !== v) throw new UserInteractionError("input_changed");

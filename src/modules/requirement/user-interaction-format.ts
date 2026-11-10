@@ -3,7 +3,7 @@ import { adviceIn } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { object, positive, counter, PrdReference } from "./requirement-contracts.ts";
+import { object, positive, counter, PrdReference, ApprovalManifestReferenceSchema } from "./requirement-contracts.ts";
 import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 import { DecisionItem, ShortDecisionRecord, checkDecisionRecord, parseDecisionBatch, decisionDigest, SHORT_DECISION_LIMITS } from "./short-decision-format.ts";
 import { parseStrictJson } from "../../core/storage/strict-json.ts";
@@ -73,6 +73,9 @@ export const AdjudicationSubject = object({
   summary: Type.String({ minLength: 1, maxLength: 2000 }),
 });
 export type AdjudicationSubject = Static<typeof AdjudicationSubject>;
+/** 由宿主从需求记录生成，解释器只能据此判断。 */
+export const ImplementAuthorizationSubject = object({ revision: positive, manifest: ApprovalManifestReferenceSchema });
+export type ImplementAuthorizationSubject = Static<typeof ImplementAuthorizationSubject>;
 export const ADJUDICATION_CHOICES = ["retry", "adjust", "keep", "terminate", "cancel", "reject", "accept", "rework"] as const;
 /** 这里看不出任务是否请求拆分，按任务细分的选项在登记生效时再判。 */
 const CHOICES_BY_SUBJECT: Readonly<Record<string, readonly string[]>> = { task: ["retry", "adjust", "keep", "terminate"], requirement: ["cancel", "reject"], report: ["accept", "rework"] };
@@ -91,6 +94,7 @@ export const InteractionContext = object({
   continuityIssues: Type.Optional(Type.Array(ContinuityIssue)),
   revisionSources: Type.Optional(Type.Array(RevisionSource, { maxItems: 20 })),
   adjudication: Type.Optional(AdjudicationSubject),
+  implementAuthorization: Type.Optional(ImplementAuthorizationSubject),
   addressed: Type.Optional(object({ how: enumeration(["mention", "window"]), others: Type.Optional(Type.Integer({ minimum: 0, maximum: 32 })),
     otherDrafts: Type.Optional(Type.Array(object({ title: Type.String(), version: Type.Integer({ minimum: 1 }) }), { minItems: 1, maxItems: 32 })) })),
 });
@@ -115,6 +119,7 @@ export type InteractionInterpretation = Static<typeof InteractionInterpretation>
 export const VOIDED_INPUT_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户在主窗口重新说一句后再登记";
 const MODEL_CONFIG_VOIDED_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户先检查模型配置或改选模型，再在主窗口重新说一句后登记";
 export const VOIDED_INPUT_NEXT_BY_CODE: Readonly<Record<string, string>> = {
+  implement_not_explicit: "这句用户原话已作废，不能直接重试；请用户在主窗口说清楚是否要实施，再用 authorizeImplement 登记",
   interaction_context_limit: "这句用户原话已作废，重试结果相同；先请用户回答或处理掉已有的问题和待定事项，再请用户在主窗口重新说一句后登记",
   model_auth_unavailable: MODEL_CONFIG_VOIDED_NEXT,
   model_unavailable: MODEL_CONFIG_VOIDED_NEXT,
@@ -169,6 +174,9 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   input_changed: { why: "处理期间用户又说了新的话", next: "按用户最新的原话重新处理" },
   input_unavailable: { why: "没有可用的用户原话（还没有，或已被撤销）", next: "等用户在主窗口说出新的一句话后再操作" },
   input_reentry: { why: "同一句用户原话被重复使用", next: "等用户在主窗口说出新的一句话后再操作" },
+  implement_action_invalid: { why: "补授权的动作条目不能带候选、问题、引用或取代", next: "去掉这些字段；拿不准用户是否要实施时不要输出动作条目，改列未决条目" },
+  implement_context_mismatch: { why: "授权实施的上下文和需求当前已批准的版本对不上", next: "重新读取需求后按最新版本再试" },
+  implement_not_explicit: { why: "这句话没有明确说要实施", next: VOIDED_INPUT_NEXT },
   interaction_context_limit: { why: "本需求累积的待答问题、以往决定或原依据太多，发给解释器的材料超出上限", next: "不要重试，重试结果相同；先回答或处理掉已有的问题和待定事项，仍不行就把这段原因告诉用户" },
   interpretation_denied: { why: "解读用户原话时出了意外错误，没有得到解读结果（不是用户的话说得不清楚）", next: VOIDED_INPUT_NEXT },
   invalid_capability: { why: "确认能力无效或已用过", next: "重新读取需求后按最新版本再试" },
@@ -293,6 +301,11 @@ export function checkContext(value: unknown): InteractionContext {
     new Set(context.questions.map((q) => q.requestId)).size !== context.questions.length) throw new UserInteractionError("duplicate_reference");
   if (new Set(context.candidates.map((c) => c.to.hash)).size !== context.candidates.length) throw new UserInteractionError("duplicate_document_candidate");
   for (const c of context.candidates) if (decisionDigest(c.from) !== decisionDigest(context.basis.prd)) throw new UserInteractionError("candidate_baseline_mismatch");
+  if (context.implementAuthorization) {
+    const { manifest } = context.implementAuthorization;
+    if (context.document || context.candidates.length > 0 || context.adjudication || manifest.requirementId !== context.basis.requirementId ||
+      decisionDigest(manifest.candidate.to) !== decisionDigest(context.basis.prd)) throw new UserInteractionError("implement_context_mismatch");
+  }
   if (context.document) {
     const doc = context.document;
     if (context.candidates.length !== 1 || decisionDigest(candidateBinding(context.candidates[0]!)) !== decisionDigest(doc.candidate)) throw new UserInteractionError("document_candidate_mismatch");
@@ -347,6 +360,9 @@ export function checkInterpretation(source: string, context: InteractionContext)
   const result = parseInteraction(InteractionInterpretation, source);
   if (Boolean(result.documentReview) !== Boolean(context.document)) throw new UserInteractionError("document_review_required");
   if (result.referenceResolution === "single-question" && context.questions.length !== 1) throw new UserInteractionError("ambiguous_reference");
+  if (context.implementAuthorization) {
+    for (const entry of result.entries) if (entry.kind === "action" && entry.basis === "explicit" && entry.resolution === "direct") implementActionOf(entry);
+  }
   for (const entry of result.entries) {
     checkProposal({ conclusion: entry.conclusion, scope: entry.scope, references: entry.references, supersedes: entry.supersedes }, context.basis);
     const candidate = context.candidates.find((c) => c.candidateId === entry.candidateId);
@@ -360,8 +376,8 @@ export function checkInterpretation(source: string, context: InteractionContext)
     if (!context.document && result.referenceResolution === "single-question" && ["explicit", "delegated"].includes(entry.basis) &&
       !["modify", "defer", "unclear"].includes(entry.resolution) &&
       (entry.requestId !== context.questions[0]!.requestId || entry.resolution !== "accept")) throw new UserInteractionError("single_question_scope_escape");
-    if (entry.actions.length > 0 && entry.kind !== "action") throw new UserInteractionError("action_kind_required");
-    if (entry.kind === "action" && (entry.actions.length === 0 || !candidate)) throw new UserInteractionError("action_candidate_required");
+    if (entry.actions.length > 0 && entry.kind !== "action" && !context.implementAuthorization) throw new UserInteractionError("action_kind_required");
+    if (entry.kind === "action" && (entry.actions.length === 0 || !candidate && !context.implementAuthorization)) throw new UserInteractionError("action_candidate_required");
     if (entry.basis === "delegated" && entry.kind !== "ai-choice") throw new UserInteractionError("delegation_kind_required");
     if (entry.kind === "ai-choice" && entry.basis !== "delegated" && entry.basis !== "proposed") throw new UserInteractionError("ai_subject_required");
     if (["future", "unresolved", "suggestion"].includes(entry.kind) && !["proposed", "uncertain"].includes(entry.basis)) throw new UserInteractionError("pending_basis_required");
@@ -392,4 +408,8 @@ export function adjudicationOf(entry: InteractionEntry, context: Pick<Interactio
   if (value("item") !== subject.itemId || value("version") !== subject.version || !choice || !CHOICES_BY_SUBJECT[subject.itemId.split(":")[0]!]?.includes(choice) ||
     (choice === "retry") !== (maxTurns !== null) || (choice !== "retry" && turns !== null) || entry.references.length !== expected) throw new UserInteractionError("adjudication_invalid");
   return { itemId: subject.itemId, version: subject.version, choice, maxTurns };
+}
+
+export function implementActionOf(entry: InteractionEntry): void {
+  if (entry.candidateId !== null || entry.requestId !== null || entry.supersedes.length > 0 || entry.references.length > 0) throw new UserInteractionError("implement_action_invalid");
 }
