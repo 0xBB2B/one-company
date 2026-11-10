@@ -5,6 +5,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/pi-ai";
 import { checkExploreSession } from "../src/modules/explore/explore-session.ts";
+import { agentManageTool } from "../src/app/daemon/pm-tools.ts";
+import type { PmToolsInput } from "../src/app/daemon/pm-tools.ts";
+import { readExploreResearch, saveExploreResearch } from "../src/modules/explore/explore-session.ts";
+import { loadRoleRules } from "../src/modules/agents/package-rules.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
 import { registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
@@ -26,6 +31,8 @@ async function world() {
   const exploreRequest = (requests: Context[]) => requests.find((request) => request.systemPrompt?.includes("检索来源：直接读取本地文件"));
   return { ...w, workspace, readme, other, hashOf, submit, exploreRequest };
 }
+const sourcesTool = (w: { fixture: { dataRoot: string; repoId: string }; lease: PmToolsInput["lease"] }) => agentManageTool({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease, alive: () => true, agents: {} } as unknown as PmToolsInput) as unknown as
+  { execute(id: string, params: unknown): Promise<{ content: Array<{ text: string }> }> };
 const text = (request: Context | undefined) => JSON.stringify(request?.messages.at(-1) ?? "");
 
 test("M7-AC15/AC17：PM 派出 explore 只拿到问题、线索与工作区范围，不含 PRD 正文与 PM 会话；结果非阻塞地注入 PM 会话并标明不是 PASS", async () => {
@@ -35,15 +42,14 @@ test("M7-AC15/AC17：PM 派出 explore 只拿到问题、线索与工作区范�
   const dispatched = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
     request: { question: "登录模块在哪里", clues: ["可能在 src/auth"], source: { kind: "local_file" } }, maxTurns: 3 });
   expect(dispatched.maxTurns).toBe(3);
-  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  await until(() => w.provider.requests.some((request) => text(request).includes("sourceCount")));
   const request = w.exploreRequest(w.provider.requests)!;
   expect(request.systemPrompt).toContain("登录模块在哪里");
   expect(request.systemPrompt).toContain(`在 ${w.workspace} 内查看`);
   expect(JSON.stringify(request)).not.toContain("输入正确验证码后成功");
   expect(JSON.stringify(request)).not.toContain("等待核对");
   expect(request.tools?.map((tool) => tool.name).sort()).toEqual(["grep", "one_company_result_submit", "read"]);
-  const report = w.provider.requests.find((entry) => text(entry).includes("explore-report"))!;
-  expect(text(report)).toContain("research 不是 PASS");
+  const report = w.provider.requests.find((entry) => text(entry).includes("sourceCount"))!;
   expect(text(report)).toContain("登录模块在 src/auth");
   const run = await w.runStore.get(dispatched.runId);
   expect(run.ok && run.run).toMatchObject({ role: "one-company.explore", parentRunId: w.pm.runId, state: "completed" });
@@ -158,13 +164,12 @@ test("research 本地来源只写相对路径与行范围时，宿主补成绝�
     conclusions: ["登录模块在 src/auth"], sources: [{ path, startLine: 1, endLine: 1 }], searchedScope: { paths: [path] },
     notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] } } });
   w.provider.queue.push(minimal("../OTHER.md"), minimal("README.md"), { type: "text", text: "PM 收到检索结果" });
-  await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+  const dispatched = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
     request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 3 });
-  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  await until(() => w.provider.requests.some((request) => text(request).includes("sourceCount")));
   expect(w.provider.requests.some((request) => text(request).includes("原因：提交内容的字段不符合格式：字段值格式不符：sources"))).toBe(true);
-  const report = text(w.provider.requests.find((entry) => text(entry).includes("explore-report")));
-  expect(report).toContain(await w.hashOf(w.readme));
-  expect(report).toContain(w.readme);
+  const stored = JSON.parse((await sourcesTool(w).execute("t", { action: "sources", runId: dispatched.runId })).content[0]!.text);
+  expect(stored.sources).toEqual([expect.objectContaining({ path: w.readme, fileHash: await w.hashOf(w.readme) })]);
 });
 
 test("research 的检索范围写带结尾斜杠的目录（如 src/）时，宿主补成绝对路径后能通过核对，不被当成超出范围", async () => {
@@ -172,11 +177,12 @@ test("research 的检索范围写带结尾斜杠的目录（如 src/）时，宿
   w.provider.queue.push({ type: "toolcall", name: "one_company_result_submit", input: { action: "research", result: {
     conclusions: ["说明在 README.md"], sources: [{ path: "README.md", startLine: 1, endLine: 1 }], searchedScope: { paths: ["src/", "README.md"] },
     notFound: [], failures: [], truncation: { truncated: false, reasons: [] }, unknown: [] } } }, { type: "text", text: "PM 收到检索结果" });
-  await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+  const dispatched = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
     request: { question: "说明在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 3 });
-  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  await until(() => w.provider.requests.some((request) => text(request).includes("sourceCount")));
   expect(w.provider.requests.some((request) => text(request).includes("out_of_scope"))).toBe(false);
-  expect(text(w.provider.requests.find((entry) => text(entry).includes("explore-report")))).toContain(`${w.workspace}/src`);
+  const stored = JSON.parse((await sourcesTool(w).execute("t", { action: "sources", runId: dispatched.runId })).content[0]!.text);
+  expect(stored.searchedScope.paths).toContain(`${w.workspace}/src`);
 });
 
 test("M7-AC18：PM 停止（撤权或被接管）时它派出的 explore 随之停止，检索会话失效，迟到结果不能提交", async () => {
@@ -267,7 +273,7 @@ test("explore 定义声明 MCP 服务时按 mcp.json 装载 pi 自带的 MCP，�
     { type: "toolcall", name: "codemode", input: { code: "return (await tools.mcp__docs__search({ q: '登录' })).content[0].text;" } },
     w.submit(w.readme, await w.hashOf(w.readme)), { type: "text", text: "PM 收到" });
   const dispatched = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId }, request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 5 });
-  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  await until(() => w.provider.requests.some((request) => text(request).includes("sourceCount")));
   const request = w.exploreRequest(w.provider.requests)!;
   expect(request.tools?.map((tool) => tool.name)).toEqual(expect.arrayContaining(["codemode", "tool_search"]));
   expect(request.systemPrompt).toContain("已装载 docs");
@@ -283,4 +289,97 @@ test("PM 派检索时运行记录写入派工的轮数上限 maxTurns", async ()
     request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 7 });
   const run = await w.runStore.get(dispatched.runId);
   expect((run as { run: { maxTurns?: number } }).run.maxTurns).toBe(7);
+});
+
+const pmInput = (w: { provider: { requests: Context[] } }, needle: string) => {
+  const request = w.provider.requests.find((entry) => text(entry).includes(needle))!;
+  const content = request.messages.at(-1)!.content as string | Array<{ text?: string }>;
+  return typeof content === "string" ? content : content.map((block) => block.text ?? "").join("");
+};
+
+async function deliveredSummary() {
+  const w = await world();
+  w.provider.queue.push(w.submit(w.readme, await w.hashOf(w.readme)), { type: "text", text: "PM 收到" });
+  const dispatched = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 3 });
+  await until(() => w.provider.requests.some((request) => text(request).includes("sourceCount")));
+  return { w, runId: dispatched.runId, input: pmInput(w, "sourceCount") };
+}
+
+test("PM 收到的检索结果是 10 个键的摘要，来源只给条数，next 是给 PM 的用法说明", async () => {
+  const { runId, input } = await deliveredSummary();
+  const summary = JSON.parse(input);
+  expect(Object.keys(summary).sort()).toEqual(["conclusions", "failures", "next", "notFound", "outcome", "runId", "sourceCount", "truncation", "turnsUsed", "unknown"]);
+  expect(summary).toMatchObject({ runId, outcome: "completed", sourceCount: 1, conclusions: ["登录模块在 src/auth"] });
+  expect(summary.next).toBe("结论要写进计划或任务，或当作回答用户的依据时，先用 one_company_agent_manage action=sources 按 runId 取来源核对；只用来决定下一步再查什么时不用取。");
+});
+
+test("PM 收到的摘要不含来源路径、文件哈希、起止行，也没有 parent、format、searchedScope", async () => {
+  const { w, input } = await deliveredSummary();
+  for (const hidden of [w.readme, await w.hashOf(w.readme), "startLine", "endLine", "fileHash", "searchedScope", "parent", "format"]) expect(input).not.toContain(hidden);
+});
+
+test("PM 按运行编号取来源：返回宿主补全的绝对路径和与实际内容一致的哈希，换一个全新的工具实例结果逐字相同", async () => {
+  const { w, runId } = await deliveredSummary();
+  const first = (await sourcesTool(w).execute("t", { action: "sources", runId })).content[0]!.text;
+  const afterRestart = (await sourcesTool(w).execute("t", { action: "sources", runId })).content[0]!.text;
+  expect(afterRestart).toBe(first);
+  expect(JSON.parse(first)).toEqual({ runId, sources: [{ kind: "local_file", indexBaseline: "not_applicable", path: w.readme, fileHash: await w.hashOf(w.readme), startLine: 1, endLine: 1 }],
+    searchedScope: { kind: "local_file", paths: [w.readme] } });
+});
+
+test("别的需求下派出的检索、从没派出过的编号，PM 取来源都失败并说明本需求没有派出过", async () => {
+  const { w, runId: delivered } = await deliveredSummary();
+  const config = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
+  const foreign = uuidv7();
+  saveExploreResearch(config, foreign, uuidv7(), readExploreResearch(config, delivered)!.research);
+  for (const runId of [foreign, uuidv7()]) {
+    await expect(sourcesTool(w).execute("t", { action: "sources", runId })).rejects.toThrow("原因：本需求没有派出过这个编号的检索");
+  }
+});
+
+test("完整报告写不进本机数据库时，PM 收到的是完整报告，来源照样在里面", async () => {
+  const { w, runId: first } = await deliveredSummary();
+  const config = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
+  w.provider.queue.push(w.submit(w.readme, await w.hashOf(w.readme)), { type: "text", text: "PM 收到" });
+  const dispatched = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 3 });
+  saveExploreResearch(config, dispatched.runId, uuidv7(), readExploreResearch(config, first)!.research);
+  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  const input = pmInput(w, "explore-report");
+  expect(JSON.parse(input)).toMatchObject({ kind: "explore-report", runId: dispatched.runId, outcome: "completed" });
+  expect(input).toContain(w.readme);
+});
+
+test("检索没交结果时 PM 收到守护进程报告原样，research 为 null，按该编号取来源失败", async () => {
+  const w = await world();
+  w.provider.queue.push({ type: "toolcall", name: "read", input: { path: w.other } }, { type: "text", text: "PM 收到到限报告" });
+  const dispatched = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 1 });
+  await until(() => w.provider.requests.some((request) => text(request).includes("turn_limit_reached")));
+  const report = JSON.parse(pmInput(w, "turn_limit_reached"));
+  expect(report).toMatchObject({ kind: "explore-report", runId: dispatched.runId, outcome: "turn_limit_reached", research: null });
+  for (const key of ["reason", "next", "log"]) expect(typeof report[key]).toBe("string");
+  await expect(sourcesTool(w).execute("t", { action: "sources", runId: dispatched.runId })).rejects.toThrow("原因：本需求没有派出过这个编号的检索");
+});
+
+test.each([
+  ["缺 runId", { action: "sources" }],
+  ["runId 不是 UUIDv7", { action: "sources", runId: "not-a-uuid" }],
+  ["多带 taskId", { action: "sources", runId: "0197b7b0-6a20-7c51-8a32-b9465fb72d11", taskId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10" }],
+])("sources 参数不合格（%s）按参数格式失败", async (_name, params) => {
+  const w = await world();
+  await expect(sourcesTool(w).execute("t", params)).rejects.toThrow("参数不符合该动作的格式");
+});
+
+test("PM 会话已结束时 sources 失败并说明会话已结束", async () => {
+  const w = await world();
+  const tool = agentManageTool({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease, alive: () => false, agents: {} } as unknown as PmToolsInput) as unknown as
+    { execute(id: string, params: unknown): Promise<unknown> };
+  await expect(tool.execute("t", { action: "sources", runId: uuidv7() })).rejects.toThrow("本 PM 会话已结束、被停止或已被新 PM 取代");
+});
+
+test("PM 规矩写明要当依据时先按运行编号取来源核对，检索结果写进计划或任务", () => {
+  const rules = loadRoleRules("pm");
+  expect(rules.split("\n")).toContain("- 子代理结果必须由你核对实际证据后整合：结束通知里的验证引用用 one_company_verification_run action=status 逐条查看；检索结果只有结论、没查到、没核实和来源条数，要当依据时先按运行编号取来源核对：结论要写进计划或任务时，先用 one_company_agent_manage action=sources 取来源，只用来决定下一步再查什么时不用取；非阻塞建议不自动变成任务。");
 });

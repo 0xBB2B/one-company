@@ -17,6 +17,8 @@ import type { CoreToolRuntime } from "../../modules/agents/role-tools.ts";
 import { createPlanManageTool, PLAN_MANAGE_PARAMETERS, planManageView } from "../../modules/pm/plan-manage.ts";
 import { createVerificationRunTool, VERIFICATION_RUN_PARAMETERS, verificationRunView } from "../../modules/pm/verification-run.ts";
 import { createWorkflowManageTool, pmWorkflowView, WORKFLOW_MANAGE_PARAMETERS, type WorkflowManageToolOptions } from "../../modules/delivery/workflow-manage.ts";
+import { exploreSourcesView } from "../../modules/explore/explore-report.ts";
+import { readExploreResearch } from "../../modules/explore/explore-session.ts";
 import { EXPLORE_WEB_QUERY, exploreSource } from "../../modules/explore/explore-dispatch.ts";
 import type { ExploreSourceRequest } from "../../modules/explore/explore-dispatch.ts";
 
@@ -47,7 +49,7 @@ export interface PmToolsInput {
 }
 
 const UUID_V7 = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
-const runControl = (action: "status" | "pause" | "resume" | "stop") =>
+const runControl = (action: "status" | "pause" | "resume" | "stop" | "sources") =>
   Type.Object({ action: Type.Literal(action), runId: Type.String({ pattern: UUID_V7 }) }, { additionalProperties: false });
 const PM_ACTION_SHAPES: Partial<Record<CoreAction<"agent_manage">, TSchema[]>> = {
   dispatch: [
@@ -61,6 +63,7 @@ const PM_ACTION_SHAPES: Partial<Record<CoreAction<"agent_manage">, TSchema[]>> =
       clues: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 400 }), { maxItems: 8 })), ...EXPLORE_WEB_QUERY,
       maxTurns: Type.Integer({ minimum: 1, maximum: 100 }) }, { additionalProperties: false }),
   ],
+  sources: [runControl("sources")],
   status: [runControl("status")], pause: [runControl("pause")], resume: [runControl("resume")], stop: [runControl("stop")],
   catalog: [Type.Object({ action: Type.Literal("catalog"), role: Type.Optional(Type.Union(["worker", "reviewer", "qa", "explore"].map((role) => Type.Literal(role)))),
     cursor: Type.Optional(Type.Integer({ minimum: 0, maximum: 10_000 })) }, { additionalProperties: false })],
@@ -144,7 +147,7 @@ export function agentManageTool(input: PmToolsInput): ToolDefinition {
   return {
     name: "one_company_agent_manage",
     label: "agent_manage",
-    description: "dispatch 按已冻结计划中的任务派出子代理，轮次上限取任务登记值；任务首次尝试未完成时可带 retry（原因与新的轮次上限）重试一次，再未完成即等待用户裁决。worker 任务完成后进入待审查，带 review 派一次审查，程序同时派出通用和专项审查（review 给轮次上限），返回本轮启动成功的审查运行编号和启动失败的原因；review 里加 agent 只单独派名单里的这一个（审查没交出结论时用它重试，可调整轮次上限），agent 是名单外的专项审查定义时须再给 reason，临时加进这个任务的审查名单；审查打回后带 rework（原因与新的轮次上限）派 worker 返修一次，再次打回即等待用户裁决。返修后再派审查，通用审查和全部专项审查都重新审一遍。所在目录与执行中、待审查、待返修任务重叠的 worker 任务不能同时派出。dispatch role=explore 派出只读检索（问题、线索与轮次上限；不给 webQuery 时在需求工作区内检索本地文件，给出 webQuery 则联网检索），立即返回运行编号，结果到达后自动注入本会话，可同时派出多个。status/pause/resume/stop 控制本 PM 派出的运行。catalog 按职责分页列出可用角色定义（名称、描述、来源），供在计划任务里用 agent 指定专业定义；用户明确指定的定义不可用或已关闭时，不自行改用其他定义，向用户提问。",
+    description: "dispatch 按已冻结计划中的任务派出子代理，轮次上限取任务登记值；任务首次尝试未完成时可带 retry（原因与新的轮次上限）重试一次，再未完成即等待用户裁决。worker 任务完成后进入待审查，带 review 派一次审查，程序同时派出通用和专项审查（review 给轮次上限），返回本轮启动成功的审查运行编号和启动失败的原因；review 里加 agent 只单独派名单里的这一个（审查没交出结论时用它重试，可调整轮次上限），agent 是名单外的专项审查定义时须再给 reason，临时加进这个任务的审查名单；审查打回后带 rework（原因与新的轮次上限）派 worker 返修一次，再次打回即等待用户裁决。返修后再派审查，通用审查和全部专项审查都重新审一遍。所在目录与执行中、待审查、待返修任务重叠的 worker 任务不能同时派出。dispatch role=explore 派出只读检索（问题、线索与轮次上限；不给 webQuery 时在需求工作区内检索本地文件，给出 webQuery 则联网检索），立即返回运行编号，结果到达后自动注入本会话，可同时派出多个。status/pause/resume/stop 控制本 PM 派出的运行。sources 按运行编号取本需求派出过的检索的全部来源和检索范围。catalog 按职责分页列出可用角色定义（名称、描述、来源），供在计划任务里用 agent 指定专业定义；用户明确指定的定义不可用或已关闭时，不自行改用其他定义，向用户提问。",
     parameters: PM_AGENT_MANAGE_PARAMETERS,
     executionMode: "sequential",
     async execute(_toolCallId, rawParams) {
@@ -158,10 +161,11 @@ export function agentManageTool(input: PmToolsInput): ToolDefinition {
       { why: "原型由主窗口在澄清阶段出，PM 不能派原型设计师", next: "去掉 prototype 参数；需要原型时请主代理在澄清阶段处理" });
     if (!Value.Check(PM_AGENT_MANAGE_PARAMETERS, rawParams)) throw new AdvisedError("invalid_shape",
       { why: "参数不符合该动作的格式（retry、rework、review 三者最多给一个；轮次上限是 1 到 100 的整数）", next: "按工具说明改正字段后重试" });
-    const params = rawParams as { action: "dispatch" | "status" | "pause" | "resume" | "stop" | "catalog"; taskId?: string; runId?: string;
+    const params = rawParams as { action: "dispatch" | "status" | "pause" | "resume" | "stop" | "catalog" | "sources"; taskId?: string; runId?: string;
       retry?: { reason: string; maxTurns: number }; rework?: { reason: string; maxTurns: number }; review?: { maxTurns: number; agent?: string; reason?: string }; role?: string; question?: string; clues?: string[]; webQuery?: string; maxTurns?: number; cursor?: number };
     if (!authorizeToolAction("pm", "agent_manage", params.action)) throw new AdvisedError("action_not_allowed",
       { why: `PM 的职责不允许 agent_manage 的 ${params.action} 动作`, next: "改用 PM 职责内的动作" });
+    if (params.action === "sources") return pmExploreSources(input, params.runId!);
     const result = params.action === "catalog"
       ? await input.agents.catalog(params.role, params.cursor ?? 0)
       : params.action === "dispatch" && params.role === "explore"
@@ -171,6 +175,13 @@ export function agentManageTool(input: PmToolsInput): ToolDefinition {
       : await input.agents.control(params.action as "status" | "pause" | "resume" | "stop", params.runId!);
     return leanToolResult(result, pmAgentManageView(result, params));
   }
+}
+
+function pmExploreSources(input: PmToolsInput, runId: string) {
+  const record = readExploreResearch({ dataRoot: input.dataRoot, repoId: input.repoId }, runId);
+  if (!record || record.requirementId !== input.lease.requirementId) throw new AdvisedError("explore_not_found",
+    { why: "本需求没有派出过这个编号的检索", next: "核对运行编号，用本需求派出检索时返回、检索结果里写的 runId" });
+  return leanToolResult(record, exploreSourcesView(runId, record.research));
 }
 
 function pmAgentManageView(result: unknown, params: { action: string }): unknown {

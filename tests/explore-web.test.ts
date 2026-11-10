@@ -4,6 +4,8 @@ import type { AddressInfo } from "node:net";
 import type { Context } from "@earendil-works/pi-ai";
 import { defaultPageGetter, webFetch, webSearch } from "../src/modules/explore/web-access.ts";
 import type { FetchResponse, WebDeps } from "../src/modules/explore/web-access.ts";
+import { agentManageTool } from "../src/app/daemon/pm-tools.ts";
+import type { PmToolsInput } from "../src/app/daemon/pm-tools.ts";
 import { registerProtocolHandlers } from "../src/app/daemon/run-manager.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 
@@ -50,6 +52,8 @@ test("M7-AC16：搜索先走 Exa 公开 MCP，限流时改用 DuckDuckGo 并记�
   expect(await webFetch(redirecting, "https://example.org/")).toMatchObject({ url: "http://localhost/admin", text: "正文 内容", truncated: false });
 });
 
+const sourcesTool = (w: { fixture: { dataRoot: string; repoId: string }; lease: PmToolsInput["lease"] }) => agentManageTool({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId, lease: w.lease, alive: () => true, agents: {} } as unknown as PmToolsInput) as unknown as
+  { execute(id: string, params: unknown): Promise<{ content: Array<{ text: string }> }> };
 const systemOf = (requests: Context[]) => requests.find((request) => request.systemPrompt?.includes("检索来源：联网搜索"));
 const text = (request: Context | undefined) => JSON.stringify(request?.messages.at(-1) ?? "");
 
@@ -70,15 +74,19 @@ test("M7-AC15/AC16/AC17：PM 派出联网 explore，会话可按需搜索与抓�
     { type: "text", text: "PM 收到联网检索结果" });
   const dispatched = await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
     request: { question: "vitest 如何并行", clues: [], source: { kind: "web", query } }, maxTurns: 6 });
-  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  await until(() => w.provider.requests.some((request) => text(request).includes("sourceCount")));
   const system = systemOf(w.provider.requests)!;
   expect(system.tools?.map((tool) => tool.name).sort()).toEqual(["one_company_result_submit", "web_fetch", "web_search"]);
   expect(JSON.stringify(system)).not.toContain("输入正确验证码后成功");
   expect(net.calls.filter((url) => url.startsWith("https://mcp.exa.ai/")).length).toBe(3);
   expect(fetched).toEqual(["http://wiki.intranet.local/vitest"]);
-  const report = w.provider.requests.find((entry) => text(entry).includes("explore-report"))!;
-  expect(text(report)).toContain("用 pool 配置并行");
-  expect(text(report)).toContain("research 不是 PASS");
+  const report = w.provider.requests.find((entry) => text(entry).includes("sourceCount"))!;
+  const summary = text(report);
+  expect(summary).toContain("用 pool 配置并行");
+  for (const hidden of ["http://wiki.intranet.local/vitest", query, "vitest pool", "pool: 'threads' 控制并行", "searchedScope", "format", "parent"]) expect(summary).not.toContain(hidden);
+  const stored = JSON.parse((await sourcesTool(w).execute("t", { action: "sources", runId: dispatched.runId })).content[0]!.text);
+  expect(stored.sources).toEqual([expect.objectContaining({ kind: "web", url: "http://wiki.intranet.local/vitest", quote: "pool: 'threads' 控制并行" })]);
+  expect(stored.searchedScope).toEqual({ kind: "web", queries: [query, "vitest pool"] });
   const run = await w.runStore.get(dispatched.runId);
   expect(run.ok && run.run).toMatchObject({ role: "one-company.explore", state: "completed" });
 });
@@ -96,7 +104,7 @@ test("explore 会话里 web_search 发给模型的结果带 retrievedAt，供引
     { type: "text", text: "PM 收到联网检索结果" });
   await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
     request: { question: "vitest 如何并行", clues: [], source: { kind: "web", query: "vitest 并行 worker 配置" } }, maxTurns: 6 });
-  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  await until(() => w.provider.requests.some((request) => text(request).includes("sourceCount")));
   const last = w.provider.requests.filter((request) => request.systemPrompt?.includes("检索来源：联网搜索")).at(-1)!;
   const resultText = (name: string) => {
     const message = last.messages.find((entry) => entry.role === "toolResult" && (entry as { toolName: string }).toolName === name) as { content: Array<{ text: string }> };
