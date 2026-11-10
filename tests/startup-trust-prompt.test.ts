@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import startupTrust from "../src/modules/settings/startup-trust-extension.ts";
+import { tilde } from "../src/modules/settings/settings-page-ui.ts";
 import { runGit } from "./helpers/git-run.ts";
 
 const DOWN = "\x1b[B", ENTER = "\r", ESC = "\x1b";
@@ -162,11 +163,13 @@ describe("启动授信弹窗：选择结果", () => {
     expect(r.notices[0]!.message).toBe(LATER_NOTICE);
   });
 
-  test.skipIf(process.getuid?.() === 0)("授信记录所在目录只读时选信任：记录不变，红字提示前面不带 pi 的 Error: 前缀", async () => {
+  test.skipIf(process.getuid?.() === 0)("授信记录文件只读时选信任：记录不变，红字提示前面不带 pi 的 Error: 前缀", async () => {
     await addAgents(5);
-    await chmod(join(root, "agent"), 0o555);
+    await writeFile(trustFile(), "{}");
+    await chmod(trustFile(), 0o444);
     const r = await launch({ keys: [ENTER] });
-    expect(existsSync(trustFile())).toBe(false);
+    expect(r.customCalls()).toBe(1);
+    expect(await readFile(trustFile(), "utf8")).toBe("{}");
     expect(r.notices).toHaveLength(1);
     expect(r.notices[0]!.type).not.toBe("error");
     expect(r.notices[0]!.message).toMatch(/^<error>✗ 没有记下你的选择：[^\n]+<\/>$/u);
@@ -190,6 +193,61 @@ describe("启动授信弹窗：窄终端", () => {
       const lines = r.screen.split("\n");
       expect(lines.length).toBeGreaterThan(3);
       for (const line of lines) expect(visibleWidth(plain(line))).toBeLessThanOrEqual(width);
+    });
+  }
+});
+
+describe("启动授信弹窗：授信记录读不出来", () => {
+  const brokenCases: Array<[string, () => string, RegExp]> = [
+    ["不是合法 JSON", () => '{"a": true,}', /Failed to read trust store/u],
+    ["值不是 true/false/null", () => JSON.stringify({ [repo]: "yes" }), /Invalid trust store/u],
+  ];
+  for (const [name, content, reasonPattern] of brokenCases) {
+    test(`${name}：不弹窗，只给一条红字提示，记录原样不动`, async () => {
+      await addAgents(5);
+      const broken = content();
+      await writeFile(trustFile(), broken);
+      const r = await launch({ keys: [ENTER] });
+      expect(r.customCalls()).toBe(0);
+      expect(r.notices).toHaveLength(1);
+      expect(r.notices[0]!.type).toBeUndefined();
+      const prefix = `<error>✗ 读不了授信记录 ${tilde(trustFile())}：`;
+      const suffix = "；改好这个文件后再启动 pi</>";
+      const message = r.notices[0]!.message;
+      expect(message.startsWith(prefix)).toBe(true);
+      expect(message.endsWith(suffix)).toBe(true);
+      const reason = message.slice(prefix.length, message.length - suffix.length);
+      expect(reason).toMatch(reasonPattern);
+      expect(reason).not.toContain("\n");
+      expect(await readFile(trustFile(), "utf8")).toBe(broken);
+    });
+  }
+
+  test.skipIf(process.getuid?.() === 0)("授信记录所在目录只读：不弹窗，只给一条红字提示，记录仍不存在", async () => {
+    await addAgents(5);
+    await chmod(join(root, "agent"), 0o555);
+    const r = await launch({ keys: [ENTER] });
+    expect(r.customCalls()).toBe(0);
+    expect(r.notices).toHaveLength(1);
+    expect(r.notices[0]!.type).not.toBe("error");
+    expect(r.notices[0]!.message).toMatch(new RegExp(`^<error>✗ 读不了授信记录 ${tilde(trustFile()).replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}：[^\\n]+；改好这个文件后再启动 pi</>$`, "u"));
+    expect(existsSync(trustFile())).toBe(false);
+  });
+
+  const quietCases: Array<[string, () => Promise<Options | void>]> = [
+    ["reason 为 resume", async () => ({ reason: "resume" })],
+    ["项目没有 .pi/agents", async () => { await rm(join(repo, ".pi"), { recursive: true, force: true }); }],
+  ];
+  for (const [name, prepare] of quietCases) {
+    test(`记录写坏且${name}：什么都不做`, async () => {
+      await addAgents(5);
+      const options = (await prepare()) ?? {};
+      const broken = '{"a": true,}';
+      await writeFile(trustFile(), broken);
+      const r = await launch(options);
+      expect(r.customCalls()).toBe(0);
+      expect(r.notices).toEqual([]);
+      expect(await readFile(trustFile(), "utf8")).toBe(broken);
     });
   }
 });

@@ -1,12 +1,12 @@
 import { readdir } from "node:fs/promises";
-import { dirname } from "node:path";
-import { hasTrustRequiringProjectResources } from "@earendil-works/pi-coding-agent";
+import { dirname, join } from "node:path";
+import { ProjectTrustStore, hasTrustRequiringProjectResources } from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { chooseWindow, mutedLines } from "../../core/host/question-window.ts";
 import { dataRoot } from "../../core/storage/data-root.ts";
 import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { projectRoleDir } from "../agents/roles.ts";
-import { distrustProject, readProjectTrust, trustProject } from "./project-trust.ts";
+import { distrustProject, trustProject } from "./project-trust.ts";
 import { tilde } from "./settings-page-ui.ts";
 
 const TRUST = "信任", DISTRUST = "不信任", LATER = "以后再说";
@@ -55,9 +55,16 @@ export default function startupTrustExtension(pi: ExtensionAPI): void {
     if (event.reason !== "startup" || !ctx.hasUI) return;
     const agentDir = dirname(dataRoot(process.env));
     const repoRoot = await primaryWorktreeRoot(ctx.cwd);
-    if (readProjectTrust(agentDir, repoRoot) !== "unset") return;
     const count = await projectDefinitionCount(repoRoot);
     if (count < 1 || hasTrustRequiringProjectResources(ctx.cwd)) return;
+    let recorded: boolean | null;
+    try {
+      recorded = new ProjectTrustStore(agentDir).get(repoRoot);
+    } catch (error) {
+      ctx.ui.notify(ctx.ui.theme.fg("error", `✗ 读不了授信记录 ${tilde(join(agentDir, "trust.json"))}：${(error instanceof Error ? error.message : String(error)).split("\n")[0]}；改好这个文件后再启动 pi`));
+      return;
+    }
+    if (recorded !== null) return;
     await askProjectTrust(ctx, agentDir, repoRoot, count);
   });
 }
