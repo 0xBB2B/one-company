@@ -59,6 +59,9 @@ const EXPECTED_EVENTS = [
   "prototype.finished",
 ];
 
+const LINE_EXAMPLE = ["0197b7b0-6a20-7c51-8a32-b9465fb72d11", "0197b7b0-6a20-7c51-8a32-b9465fb72d12"];
+const ANCHOR_EXAMPLE = "0197b7b0-6a20-7c51-8a32-b9465fb72d13";
+
 const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   hello: {
     authToken: "test-control-token",
@@ -79,14 +82,14 @@ const VALID_EXAMPLES: Record<string, Record<string, unknown>> = {
   "agents.dispatchExplore": { request: { question: "q", clues: [], source: { kind: "local_file" } }, maxTurns: 3, model: { provider: "p", id: "m" }, thinking: "off" },
   "explore.result": { runId: "r" },
   "explore.list": {},
-  "prototypes.dispatch": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页", brief: "手机号登录界面", maxTurns: 10, model: { provider: "p", id: "m" }, thinking: "off" },
+  "prototypes.dispatch": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页", brief: "手机号登录界面", maxTurns: 10, model: { provider: "p", id: "m" }, thinking: "off", line: LINE_EXAMPLE, anchor: ANCHOR_EXAMPLE },
   "prototypes.designers": {},
   "prototypes.list": {},
-  "prototypes.board": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10" },
-  "prototypes.pending": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页" },
-  "prototypes.decide": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页", version: 1, hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", choice: "accept", opinion: null, option: null },
-  "prototypes.remove": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页", version: 1 },
-  "prototypes.removal": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", name: "登录页" },
+  "prototypes.board": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", line: LINE_EXAMPLE },
+  "prototypes.pending": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", line: LINE_EXAMPLE, name: "登录页" },
+  "prototypes.decide": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", line: LINE_EXAMPLE, anchor: ANCHOR_EXAMPLE, name: "登录页", version: 1, hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", choice: "accept", opinion: null, option: null },
+  "prototypes.remove": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", line: LINE_EXAMPLE, anchor: ANCHOR_EXAMPLE, name: "登录页", version: 1 },
+  "prototypes.removal": { requirementId: "0197b7b0-6a20-7c51-8a32-b9465fb72d10", line: LINE_EXAMPLE, name: "登录页" },
   "pm.packet": { requirementId: "req-1", itemId: "task:x" },
   "pm.message": { requirementId: "req-1", text: "先做登录" },
   "workflow.manage": { requirementId: "req-1", request: { action: "status" } },
@@ -120,8 +123,8 @@ test("知识RPC严格拒绝模型身份/SQL/超限及非授权路径，仅接受
 });
 
 describe("协议常量", () => {
-  test("PROTOCOL_VERSION 为 8", () => {
-    expect(PROTOCOL_VERSION).toBe(8);
+  test("PROTOCOL_VERSION 为 9", () => {
+    expect(PROTOCOL_VERSION).toBe(9);
   });
 
   test("prototypes 方法的需求编号不是 UUIDv7 时以 bad_params 拒绝", () => {
@@ -343,6 +346,12 @@ describe("assertProtocolVersion", () => {
     expect(() => assertProtocolVersion(PROTOCOL_VERSION)).not.toThrow();
   });
 
+  test("版本 8 的窗口握手被拒，抛出 protocol_version 并写明期望 9、收到 8", () => {
+    const error = catchError(() => assertProtocolVersion(8));
+    expect(error?.code).toBe("protocol_version");
+    expect(error?.message).toContain("期望 9，收到 8");
+  });
+
   test("版本不一致抛出 protocol_version", () => {
     const error = catchError(() => assertProtocolVersion(PROTOCOL_VERSION + 1));
     expect(error).not.toBeNull();
@@ -436,19 +445,71 @@ describe("validateParams — 字段类型被校验", () => {
 });
 
 test("prototypes.decide 必须带 option 字段，可以为 null 或 A 到 F，其他值被拒", () => {
-  const base = { requirementId: "0192f3a4-7c1e-7b2a-9d4e-5f6a7b8c9d0e", name: "设置页", version: 1, hash: "a".repeat(64), choice: "accept", opinion: null };
+  const base = { requirementId: "0192f3a4-7c1e-7b2a-9d4e-5f6a7b8c9d0e", line: LINE_EXAMPLE, anchor: ANCHOR_EXAMPLE, name: "设置页", version: 1, hash: "a".repeat(64), choice: "accept", opinion: null };
   expect(catchError(() => validateParams("prototypes.decide", base))?.code).toBe("bad_params");
   for (const option of ["G", "a", "AB", ""]) expect(catchError(() => validateParams("prototypes.decide", { ...base, option }))?.code).toBe("bad_params");
   for (const option of [null, "A", "F"]) expect(() => validateParams("prototypes.decide", { ...base, option })).not.toThrow();
 });
 
 test("prototypes.decide 带 note 字段被拒", () => {
-  const base = { requirementId: "0192f3a4-7c1e-7b2a-9d4e-5f6a7b8c9d0e", name: "设置页", version: 1, hash: "a".repeat(64), choice: "accept", opinion: null, option: null };
+  const base = { requirementId: "0192f3a4-7c1e-7b2a-9d4e-5f6a7b8c9d0e", line: LINE_EXAMPLE, anchor: ANCHOR_EXAMPLE, name: "设置页", version: 1, hash: "a".repeat(64), choice: "accept", opinion: null, option: null };
   expect(catchError(() => validateParams("prototypes.decide", { ...base, note: null }))?.code).toBe("bad_params");
 });
 
 test("prototypes.decide 接受 opinion，拒绝已去掉的 rework", () => {
-  const base = { requirementId: "0192f3a4-7c1e-7b2a-9d4e-5f6a7b8c9d0e", name: "设置页", version: 1, hash: "a".repeat(64), option: null, opinion: "改成横向滚动" };
+  const base = { requirementId: "0192f3a4-7c1e-7b2a-9d4e-5f6a7b8c9d0e", line: LINE_EXAMPLE, anchor: ANCHOR_EXAMPLE, name: "设置页", version: 1, hash: "a".repeat(64), option: null, opinion: "改成横向滚动" };
   expect(() => validateParams("prototypes.decide", { ...base, choice: "opinion" })).not.toThrow();
   expect(catchError(() => validateParams("prototypes.decide", { ...base, choice: "rework" }))?.code).toBe("bad_params");
+});
+
+describe("原型请求带对话线和新锚点", () => {
+  const PROTOTYPE_METHODS_WITH_LINE = ["prototypes.dispatch", "prototypes.board", "prototypes.pending", "prototypes.decide", "prototypes.remove", "prototypes.removal"];
+  const PROTOTYPE_METHODS_WITH_ANCHOR = ["prototypes.dispatch", "prototypes.decide", "prototypes.remove"];
+
+  test("缺 line 的原型请求以 bad_params 拒绝并写明字段", () => {
+    for (const method of PROTOTYPE_METHODS_WITH_LINE) {
+      const { line: _line, ...params } = VALID_EXAMPLES[method]!;
+      const error = catchError(() => validateParams(method, params));
+      expect(error?.code, method).toBe("bad_params");
+      expect(error?.message, method).toContain("line");
+    }
+  });
+
+  test("line 为空数组时通过校验：对话线上还没有这个需求的锚点", () => {
+    for (const method of PROTOTYPE_METHODS_WITH_LINE) expect(() => validateParams(method, { ...VALID_EXAMPLES[method]!, line: [] }), method).not.toThrow();
+  });
+
+  test("line 里有不是 UUIDv7 的元素，或 line 不是数组时以 bad_params 拒绝", () => {
+    for (const method of PROTOTYPE_METHODS_WITH_LINE) {
+      expect(catchError(() => validateParams(method, { ...VALID_EXAMPLES[method]!, line: ["anchor-1"] }))?.code, method).toBe("bad_params");
+      expect(catchError(() => validateParams(method, { ...VALID_EXAMPLES[method]!, line: LINE_EXAMPLE[0] }))?.code, method).toBe("bad_params");
+    }
+  });
+
+  test("派出、通过或提意见或放弃、移除缺 anchor 时以 bad_params 拒绝并写明字段", () => {
+    for (const method of PROTOTYPE_METHODS_WITH_ANCHOR) {
+      const { anchor: _anchor, ...params } = VALID_EXAMPLES[method]!;
+      const error = catchError(() => validateParams(method, params));
+      expect(error?.code, method).toBe("bad_params");
+      expect(error?.message, method).toContain("anchor");
+    }
+  });
+
+  test("anchor 不是 UUIDv7 时以 bad_params 拒绝", () => {
+    for (const method of PROTOTYPE_METHODS_WITH_ANCHOR) expect(catchError(() => validateParams(method, { ...VALID_EXAMPLES[method]!, anchor: "a-1" }))?.code, method).toBe("bad_params");
+  });
+
+  test("只读的 board、pending、removal 不收 anchor", () => {
+    for (const method of ["prototypes.board", "prototypes.pending", "prototypes.removal"]) {
+      expect(catchError(() => validateParams(method, { ...VALID_EXAMPLES[method]!, anchor: ANCHOR_EXAMPLE }))?.code, method).toBe("bad_params");
+    }
+  });
+
+  test("upgrade.check 和 upgrade.yield 的参数格式不变：只收 authToken 和 windowId", () => {
+    for (const method of ["upgrade.check", "upgrade.yield"]) {
+      expect(() => validateParams(method, { authToken: "t", windowId: "w" })).not.toThrow();
+      expect(catchError(() => validateParams(method, { authToken: "t" }))?.code, method).toBe("bad_params");
+      expect(catchError(() => validateParams(method, { authToken: "t", windowId: "w", line: LINE_EXAMPLE }))?.code, method).toBe("bad_params");
+    }
+  });
 });

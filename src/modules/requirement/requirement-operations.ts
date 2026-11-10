@@ -214,6 +214,7 @@ export class RequirementOperations {
         if (claim !== null && processIsAlive(claim.data.pid)) throw new RequirementServiceError("requirement_write_busy");
         this.settleAbandoned(db, { ...stored, data: operation });
       }
+      releaseDeadRequirementWriteIn(db, this.repoId, input.requirementId);
       if (readRequirementWriteClaimIn(db, this.repoId, input.requirementId)) {
         throw new RequirementServiceError("requirement_write_pending");
       }

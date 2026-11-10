@@ -7,6 +7,8 @@ import { KnowledgeTransportQuerySchema, parseKnowledgeTransportQuery } from "../
 import { assertKnownMethod, PM_MESSAGE_MAX_CHARS, protocolError } from "../../core/host/protocol.ts";
 import type { METHODS } from "../../core/host/protocol.ts";
 
+const line = Type.Array(id, { maxItems: 4096 });
+
 const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   hello: Type.Object(
     {
@@ -38,14 +40,14 @@ const PARAM_SCHEMAS: Record<(typeof METHODS)[number], TSchema> = {
   "prototypes.dispatch": PrototypeDispatchInput,
   "prototypes.designers": Type.Object({}, { additionalProperties: false }),
   "prototypes.list": Type.Object({}, { additionalProperties: false }),
-  "prototypes.board": Type.Object({ requirementId: id }, { additionalProperties: false }),
-  "prototypes.pending": Type.Object({ requirementId: id, name: Type.String() }, { additionalProperties: false }),
-  "prototypes.decide": Type.Object({ requirementId: id, name: Type.String(), version: positive, hash,
+  "prototypes.board": Type.Object({ requirementId: id, line }, { additionalProperties: false }),
+  "prototypes.pending": Type.Object({ requirementId: id, name: Type.String(), line }, { additionalProperties: false }),
+  "prototypes.decide": Type.Object({ requirementId: id, name: Type.String(), version: positive, hash, line, anchor: id,
     choice: Type.Union([Type.Literal("accept"), Type.Literal("opinion"), Type.Literal("abandon")]),
     opinion: Type.Union([Type.String({ maxLength: 4000 }), Type.Null()]),
     option: Type.Union([Type.String({ pattern: "^[A-F]$" }), Type.Null()]) }, { additionalProperties: false }),
-  "prototypes.remove": Type.Object({ requirementId: id, name: Type.String(), version: positive }, { additionalProperties: false }),
-  "prototypes.removal": Type.Object({ requirementId: id, name: Type.String() }, { additionalProperties: false }),
+  "prototypes.remove": Type.Object({ requirementId: id, name: Type.String(), version: positive, line, anchor: id }, { additionalProperties: false }),
+  "prototypes.removal": Type.Object({ requirementId: id, name: Type.String(), line }, { additionalProperties: false }),
   "pm.packet": Type.Object({ requirementId: Type.String(), itemId: Type.String() }, { additionalProperties: false }),
   "pm.message": Type.Object({ requirementId: Type.String(), text: Type.String({ minLength: 1, maxLength: PM_MESSAGE_MAX_CHARS }) }, { additionalProperties: false }),
   "workflow.manage": Type.Object({ requirementId: Type.String(), request: Type.Object({}, { additionalProperties: true }) }, { additionalProperties: false }),

@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
-import { currentLine, recordLineAnchor, recordSaveStart, startedSaves } from "../src/modules/interaction/conversation-line.ts";
+import { currentLine, recordLineAnchor } from "../src/modules/requirement/line-anchors.ts";
+import { recordSaveStart, startedSaves } from "../src/modules/interaction/conversation-line.ts";
 
 const anchorEntry = (requirementId: string, anchor: string) =>
   ({ type: "custom", customType: "one-company.line-anchor", data: { repoId: "repo", requirementId, anchor } });

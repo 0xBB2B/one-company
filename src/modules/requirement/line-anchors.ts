@@ -1,4 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
+import type { ExtensionAPI, SessionManager } from "@earendil-works/pi-coding-agent";
+import { appendCustomEntry, branchCustomEntries } from "../../core/host/conversation-entries.ts";
 import { uuidv7 } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { checked, LineAnchorMemberRecord, LineAnchorRecord } from "./requirement-contracts.ts";
@@ -6,6 +8,18 @@ import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts
 import { REQUIREMENT_OPERATION_NAMESPACE } from "./requirement-coordination.ts";
 
 export const LINE_ANCHOR_ENTRY = "one-company.line-anchor";
+
+interface LineAnchorEntry { repoId: string; requirementId: string; anchor: string }
+
+export function currentLine(sessionManager: Pick<SessionManager, "getBranch">): Record<string, string[]> {
+  const line: Record<string, string[]> = {};
+  for (const entry of branchCustomEntries<LineAnchorEntry>(sessionManager, LINE_ANCHOR_ENTRY)) (line[entry.requirementId] ??= []).push(entry.anchor);
+  return line;
+}
+
+export function recordLineAnchor(pi: Pick<ExtensionAPI, "appendEntry">, entry: LineAnchorEntry): void {
+  appendCustomEntry(pi, LINE_ANCHOR_ENTRY, entry);
+}
 
 const ANCHORS = "line_anchors";
 const MEMBERS = "line_anchor_members";
@@ -110,7 +124,7 @@ export function draftLineView(
   const rowSaved = row.data.saved;
   const last = line.at(-1);
   const latestSave = latestSaveOf(anchors);
-  const hashOf = (tip: LineAnchorRecord) => tip.fileCommit === null ? undefined : tip.fileCommit === rowSaved?.commit ? rowSaved.hash : hashAt(tip.fileCommit);
+  const hashOf = (commit: string) => commit === rowSaved?.commit ? rowSaved.hash : hashAt(commit);
   let failure = forcedFailure;
   let tip = latestSave;
   if (last !== undefined && !failure) {
@@ -119,9 +133,12 @@ export function draftLineView(
   }
   const restore = failure ? { restoreFailure: failure } : {};
   if (!tip) return { version: row.version, saved: rowSaved, fileCommit: rowSaved?.commit ?? null, tip: null, updatedAt: row.data.updatedAt, ...restore };
-  const commit = tip.fileCommit;
-  const hash = hashOf(tip);
-  return { version: tip.lineVersion, saved: commit !== null && hash !== undefined ? { commit, hash } : null, fileCommit: commit, tip, updatedAt: Math.max(row.data.createdAt, tip.createdAt), ...restore };
+  const byAnchor = new Map(anchors.map((record) => [record.anchor, record]));
+  let save: LineAnchorRecord | null = tip;
+  for (const seen = new Set<string>(); save && save.kind !== "save" && !seen.has(save.anchor); save = save.parent ? byAnchor.get(save.parent) ?? null : null) seen.add(save.anchor);
+  const savedCommit = save?.fileCommit ?? null;
+  const hash = savedCommit === null ? undefined : hashOf(savedCommit);
+  return { version: tip.lineVersion, saved: savedCommit !== null && hash !== undefined ? { commit: savedCommit, hash } : null, fileCommit: tip.fileCommit, tip, updatedAt: Math.max(row.data.createdAt, tip.createdAt), ...restore };
 }
 
 export function draftLineViewIn(

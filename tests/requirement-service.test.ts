@@ -13,13 +13,13 @@ import { RequirementStateStore } from "../src/modules/requirement/requirement-st
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import * as databaseModule from "../src/core/storage/database.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
-import { prdRequirementPath } from "../src/modules/requirement/prd-storage.ts";
+import { prdRequirementPath, readDraftFiles } from "../src/modules/requirement/prd-storage.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { failDatabaseWrites } from "./helpers/database-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { adviceOf } from "../src/core/exec/tool-failure.ts";
 import { readdir } from "node:fs/promises";
-import { beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, readPrototypeBoard, submitDesign } from "../src/modules/requirement/requirement-prototypes.ts";
+import { beginDesign as beginDesignOn, decidePrototype as decidePrototypeOn, draftPrototypes, pendingConfirmation as pendingConfirmationOn, readPrototypeBoard, submitDesign } from "../src/modules/requirement/requirement-prototypes.ts";
 import { prototypesAtRevision } from "../src/modules/requirement/requirement-prototype-revisions.ts";
 import { VALID_DESIGN } from "./helpers/design-sample.ts";
 
@@ -45,6 +45,7 @@ async function world(authorize: RequirementServiceOptions["authorize"] = () => t
     repoId: identity.repoId,
     authorize,
     authorizeManifest: () => true,
+    lines: {},
   };
   const service = await RequirementService.open(options);
   const state = await RequirementStateStore.open({ ...options, authorize: () => true });
@@ -601,20 +602,36 @@ test("SQLite 原始 records/events 不含正文、patch 或正文副本字段", 
 
 const PROTOTYPE_HTML = "<!doctype html><html><body><h1>设置页</h1></body></html>";
 const PAGES = [{ name: "页面", views: [{ name: "正常" }] }];
-const boardRef = (w: Awaited<ReturnType<typeof world>>) => ({ dataRoot: w.options.dataRoot, repoId: w.options.repoId });
+type World = Awaited<ReturnType<typeof world>>;
+const boardRef = (w: World) => ({ dataRoot: w.options.dataRoot, repoId: w.options.repoId });
+
+const lineOn = (w: World, requirementId: string) => (w.options.lines![requirementId] ??= []) as string[];
+async function onLine<T>(w: World, requirementId: string, run: (line: string[], anchor: string) => Promise<T>): Promise<T> {
+  const anchor = uuidv7();
+  const result = await run([...lineOn(w, requirementId)], anchor);
+  lineOn(w, requirementId).push(anchor);
+  return result;
+}
+type Without<T> = Omit<T, "line" | "anchor">;
+const beginDesign = (w: World, input: Without<Parameters<typeof beginDesignOn>[1]>) =>
+  onLine(w, input.requirementId, (line, anchor) => beginDesignOn(boardRef(w), { ...input, line, anchor }));
+const decidePrototype = (w: World, input: Without<Parameters<typeof decidePrototypeOn>[1]>) =>
+  onLine(w, input.requirementId, (line, anchor) => decidePrototypeOn(boardRef(w), { ...input, line, anchor }));
+const pendingConfirmation = (w: World, input: Without<Parameters<typeof pendingConfirmationOn>[1]>) =>
+  pendingConfirmationOn(boardRef(w), { ...input, line: lineOn(w, input.requirementId) });
 
 async function acceptedPrototype(w: Awaited<ReturnType<typeof world>>, requirementId: string, name: string, options?: string[]) {
   const runId = uuidv7();
-  await beginDesign(boardRef(w), { requirementId, name, runId, agent: "designer", designBase: null });
+  await beginDesign(w, { requirementId, name, runId, agent: "designer", designBase: null });
   await submitDesign(boardRef(w), { design: VALID_DESIGN, pages: PAGES, requirementId, name, runId, html: PROTOTYPE_HTML, note: "说明", ...(options ? { options } : {}) });
-  const pending = await pendingConfirmation(boardRef(w), { repositoryRoot: w.options.repositoryRoot, requirementId, name });
-  await decidePrototype(boardRef(w), { repositoryRoot: w.options.repositoryRoot, requirementId, name, version: pending.version, hash: pending.hash, choice: "accept", option: options ? "B" : null, opinion: null });
+  const pending = await pendingConfirmation(w, { repositoryRoot: w.options.repositoryRoot, requirementId, name });
+  await decidePrototype(w, { repositoryRoot: w.options.repositoryRoot, requirementId, name, version: pending.version, hash: pending.hash, choice: "accept", option: options ? "B" : null, opinion: null });
 }
 
 async function prototypeApproval(w: Awaited<ReturnType<typeof world>>) {
   const created = await w.service.create(createInput());
   await acceptedPrototype(w, created.requirementId, "设置页");
-  const { digest } = await draftPrototypes(boardRef(w), created.requirementId);
+  const { digest } = await draftPrototypes(boardRef(w), created.requirementId, lineOn(w, created.requirementId));
   const input = { ...(await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId })), prototypes: digest };
   return { created, input, digest };
 }
@@ -624,13 +641,13 @@ test("带方案清单选定 B 的原型批准后，该版和只改正文的下�
   const created = await w.service.create(createInput());
   await acceptedPrototype(w, created.requirementId, "设置页", ["顶部分栏", "左侧导航"]);
   const picked = { letter: "B", name: "左侧导航" };
-  const { digest } = await draftPrototypes(boardRef(w), created.requirementId);
+  const { digest } = await draftPrototypes(boardRef(w), created.requirementId, lineOn(w, created.requirementId));
   const first = { ...(await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId })), prototypes: digest };
   expect((await w.service.confirmUpdate(first)).revision).toBe(1);
   expect((await prototypesAtRevision(boardRef(w), created.requirementId, 1)).map((item) => item.picked)).toEqual([picked]);
   const updated = await w.service.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(), version: (await w.service.metadata(created.requirementId)).version,
     title: "需求标题", body: "只改正文" });
-  const next = await draftPrototypes(boardRef(w), created.requirementId);
+  const next = await draftPrototypes(boardRef(w), created.requirementId, lineOn(w, created.requirementId));
   const second = { ...(await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: updated.operationId })), prototypes: next.digest };
   expect((await w.service.confirmUpdate(second)).revision).toBe(2);
   expect((await prototypesAtRevision(boardRef(w), created.requirementId, 2)).map((item) => item.picked)).toEqual([picked]);
@@ -652,6 +669,7 @@ test("批准带的原型指纹和草稿不一致时被拒且不留未完成的�
   const updated = await w.service.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(), version: (await w.service.metadata(created.requirementId)).version,
     title: "需求标题", body: "批准被拒后改过的正文" });
   expect(updated.status).toBe("saved");
+  lineOn(w, created.requirementId).push(updated.anchor);
   const next = { ...(await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: updated.operationId })), prototypes: input.prototypes };
   expect((await w.service.confirmUpdate(next)).revision).toBe(1);
   expect((await prototypesAtRevision(boardRef(w), created.requirementId, 1)).map((item) => item.name)).toEqual(["设置页"]);
@@ -660,7 +678,7 @@ test("批准带的原型指纹和草稿不一致时被拒且不留未完成的�
 test("草稿里还有在途原型时，批准被拒且不留未完成的批准记录，改草稿照常成功", async () => {
   const w = await world();
   const { created, input } = await prototypeApproval(w);
-  await beginDesign(boardRef(w), { requirementId: created.requirementId, name: "命令行输出", runId: uuidv7(), agent: "designer", designBase: null });
+  await beginDesign(w, { requirementId: created.requirementId, name: "命令行输出", runId: uuidv7(), agent: "designer", designBase: null });
   await expect(w.service.confirmUpdate(input)).rejects.toThrow();
   const updated = await w.service.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(), version: (await w.service.metadata(created.requirementId)).version,
     title: "需求标题", body: "批准被拒后改过的正文" });
@@ -868,20 +886,67 @@ test("带原型的批准写入中途失败：看板和原型快照也保持调�
   const w = await world();
   const { created, input } = await prototypeApproval(w);
   const id = created.requirementId;
-  const boardBefore = await readPrototypeBoard(boardRef(w), id);
+  const boardBefore = await readPrototypeBoard(boardRef(w), id, lineOn(w, id));
   const before = approvalSnapshot(w, id);
   const restore = failDatabaseWrites(repositoryDatabase(w.options.dataRoot, w.options.repoId), "events", "stream", `requirement_events:${id}`);
   try { await expect(w.service.confirmUpdate(input)).rejects.toBeTruthy(); }
   finally { restore(); }
   expect(approvalSnapshot(w, id)).toEqual(before);
-  expect(await readPrototypeBoard(boardRef(w), id)).toEqual(boardBefore);
+  expect(await readPrototypeBoard(boardRef(w), id, lineOn(w, id))).toEqual(boardBefore);
   expect(await prototypesAtRevision(boardRef(w), id, 1)).toEqual([]);
 
   expect(await w.service.confirmUpdate(input)).toMatchObject({ revision: 1, lifecycle: "active" });
   expect((await prototypesAtRevision(boardRef(w), id, 1)).map((item) => `${item.name}:${item.version}`)).toEqual(["设置页:1"]);
-  const entry = (await readPrototypeBoard(boardRef(w), id)).entries[0]!;
+  const entry = (await readPrototypeBoard(boardRef(w), id, lineOn(w, id))).entries[0]!;
   expect(entry.approved?.version).toBe(1);
   expect(entry.draft).toBeNull();
+});
+
+test("批准锚点的 fileCommit 等于批准前线尖的 fileCommit：按它能读到线上通过的原型 HTML", async () => {
+  const w = await world();
+  const { created, input } = await prototypeApproval(w);
+  const id = created.requirementId;
+  await w.service.confirmUpdate(input);
+  const anchors = withDatabase(repositoryDatabase(w.options.dataRoot, w.options.repoId), (db) => db.list<{ requirementId: string; anchor: string; kind: string; parent: string | null; fileCommit: string | null }>("line_anchors"))
+    .map((row) => row.data).filter((record) => record.requirementId === id);
+  const approval = anchors.find((record) => record.kind === "approval")!;
+  const tipBefore = anchors.find((record) => record.anchor === approval.parent)!;
+  expect(approval.fileCommit).toBe(tipBefore.fileCommit);
+  const files = await readDraftFiles({ ...boardRef(w), requirementId: id, repositoryRoot: w.options.repositoryRoot, commit: approval.fileCommit!, authorize: () => true } as never);
+  expect(files.prototypes["设置页.v1"]).toBeDefined();
+});
+
+async function leaveDeadWriteClaim(w: World, requirementId: string) {
+  const child = spawn("true");
+  await new Promise((resolve) => child.once("exit", resolve));
+  withDatabase(repositoryDatabase(w.options.dataRoot, w.options.repoId), (db) => db.transaction(() => {
+    claimRequirementWriteIn(db, { repoId: w.options.repoId, requirementId, operationId: uuidv7(), ownerToken: uuidv7(), pid: child.pid!, acquiredAt: 1 }, { allowDeadOriginalOperationRecovery: false });
+  }));
+}
+
+test("通过原型提交到一半、进程退出留下写占用（没有保存操作记录）：之后照常保存草稿", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  await leaveDeadWriteClaim(w, created.requirementId);
+  const updated = await w.service.updateDraft({ requirementId: created.requirementId, operationId: uuidv7(), version: (await w.service.metadata(created.requirementId)).version,
+    title: "需求标题", body: "占用残留后保存的正文" });
+  expect(updated.status).toBe("saved");
+});
+
+test("通过原型提交到一半、进程退出留下写占用（没有保存操作记录）：之后能再通过原型", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  await leaveDeadWriteClaim(w, created.requirementId);
+  await acceptedPrototype(w, created.requirementId, "设置页");
+  expect((await draftPrototypes(boardRef(w), created.requirementId, lineOn(w, created.requirementId))).items.map((item) => item.name)).toEqual(["设置页"]);
+});
+
+test("通过原型提交到一半、进程退出留下写占用（没有保存操作记录）：之后能批准", async () => {
+  const w = await world();
+  const created = await w.service.create(createInput());
+  await leaveDeadWriteClaim(w, created.requirementId);
+  const input = await manifestConfirmInput(w.options, { requirementId: created.requirementId, savedOperationId: created.operationId });
+  expect(await w.service.confirmUpdate(input)).toMatchObject({ revision: 1, lifecycle: "active" });
 });
 
 test("另一次 updateDraft 没做完时批准被拒，原因写明还有一次没完成的保存，需求状态不变", async () => {

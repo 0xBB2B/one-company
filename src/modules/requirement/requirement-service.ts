@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { lstat, open } from "node:fs/promises";
 import { join } from "node:path";
 import { isPromise } from "node:util/types";
-import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn } from "./requirement-coordination.ts";
+import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn, releaseDeadRequirementWriteIn } from "./requirement-coordination.ts";
 import { RequirementStateStore } from "./requirement-state.ts";
 import type { RequirementAction, RequirementStoreOptions } from "./requirement-state.ts";
 import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
@@ -378,6 +378,7 @@ export class RequirementService {
     available(before.data);
     withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => {
       assertNoUnfinishedRequirementOperationsIn(db, input.requirementId);
+      releaseDeadRequirementWriteIn(db, this.options.repoId, input.requirementId);
       assertNoRequirementWriteClaimIn(db, this.options.repoId, input.requirementId);
     });
     await this.assertNoObservedArchive(initialState, input.requirementId);

@@ -42,7 +42,8 @@ import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from ".
 import { requirementSummary, saveRequirementSummary } from "../requirement/requirement-summary.ts";
 import { linedRequirementIn } from "../requirement/line-anchors.ts";
 import type { WorkingLines } from "../requirement/line-anchors.ts";
-import { currentLine, recordLineAnchor, recordSaveStart, startedSaves } from "./conversation-line.ts";
+import { recordSaveStart, startedSaves } from "./conversation-line.ts";
+import { currentLine, recordLineAnchor } from "../requirement/line-anchors.ts";
 import { askWindow, confirmWindow, mutedLines } from "../../core/host/question-window.ts";
 import type { WindowAnswer } from "../../core/host/question-window.ts";
 import type { WindowLine } from "../../core/host/question-window.ts";
@@ -276,7 +277,7 @@ export class MainRequirementInteraction {
   #recordNewAnchors(ctx: ExtensionContext, repoId: string): void {
     const recorded = this.#host(ctx).lines();
     for (const [requirementId, line] of Object.entries(this.#lines)) {
-      for (const anchor of line.slice(recorded[requirementId]?.length ?? 0)) recordLineAnchor(this.#options.pi, { repoId, requirementId, anchor });
+      for (const anchor of line.filter((item) => !recorded[requirementId]?.includes(item))) recordLineAnchor(this.#options.pi, { repoId, requirementId, anchor });
     }
   }
   #live(ctx: ExtensionContext, host: RequirementManageHostContext, generation: number): void {
@@ -472,7 +473,7 @@ export class MainRequirementInteraction {
         signal.throwIfAborted();
         const how = this.#addressed.get(id), otherDrafts = how ? await this.#otherDrafts(ctx, repoId, id) : [];
         return { basis: loaded.basis, currentGoal: loaded.approved ? "当前批准基线由candidate.from与真实差异绑定。" : "尚无已批准目标；full_candidate.from=null。",
-          candidates: [{ ...loaded.candidate, diff: await this.#differenceText(repoId, id, loaded.difference.text, this.#snapshot(host, repoId, id).data.revision) }],
+          candidates: [{ ...loaded.candidate, diff: await this.#differenceText(repoId, id, loaded.difference.text, this.#snapshot(host, repoId, id).data.revision, host.lines()[id] ?? []) }],
           document, savedOperationId: loaded.savedOperationId, ...records,
           ...(how ? { addressed: { how, ...(how === "mention" ? { others: this.#inputTargets.length - 1 } : {}), ...(otherDrafts.length ? { otherDrafts } : {}) } } : {}) };
       } });
@@ -727,11 +728,12 @@ export class MainRequirementInteraction {
     if (sections) throw new HostAuthorizationError("prd_sections_required", sections);
     if (!this.#ticket) return denied("current_input_required");
     const prototypeRef = { dataRoot: this.#options.dataRoot, repoId: request.repoId };
-    const inFlight = await inFlightSummary(prototypeRef, request.requirementId);
+    let line = host.lines()[request.requirementId] ?? [];
+    const inFlight = await inFlightSummary(prototypeRef, request.requirementId, line);
     const blocked = inFlightBlock(inFlight);
     if (blocked) throw blocked;
-    await verifyDraftFiles(prototypeRef, request.requirementId);
-    const draft = await draftPrototypes(prototypeRef, request.requirementId);
+    await verifyDraftFiles(prototypeRef, request.requirementId, line);
+    let draft = await draftPrototypes(prototypeRef, request.requirementId, line);
     const mentioned = this.#inputTargets.some((target) => target.repoId === request.repoId && target.requirementId === request.requirementId);
     // 决定对象只认用户这句话里 @ 到的需求；得不出时由用户在程序窗口里亲手确认，不认模型填写的需求编号
     if (!input.fromQuestionWindow && (!mentioned || draft.items.length)) {
@@ -761,6 +763,16 @@ export class MainRequirementInteraction {
         blockedReason: this.#blockedReason(request, loaded, interpretation, host.sessionId, host.lines()[request.requirementId] ?? [], []) }, undefined, []);
     }
     try {
+      // 窗口应答和解读期间对话线可能又追加了锚点，写入按此刻的线重新核对
+      this.#recordNewAnchors(ctx, request.repoId);
+      this.#syncLines(this.#host(ctx));
+      line = this.#lines[request.requirementId] ?? [];
+      const blockedNow = inFlightBlock(await inFlightSummary(prototypeRef, request.requirementId, line));
+      if (blockedNow) throw blockedNow;
+      await verifyDraftFiles(prototypeRef, request.requirementId, line);
+      const shownDigest = draft.digest;
+      draft = await draftPrototypes(prototypeRef, request.requirementId, line);
+      if (!same(draft.digest, shownDigest)) throw new HostAuthorizationError("prototype_changed");
       const saved = core.save(capability);
       this.#recordNewAnchors(ctx, request.repoId);
       const decisionProofs = this.#decisionProofs(request.repoId, saved.decisionIds, saved.operationId);
@@ -796,7 +808,7 @@ export class MainRequirementInteraction {
       const service = await this.#service(ctx, request.repoId, request.requirementId, (r) => r.action === "confirmUpdate" &&
         r.operationId === request.operationId && r.version === loaded.version && r.intentHash === loaded.candidate.intentHash &&
         r.receiptId === receiptId && (r.epoch === undefined || r.epoch === loaded.epoch) && same(r.manifest, reference), authorizeManifest);
-      await verifyDraftFiles(prototypeRef, request.requirementId);
+      await verifyDraftFiles(prototypeRef, request.requirementId, line);
       const receipt = await service.confirmUpdate({ requirementId: request.requirementId, operationId: request.operationId, version: loaded.version,
         title: loaded.title, body: loaded.body, receiptId, manifest: reference, docSpec, prototypes: draft.digest })
         .catch((error: unknown) => {
@@ -822,9 +834,9 @@ export class MainRequirementInteraction {
     return [{ text: `这一版一起批准的原型（${items.filter((item) => item.label !== "removed").length} 份）：` }, ...rows,
       ...mutedLines(["原型的样子以你在浏览器里通过的那一版为准。"])];
   }
-  async #differenceText(repoId: string, requirementId: string, body: string, revision: number): Promise<string> {
+  async #differenceText(repoId: string, requirementId: string, body: string, revision: number, line: readonly string[]): Promise<string> {
     const ref = { dataRoot: this.#options.dataRoot, repoId };
-    const draft = await draftPrototypes(ref, requirementId);
+    const draft = await draftPrototypes(ref, requirementId, line);
     const changes = prototypeChangeLines(prototypeChanges(await prototypesAtRevision(ref, requirementId, revision), draft.items.filter((item) => item.label !== "removed")));
     return [body || "正文没有差异。", ...(changes ? [changes] : [])].join("\n");
   }

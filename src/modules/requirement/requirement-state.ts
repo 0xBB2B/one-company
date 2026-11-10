@@ -404,6 +404,7 @@ export class RequirementStateStore {
       if (!equal(record.data.workspace, previous.data.workspace)) throw new RequirementStateError("workspace_binding_changed");
       if (record.data.workspace) this.checkClaims(db, record.data.workspace);
       assertNoUnfinishedRequirementOperationsIn(db, record.id);
+      releaseDeadRequirementWriteIn(db, this.options.repoId, record.id);
       assertNoRequirementWriteClaimIn(db, this.options.repoId, record.id);
       const lined = linedRequirementIn(db, record, request.line ?? []);
       if (!equal(lined.data.saved, request.reference)) throw new RequirementStateError("saved_version_mismatch");
@@ -421,9 +422,9 @@ export class RequirementStateStore {
       if (final.version !== record.version || !equal(final.data, record.data)) throw new RequirementStateError("manifest_stale");
       const approvalManifest = summarizeApprovalManifest(registeredApprovalManifestIn(db, this.options.repoId, request.manifest, linedRequirementIn(db, final, request.line ?? []), request.receiptId, request.line));
       const revision = increment(record.data.revision);
-      if (readBoardIn(db, record.id)?.data.entries.length) {
+      if (readBoardIn(db, record.id, request.line ?? []).entries.length) {
         if (!request.prototypes) throw new RequirementStateError("prototype_digest_required");
-        const prototypes = promoteOnApprovalIn(db, { requirementId: record.id, digest: request.prototypes }).items
+        const prototypes = promoteOnApprovalIn(db, { requirementId: record.id, digest: request.prototypes, line: request.line ?? [] }).items
           .filter((item) => item.label !== "removed").map(({ name, version, hash, bytes, picked }) => ({ name, version, hash, bytes, picked }));
         if (prototypes.length) writePrototypeRevision(db, { requirementId: record.id, revision, prototypes });
       }

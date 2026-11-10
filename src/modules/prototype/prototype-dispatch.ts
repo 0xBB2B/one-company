@@ -12,6 +12,8 @@ export const PrototypeDispatchInput = Type.Object({
   agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
   model: Type.Object({ provider: Type.String(), id: Type.String() }, { additionalProperties: false }),
   thinking: Type.String(),
+  line: Type.Array(id, { maxItems: 4096 }),
+  anchor: id,
 }, { additionalProperties: false });
 export type PrototypeDispatchInput = Static<typeof PrototypeDispatchInput>;
 
