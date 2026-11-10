@@ -74,12 +74,13 @@ abstract class SwitchPicker {
 
   protected readonly theme: PageTheme;
   protected readonly projectTrust: ProjectTrust;
+  protected readonly trustFile: string;
   private readonly key: ClearSwitchRequest["key"];
   private readonly currentSource: () => RoleSource;
   private readonly onClear: (request: ClearSwitchRequest) => void;
 
-  constructor(theme: PageTheme, projectTrust: ProjectTrust, key: ClearSwitchRequest["key"], currentSource: () => RoleSource, onClear: (request: ClearSwitchRequest) => void) {
-    this.theme = theme; this.projectTrust = projectTrust; this.key = key; this.currentSource = currentSource; this.onClear = onClear;
+  constructor(theme: PageTheme, projectTrust: ProjectTrust, trustFile: string, key: ClearSwitchRequest["key"], currentSource: () => RoleSource, onClear: (request: ClearSwitchRequest) => void) {
+    this.theme = theme; this.projectTrust = projectTrust; this.trustFile = trustFile; this.key = key; this.currentSource = currentSource; this.onClear = onClear;
   }
 
   picking(): boolean { return this.step > 0; }
@@ -102,7 +103,7 @@ abstract class SwitchPicker {
     if (matchesKey(data, "up")) { const previous = rows.findLastIndex((row, index) => index < this.cursor && !row.disabled); if (previous >= 0) this.cursor = previous; return undefined; }
     if (!matchesKey(data, "enter")) return undefined;
     if (this.step === 1) {
-      if (this.confirmFirstStep()) { this.step = 2; this.cursor = this.projectTrust === "denied" ? 1 : 0; }
+      if (this.confirmFirstStep()) { this.step = 2; this.cursor = this.projectTrust === "denied" || this.projectTrust === "unreadable" ? 1 : 0; }
     } else {
       this.step = 0;
       this.save(this.cursor === 0 ? "project" : "user");
@@ -120,7 +121,7 @@ abstract class SwitchPicker {
   protected rows(): PickerRow[] { return this.step === 1 ? this.firstStepRows() : layerRows(this.projectTrust); }
   protected layerStep(width: number, title: string): string[] {
     return [pickerHead(this.theme, title, "第 2 步，共 2 步", width), "", ...pickerList(this.theme, this.rows(), this.cursor, 9, width),
-      ...(this.projectTrust === "trusted" ? [] : ["", ...layerNote(this.theme, width, this.projectTrust)])];
+      ...(this.projectTrust === "trusted" ? [] : ["", ...layerNote(this.theme, width, this.projectTrust, this.trustFile)])];
   }
   abstract render(width: number): string[];
 }
@@ -129,12 +130,12 @@ class DeliveryModePicker extends SwitchPicker {
   private chosen: DeliveryMode = "remote";
 
   private readonly options: {
-    theme: PageTheme; current: { mode: DeliveryMode; source: RoleSource }; projectTrust: ProjectTrust;
+    theme: PageTheme; current: { mode: DeliveryMode; source: RoleSource }; projectTrust: ProjectTrust; trustFile: string;
     onSave(request: SaveSwitchRequest): void; onClear(request: ClearSwitchRequest): void;
   };
 
   constructor(options: DeliveryModePicker["options"]) {
-    super(options.theme, options.projectTrust, "git-delivery", () => options.current.source, options.onClear);
+    super(options.theme, options.projectTrust, options.trustFile, "git-delivery", () => options.current.source, options.onClear);
     this.options = options;
   }
 
@@ -160,12 +161,12 @@ class MergeMethodsPicker extends SwitchPicker {
   private empty = false;
 
   private readonly options: {
-    theme: PageTheme; current: { methods: readonly MergeMethod[]; source: RoleSource }; projectTrust: ProjectTrust;
+    theme: PageTheme; current: { methods: readonly MergeMethod[]; source: RoleSource }; projectTrust: ProjectTrust; trustFile: string;
     onSave(request: SaveSwitchRequest): void; onClear(request: ClearSwitchRequest): void;
   };
 
   constructor(options: MergeMethodsPicker["options"]) {
-    super(options.theme, options.projectTrust, "merge-methods", () => options.current.source, options.onClear);
+    super(options.theme, options.projectTrust, options.trustFile, "merge-methods", () => options.current.source, options.onClear);
     this.options = options;
   }
 
@@ -208,7 +209,7 @@ export class SettingsPageView {
   private fresh: string[] = [];
   private naming: { entry: RoleCatalogEntry; text: string; error?: string } | undefined;
   private readonly options: {
-    catalog: RoleCatalog; theme: PageTheme; projectTrust: ProjectTrust; untrustedProjectCount: number; state?: PageState;
+    catalog: RoleCatalog; theme: PageTheme; projectTrust: ProjectTrust; trustFile: string; trustReason: string; untrustedProjectCount: number; state?: PageState;
     settings: Settings; models: readonly ModelLike[]; mainModel: ModelLike | undefined; mainThinking: string;
     nameTaken(name: string): string | undefined; onCopy(request: CopyRequest): void; onClose(): void;
     onSaveSetting(request: SaveSettingRequest): void; onClearSetting(request: ClearSettingRequest): void;
@@ -221,10 +222,10 @@ export class SettingsPageView {
 
   constructor(options: SettingsPageView["options"]) {
     this.options = options;
-    const { theme, settings, projectTrust } = options;
-    this.settingsTab = new SettingsTab({ theme, settings, models: options.models, mainModel: options.mainModel, mainThinking: options.mainThinking, projectTrust,
+    const { theme, settings, projectTrust, trustFile } = options;
+    this.settingsTab = new SettingsTab({ theme, settings, models: options.models, mainModel: options.mainModel, mainThinking: options.mainThinking, projectTrust, trustFile,
       sourceTag: (source) => this.sourceTag(source), onSave: options.onSaveSetting, onClear: options.onClearSetting });
-    const switchOptions = { theme, projectTrust, onSave: options.onSaveSwitch, onClear: options.onClearSwitch };
+    const switchOptions = { theme, projectTrust, trustFile, onSave: options.onSaveSwitch, onClear: options.onClearSwitch };
     this.deliveryPicker = new DeliveryModePicker({ ...switchOptions, current: settings.gitDelivery });
     this.methodsPicker = new MergeMethodsPicker({ ...switchOptions, current: settings.mergeMethods });
     const state = options.state;
@@ -243,7 +244,7 @@ export class SettingsPageView {
 
   invalidate(): void {}
 
-  private untrustedLabel(): string { return this.options.projectTrust === "unset" ? "项目还没设为受信任" : "项目未受信任"; }
+  private untrustedLabel(): string { return this.options.projectTrust === "unreadable" ? "读不了授信记录" : this.options.projectTrust === "unset" ? "项目还没设为受信任" : "项目未受信任"; }
   private sections(): Section[] { return [...ROLE_SECTIONS, "models", "switches", ...(this.problemRows().length ? ["problems" as const] : [])]; }
   private get section(): Section { return this.sections()[this.sectionIndex]!; }
   private isDefinitions(): boolean { return (ROLE_SECTIONS as readonly string[]).includes(this.section); }
@@ -282,6 +283,13 @@ export class SettingsPageView {
     for (const problem of this.options.catalog.problems) {
       if (problem.kind === "untrusted") {
         const count = this.options.untrustedProjectCount;
+        if (this.options.projectTrust === "unreadable") {
+          rows.unshift({ file: ".pi/agents/", source: "project", tone: "error", short: "读不了授信记录，项目层的定义和设定没有生效",
+            detail: [{ key: "原因", value: "读不了授信记录，项目层的定义和设定不会加载" }, { key: "现在是", value: this.options.trustReason, error: true },
+              { key: "文件", value: this.options.trustFile }, { key: "目录", value: tilde(problem.dir) }],
+            footer: `改好 ${this.options.trustFile} 后重新打开本页，项目层的${count ? ` ${count} 份` : ""}定义才会生效` });
+          continue;
+        }
         rows.unshift({ file: ".pi/agents/", source: "project", tone: "info", short: `${this.untrustedLabel()}，项目层的定义和设定没有生效`,
           detail: [{ key: "原因", value: `${this.untrustedLabel()}，项目层的定义和设定不会加载` }, { key: "目录", value: tilde(problem.dir) }],
           footer: this.options.projectTrust === "unset" ? `按回车把本项目设为受信任，项目层的${count ? ` ${count} 份` : ""}定义就会生效`

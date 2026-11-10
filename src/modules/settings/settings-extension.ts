@@ -10,7 +10,7 @@ import { primaryWorktreeRoot } from "../../core/storage/identity.ts";
 import { defaultModeReason, methodsText, MODE_LABEL, SettingsPageView, tilde } from "./settings-page-ui.ts";
 import type { ClearSwitchRequest, CopyRequest, PageState, SaveSwitchRequest } from "./settings-page-ui.ts";
 import { AgentCopyError, copyAgentDefinition } from "../agents/agent-copy.ts";
-import { readProjectTrust, trustProject } from "./project-trust.ts";
+import { readProjectTrust, trustFilePath, trustProject } from "./project-trust.ts";
 import { describeSetting } from "./agent-settings-ui.ts";
 import type { ClearSettingRequest, PageNotice, PageTheme, SaveSettingRequest, SettingsLayerName } from "./agent-settings-ui.ts";
 import { agentSwitchOf, clearAgentSetting, clearGitDeliverySetting, clearMergeMethodsSetting, disabledAgentProblems, projectSettingsPath, readAgentSettings, saveAgentSetting, saveDisabledAgentsSetting, saveGitDeliverySetting, saveMergeMethodsSetting, SETTINGS_ROLES, userSettingsPath } from "./agent-settings.ts";
@@ -31,11 +31,13 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
   const nameTaken = (name: string) => layers.find((layer) => existsSync(fileOf(layer.dir, name)))?.label;
   const settingsPaths: Record<SettingsLayerName, string> = { user: userSettingsPath(agentDir), project: projectSettingsPath(repositoryRoot) };
   const layerLabel: Record<SettingsLayerName, string> = { user: "用户层", project: "项目层" };
-  const readSettings = () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: readProjectTrust(agentDir, repositoryRoot) === "trusted" });
+  const trustFile = tilde(trustFilePath(agentDir));
+  const readSettings = () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: readProjectTrust(agentDir, repositoryRoot).trust === "trusted" });
   const models = ctx.modelRegistry.getAll().filter((model) => ctx.modelRegistry.hasConfiguredAuth(model));
   type Picked = { state: PageState } & ({ copy: CopyRequest } | { save: SaveSettingRequest } | { clear: ClearSettingRequest } | { saveSwitch: SaveSwitchRequest } | { clearSwitch: ClearSwitchRequest } | { toggle: RoleCatalogEntry } | { trust: true });
   const claimProjectLayer = (): string => {
-    const now = readProjectTrust(agentDir, repositoryRoot);
+    const { trust: now, reason } = readProjectTrust(agentDir, repositoryRoot);
+    if (now === "unreadable") throw new Error(`读不了授信记录 ${trustFile}：${reason}`);
     if (now === "denied") throw new Error("你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust");
     if (now === "trusted") return "";
     trustProject(agentDir, repositoryRoot);
@@ -92,7 +94,8 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
       lines: [{ text: `项目：${tilde(repositoryRoot)}` }, { text: "设为受信任后，项目里的 .pi 设置和角色定义都会生效。" }, ...mutedLines(["和在 pi 里输入 /trust 选 Trust 一样，会记进 pi 的授信记录。"])],
       choices: [{ label: "设为受信任", description: "记进授信记录，项目层马上生效" }, { label: "取消", description: "不改授信记录，回到设置页" }], cancelNote: "不改授信记录" });
     if (choice !== "设为受信任") return { kind: "cancelled" };
-    const now = readProjectTrust(agentDir, repositoryRoot);
+    const { trust: now, reason } = readProjectTrust(agentDir, repositoryRoot);
+    if (now === "unreadable") return { kind: "failed", reason: `读不了授信记录 ${trustFile}：${reason}` };
     if (now === "denied") return { kind: "denied" };
     if (now === "unset") {
       try { trustProject(agentDir, repositoryRoot); } catch (error) { return { kind: "failed", reason: (error instanceof Error ? error.message : String(error)).split("\n")[0] }; }
@@ -101,13 +104,13 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
   };
   let state: PageState | undefined;
   for (;;) {
-    const projectTrust = readProjectTrust(agentDir, repositoryRoot), projectTrusted = projectTrust === "trusted";
+    const { trust: projectTrust, reason: trustReason = "" } = readProjectTrust(agentDir, repositoryRoot), projectTrusted = projectTrust === "trusted";
     const untrustedProjectCount = projectTrusted ? 0 : await readdir(dirs.projectDir).then((files) => files.filter((file) => file.endsWith(".md")).length, () => 0);
     const catalog = await loadRoleCatalog({ ...dirs, parseFrontmatter, projectTrusted });
     const settings = await readSettings();
     settings.problems.push(...disabledAgentProblems(settings.disabledAgents, { user: settingsPaths.user, project: settingsPaths.project }, catalog));
     const picked = await openProgramWindow<Picked>(ctx, (tui, theme, _keybindings, done) => {
-      const view: SettingsPageView = new SettingsPageView({ catalog, theme: theme as unknown as PageTheme, projectTrust, untrustedProjectCount, nameTaken,
+      const view: SettingsPageView = new SettingsPageView({ catalog, theme: theme as unknown as PageTheme, projectTrust, trustFile, trustReason, untrustedProjectCount, nameTaken,
         settings, models, mainModel: ctx.model, mainThinking: options.mainThinking(), ...(state ? { state } : {}),
         onCopy: (copy) => done({ copy, state: view.state() }), onSaveSetting: (save) => done({ save, state: view.state() }), onClearSetting: (clear) => done({ clear, state: view.state() }),
         onSaveSwitch: (saveSwitch) => done({ saveSwitch, state: view.state() }), onClearSwitch: (clearSwitch) => done({ clearSwitch, state: view.state() }), onToggleAgent: (toggle) => done({ toggle, state: view.state() }), onTrustProject: () => done({ trust: true, state: view.state() }),
@@ -148,10 +151,10 @@ export async function openSettingsPage(ctx: SettingsExtensionContext, options: {
     const user = target(dirs.userDir), project = target(dirs.projectDir);
     const choices: WindowChoice[] = [
       { label: "用户层", ...(user.taken ? { disabled: `已有 ${tilde(user.path)}` } : { description: tilde(user.path) }) },
-      { label: "项目层", ...(projectTrust === "denied" ? { disabled: "你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust" } : project.taken ? { disabled: `已有 ${tilde(project.path)}` } : { description: projectTrust === "unset" ? `${tilde(project.path)} · 选它会把本项目设为受信任` : tilde(project.path) }) },
+      { label: "项目层", ...(projectTrust === "unreadable" ? { disabled: `读不了授信记录 ${trustFile}，改好这个文件后才能复制到项目层` } : projectTrust === "denied" ? { disabled: "你在 pi 里选过不信任这个项目，先输入 /trust 选 Trust" } : project.taken ? { disabled: `已有 ${tilde(project.path)}` } : { description: projectTrust === "unset" ? `${tilde(project.path)} · 选它会把本项目设为受信任` : tilde(project.path) }) },
     ];
     if (choices.every((choice) => choice.disabled)) {
-      back({ tone: "muted", text: project.taken ? `用户层和项目层都已经有 ${name}，直接编辑对应文件即可` : `用户层已经有 ${name}，直接编辑这个文件即可；你在 pi 里选过不信任这个项目，不能复制到项目层` });
+      back({ tone: "muted", text: project.taken ? `用户层和项目层都已经有 ${name}，直接编辑对应文件即可` : `用户层已经有 ${name}，直接编辑这个文件即可；${projectTrust === "unreadable" ? "读不了授信记录" : "你在 pi 里选过不信任这个项目"}，不能复制到项目层` });
       continue;
     }
     const layer = await chooseWindow(ctx, { title: `复制 ${entry.name} 到哪一层？`,

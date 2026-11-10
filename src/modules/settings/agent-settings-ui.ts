@@ -135,13 +135,14 @@ const DENIED_NOTE = "你在 pi 里选过不信任这个项目。要存到项目�
 const UNSET_NOTE = "选项目层会把这个项目设为受信任，和在 pi 里输入 /trust 选 Trust 一样；项目里已有的 .pi 设置和角色定义也会一起生效";
 
 export const layerRows = (projectTrust: ProjectTrust): PickerRow[] => [
-  projectTrust === "denied" ? { name: "项目层", note: "你在 pi 里选过不信任这个项目", disabled: true }
+  projectTrust === "unreadable" ? { name: "项目层", note: "读不了授信记录", disabled: true }
+    : projectTrust === "denied" ? { name: "项目层", note: "你在 pi 里选过不信任这个项目", disabled: true }
     : { name: "项目层", note: projectTrust === "unset" ? ".pi/settings.json · 选它会把本项目设为受信任" : ".pi/settings.json · 只对这个项目生效" },
   { name: "用户层", note: "~/.pi/agent/settings.json · 所有项目" },
 ];
 
-export const layerNote = (theme: PageTheme, width: number, projectTrust: ProjectTrust) =>
-  projectTrust === "trusted" ? [] : wrapText(projectTrust === "denied" ? DENIED_NOTE : UNSET_NOTE, width - 1).map((line) => ` ${theme.fg("dim", line)}`);
+export const layerNote = (theme: PageTheme, width: number, projectTrust: ProjectTrust, trustFile: string) =>
+  projectTrust === "trusted" ? [] : wrapText(projectTrust === "unreadable" ? `读不了授信记录 ${trustFile}。要存到项目层，先改好这个文件，再重开本页` : projectTrust === "denied" ? DENIED_NOTE : UNSET_NOTE, width - 1).map((line) => ` ${theme.fg("dim", line)}`);
 
 export function modelChoices(models: readonly ModelLike[], mainModel: ModelLike | undefined, current: RoleSetting): ModelChoice[] {
   const currentModel = current.model === null ? undefined : findDefinedModel(current.model, models, mainModel?.provider);
@@ -174,7 +175,7 @@ export class SettingsTab {
   private chosenThinking: ThinkingLevel | null = null;
   private readonly options: {
     theme: PageTheme; settings: { values: Record<SettingsRoleKey, EffectiveSetting> }; models: readonly ModelLike[]; mainModel: ModelLike | undefined; mainThinking: string;
-    projectTrust: ProjectTrust; sourceTag(source: RoleSource): string;
+    projectTrust: ProjectTrust; trustFile: string; sourceTag(source: RoleSource): string;
     onSave(request: SaveSettingRequest): void; onClear(request: ClearSettingRequest): void;
   };
 
@@ -282,6 +283,6 @@ export class SettingsTab {
       return [...head, "", ...(empty ? wrapText("本机还没有其他配了凭据的模型，先在 pi 里登录模型服务", width - 1).map((line) => ` ${muted(line)}`) : [` ${dim("只列出本机配了凭据的模型")}`])];
     }
     if (this.step === 2) return head;
-    return [...head, "", ...layerNote(theme, width, this.options.projectTrust)];
+    return [...head, "", ...layerNote(theme, width, this.options.projectTrust, this.options.trustFile)];
   }
 }

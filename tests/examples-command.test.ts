@@ -741,3 +741,50 @@ describe("被改过的 skill 还缺文件", () => {
     ]);
   });
 });
+
+describe("授信记录读不了", () => {
+  const BAD_TRUST = '{"a": true,}';
+  const breakTrust = () => writeFile(trustPath(), BAD_TRUST);
+  const reason = () => {
+    try { JSON.parse(BAD_TRUST); } catch (error) { return `Failed to read trust store ${trustPath()}: ${(error as Error).message}`; }
+    throw new Error("BAD_TRUST 应该解析失败");
+  };
+
+  test("窗口一每套样例的项目层状态写读不了授信记录", async () => {
+    await setup();
+    await breakTrust();
+    const screens: string[] = [];
+    await run([capture(screens, GOLANG), capture(screens, CANCEL)]);
+    expect(screens[0]).toContain("Go 后端 · 用户层：未复制 · 项目层：读不了授信记录");
+    expect(screens[0]).toMatch(/vue.*Vue 前端 · 用户层：未复制 · 项目层：读不了授信记录/u);
+  });
+
+  test("选层窗口项目层不可选写读不了授信记录和文件，用户层照常", async () => {
+    await setup();
+    await breakTrust();
+    const screens: string[] = [];
+    await run([GOLANG, capture(screens, CANCEL)]);
+    expect(screens[0]).toContain("把 Go 后端样例复制到哪一层？");
+    expect(screens[0]).toContain(`读不了授信记录 ${tildeOf(trustPath())}，改好这个文件后才能复制到项目层`);
+    expect(screens[0]).toContain(`${agentDir}/ · 对你的所有项目生效`);
+    expect(screens[0]).toMatch(/→ 用户层/u);
+    expect(screens[0]).not.toContain("选它会把本项目设为受信任");
+  });
+
+  test("用户层已全部复制：不弹选层窗口，提示写读不了授信记录，不能复制到项目层", async () => {
+    await setup();
+    await copyGolangToUser();
+    await breakTrust();
+    const result = await run([GOLANG]);
+    expect(result.last()).toBe("Go 后端样例在用户层已全部复制，和样例一致；读不了授信记录，不能复制到项目层。");
+  });
+
+  test("确认复制前授信记录被写坏：不复制，不写授信记录，error 提示写复制没有完成并带文件和原因", async () => {
+    await setup();
+    const result = await run([GOLANG, PROJECT_LAYER, (screen) => { writeFileSync(trustPath(), BAD_TRUST); COPY(screen); }]);
+    expect(result.last()).toBe(`✗ 复制没有完成：读不了授信记录 ${tildeOf(trustPath())}：${reason()}`);
+    expect(result.notifications[0]!.level).toBe("error");
+    expect(exists(join(repoDir, ".pi", "skills", "api-design", "SKILL.md"))).toBe(false);
+    expect(await read(trustPath())).toBe(BAD_TRUST);
+  });
+});

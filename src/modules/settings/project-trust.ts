@@ -1,11 +1,17 @@
+import { join } from "node:path";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 
-export type ProjectTrust = "trusted" | "denied" | "unset";
+export type ProjectTrust = "trusted" | "denied" | "unset" | "unreadable";
 
-export function readProjectTrust(agentDir: string, repositoryRoot: string): ProjectTrust {
-  let recorded: boolean | null;
-  try { recorded = new ProjectTrustStore(agentDir).get(repositoryRoot); } catch { recorded = null; }
-  return recorded === true ? "trusted" : recorded === false ? "denied" : "unset";
+export const trustFilePath = (agentDir: string): string => join(agentDir, "trust.json");
+
+export function readProjectTrust(agentDir: string, repositoryRoot: string): { trust: ProjectTrust; reason?: string } {
+  try {
+    const recorded = new ProjectTrustStore(agentDir).get(repositoryRoot);
+    return { trust: recorded === true ? "trusted" : recorded === false ? "denied" : "unset" };
+  } catch (error) {
+    return { trust: "unreadable", reason: (error instanceof Error ? error.message : String(error)).split("\n")[0] };
+  }
 }
 
 export function trustProject(agentDir: string, repositoryRoot: string): void {

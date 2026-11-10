@@ -442,12 +442,12 @@ test("记录为空时第 3 步选用户层保存、或在选择框按 Esc：都�
   expect((await readJson(userFile()))["one-company"].pm).toEqual({ model: "gpt-6-luna", thinking: "xhigh" });
 }, 5000);
 
-test("记录为空时信任记录写不进去：不写项目设置文件，底部红字没有保存，信任记录仍是空", async (context) => {
+test("记录为空时信任记录文件只读写不进去：不写项目设置文件，底部红字没有保存，信任记录仍是空", async (context) => {
   if (process.getuid?.() === 0) context.skip();
   await mkdir(repoDir(), { recursive: true });
   const ctx = scripted([
     (s) => {
-      chmodSync(agentDir(), 0o555);
+      chmodSync(trustFilePath(), 0o444);
       pickPmModel(s);
       moveTo(s, "项目层");
       s.press(ENTER);
@@ -459,9 +459,9 @@ test("记录为空时信任记录写不进去：不写项目设置文件，底�
       s.press(ESC, ESC);
     },
   ], { trust: "unset" });
-  mkdirSync(agentDir(), { recursive: true });
+  await writeSettings(trustFilePath(), {});
   await run(ctx);
-  expect(existsSync(trustFilePath())).toBe(false);
+  expect(await readFile(trustFilePath(), "utf8")).toBe("{}");
   expect(existsSync(projectFile())).toBe(false);
 }, 5000);
 
@@ -747,18 +747,19 @@ test("记录为空时复制到项目层：先写信任记录再复制，提示�
   expect(existsSync(trustFilePath())).toBe(false);
 }, 8000);
 
-test("记录为空时复制到项目层、信任记录写不进去：不复制，底部写复制没有完成，信任记录仍是空", async (context) => {
+test("记录为空时复制到项目层、信任记录文件只读写不进去：不复制，底部写复制没有完成，信任记录仍是空", async (context) => {
   if (process.getuid?.() === 0) context.skip();
   await mkdir(repoDir(), { recursive: true });
   await mkdir(agentsDir(), { recursive: true });
   await writeFile(SOURCE(), COPY_SOURCE);
-  chmodSync(agentDir(), 0o555);
+  await writeSettings(trustFilePath(), {});
+  chmodSync(trustFilePath(), 0o444);
   await run(copyToProject((s) => {
     expect(s.now()).toContain("复制没有完成：");
     expect(s.now()).toContain("trust.json");
     expect(s.now()).not.toContain("✓ 已复制到");
   }));
-  expect(existsSync(trustFilePath())).toBe(false);
+  expect(await readFile(trustFilePath(), "utf8")).toBe("{}");
   expect(existsSync(join(repoDir(), ".pi", "agents", "copy-w.md"))).toBe(false);
 }, 8000);
 
@@ -1600,13 +1601,13 @@ test("窗口打开期间 trust.json 被改成 false：确认后不写文件，�
   expect(await readFile(trustPath(), "utf8")).toBe(written);
 });
 
-test("trust.json 所在目录只读写不进去：记录仍为空，回到授信那一条，黄字还在，底部红字以没有设为受信任开头", async (context) => {
+test("trust.json 文件只读写不进去：记录仍为空，回到授信那一条，黄字还在，底部红字以没有设为受信任开头", async (context) => {
   if (process.getuid?.() === 0) context.skip();
   await seedProjectDefs();
-  mkdirSync(agentDir(), { recursive: true });
+  await writeSettings(trustPath(), {});
   const ctx = scripted([
     (s) => { toTrustEntry(s); s.press(ENTER); },
-    (s) => { chmodSync(agentDir(), 0o555); s.press(ENTER); },
+    (s) => { chmodSync(trustPath(), 0o444); s.press(ENTER); },
     (s) => {
       expect(selectedLine(s)).toMatch(/\.pi\/agents\/ +项目/u);
       expect(s.now()).toContain("! 项目还没设为受信任");
@@ -1615,7 +1616,7 @@ test("trust.json 所在目录只读写不进去：记录仍为空，回到授信
     },
   ], { trust: "unset" });
   await runAll(ctx);
-  expect(existsSync(trustPath())).toBe(false);
+  expect(await readFile(trustPath(), "utf8")).toBe("{}");
 });
 
 test("确认窗口选取消：trust.json 不变，回到授信那一条，底部灰字写已取消，授信记录没有改", async () => {
@@ -1720,3 +1721,228 @@ for (const width of [36, 44, 60, 80]) {
     ], options));
   }, 10000);
 }
+
+const BAD_TRUST = '{"a": true,}';
+const breakTrust = () => { mkdirSync(agentDir(), { recursive: true }); writeFileSync(trustPath(), BAD_TRUST); };
+const trustFile = () => tilde(trustPath());
+const unreadableReason = () => {
+  try { JSON.parse(BAD_TRUST); } catch (error) { return `Failed to read trust store ${trustPath()}: ${(error as Error).message}`; }
+  throw new Error("BAD_TRUST 应该解析失败");
+};
+const UNREADABLE_HINT = "←/Esc 回左栏  ↑↓ 选择  回车 详情";
+const UNREADABLE_FOOT = (n: number) => `改好 ${trustFile()} 后重新打开本页，项目层的${n ? ` ${n} 份` : ""}定义才会生效`;
+
+test("授信记录读不了：顶部黄字写读不了授信记录", async () => {
+  await seedProjectDefs();
+  breakTrust();
+  const ctx = scripted([
+    (s) => {
+      expect(s.now()).toContain("! 读不了授信记录：项目层的定义和设定都没有生效");
+      expect(s.raw()).toMatch(/<warning>[^\n]*读不了授信记录：项目层的定义和设定都没有生效/u);
+      expect(s.now()).not.toContain("项目还没设为受信任");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+});
+
+test("授信记录读不了：问题第一条原因列是 error 色，提示是回车 详情，底部说明写改好文件后项目层的 5 份定义才会生效", async () => {
+  await seedProjectDefs();
+  breakTrust();
+  const ctx = scripted([
+    (s) => {
+      toTrustEntry(s);
+      expect(selectedLine(s)).toMatch(/\.pi\/agents\/ +项目/u);
+      expect(selectedLine(s)).toContain("读不了授信记录，项目层的定义和设定没有生效");
+      expect(s.raw()).toContain("<error>读不了授信记录，项目层的定义和设定");
+      expect(s.now()).toContain(UNREADABLE_HINT);
+      expect(s.now()).not.toContain("回车 设为受信任");
+      expect(squeeze(s.now())).toContain(squeeze(UNREADABLE_FOOT(5)));
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(await readFile(trustPath(), "utf8")).toBe(BAD_TRUST);
+});
+
+test("授信记录读不了、0 份项目层定义：底部说明没有 N 份", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  breakTrust();
+  const ctx = scripted([
+    (s) => {
+      toTrustEntry(s);
+      expect(squeeze(s.now())).toContain(squeeze(UNREADABLE_FOOT(0)));
+      expect(s.now()).not.toMatch(/项目层的 \d+ 份/u);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+});
+
+test("授信记录读不了时在问题第一条按回车：只展开详情不弹窗不写文件，列出原因、现在是、文件、目录，再按收起", async () => {
+  await seedProjectDefs();
+  breakTrust();
+  const ctx = scripted([
+    (s) => {
+      toTrustEntry(s);
+      s.press(ENTER);
+      expect(s.now()).toContain("←/Esc 回左栏  ↑↓ 选择  回车 收起");
+      const text = squeeze(s.now());
+      const rightPane = squeeze(paneOf(s.now()).join("").replaceAll("┊", ""));
+      expect(text).toContain(squeeze("原因读不了授信记录，项目层的定义和设定不会加载"));
+      expect(rightPane).toContain(squeeze(`现在是${unreadableReason()}`));
+      expect(s.raw()).toContain("<error>Failed to read trust store");
+      expect(text).toContain(squeeze(`文件${trustFile()}`));
+      expect(text).toContain(squeeze(`目录${tilde(join(repoDir(), ".pi", "agents"))}`));
+      s.press(ENTER);
+      expect(s.now()).toContain(UNREADABLE_HINT);
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(await readFile(trustPath(), "utf8")).toBe(BAD_TRUST);
+});
+
+const unreadableScopeNote = () => `读不了授信记录 ${trustFile()}。要存到项目层，先改好这个文件，再重开本页`;
+const expectProjectLayerBlocked = (s: Screen) => {
+  expect(s.now()).toMatch(/项目层 +读不了授信记录/u);
+  expect(selectedLine(s)).toMatch(/用户层/u);
+  expect(squeeze(s.now())).toContain(squeeze(unreadableScopeNote()));
+  expect(s.raw()).toMatch(/<dim>[^\n]*读不了授信记录/u);
+  expect(s.now()).not.toContain("选它会把本项目设为受信任");
+};
+
+test("授信记录读不了时模型设定的存到哪一层：项目层变暗写读不了授信记录，光标在用户层，下方灰字写先改好文件再重开本页", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  breakTrust();
+  const ctx = scripted([
+    (s) => {
+      pickPmModel(s);
+      expectProjectLayerBlocked(s);
+      s.press(ESC, ESC, ESC, ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect(await readFile(trustPath(), "utf8")).toBe(BAD_TRUST);
+}, 5000);
+
+test("授信记录读不了时 Git 交付的存到哪一层：项目层变暗写读不了授信记录，光标在用户层，下方灰字写先改好文件再重开本页", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  breakTrust();
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "switches");
+      s.press(ENTER);
+      moveTo(s, "仅本地");
+      s.press(ENTER);
+      expectProjectLayerBlocked(s);
+      s.press(ESC, ESC, ESC, ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect(await readFile(trustPath(), "utf8")).toBe(BAD_TRUST);
+}, 5000);
+
+test("授信记录读不了时合并方式的存到哪一层：项目层变暗写读不了授信记录，光标在用户层，下方灰字写先改好文件再重开本页", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  breakTrust();
+  const ctx = scripted([
+    (s) => {
+      goTo(s, "switches");
+      s.press(DOWN, ENTER, SPACE, ENTER);
+      expectProjectLayerBlocked(s);
+      s.press(ESC, ESC, ESC, ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await run(ctx);
+  expect(await readFile(trustPath(), "utf8")).toBe(BAD_TRUST);
+}, 5000);
+
+test("授信记录读不了时按 C 复制：选层窗口项目层不可选写读不了授信记录，用户层照常可选", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await mkdir(agentsDir(), { recursive: true });
+  await writeFile(SOURCE(), COPY_SOURCE);
+  breakTrust();
+  let window = "";
+  const ctx = scripted([
+    (s) => { s.press(RIGHT); moveTo(s, "ui-w"); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
+    (s) => { window = s.now(); s.press(ESC); },
+    (s) => s.press(ESC, ESC),
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(window).toMatch(/→ 用户层/u);
+  expect(window).toContain(join(agentsDir(), "copy-w.md"));
+  expect(squeeze(window)).toContain(squeeze(`项目层读不了授信记录 ${trustFile()}，改好这个文件后才能复制到项目层`));
+  expect(window).not.toContain("选它会把本项目设为受信任");
+  expect(existsSync(join(repoDir(), ".pi", "agents", "copy-w.md"))).toBe(false);
+  expect(await readFile(trustPath(), "utf8")).toBe(BAD_TRUST);
+}, 8000);
+
+test("打开页面时授信记录正常、在授信那一条的确认窗口里被写坏：不写文件，回到授信那一条，底部红字写没有设为受信任并带文件和原因", async () => {
+  await seedProjectDefs();
+  const ctx = scripted([
+    (s) => { toTrustEntry(s); s.press(ENTER); },
+    (s) => { breakTrust(); s.press(ENTER); },
+    (s) => {
+      expect(selectedLine(s)).toMatch(/\.pi\/agents\/ +项目/u);
+      expect(s.raw()).toContain("<error>✗ 没有设为受信任：读不了授信记录");
+      expect(squeeze(s.now())).toContain(squeeze(`✗ 没有设为受信任：读不了授信记录 ${trustFile()}：${unreadableReason()}`));
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(await readFile(trustPath(), "utf8")).toBe(BAD_TRUST);
+});
+
+test("打开页面时授信记录正常、模型设定选项目层回车前被写坏：不写项目设置文件和授信记录，底部红字写没有保存并带文件和原因", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  const ctx = scripted([
+    (s) => {
+      pickPmModel(s);
+      moveTo(s, "项目层");
+      breakTrust();
+      s.press(ENTER);
+    },
+    (s) => {
+      expect(s.raw()).toContain("<error>✗ 没有保存：读不了授信记录");
+      expect(squeeze(s.now())).toContain(squeeze(`✗ 没有保存：读不了授信记录 ${trustFile()}：${unreadableReason()}`));
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(existsSync(projectFile())).toBe(false);
+  expect(await readFile(trustPath(), "utf8")).toBe(BAD_TRUST);
+}, 5000);
+
+test("打开页面时授信记录正常、按 C 复制在选项目层前被写坏：不复制，不写授信记录，底部灰字写复制没有完成并带文件和原因", async () => {
+  await mkdir(repoDir(), { recursive: true });
+  await mkdir(agentsDir(), { recursive: true });
+  await writeFile(SOURCE(), COPY_SOURCE);
+  const ctx = scripted([
+    (s) => { s.press(RIGHT); moveTo(s, "ui-w"); s.press("c", ...Array(30).fill(BACKSPACE), ...typed("copy-w"), ENTER); },
+    (s) => { breakTrust(); s.press(DOWN, ENTER); },
+    (s) => {
+      expect(s.raw()).toContain("<muted>复制没有完成：读不了授信记录");
+      expect(squeeze(s.now())).toContain(squeeze(`复制没有完成：读不了授信记录 ${trustFile()}：${unreadableReason()}`));
+      expect(s.now()).not.toContain("✓ 已复制到");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+  expect(existsSync(join(repoDir(), ".pi", "agents", "copy-w.md"))).toBe(false);
+  expect(await readFile(trustPath(), "utf8")).toBe(BAD_TRUST);
+}, 8000);
+
+test("授信记录所在目录只读、trust.json 不存在时打开设置页：顶部黄字按读不了授信记录处理", async (context) => {
+  if (process.getuid?.() === 0) context.skip();
+  await mkdir(repoDir(), { recursive: true });
+  mkdirSync(agentDir(), { recursive: true });
+  chmodSync(agentDir(), 0o555);
+  const ctx = scripted([
+    (s) => {
+      expect(s.now()).toContain("! 读不了授信记录：项目层的定义和设定都没有生效");
+      s.press(ESC, ESC);
+    },
+  ], { trust: "unset" });
+  await runAll(ctx);
+});
