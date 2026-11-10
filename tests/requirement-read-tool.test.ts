@@ -8,11 +8,12 @@ import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { RequirementService, requirementIntentHash } from "../src/modules/requirement/requirement-service.ts";
 import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
-import { createRequirementReadTool, RequirementReadError } from "../src/modules/pm/requirement-read-tool.ts";
+import { createRequirementReadTool, requirementReadView, REQUIREMENT_READ_PARAMETERS, RequirementReadError } from "../src/modules/pm/requirement-read-tool.ts";
 import type { RequirementReadBinding, RequirementReadToolOptions } from "../src/modules/pm/requirement-read-tool.ts";
 import * as storage from "../src/modules/requirement/prd-storage.ts";
 import { inspectPrdStructure } from "../src/modules/requirement/prd-view.ts";
 import { createRepoFixture, addWorktree, removeRepoFixture, GIT_ENV } from "./helpers/repo-fixture.ts";
+import { toPiTool } from "../src/modules/agents/role-tools.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
 
@@ -93,7 +94,7 @@ function content(result: unknown) { return result as { text: string; source: { c
 const LONG_STRUCTURE_BODY = Array.from({ length: 96 }, (_, i) =>
   `# Heading {#s${String(i).padStart(3, "0")}${"x".repeat(92)}}\n${"\u0001".repeat(15)}\n`).join("");
 function bounded(result: unknown) {
-  const json = JSON.stringify(result);
+  const json = JSON.stringify(requirementReadView(result));
   expect(Buffer.byteLength(json)).toBeLessThanOrEqual(49_152);
   expect(json.indexOf('"source":')).toBeLessThan(json.indexOf('"text":'));
   expect(json.indexOf('"coverage":')).toBeLessThan(json.indexOf('"text":'));
@@ -134,10 +135,16 @@ test.each([
   expect(combined).toBe(body); expect(sections).toEqual(expected.sections);
 }, 20_000);
 
+const MAX_STRUCTURE_BODY = Array.from({ length: 256 }, (_, i) => `# Heading {#s${String(i).padStart(3, "0")}${"x".repeat(92)}}\n`).join("");
+
 test.each(["close", "update"] as const)("结构专用续页仍重验当前权限：%s", async (change) => {
-  const w = await world(LONG_STRUCTURE_BODY); const tool = await w.tool();
+  const w = await world(); const tool = await w.tool();
+  const originalRead = RequirementService.prototype.read;
+  vi.spyOn(RequirementService.prototype, "read").mockImplementationOnce(async function (input) {
+    return { ...(await originalRead.call(this, input)), body: MAX_STRUCTURE_BODY };
+  });
   const first = bounded(await tool.execute({ action: "read", maxBytes: 32_768 }));
-  expect(first.text).toBe(LONG_STRUCTURE_BODY);
+  expect(first.text).toBe(MAX_STRUCTURE_BODY);
   expect(first.structure.remainingSections).toBeGreaterThan(0);
   expect(first.coverage.nextCursor).not.toBeNull();
   if (change === "close") w.close(); else await w.save(w.created.requirementId, BODY);
@@ -376,4 +383,113 @@ test("有章节结构时读不存在的章节，说明没有这个章节并建�
   const w = await world(); const tool = await w.tool();
   await expect(tool.execute({ action: "read", sectionId: "not-a-section" })).rejects.toMatchObject({ code: "section_not_found",
     advice: { why: "批准正文里没有这个章节编号", next: "先不带 sectionId 读取，按结果里 structure 列出的章节编号再读" } });
+});
+
+type Called = { content: Array<{ text: string }>; details: any };
+async function piCall(tool: Awaited<ReturnType<Awaited<ReturnType<typeof world>>["tool"]>>, params: unknown) {
+  const pi = toPiTool("requirement_manage", "读需求", REQUIREMENT_READ_PARAMETERS, { ...tool, view: requirementReadView });
+  const result = await (pi.execute as unknown as (id: string, params: unknown) => Promise<Called>)("c", params);
+  return { text: result.content[0]!.text, sent: JSON.parse(result.content[0]!.text), details: result.details };
+}
+const keptSource = (full: any) => ({ revision: full.source.revision, approvalScope: { summary: { confirmed: full.source.approvalScope.summary.confirmed } } });
+const keptCoverage = (full: any) => ({ nextCursor: full.coverage.nextCursor, blocking: full.coverage.blocking,
+  selectedTextComplete: full.coverage.selectedTextComplete, entirePrdCovered: full.coverage.entirePrdCovered });
+
+test.each(["pm", "reviewer", "qa"] as const)("%s 读需求正文：content 只有视图字段且值与完整结果相同，details 含全部字段，source 和 coverage 排在 text 前", async (role) => {
+  const w = await world(); const tool = await w.tool(w.binding(role));
+  const { sent, text, details } = await piCall(tool, { action: "read" });
+  expect(sent).toStrictEqual({ source: keptSource(details), coverage: keptCoverage(details), title: details.title, text: details.text,
+    structure: { sections: details.structure.sections.map((section: { id: string }) => ({ id: section.id })) } });
+  expect(sent.structure.sections.length).toBeGreaterThan(0);
+  expect(typeof sent.source.approvalScope.summary.confirmed).not.toBe("undefined");
+  expect(text.indexOf('"source":')).toBeLessThan(text.indexOf('"text":'));
+  expect(text.indexOf('"coverage":')).toBeLessThan(text.indexOf('"text":'));
+  expect(details.kind).toBe("read");
+  expect(details.coverage).toMatchObject({ representation: "parsed_prd_body", startByte: 0, performance: "unknown", verification: "not_evaluated" });
+  expect(details.coverage.totalBytes).toBeGreaterThan(0); expect(details.coverage.businessCompleteness).toBeDefined();
+  expect(details.structure).toMatchObject({ status: "available", totalSections: 4, complete: true });
+  expect(details.structure.sections[0]).toMatchObject({ startByte: 0 }); expect(details.structure.sections[0].hash).toBeDefined();
+  expect(details.source).toMatchObject({ commit: w.approved.commit, role });
+  expect(details.source.prdHash).toBeDefined(); expect(details.source.lifecycleEpoch).toBeDefined();
+  expect(details.source.approvalScope.status).toBe("available");
+  for (const dropped of ["representation", "sectionId", "startByte", "endByte", "totalBytes", "businessCompleteness", "verification", "performance", "status", "reason",
+    "totalSections", "startSection", "endSection", "remainingSections", "complete", "hash", "commit", "prdHash", "version", "lifecycleEpoch", "asOf", "requirementId",
+    "repoId", "workspaceId", "branch", "role", "purpose", "checkRoundId", "pending", "excluded", "blocked", "reference", "difference", "kind"]) {
+    expect(text, dropped).not.toContain(`"${dropped}":`);
+  }
+});
+
+test("diff 的 content 没有 title、structure、difference 和 kind，其余视图字段与完整结果相同", async () => {
+  const w = await world(); const tool = await w.tool(w.binding("reviewer"));
+  await w.save(w.created.requirementId, BODY + "新增一行。\n");
+  const { sent, text, details } = await piCall(tool, { action: "diff", fromRevision: 1 });
+  expect(sent).toStrictEqual({ source: keptSource(details), coverage: keptCoverage(details), text: details.text });
+  expect(details.difference).toMatchObject({ fromRevision: 1, toRevision: 2 }); expect(details.kind).toBe("diff");
+  expect(text).not.toContain("fromCommit"); expect(text).not.toContain("fromHash");
+});
+
+test("next 翻页的 content 同样是视图", async () => {
+  const w = await world(LONG_STRUCTURE_BODY); const tool = await w.tool(w.binding("qa"));
+  const first = await piCall(tool, { action: "read", maxBytes: 4_096 });
+  expect(first.sent.coverage.nextCursor).not.toBeNull();
+  const next = await piCall(tool, { action: "next", cursor: first.sent.coverage.nextCursor });
+  expect(next.sent).toStrictEqual({ source: keptSource(next.details), coverage: keptCoverage(next.details), title: next.details.title, text: next.details.text,
+    structure: { sections: next.details.structure.sections.map((section: { id: string }) => ({ id: section.id })) } });
+  expect(next.details.coverage.startByte).toBeGreaterThan(0);
+});
+
+const BIG_BODY = Array.from({ length: 250 }, (_, i) => `# Heading {#s${String(i).padStart(3, "0")}${"x".repeat(92)}}\n${'中"\\\u0001'.repeat(22)}\n`).join("");
+
+test.each([undefined, 32_768])("约 60 KB 正文 read 后 next 到底、diff 分页：maxBytes=%s，每页 content 不超 49152 字节，正文拼回原文", async (maxBytes) => {
+  expect(Buffer.byteLength(BIG_BODY)).toBeGreaterThan(60_000);
+  const w = await world(); const tool = await w.tool(w.binding("qa"));
+  const originalRead = RequirementService.prototype.read;
+  vi.spyOn(RequirementService.prototype, "read").mockImplementation(async function (input) {
+    return { ...(await originalRead.call(this, input)), body: BIG_BODY };
+  });
+  const paging = maxBytes === undefined ? {} : { maxBytes };
+  let cursor: string | null = null, combined = "", pages = 0;
+  do {
+    expect(++pages).toBeLessThan(40);
+    const { text, sent, details } = await piCall(tool, cursor ? { action: "next", cursor } : { action: "read", ...paging });
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(49_152);
+    expect(details.text).toBe(sent.text);
+    expect(text).not.toContain('"hash":'); expect(text).not.toContain('"totalBytes":');
+    combined += sent.text; cursor = sent.coverage.nextCursor;
+  } while (cursor);
+  expect(combined).toBe(BIG_BODY);
+  const original = RequirementService.prototype.diff;
+  vi.spyOn(RequirementService.prototype, "diff").mockImplementation(async function (input) {
+    return { ...(await original.call(this, input)), diff: BIG_BODY.replaceAll("Heading", "Changed") };
+  });
+  await w.save(w.created.requirementId, BODY + "新增。\n");
+  let diffText = "", diffPages = 0; cursor = null;
+  do {
+    expect(++diffPages).toBeLessThan(80);
+    const { text, sent } = await piCall(tool, cursor ? { action: "next", cursor } : { action: "diff", fromRevision: 1, ...paging });
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(49_152);
+    diffText += sent.text; cursor = sent.coverage.nextCursor;
+  } while (cursor);
+  expect(diffText).toContain("Changed");
+}, 60_000);
+
+test("metadata 动作和关闭后的 metadata：content 与完整结果的 JSON 逐字相同，details 是完整结果", async () => {
+  const w = await world(); const tool = await w.tool(w.binding("reviewer"));
+  const active = await piCall(tool, { action: "metadata" });
+  expect(active.text).toBe(JSON.stringify(active.details));
+  expect(active.details).toMatchObject({ kind: "metadata", lifecycle: "active" }); expect(active.details.source.commit).toBe(w.approved.commit);
+  w.close();
+  const closed = await piCall(tool, { action: "metadata" });
+  expect(closed.text).toBe(JSON.stringify(closed.details));
+  expect(closed.details).toMatchObject({ kind: "metadata", lifecycle: "closing" });
+});
+
+test("正文页超上限的错误文字不变，工具报这一页的结果超出了返回上限", async () => {
+  const w = await world(); const tool = await w.tool();
+  const original = RequirementService.prototype.read;
+  vi.spyOn(RequirementService.prototype, "read").mockImplementationOnce(async function (input) {
+    return { ...(await original.call(this, input)), title: "秘密".repeat(49_152) };
+  });
+  const error = await piCall(tool, { action: "read" }).catch((caught) => caught as Error);
+  expect(String((error as Error).message)).toContain("这一页的结果超出了返回上限");
 });

@@ -282,11 +282,35 @@ test.each(["worker", "reviewer", "qa"] as const)("%s 的 result_submit 成功时
   expect(result.details).toEqual(full);
 });
 
-test("requirement_manage（reviewer、qa、PM）不在精简表里，content 与完整结果逐字相同", async () => {
-  const full = { text: "# 目标\n保留移动。\n", source: { commit: HEAD, revision: 1, purpose: "black_box_acceptance" }, coverage: { nextCursor: null } };
+const readFull = (kind: "read" | "diff") => ({ kind, source: { approvalScope: { status: "available", summary: { confirmed: ["features", "acceptance"], pending: ["requirements.open"], excluded: [], blocked: [], reference: "r" } }, requirementId: REQ, repoId: HASH,
+  workspaceId: HASH, branch: "refs/heads/req", role: "qa", purpose: "black_box_acceptance", commit: HEAD, prdHash: `sha256:${HASH}`, revision: 1, version: 3, lifecycleEpoch: 1, asOf: 5 },
+  coverage: { representation: "parsed_prd_body", sectionId: null, startByte: 0, endByte: 9, totalBytes: 9, selectedTextComplete: true, entirePrdCovered: kind === "read", nextCursor: null,
+    blocking: [], businessCompleteness: "not_mechanically_proven", verification: "not_evaluated", performance: "unknown" },
+  ...(kind === "read" ? { title: "角色跳跃" } : { difference: { fromRevision: 1, toRevision: 2, fromCommit: HEAD, toCommit: HEAD, fromHash: HASH, toHash: HASH } }),
+  text: "# 目标\n保留移动。\n",
+  ...(kind === "read" ? { structure: { status: "available", businessCompleteness: "not_mechanically_proven", sections: [{ id: "goals", startByte: 0, endByte: 9, hash: HASH }],
+    totalSections: 1, startSection: 0, endSection: 1, remainingSections: 0, complete: true } } : {}) });
+
+test.each(["reviewer", "qa", "pm"] as const)("%s 的 requirement_manage read、diff：content 只留视图字段，details 是完整结果", async (who) => {
+  const tool = who === "pm" ? (await pmTools())("requirement_manage") : (await subagentTools(who))("requirement_manage");
+  const read = await call(tool, { action: "read" }, readFull("read"));
+  expect(read.sent).toStrictEqual({ source: { revision: 1, approvalScope: { summary: { confirmed: ["features", "acceptance"] } } },
+    coverage: { nextCursor: null, blocking: [], selectedTextComplete: true, entirePrdCovered: true },
+    title: "角色跳跃", text: "# 目标\n保留移动。\n", structure: { sections: [{ id: "goals" }] } });
+  expect(read.details).toEqual(readFull("read"));
+  expect(read.text.indexOf('"coverage":')).toBeLessThan(read.text.indexOf('"text":'));
+  const diff = await call(tool, { action: "diff", fromRevision: 1 }, readFull("diff"));
+  expect(diff.sent).toStrictEqual({ source: { revision: 1, approvalScope: { summary: { confirmed: ["features", "acceptance"] } } },
+    coverage: { nextCursor: null, blocking: [], selectedTextComplete: true, entirePrdCovered: false }, text: "# 目标\n保留移动。\n" });
+  expect(diff.details).toEqual(readFull("diff"));
+});
+
+test("requirement_manage 的 metadata 结果 content 与完整结果逐字相同，details 是完整结果", async () => {
+  const full = { kind: "metadata", requirementId: REQ, lifecycle: "closing" };
   for (const tool of [(await subagentTools("reviewer"))("requirement_manage"), (await subagentTools("qa"))("requirement_manage"), (await pmTools())("requirement_manage")]) {
-    const result = await call(tool, { action: "read" }, full);
+    const result = await call(tool, { action: "metadata" }, full);
     expect(result.text).toBe(JSON.stringify(full));
+    expect(result.details).toEqual(full);
   }
 });
 

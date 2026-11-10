@@ -5,7 +5,7 @@ import { listChangedPaths } from "../../core/exec/git-snapshot.ts";
 import { createPlanManageTool, PLAN_MANAGE_PARAMETERS, planManageView, readPlanIn } from "./plan-manage.ts";
 import type { TaskRecord } from "./plan-manage.ts";
 import type { PmLease, WorkspaceBinding } from "../requirement/requirement-contracts.ts";
-import { createRequirementReadTool, REQUIREMENT_READ_PARAMETERS } from "./requirement-read-tool.ts";
+import { createRequirementReadTool, REQUIREMENT_READ_PARAMETERS, requirementReadView } from "./requirement-read-tool.ts";
 import { overlaps } from "../../core/policy/ranges.ts";
 import { createResultSubmitTool, VERDICT_SUBMIT_PARAMETERS } from "./result-submit.ts";
 import { toPiTool } from "../agents/role-tools.ts";
@@ -50,7 +50,7 @@ export async function createSubagentTools(input: SubagentToolsInput): Promise<{ 
     } else {
       const read = track(await createRequirementReadTool({ ...shared, authorize, binding: { ...identity, role, lease: input.pmLease } }));
       tools.push(toPiTool("requirement_manage", `${role === "qa" ? "读取已批准的需求正文、章节或差异（黑盒验收基线）。" : "读取已批准的需求正文、章节或差异。"}结果的 coverage.nextCursor 不为空时用 next 带上它读下一页。`,
-        REQUIREMENT_READ_PARAMETERS, read));
+        REQUIREMENT_READ_PARAMETERS, { ...read, view: requirementReadView }));
     }
     if (role === "reviewer") {
       const plan = track(await createPlanManageTool({ ...shared, authorize, grant: { role, callerId: identity.callerId, runId: input.runId, ...scope } }));

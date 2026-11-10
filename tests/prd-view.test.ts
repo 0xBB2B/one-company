@@ -28,6 +28,8 @@ export const MOVEMENT_PRD = `# 角色动作 {#movement}
 跳跃高度与动画表现尚未确认；依赖这些参数的验收阻塞，不假定性能提升。
 `;
 
+const view = (response: unknown) => response;
+
 test("整包预算包含元数据和JSON转义，结构及UTF8正文都前进且可完整重组", () => {
   const body = Array.from({ length: 256 }, (_, i) =>
     `# 章 {#s${String(i).padStart(3, "0")}${"x".repeat(92)}}\n中😀\"\\\u0001\n`).join("");
@@ -36,10 +38,11 @@ test("整包预算包含元数据和JSON转义，结构及UTF8正文都前进且
   let combined = "", offset = 0, sectionOffset = 0, count = 0;
   for (;;) {
     const result = pagePrdResponse({ text: body, structure, startByte: offset, startSection: sectionOffset, maxBytes: 32_768,
+      view: (response: unknown) => response,
       response: (page, structure, more) => ({ source: '"\\\u0001'.repeat(1_000),
         coverage: { more, warning: "global_constraints_and_unresolved_may_be_outside_page" }, text: page.text, structure }) });
     expect(++count).toBeLessThan(16);
-    expect(Buffer.byteLength(JSON.stringify(result.response))).toBeLessThanOrEqual(PRD_RESPONSE_MAX_BYTES);
+    expect(Buffer.byteLength(JSON.stringify(view(result.response)))).toBeLessThanOrEqual(PRD_RESPONSE_MAX_BYTES);
     expect(result.page.endByte > offset || result.endSection > sectionOffset).toBe(true);
     expect(result.page.text).not.toContain("�");
     combined += result.page.text; sections.push(...result.response.structure!.sections);
@@ -51,12 +54,42 @@ test("整包预算包含元数据和JSON转义，结构及UTF8正文都前进且
 
 test("固定元数据超预算和非法结构偏移安全失败，不产生空转页", () => {
   const options = { text: "😀", startByte: 0, startSection: 0, maxBytes: 4,
-    response: () => ({ source: "x".repeat(PRD_RESPONSE_MAX_BYTES) }) };
+    view, response: () => ({ source: "x".repeat(PRD_RESPONSE_MAX_BYTES) }) };
   expect(() => pagePrdResponse(options)).toThrow(/^prd_response_budget_exceeded$/);
   expect(() => pagePrdResponse({ ...options, startSection: 1 })).toThrow(/^invalid_page_range$/);
   expect(() => pagePrdResponse({ ...options, startSection: -1 })).toThrow(/^invalid_page_range$/);
   const empty = pagePrdResponse({ ...options, text: "", response: (page, structure, more) => ({ page, structure, more }) });
   expect(empty.hasMore).toBe(false); expect(empty.page.complete).toBe(true);
+});
+
+const pickedView = (response: { source: unknown; coverage: unknown; text: string; structure?: { sections: Array<{ id: string }> } }) => ({
+  source: response.source, coverage: response.coverage, text: response.text,
+  ...(response.structure ? { structure: { sections: response.structure.sections.map((section) => ({ id: section.id })) } } : {}) });
+
+test("只按视图量页：完整结果里不发给模型的大字段不占页预算，每页正文和章节数不少于原样量，至少一页更多", () => {
+  const body = Array.from({ length: 250 }, (_, i) => `# 章 {#s${String(i).padStart(3, "0")}${"x".repeat(92)}}\n${"正文abc".repeat(40)}\n`).join("");
+  const structure = inspectPrdStructure(body);
+  const response = (page: { text: string }, structurePage: unknown, more: boolean) => ({ source: "s", pad: "p".repeat(30_000),
+    coverage: { more }, text: page.text, structure: structurePage });
+  let stricter = 0;
+  for (const maxBytes of [32_768, 8_192]) {
+    for (const [startByte, startSection] of [[0, 0], [Buffer.byteLength(body.slice(0, 5_000)), 20]] as const) {
+      const input = { text: body, structure, startByte, startSection, maxBytes, response };
+      const before = pagePrdResponse({ ...input, view } as never);
+      const after = pagePrdResponse({ ...input, view: pickedView } as never);
+      expect(after.page.endByte).toBeGreaterThanOrEqual(before.page.endByte);
+      expect(after.endSection).toBeGreaterThanOrEqual(before.endSection);
+      expect(Buffer.byteLength(JSON.stringify(pickedView(after.response as never)))).toBeLessThanOrEqual(PRD_RESPONSE_MAX_BYTES);
+      if (after.page.endByte > before.page.endByte) stricter++;
+    }
+  }
+  expect(stricter).toBeGreaterThan(0);
+});
+
+test("视图仍含超大字段时固定元数据超预算照旧抛 prd_response_budget_exceeded", () => {
+  const options = { text: "正文", startByte: 0, startSection: 0, maxBytes: 4, view: (response: { source: string }) => ({ source: response.source }),
+    response: () => ({ source: "x".repeat(PRD_RESPONSE_MAX_BYTES) }) };
+  expect(() => pagePrdResponse(options as never)).toThrow(/^prd_response_budget_exceeded$/);
 });
 
 test("业务PRD显式稳定ID，自包含目标、非目标、失败、边界、未决和黑盒结果", () => {

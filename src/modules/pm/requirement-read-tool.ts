@@ -101,6 +101,23 @@ interface Cursor {
   hash: string;
   epoch: number;
 }
+interface ReadResponse {
+  kind: "read" | "diff" | "metadata";
+  source: { revision: number; approvalScope: { summary: { confirmed: string[] } } };
+  coverage: { nextCursor: string | null; blocking: string[]; selectedTextComplete: boolean; entirePrdCovered: boolean };
+  title?: string;
+  text: string;
+  structure?: { sections: { id: string }[] };
+}
+export function requirementReadView(response: unknown): unknown {
+  const full = response as ReadResponse;
+  if (full.kind === "metadata") return full;
+  const { source, coverage, title, text, structure } = full;
+  return { source: { revision: source.revision, approvalScope: { summary: { confirmed: source.approvalScope.summary.confirmed } } },
+    coverage: { nextCursor: coverage.nextCursor, blocking: coverage.blocking, selectedTextComplete: coverage.selectedTextComplete, entirePrdCovered: coverage.entirePrdCovered },
+    ...(title !== undefined ? { title } : {}), text,
+    ...(structure ? { structure: { sections: structure.sections.map((section) => ({ id: section.id })) } } : {}) };
+}
 function freeze<T>(value: T): T {
   if (value && typeof value === "object") { for (const child of Object.values(value)) freeze(child); Object.freeze(value); }
   return value;
@@ -129,7 +146,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
   let unsubscribe: (() => void) | undefined;
   const deny = (code: RequirementReadErrorCode, detail?: string): never => { throw new RequirementReadError(code, detail); };
   function bounded<T>(response: T): T {
-    if (Buffer.byteLength(JSON.stringify(response)) > PRD_RESPONSE_MAX_BYTES) deny("response_too_large");
+    if (Buffer.byteLength(JSON.stringify(requirementReadView(response))) > PRD_RESPONSE_MAX_BYTES) deny("response_too_large");
     return freeze(response);
   }
   if (binding.requirementId !== binding.lease.requirementId || binding.workspaceId !== binding.lease.workspaceId ||
@@ -285,7 +302,7 @@ async function openReadTool(options: RequirementReadToolOptions) {
       const nextCursor = randomBytes(32).toString("hex");
       const origin = source(activeSync(before));
       const result = pagePrdResponse({ text, startByte: cursor?.offset ?? 0, maxBytes, structure,
-        startSection: cursor?.sectionOffset ?? 0, response: (page, structurePage, hasMore) => {
+        startSection: cursor?.sectionOffset ?? 0, view: requirementReadView, response: (page, structurePage, hasMore) => {
           const full = params.action === "read" && sectionId === undefined && page.complete && structurePage?.complete === true;
           return { kind: params.action, source: origin,
             coverage: { representation: params.action === "read" ? "parsed_prd_body" : "approved_diff",
