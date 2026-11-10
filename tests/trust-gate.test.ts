@@ -70,7 +70,7 @@ interface Options { reason?: string; hasUI?: boolean; width?: number; keys?: str
 async function launch(options: Options = {}) {
   const pi = fakePi(!options.resumed, options.settings);
   const gate = createTrustGate(pi as never) as unknown as ReturnType<typeof fakePi>;
-  const calls = { sessionStart: 0, otherEvent: 0, command: 0 };
+  const calls = { sessionStart: 0, otherEvent: 0, command: 0, tool: 0 };
   gate.on("session_start", () => { calls.sessionStart++; });
   gate.registerTool({
     name: "bash",
@@ -82,7 +82,7 @@ async function launch(options: Options = {}) {
   });
   gate.on("before_agent_start", () => { calls.otherEvent++; });
   gate.registerCommand("one:demo", { handler: () => { calls.command++; } });
-  gate.registerTool({ name: "one_demo_tool" });
+  gate.registerTool({ name: "one_demo_tool", execute: async () => { calls.tool++; return { content: [{ type: "text", text: "demo-ok" }] }; } });
 
   const screens: string[] = [];
   const notices: Array<{ message: string; type?: string }> = [];
@@ -118,6 +118,7 @@ async function launch(options: Options = {}) {
     activeTools: () => pi.active(),
     fireOtherEvent: async () => { for (const handler of pi.handlers.get("before_agent_start") ?? []) await handler({ type: "before_agent_start" }, ctx); },
     runCommand: async () => { await pi.commands.get("one:demo")!("", ctx); },
+    runDemoTool: async () => JSON.stringify(await pi.tools.get("one_demo_tool")!.execute!("id", {}, undefined, undefined, bashCtx)),
     bashParameters: () => JSON.stringify(pi.tools.get("bash")!.parameters),
     runBash: async (command = "echo hi") => JSON.stringify(await pi.tools.get("bash")!.execute!("id", { command }, undefined, undefined, bashCtx)),
   };
@@ -130,6 +131,8 @@ async function expectEnabled(r: Launched) {
   expect(r.calls.otherEvent).toBe(1);
   await r.runCommand();
   expect(r.calls.command).toBe(1);
+  expect(await r.runDemoTool()).toContain("demo-ok");
+  expect(r.calls.tool).toBe(1);
   expect(r.activeTools()).toEqual(expect.arrayContaining(["read", "bash", "one_demo_tool"]));
   expect(await r.runBash()).toContain("fake-bash");
   expect(r.bashParameters()).toContain("background");
@@ -140,6 +143,8 @@ async function expectDisabled(r: Launched) {
   expect(r.calls.otherEvent).toBe(0);
   await r.runCommand();
   expect(r.calls.command).toBe(0);
+  await expect(r.runDemoTool()).rejects.toThrow(/OneCompany (在这个项目停用|这次没有启用|还在判断)/u);
+  expect(r.calls.tool).toBe(0);
   expect(r.activeTools()).not.toContain("one_demo_tool");
   expect(r.activeTools()).toEqual(expect.arrayContaining(["read", "bash"]));
   expect(await r.runBash()).toContain("hi");

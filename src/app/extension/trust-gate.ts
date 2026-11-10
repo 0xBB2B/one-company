@@ -9,6 +9,7 @@ type CommandOptions = Parameters<ExtensionAPI["registerCommand"]>[1];
 type ToolDefinition = Parameters<ExtensionAPI["registerTool"]>[0];
 
 const PENDING: SessionTrust = { enabled: false, reason: { kind: "pending" } };
+const PLAIN_THEME = { fg: (_color: string, text: string) => text } as Parameters<typeof disabledNotice>[2];
 
 function normalizeShellPath(path: string): string {
   if (path === "~") return homedir();
@@ -69,7 +70,13 @@ export function createTrustGate(pi: ExtensionAPI): ExtensionAPI {
       if (prop === "registerTool") {
         return (tool: ToolDefinition) => {
           oneCompanyToolNames.add(tool.name);
-          target.registerTool(tool);
+          target.registerTool({
+            ...tool,
+            execute: (...args: Parameters<ToolDefinition["execute"]>) => {
+              if (!session.enabled) throw new Error(disabledNotice(session.reason, agentDir, PLAIN_THEME));
+              return tool.execute(...args);
+            },
+          });
         };
       }
       const value = Reflect.get(target, prop, receiver);
