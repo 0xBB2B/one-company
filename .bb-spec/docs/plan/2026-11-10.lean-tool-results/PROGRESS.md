@@ -6,12 +6,12 @@
 | 03 | 03-main-tool-results | done | 2026-11-10 |
 | 04 | 04-subagent-tool-results | done | 2026-11-10 |
 | 05 | 07-subagent-requirement-read | done | 2026-11-10 |
-| 06 | 05-explore-main | in-progress | — |
-| 07 | 06-explore-pm | pending | — |
+| 06 | 05-explore-main | done | 2026-11-10 |
+| 07 | 06-explore-pm | in-progress | — |
 | 08 | 08-card-renderer | pending | — |
 | 09 | 09-tool-cards | pending | — |
 ## 当前
-正在执行 `05-explore-main.md`：Red（测试工程师写测试）。
+正在执行 `06-explore-pm.md`：Red（测试工程师写测试）。
 改 PRD 记录：04 审查发现 web_search 去掉 retrievedAt 会让检索代理引用网页来源时自己编取回时间，用户 2026-11-10 决定保留，web_search 发给模型的内容不变，PRD 02 与计划 04 已同步。
 自修记录：03 审查发现以取消或拒绝关闭需求时 archive 为 null 被转成 {}（workflow-manage-extension.ts:33），补测试后修正，一次通过。执行顺序按上表：同一文件有多份计划要改的（agent-manage-extension.ts：03 → 05；pm-tools.ts、subagent-tools.ts：04 → 07 → 06），按表中先后串行。
 ## 阻塞

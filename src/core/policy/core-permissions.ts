@@ -9,7 +9,7 @@ export const CORE_TOOL_ACTIONS = Object.freeze({
   knowledge_query: Object.freeze(["exact", "search", "facts", "next"] as const),
   requirement_manage: Object.freeze(["create", "updateDraft", "confirmUpdate", "read", "diff", "next", "metadata", "list"] as const),
   plan_manage: Object.freeze(["propose", "read", "update", "confirm", "assess-update"] as const),
-  agent_manage: Object.freeze(["dispatch", "status", "pause", "resume", "stop", "catalog", "message"] as const),
+  agent_manage: Object.freeze(["dispatch", "status", "pause", "resume", "stop", "catalog", "message", "sources"] as const),
   user_interact: Object.freeze(["ask", "ask-tech", "reply", "forward"] as const),
   change_apply: Object.freeze(["prepare", "apply", "import", "status"] as const),
   verification_run: Object.freeze(["run", "stop", "status"] as const),
