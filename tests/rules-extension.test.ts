@@ -61,6 +61,17 @@ test("M8A-AC7：主会话规则要求先请用户批准草稿，需求生效后�
   expect(systemPrompt).not.toContain("在请用户批准之前");
 });
 
+test("主会话规则写明：用户要补授权实施时用 authorizeImplement，不重新批准、不用提问窗口；成功后没建工作区先建，建好了派 PM", async () => {
+  const systemPrompt = await start(noWindow);
+  const line = systemPrompt.split("\n").find((text) => text.includes("authorizeImplement"));
+  expect(line, "规则里应有 authorizeImplement").toBeDefined();
+  expect(line).toContain("重新批准");
+  expect(line).toContain("提问窗口");
+  const prepare = line!.indexOf("workspace-prepare"), dispatch = line!.indexOf("role=pm");
+  expect(prepare).toBeGreaterThan(line!.indexOf("authorizeImplement"));
+  expect(dispatch).toBeGreaterThan(prepare);
+});
+
 test("M8C-AC1：零自定义时注入包内默认规范，按背景、需求、功能、实现、验收的顺序列出五大板块及固定编号", async () => {
   const systemPrompt = await start(noWindow);
   expect(systemPrompt).toContain(`## 需求文档规范\n来源：${join(packageSkillsDir(), "requirement-doc", "SKILL.md")}（包内默认）`);

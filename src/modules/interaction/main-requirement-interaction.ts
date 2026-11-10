@@ -28,7 +28,7 @@ import type { InteractionContext, InteractionInterpretation, InteractionAction }
 import { RequirementStateStore } from "../requirement/requirement-state.ts";
 import { decisionDigest } from "../requirement/short-decision-format.ts";
 import { parseStrictJson } from "../../core/storage/strict-json.ts";
-import { ApprovalManifestStore, summarizeApprovalManifest, assertApprovalScopeReturnIn, assertRegisteredScopeReturnIn, APPROVAL_MANIFEST_NAMESPACE } from "../requirement/approval-manifest-store.ts";
+import { ApprovalManifestStore, summarizeApprovalManifest, assertApprovalScopeReturnIn, assertRegisteredScopeReturnIn, registeredApprovalManifestIn, APPROVAL_MANIFEST_NAMESPACE } from "../requirement/approval-manifest-store.ts";
 import type { RegisteredScopeReturnProof } from "../requirement/approval-manifest-store.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
@@ -36,7 +36,8 @@ import { checkRequirement } from "../requirement/requirement-contracts.ts";
 import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
 import type { RequirementApprovalScope } from "../requirement/requirement-manage-contracts.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE } from "../requirement/interaction-continuity.ts";
-import { approvalManifestReference, confirmed } from "../requirement/approval-manifest.ts";
+import type { ApprovalManifestReference } from "../requirement/approval-manifest.ts";
+import { approvalManifestReference, confirmed, implementGoalUnitIds, manifestAuthorizesImplement, supplementImplementAction } from "../requirement/approval-manifest.ts";
 import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from "../panel/adjudication.ts";
 import { requirementSummary, saveRequirementSummary } from "../requirement/requirement-summary.ts";
 import { askWindow, confirmWindow, mutedLines } from "../../core/host/question-window.ts";
@@ -54,7 +55,7 @@ export interface RequirementManageHostContext {
   readonly windowId: string; readonly sessionId: string;
   readonly repositories: ReadonlyMap<string, { readonly path: string }>;
 }
-export type RequirementServiceHandle = Pick<RequirementService, "create" | "updateDraft" | "confirmUpdate" | "loadConfirmationContext" | "read" | "diff" | "metadata">;
+export type RequirementServiceHandle = Pick<RequirementService, "create" | "updateDraft" | "confirmUpdate" | "loadConfirmationContext" | "read" | "diff" | "metadata" | "authorizeImplement">;
 export type OpenRequirementService = (options: RequirementServiceOptions) => Promise<RequirementServiceHandle>;
 export interface MainRequirementInteractionOptions {
   dataRoot: string; authorization: HostAuthorizationManager;
@@ -98,6 +99,7 @@ function parseMentions(text: string): Array<{ token: string; title: string; tail
 }
 const digest = (value: unknown) => decisionDigest(JSON.parse(JSON.stringify(value ?? null)));
 const same = (a: unknown, b: unknown) => digest(a) === digest(b);
+const STALE_AUTHORIZATION_CODES: ReadonlySet<string> = new Set(["manifest_authorization_required", "manifest_admission_required", "manifest_admission_changed", "manifest_input_changed", "authorization_required"]);
 function denied(code: string): never { throw new HostAuthorizationError(code); }
 
 const UNEXPLAINED_LOG_LIMIT = 200;
@@ -135,6 +137,7 @@ export class MainRequirementInteraction {
   #interpreted: { repoId: string; requirementId: string; operationId: string } | undefined;
   #candidate: ConfirmationRequest | undefined;
   #adjudication: { requirementId: string; subject: AdjudicationSubject } | undefined;
+  #implementAuthorization: { requirementId: string; revision: number; manifest: ApprovalManifestReference } | undefined;
   #resave: PendingResave | undefined;
   #unsubscribeState: (() => void) | undefined;
   readonly #unsubscribeHost: () => void;
@@ -170,7 +173,7 @@ export class MainRequirementInteraction {
   #dropInput(): void {
     this.#inputTargets = []; this.#addressed.clear();
     this.#core?.revoke(); this.#core?.shutdown(); this.#core = undefined; this.#coreRepo = undefined; this.#coreRequirement = undefined;
-    this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined; this.#candidate = undefined; this.#adjudication = undefined; this.#resave = undefined;
+    this.#ticket = undefined; this.#capability = undefined; this.#interpretation = undefined; this.#candidate = undefined; this.#adjudication = undefined; this.#implementAuthorization = undefined; this.#resave = undefined;
     const input = this.#input; this.#input = undefined;
     if (input) { input.event.text = ""; input.abort.abort(); }
     this.#unsubscribeState?.(); this.#unsubscribeState = undefined;
@@ -422,6 +425,14 @@ export class MainRequirementInteraction {
           return { basis, currentGoal: "", candidates: [], ...records, questions: records.questions.filter((question) => digest(question.basis) === digest(basis)),
             adjudication: adjudication.subject };
         }
+        const implement = this.#implementAuthorization;
+        if (implement && implement.requirementId === id) {
+          const record = this.#authorization.snapshot(repoId, id, host.sessionId);
+          const records = this.#authorization.interactionRecords(repoId, id, host.sessionId);
+          const basis = { requirementId: id, version: record.version, epoch: record.data.epoch, prd: record.data.approved };
+          return { basis, currentGoal: "", candidates: [], ...records, questions: records.questions.filter((question) => digest(question.basis) === digest(basis)),
+            implementAuthorization: { revision: implement.revision, manifest: implement.manifest } };
+        }
         const request = this.#candidate;
         if (!request || request.requirementId !== id || !this.#ctx) return denied("candidate_required");
         const loaded = await this.#load(this.#ctx, request);
@@ -600,6 +611,72 @@ export class MainRequirementInteraction {
       return this.#prove(ctx, request.repoId, { ...base, status: "recorded", decisionId, choice: task.userDecision!.choice,
         maxTurns: task.userDecision!.maxTurns, taskStatus: task.status }, undefined, proofs);
     } finally { this.#adjudication = undefined; }
+  }
+  async authorizeImplement(ctx: ExtensionContext, request: { repoId: string; requirementId: string }): Promise<Record<string, unknown>> {
+    const { repoId, requirementId } = request;
+    const windowInput = this.#currentInput(ctx);
+    if (windowInput.fromQuestionWindow) denied("implement_window_answer");
+    const host = this.#host(ctx);
+    const record = this.#snapshot(host, repoId, requirementId, false);
+    if (record.data.lifecycle !== "active" || record.data.recovery !== "ready") denied("implement_requirement_not_active");
+    if (!same(record.data.saved, record.data.approved)) denied("implement_draft_unapproved");
+    const baseRef = record.data.approvalManifest!.reference;
+    const current = withDatabase(repositoryDatabase(this.#options.dataRoot, repoId), (db) => registeredApprovalManifestIn(db, repoId, baseRef, record));
+    if (manifestAuthorizesImplement(current)) {
+      return this.#prove(ctx, repoId, { requirementId, version: record.version, epoch: record.data.epoch, status: "already_authorized",
+        implementAuthorization: "已授权实施", next: "这一版已经授权实施" });
+    }
+    const goalIds = implementGoalUnitIds(current, record.data.docSpec!.sections);
+    if (!goalIds.length) denied("implement_scope_empty");
+    if (!this.#inputTargets.some((target) => target.repoId === repoId && target.requirementId === requirementId)) {
+      const approved = await confirmWindow(ctx, { title: "授权实施", lines: await this.#implementWindowLines(host, repoId, requirementId, record) });
+      if (!approved) denied("implement_authorization_declined");
+      if (this.#currentInput(ctx) !== windowInput) denied("input_changed");
+    }
+    this.#candidate = undefined; this.#capability = undefined; this.#interpretation = undefined;
+    this.#implementAuthorization = { requirementId, revision: record.data.revision, manifest: baseRef };
+    const stale = (error: unknown): never => {
+      if (STALE_AUTHORIZATION_CODES.has(String((error as { code?: unknown } | null)?.code))) denied("implement_authorization_stale");
+      throw error;
+    };
+    try {
+      const core = await this.#ensureCore(ctx, repoId, requirementId);
+      if (!this.#ticket) return denied("current_input_required");
+      const { capability, notRecorded } = await this.#unlessSuperseded(windowInput, () => core.interpret(this.#ticket!, requirementId));
+      const saved = core.save(capability);
+      const authorization = core.authorizeImplement(capability);
+      if (!authorization) return denied("implement_authorization_stale");
+      const manifest = supplementImplementAction({ manifest: current, goalIds, decisionId: authorization.decisionId });
+      const next = approvalManifestReference(manifest);
+      const recheck = () => {
+        const again = core.authorizeImplement(capability);
+        return again !== null && again.receiptId === authorization.receiptId && again.version === authorization.version ? again : null;
+      };
+      const store = new ApprovalManifestStore({ dataRoot: this.#options.dataRoot, repoId,
+        authorize: (r) => { this.#snapshot(this.#host(ctx), repoId, requirementId); return r.action === "register" && same(r.reference, next); },
+        loadExpected: async (reference) => same(reference, next) ? { requirementId, candidate: manifest.candidate,
+          partition: { prdHash: manifest.candidate.to.hash, totalBytes: manifest.totalBytes,
+            units: manifest.units.map(({ id, hash, startByte, endByte }) => ({ id, hash, startByte, endByte })) } } : denied("manifest_mismatch"),
+        admit: (r) => { const again = recheck();
+          return again && same(r.reference, next) ? { receiptId: again.receiptId, version: again.version, epoch: again.epoch, inputProof: again.inputProof } : null; } });
+      await this.#unlessSuperseded(windowInput, () => store.registerImplementSupplement({ base: baseRef, manifest, decisionId: authorization.decisionId }).catch(stale));
+      const receipt = await this.#unlessSuperseded(windowInput, async () => {
+      const service = await this.#service(ctx, repoId, requirementId, (r) => r.action === "authorizeImplement" &&
+        r.version === authorization.version && r.receiptId === authorization.receiptId && same(r.manifest, next),
+        (r) => recheck() !== null && r.requirementId === requirementId && r.version === authorization.version && r.receiptId === authorization.receiptId && same(r.manifest, next));
+      return service.authorizeImplement({ requirementId, version: authorization.version, receiptId: authorization.receiptId, manifest: next }).catch(stale);
+      });
+      return this.#prove(ctx, repoId, { requirementId, version: receipt.version, epoch: receipt.epoch, status: "authorized", implementAuthorization: "已授权实施",
+        decisionIds: saved.decisionIds, next: "照规矩继续：工作区没建就先用 workspace-prepare 建，建好了用 agent_manage role=pm 派 PM",
+        ...(notRecorded.length ? { notRecorded } : {}) }, undefined, this.#decisionProofs(repoId, saved.decisionIds, saved.operationId));
+    } finally { this.#implementAuthorization = undefined; }
+  }
+  async #implementWindowLines(host: RequirementManageHostContext, repoId: string, requirementId: string, record: StoredRecord<RequirementRecord>): Promise<WindowLine[]> {
+    const title = await this.#requirementTitle(host, repoId, requirementId);
+    const summary = record.data.saved ? requirementSummary(this.#options.dataRoot, repoId, requirementId, record.data.saved.hash) : undefined;
+    return [{ text: `需求：${title}（已批准第 ${record.data.revision} 版）` },
+      ...mutedLines([`编号：${requirementId} · 仓库：${basename(host.repositories.get(repoId)!.path)}`, ...(summary ? [`简介：${summary}`] : [])]),
+      { text: "" }, { text: `确认后登记"实施"授权，PM 按已批准的第 ${record.data.revision} 版规划和派工。` }];
   }
   async confirm(ctx: ExtensionContext, request: ConfirmationRequest): Promise<Record<string, unknown>> {
     const input = this.#currentInput(ctx);

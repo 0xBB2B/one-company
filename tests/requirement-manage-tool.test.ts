@@ -30,6 +30,17 @@ describe("requirement_manage严格公开参数", () => {
     expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...confirm, operationId: "不是编号" } })).toBe(false);
     await expect(tool.execute("test", { request: { ...confirm, operationId: uuidv7() } } as never, undefined, undefined, {} as never)).rejects.toMatchObject({ code: "invalid_shape" });
   });
+  test("authorizeImplement只接action、repoId、requirementId，多传、缺失或编号格式不对都被拒", async () => {
+    const authorize = { action: "authorizeImplement", repoId: base.repoId, requirementId: uuidv7() };
+    expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: authorize })).toBe(true);
+    for (const extra of [{ operationId: uuidv7() }, { version: 1 }, { receiptId: uuidv7() }, { text: "授权实施" }]) {
+      expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...authorize, ...extra } }), Object.keys(extra)[0]).toBe(false);
+      await expect(tool0().execute("test", { request: { ...authorize, ...extra } } as never, undefined, undefined, {} as never)).rejects.toMatchObject({ code: "invalid_shape" });
+    }
+    const { requirementId: _omitted, ...missing } = authorize;
+    expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: missing })).toBe(false);
+    expect(Value.Check(REQUIREMENT_MANAGE_PARAMETERS, { request: { ...authorize, requirementId: "不是编号" } })).toBe(false);
+  });
   const tool0 = () => createRequirementManageTool({ interaction: { execute: () => { throw new Error("must-not-run"); } } as never });
   test("工具说明不提新生成与UUIDv7，也不让模型填写或照抄操作编号去续做", () => {
     const { description } = createRequirementManageTool({ interaction: {} as never });
