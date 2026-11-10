@@ -56,7 +56,7 @@ export async function createPmRunWorld(cleanups: Array<() => unknown | Promise<u
     shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(fixture.dataRoot, fixture.repoId) }), networkGate: new NetworkPauseGate(),
     loadAgentSettings: options.loadAgentSettings ?? (() => readAgentSettings({ agentDir: join(fixture.root, "none-a"), repositoryRoot: join(fixture.root, "none-r"), projectTrusted: false })),
     roleCatalog: catalog.roles, ...(options.reloadCatalog ? { loadRoleCatalog: async () => (await loadCatalog()).roles } : {}),
-    skillDirs: [join(defaultRoleDir(), "..", "skills"), ...(options.skillDirs ?? [])],
+    loadSkillDirs: () => [join(defaultRoleDir(), "..", "skills"), ...(options.skillDirs ?? [])],
     runtime, clock, workspaceRepoIds: [fixture.repoId], emit, web: options.web, index,
     loadDisabledAgents });
   manager.markStarted();

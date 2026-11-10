@@ -91,8 +91,8 @@ export interface RunManagerOptions {
   loadDisabledAgents?: () => Set<string>;
   /** 每次派出时重新读取角色目录；缺省用启动时的 roleCatalog。 */
   loadRoleCatalog?: () => Promise<RoleCatalogEntry[]>;
-  /** 按顺序查找 skill 的目录（项目、用户、安装资源）。 */
-  skillDirs?: string[];
+  /** 每次派出时按顺序取查找 skill 的目录（项目、用户、安装资源）。 */
+  loadSkillDirs?: () => string[];
   /** 守护进程持有的主仓库索引；缺省时角色没有 knowledge_query。 */
   index?: ProjectIndexHost;
 }
@@ -672,7 +672,7 @@ export class RunManager {
     const extra = uncovered.filter((skill) => !own.has(skill));
     if (!extra.length) return { definition, resolved };
     try {
-      const loaded = await loadSkills(extra, this.options.skillDirs ?? [], name);
+      const loaded = await loadSkills(extra, this.options.loadSkillDirs?.() ?? [], name);
       return { definition, resolved: { ...resolved, skillsContext: [resolved.skillsContext, loaded.context].filter(Boolean).join("\n\n"),
         fingerprint: { ...resolved.fingerprint, skills: [...resolved.fingerprint.skills, ...loaded.skills] } } };
     } catch (error) {
@@ -1138,7 +1138,7 @@ export class RunManager {
     if (this.disabledAgents().has(name)) throw protocolError("agent_disabled", `${name} 已关闭`, `改用开着的定义，或不指定（用通用 ${role}）后重新派；用户点名要这个定义时先问用户`);
     const catalog = this.options.loadRoleCatalog ? await this.options.loadRoleCatalog() : this.options.roleCatalog;
     try {
-      return await resolveAgent({ catalog, name, role, fallback, skillDirs: this.options.skillDirs ?? [], ...this.modelLookup() });
+      return await resolveAgent({ catalog, name, role, fallback, skillDirs: this.options.loadSkillDirs?.() ?? [], ...this.modelLookup() });
     } catch (error) {
       if (error instanceof AgentResolveError) throw protocolError(error.code, error.message);
       throw error;
