@@ -32,7 +32,7 @@ import { resolveRepositoryRequirementDoc } from "../src/modules/requirement/requ
 import type { ConfirmationContext } from "../src/modules/requirement/requirement-manage-contracts.ts";
 import type { Static } from "typebox";
 import { ModelInterpretation } from "../src/modules/interaction/interaction-derivation.ts";
-import { requirementSummary, saveRequirementSummary } from "../src/modules/requirement/requirement-summary.ts";
+import { requirementSummary } from "../src/modules/requirement/requirement-summary.ts";
 import { beginDesign as beginDesignOn, decidePrototype as decidePrototypeOn, pendingConfirmation as pendingConfirmationOn, prototypeFilePath, readPrototypeBoard, removeFromDraft as removeFromDraftOn, submitDesign } from "../src/modules/requirement/requirement-prototypes.ts";
 import { prototypesAtRevision } from "../src/modules/requirement/requirement-prototype-revisions.ts";
 import { answeringUi } from "./helpers/window-host.ts";
@@ -2075,8 +2075,8 @@ async function approvedWorld(implement = false, review: typeof phoneReview = (c)
   const worktree = join(w.root, "worktree"); await git(w.repositoryRoot, ["worktree", "add", "-b", "requirement-test", worktree, "HEAD"]);
   const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
   const baseCommit = await git(w.repositoryRoot, ["rev-parse", "HEAD"]);
-  const bound = await state.bindWorkspace({ requirementId: String(created.requirementId), version: Number(created.version), path: worktree, baseCommit, prepareOperationId: uuidv7() });
-  const { input } = await w.request({ ...created, version: bound.version });
+  await state.bindWorkspace({ requirementId: String(created.requirementId), version: Number(created.version), path: worktree, baseCommit, prepareOperationId: uuidv7() });
+  const { input } = await w.request(created);
   w.capture(utterance); scriptReview(w.provider, review);
   const approved = await w.call({ action: "confirmUpdate", ...input });
   const requirementId = input.requirementId;
@@ -2406,7 +2406,8 @@ describe("补授权实施 authorizeImplement", () => {
 
   test("需求没有简介时，确认窗口不显示简介一行", async () => {
     const { w, authorize, record, requirementId } = await approvedWorld();
-    saveRequirementSummary(w.dataRoot, w.repoId, requirementId, "0".repeat(64), "别的版本的简介");
+    const key = `${requirementId}:${record().data.saved!.hash.replace(/^sha256:/u, "")}`;
+    withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.remove("requirement_summaries", key, db.read("requirement_summaries", key)!.version));
     expect(requirementSummary(w.dataRoot, w.repoId, requirementId, record().data.saved!.hash)).toBeUndefined();
     w.capture("授权实施", "interactive", false); scriptImplement(w.provider); w.answerWindows(true);
     await authorize();
@@ -2425,6 +2426,9 @@ describe("补授权实施 authorizeImplement", () => {
     const error = await rejectionOf(authorize());
     expect(error.message).toContain("原因：需求不在生效状态（还是草稿、已关闭或已取消），不能补授权实施");
     expect(error.message).toContain("建议：草稿请用户批准时在同一句话里说'批准并开始实施'；已关闭或已取消的需求不能再授权");
+  });
+});
+
 describe("需求草稿跟着对话线", () => {
   const lineWorld = async () => {
     const w = await world();
