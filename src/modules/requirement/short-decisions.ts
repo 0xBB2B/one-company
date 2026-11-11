@@ -129,7 +129,6 @@ export class ShortDecisionStore {
           if (supersedingNow.has(target) || supersededBy(old) !== null || (subject.actor === "ai" && old.actor === "user") ||
             (subject.status === "pending" && old.status !== "pending")) throw new ShortDecisionError("supersede_denied");
           supersedingNow.add(target);
-          if (!this.options.lines) db.update("short_decisions", target, db.read("short_decisions", target)!.version, { ...old, status: "superseded", supersededBy: decisionId });
         }
         db.create("short_decisions", decisionId, record, decisionId);
         db.append(stream(batch.requirementId), checked(Event, { requirementId: batch.requirementId, repoId: this.options.repoId,

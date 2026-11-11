@@ -383,10 +383,8 @@ export class UserInteractionCore {
       const replacements = records.filter(({ record }) => record.operationId === v.saved!.operationId && record.supersedes.includes(original.record.decisionId));
       if (!replacements.length && records !== v.savedRecords) continue;
       if (replacements.length !== 1) throw new UserInteractionError("revision_link_mismatch");
-      const replacement = replacements[0]!.record, row = db.read("short_decisions", original.record.decisionId);
-      const expected = this.#options.lines ? { version: original.version, data: original.record }
-        : { version: original.version + 1, data: { ...original.record, status: "superseded", supersededBy: replacement.decisionId } };
-      if (!row || row.id !== original.record.decisionId || row.version !== expected.version || decisionDigest(row.data) !== decisionDigest(expected.data)) throw new UserInteractionError("revision_source_changed");
+      const row = db.read("short_decisions", original.record.decisionId);
+      if (!row || row.id !== original.record.decisionId || row.version !== original.version || decisionDigest(row.data) !== decisionDigest(original.record)) throw new UserInteractionError("revision_source_changed");
     }
   }
   #finishSaved(v: Verified): void {
@@ -417,9 +415,7 @@ export class UserInteractionCore {
     if (verified?.saved && context.document) {
       withDatabase(this.#path(), (db) => this.#assertSavedRevisions(db, verified));
       inputCheck = { excludeOperationId: verified.saved.operationId,
-        originals: new Map((verified.originalRevisions ?? []).map(({ version, record }) => [record.decisionId, { id: record.decisionId, version, data: record }])),
-        replacements: new Map(verified.savedRecords!.filter(({ record }) => record.operationId === verified.saved!.operationId)
-          .map(({ version, record }) => [record.decisionId, { id: record.decisionId, version, data: record }])) };
+        originals: new Map((verified.originalRevisions ?? []).map(({ version, record }) => [record.decisionId, { id: record.decisionId, version, data: record }])) };
     }
     if (context.document && context.savedOperationId && (checkView || inputCheck)) {
       const actual = loadInteractionContinuity(this.#options.dataRoot, this.#options.repoId, context.basis, context.document, inputCheck, this.#line(context.basis.requirementId));

@@ -68,7 +68,7 @@ export function recordInteractionResolutionIn(db: LocalDatabase, repoId: string,
       const row = db.read("short_decisions", saved.decisionIds[index]!); if (!row) return deny("continuity_decision_missing");
       const d = checkDecisionRecord(row.data);
       if (d.operationId !== saved.operationId || d.requirementVersion !== context.basis.version || d.epoch !== context.basis.epoch ||
-        d.requirementId !== context.basis.requirementId || d.status === "superseded") deny("continuity_decision_mismatch");
+        d.requirementId !== context.basis.requirementId) deny("continuity_decision_mismatch");
       return { record: ref(row), kind: entry.kind, basis: entry.basis, resolution: entry.resolution, requestId: entry.requestId,
         unitIds: units(review.units.filter((u) => u.conclusionIndexes.includes(index)).map((u) => u.id)) };
     }),
@@ -118,7 +118,8 @@ function collectionProof(facts: ProofRow[], questions: ProofRow[], read: Pick<Lo
   const ids = new Set(facts.flatMap((row) => checkedFact(row).decisions.map((decision) => decision.record.id)));
   const records = (rows: ProofRow[]) => rows.map((row) => ({ ...ref(row), key: row.key ?? row.id })).sort((a, b) => a.key.localeCompare(b.key) || a.id.localeCompare(b.id));
   return decisionDigest({ facts: records(facts), questions: records(questions), decisions: [...ids].sort().map((id) => {
-    const row = read("short_decisions", id); return { id, value: row ? ref(row) : null, supersededBy: row ? supersederOnLine(row.data as ShortDecisionRecord) : null };
+    const row = read("short_decisions", id), supersededBy = row ? supersederOnLine(row.data as ShortDecisionRecord) : null;
+    return { id, value: row ? ref(row) : null, supersededBy };
   }) });
 }
 /** 在调用方现有SQLite快照中核对整个输入集合，覆盖新增/删除；不向调用方返回其他需求元数据。 */
@@ -136,8 +137,7 @@ export function continuityInputProofIn(db: LocalDatabase, requirementId: string,
 }
 /** 查询只读取有界元数据。超过扫描预算拒绝，绝不截掉未答问题。 */
 export function loadInteractionContinuity(dataRoot: string, repoId: string, basis: InteractionBasis, doc: DocumentAnalysis,
-  inputCheck?: { excludeOperationId: string; originals: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>>;
-    replacements: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>> }, line?: readonly string[]) {
+  inputCheck?: { excludeOperationId: string; originals: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>> }, line?: readonly string[]) {
   const db = new DatabaseSync(repositoryDatabase(dataRoot, repoId), { readOnly: true, timeout: 5_000 });
   try {
     db.exec("BEGIN");
@@ -150,13 +150,7 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
       const actual = actualRead<T>(namespace, key);
       const original = namespace === "short_decisions" ? inputCheck?.originals.get(key) : undefined;
       if (!original) return actual;
-      if (actual && actual.id === original.id && actual.version === original.version && same(actual.data, original.data)) return original as unknown as StoredRecord<T>;
-      const changed = actual?.data as ShortDecisionRecord | undefined;
-      const replacement = changed?.supersededBy ? inputCheck!.replacements.get(changed.supersededBy) : undefined;
-      if (!actual || actual.id !== original.id || actual.version !== original.version + 1 || !replacement ||
-        replacement.data.operationId !== inputCheck!.excludeOperationId || !replacement.data.supersedes.includes(key) ||
-        !same(actual.data, { ...original.data, status: "superseded", supersededBy: replacement.id }) ||
-        !same(actualRead("short_decisions", replacement.id), replacement)) deny("continuity_revision_changed");
+      if (!actual || actual.id !== original.id || actual.version !== original.version || !same(actual.data, original.data)) deny("continuity_revision_changed");
       return original as unknown as StoredRecord<T>;
     };
     const current = read<RequirementRecord>("requirements", basis.requirementId);
@@ -187,9 +181,9 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
       const value = checkDecisionRecord(row.data);
       if (value.repoId !== repoId || value.requirementId !== basis.requirementId || value.epoch !== basis.epoch || value.operationId !== fact.operationId ||
         value.requirementVersion !== fact.basis.version || value.basisReceiptId !== null && value.basisReceiptId !== fact.receiptId || !same(value.prd, fact.basis.prd)) return null;
-      if (value.status !== "superseded") return same(ref(row), d.record) &&
-        value.basisReceiptId === (value.status === "confirmed" ? fact.receiptId : null) ? { row, value: withSupersession(value, supersededByOnLine(value)) } : null;
-      // 原字段只能发生ShortDecisionStore的单次状态取代，不能把任意行变化解释成修订。
+      if (value.status !== "superseded") return same(ref(row), d.record) && value.basisReceiptId === (value.status === "confirmed" ? fact.receiptId : null)
+        ? { row, value: withSupersession(value, supersededByOnLine(value)) } : null;
+      // 升级前的旧库把被取代决定那一行改成了已取代、版本号加 1；只认这一种变化，不能把任意行变化解释成修订。
       if (row.version !== d.record.version + 1 || !["confirmed", "pending"].some((status) => decisionDigest({ ...value, status, supersededBy: null }) === d.record.hash)) return null;
       return { row, value };
     };

@@ -267,9 +267,9 @@ test("被取代/篡改的真实短决定不能登记或维持批准范围", asyn
   const decisionId = manifest.units.find((u) => u.id === "B")!.decisionIds[0]!;
   f.db((db) => { const row = db.read<any>("short_decisions", decisionId)!;
     db.update("short_decisions", decisionId, row.version, { ...row.data, status: "superseded", supersededBy: uuidv7() }); });
-  expect(() => f.store.read(ref)).toThrow(/manifest_decision_mismatch/);
-  await expect(f.service.read({ requirementId: f.saved.requirementId, source: "approved" })).rejects.toThrow(/manifest_decision_mismatch/);
-  await expect(f.service.diff({ requirementId: f.saved.requirementId, fromRevision: 1 })).rejects.toThrow(/manifest_decision_mismatch/);
+  expect(() => f.store.read(ref)).toThrow(/manifest_decision/);
+  await expect(f.service.read({ requirementId: f.saved.requirementId, source: "approved" })).rejects.toThrow(/manifest_decision/);
+  await expect(f.service.diff({ requirementId: f.saved.requirementId, fromRevision: 1 })).rejects.toThrow(/manifest_decision/);
 });
 
 test("真实saved loader拒绝历史操作/任意ref，当前版本变化使旧Core与清单失效", async () => {

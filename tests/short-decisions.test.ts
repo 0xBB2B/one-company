@@ -179,6 +179,16 @@ test("修订保留旧结论并标记取代关系；重复批次不再次改写",
   expect(w.events()).toHaveLength(2);
 });
 
+test("不带对话线的存储：E 取代 D 后库里 D 那一行不被改写，读出来是已取代且指向 E，再取代 D 被拒", async () => {
+  const w = await world();
+  const d = w.store.append(JSON.stringify(w.input)).decisionIds[0]!;
+  const rowBefore = withDatabase(w.path, (db) => db.read("short_decisions", d))!;
+  const e = w.store.append(JSON.stringify({ ...w.input, operationId: uuidv7(), decisions: [{ ...item(), conclusion: "E 取代 D", supersedes: [d] }] })).decisionIds[0]!;
+  expect(withDatabase(w.path, (db) => db.read("short_decisions", d))).toEqual(rowBefore);
+  expect(w.store.read(w.input.requirementId, d)).toMatchObject({ status: "superseded", supersededBy: e });
+  expect(() => w.store.append(JSON.stringify({ ...w.input, operationId: uuidv7(), decisions: [{ ...item(), conclusion: "再取代 D", supersedes: [d] }] }))).toThrow(/supersede_denied/);
+});
+
 test("AI不能取代用户决定，pending不能取代confirmed，不接受旧格式USER编号", async () => {
   const w = await world(); const first = w.store.append(JSON.stringify(w.input));
   const input = { ...w.input, operationId: uuidv7(), decisions: [{ ...item(), supersedes: first.decisionIds }] };
