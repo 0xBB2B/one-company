@@ -179,6 +179,16 @@ test("修订保留旧结论并标记取代关系；重复批次不再次改写",
   expect(w.events()).toHaveLength(2);
 });
 
+test("不带对话线的存储：E 取代 D 后库里 D 那一行不被改写，读出来是已取代且指向 E，再取代 D 被拒", async () => {
+  const w = await world();
+  const d = w.store.append(JSON.stringify(w.input)).decisionIds[0]!;
+  const rowBefore = withDatabase(w.path, (db) => db.read("short_decisions", d))!;
+  const e = w.store.append(JSON.stringify({ ...w.input, operationId: uuidv7(), decisions: [{ ...item(), conclusion: "E 取代 D", supersedes: [d] }] })).decisionIds[0]!;
+  expect(withDatabase(w.path, (db) => db.read("short_decisions", d))).toEqual(rowBefore);
+  expect(w.store.read(w.input.requirementId, d)).toMatchObject({ status: "superseded", supersededBy: e });
+  expect(() => w.store.append(JSON.stringify({ ...w.input, operationId: uuidv7(), decisions: [{ ...item(), conclusion: "再取代 D", supersedes: [d] }] }))).toThrow(/supersede_denied/);
+});
+
 test("AI不能取代用户决定，pending不能取代confirmed，不接受旧格式USER编号", async () => {
   const w = await world(); const first = w.store.append(JSON.stringify(w.input));
   const input = { ...w.input, operationId: uuidv7(), decisions: [{ ...item(), supersedes: first.decisionIds }] };
@@ -295,4 +305,30 @@ test("短结论随一致性备份保存，副本仍不能直接接管执行", as
     const result = raw.prepare("SELECT data FROM records WHERE namespace='short_decisions' AND record_key=?").get(first.decisionIds[0]!);
     expect(JSON.parse(String(result?.data))).toMatchObject({ conclusion: item().conclusion, scope: item().scope });
   } finally { raw.close(); }
+});
+
+test("带对话线的存储：线 A 上 E 取代 D 后，回到 E 之前的线 B 上 D 仍是有效，线 A 上 D 是已取代", async () => {
+  const w = await world();
+  const requirementId = w.input.requirementId;
+  const linesA: Record<string, string[]> = {};
+  const storeA = await ShortDecisionStore.open({ ...w.options, lines: linesA });
+  const d = storeA.append(JSON.stringify(w.input)).decisionIds[0]!;
+  const linesB = { [requirementId]: [...linesA[requirementId]!] };
+  const e = storeA.append(JSON.stringify({ ...w.input, operationId: uuidv7(), decisions: [{ ...item(), conclusion: "取代 D", supersedes: [d] }] })).decisionIds[0]!;
+  expect(storeA.read(requirementId, d)).toMatchObject({ status: "superseded", supersededBy: e });
+  const storeB = await ShortDecisionStore.open({ ...w.options, lines: linesB });
+  expect(storeB.read(requirementId, d)).toMatchObject({ status: "confirmed", supersededBy: null });
+});
+
+test("带对话线的存储：同一批里两条决定取代同一个目标被拒，同一条线上再取代已被取代的决定也被拒", async () => {
+  const w = await world();
+  const requirementId = w.input.requirementId;
+  const lines: Record<string, string[]> = {};
+  const store = await ShortDecisionStore.open({ ...w.options, lines });
+  const d = store.append(JSON.stringify(w.input)).decisionIds[0]!;
+  const twice = { ...w.input, operationId: uuidv7(), decisions: [{ ...item(), supersedes: [d] }, { ...item(), conclusion: "另一条也取代 D", supersedes: [d] }] };
+  expect(() => store.append(JSON.stringify(twice))).toThrow(/supersede_denied/);
+  expect(store.read(requirementId, d)).toMatchObject({ status: "confirmed", supersededBy: null });
+  store.append(JSON.stringify({ ...w.input, operationId: uuidv7(), decisions: [{ ...item(), conclusion: "E 取代 D", supersedes: [d] }] }));
+  expect(() => store.append(JSON.stringify({ ...w.input, operationId: uuidv7(), decisions: [{ ...item(), conclusion: "再取代 D", supersedes: [d] }] }))).toThrow(/supersede_denied/);
 });

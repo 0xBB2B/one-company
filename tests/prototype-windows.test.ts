@@ -29,8 +29,18 @@ const withOptions = (options: string[]) => ({ ...pendingV2, options });
 type Handler = (data: unknown) => unknown;
 type Views = Array<{ render(width: number): string[]; handleInput(data: string): void }>;
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const ANCHOR = expect.stringMatching(UUID_PATTERN);
+const BASE_ANCHOR = "01900000-0000-7000-8000-0000000000a1";
+const DISPATCH_ANCHOR = "01900000-0000-7000-8000-0000000000a2";
+const LINE = [BASE_ANCHOR, DISPATCH_ANCHOR];
+const anchorEntry = (anchor: string, requirementId = REQ) => ({ type: "custom", customType: "one-company.line-anchor", data: { repoId: REPO, requirementId, anchor } });
+const ANCHOR_ENTRY = "one-company.line-anchor";
+
 interface Options {
   hasUI?: boolean;
+  windowReady?: () => Promise<unknown>;
+  branch?: unknown[];
   openFile?: (path: string) => Promise<boolean>;
   responses?: Record<string, (params: Record<string, unknown>) => unknown>;
 }
@@ -58,7 +68,7 @@ async function harness(options: Options = {}) {
     clients: { forRepo: (id: string) => (id === REPO ? client : undefined), all: () => [client], skipped: () => [], closeAll: () => {} } };
   const order: string[] = [];
   const openFile = vi.fn(async (path: string) => { order.push("open"); return options.openFile ? options.openFile(path) : true; });
-  prototypeExtension(pi as never, { windowReady: () => Promise.resolve(window) as never, openFile } as never);
+  prototypeExtension(pi as never, { windowReady: options.windowReady ?? (() => Promise.resolve(window) as never), openFile } as never);
 
   const views: Views = [];
   const custom = vi.fn((factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: unknown) => void) => Views[number]) =>
@@ -66,7 +76,8 @@ async function harness(options: Options = {}) {
       order.push("window");
       views.push(factory({ requestRender: () => {}, terminal: { rows: 40, columns: 80 } }, { fg: (kind: string, text: string) => (kind === "muted" ? `{${text}}` : text), bold: (text: string) => text }, {}, resolve));
     }));
-  const ctx = { mode: "tui", hasUI: options.hasUI ?? true, model: { provider: "prov", id: "mod" }, sessionManager: { getSessionId: () => SESSION },
+  let branch = options.branch ?? LINE.map((anchor) => anchorEntry(anchor));
+  const ctx = { mode: "tui", hasUI: options.hasUI ?? true, model: { provider: "prov", id: "mod" }, sessionManager: { getSessionId: () => SESSION, getBranch: () => branch },
     ui: { custom, notify: vi.fn(), setWidget: () => {} } };
   await fake.trigger("session_start", { reason: "new" }, ctx);
 
@@ -84,10 +95,11 @@ async function harness(options: Options = {}) {
   };
   const called = (method: string) => calls.filter((call) => call.method === method).map((call) => call.params);
   const nextView = async (index = 0) => { await vi.waitFor(() => expect(views.length).toBeGreaterThan(index), { timeout: 5_000 }); return views[index]!; };
-  return { fake, calls, called, appendEntry, sendMessage, openFile, custom, views, order, emit, run, outcome, tool, nextView, ctx };
+  const switchBranch = (next: unknown[]) => { branch = next; };
+  return { fake, calls, called, appendEntry, sendMessage, openFile, custom, views, order, emit, run, outcome, tool, nextView, ctx, switchBranch };
 }
 
-const submitted = (name: string, version: number) => ({ parentSessionId: SESSION, requirementId: REQ, name, version });
+const submitted = (name: string, version: number, dispatchAnchor = DISPATCH_ANCHOR) => ({ parentSessionId: SESSION, requirementId: REQ, name, version, dispatchAnchor });
 const decideOk = (params: Record<string, unknown>) => ({ version: params.version, choice: params.choice });
 
 const CONFIRM_FRAME = (open: boolean, version: 1 | 2, options: string[] = [], cursor = 0): string[] => [
@@ -121,7 +133,7 @@ test("收到交稿事件后先打开浏览器再弹确认窗口，窗口内容�
   expect(h.openFile).toHaveBeenCalledTimes(1);
   expect(h.openFile).toHaveBeenCalledWith(PATH);
   expect(h.order).toEqual(["open", "window"]);
-  expect(h.called("prototypes.pending")).toEqual([{ requirementId: REQ, name: "设置页" }]);
+  expect(h.called("prototypes.pending")).toEqual([{ requirementId: REQ, line: LINE, name: "设置页" }]);
   expect(view.render(80)).toEqual(CONFIRM_FRAME(true, 2));
 });
 
@@ -136,7 +148,7 @@ test("选通过：decide 收到 accept 和指纹，记一条绿色程序记录�
   const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
   await h.emit("prototype.submitted", submitted("设置页", 2));
   (await h.nextView()).handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: null }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「设置页」第 2 版通过，已写进需求草稿。" }));
   expect(h.sendMessage).not.toHaveBeenCalled();
 });
@@ -145,7 +157,7 @@ test("按 Esc 放弃：decide 收到 abandon，记一条程序记录，不触发
   const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
   await h.emit("prototype.submitted", submitted("设置页", 2));
   (await h.nextView()).handleInput("\x1b");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, option: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, option: null }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：放弃原型「设置页」第 2 版，它不再挡住批准。" }));
   expect(h.sendMessage).not.toHaveBeenCalled();
 });
@@ -168,7 +180,7 @@ test("在其他一行写字回车：decide 收到 opinion 和去首尾空白的�
   expect(inputLine(view)).toContain("› ");
   expect(inputLine(view)).toContain("深色下按钮边框太亮");
   view.handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "opinion", opinion: "深色下按钮边框太亮", option: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", version: 2, hash: HASH_V2, choice: "opinion", opinion: "深色下按钮边框太亮", option: null }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：你对原型「设置页」第 2 版的意见已原话交给主代理，这一版仍在等你确认。" }));
   expect(h.sendMessage).toHaveBeenCalledTimes(1);
   const [message, options] = h.sendMessage.mock.calls[0]!;
@@ -213,7 +225,7 @@ test("confirm 动作打开的窗口在其他一行写字回车：同样登记 op
   for (const char of "再亮一点") view.handleInput(char);
   view.handleInput("\r");
   await done;
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "opinion", opinion: "再亮一点", option: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", version: 2, hash: HASH_V2, choice: "opinion", opinion: "再亮一点", option: null }]));
   await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
   expect(h.sendMessage.mock.calls[0]![0].content).toBe(OPINION_MESSAGE("再亮一点"));
   expect(h.sendMessage.mock.calls[0]![1]).toEqual({ triggerTurn: true });
@@ -224,7 +236,7 @@ test("confirm 动作的窗口按 Esc 同样登记放弃，工具结果写明放�
   const done = h.run({ action: "confirm", repoId: REPO, requirementId: REQ, name: "设置页" });
   (await h.nextView()).handleInput("\x1b");
   const result = await done;
-  expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, option: null }]);
+  expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, option: null }]);
   expect(result.content.map((part) => part.text).join("\n")).toContain("放弃");
   expect(h.sendMessage).not.toHaveBeenCalled();
 });
@@ -238,12 +250,19 @@ test("没有界面时不弹窗也不调用 decide", async () => {
   expect(h.appendEntry).not.toHaveBeenCalled();
 });
 
-test("别的会话派出的设计师交稿，本会话不弹窗", async () => {
+test("别的会话派出的设计师交稿，派发锚点不在本会话当前对话线上，本会话不弹窗", async () => {
+  const offLine = "01900000-0000-7000-8000-0000000000c2";
   const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
-  await h.emit("prototype.submitted", { ...submitted("设置页", 2), parentSessionId: "other-session" });
+  await h.emit("prototype.submitted", { ...submitted("设置页", 2, offLine), parentSessionId: "other-session" });
   await new Promise((resolve) => setTimeout(resolve, 50));
   expect(h.custom).not.toHaveBeenCalled();
   expect(h.openFile).not.toHaveBeenCalled();
+});
+
+test("从别的会话派出的那条对话线 fork 出来的会话：对话线里有派发锚点，交稿后照常弹窗", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", { ...submitted("设置页", 2), parentSessionId: "other-session" });
+  expect((await h.nextView()).render(80)).toEqual(CONFIRM_FRAME(true, 2));
 });
 
 test("两份原型几乎同时交稿：第一个窗口关掉之后才弹第二个", async () => {
@@ -318,11 +337,11 @@ test("remove 动作弹出移除窗口；选移除后调用 remove 并记一条�
   const h = await harness({ responses: { "prototypes.removal": () => removal, "prototypes.remove": () => ({}) } });
   const done = h.run({ action: "remove", repoId: REPO, requirementId: REQ, name: "旧外观弹窗" });
   const view = await h.nextView();
-  expect(h.called("prototypes.removal")).toEqual([{ requirementId: REQ, name: "旧外观弹窗" }]);
+  expect(h.called("prototypes.removal")).toEqual([{ requirementId: REQ, line: LINE, name: "旧外观弹窗" }]);
   expect(view.render(80)).toEqual(REMOVE_FRAME("第 2 版需求里批准过"));
   view.handleInput("\r");
   await done;
-  expect(h.called("prototypes.remove")).toEqual([{ requirementId: REQ, name: "旧外观弹窗", version: 1 }]);
+  expect(h.called("prototypes.remove")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "旧外观弹窗", version: 1 }]);
   expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「旧外观弹窗」从草稿移除，批准第 3 版后生效。" });
 });
 
@@ -373,7 +392,7 @@ test("dispatch 动作带上主窗口当前模型和思考等级调用 prototypes
   const h = await harness({ responses: { "prototypes.dispatch": () => ({ runId: "run-1", version: 1 }) } });
   const text = await h.outcome({ action: "dispatch", repoId: REPO, requirementId: REQ, name: "设置页", brief: "出设置页深色模式的界面原型", maxTurns: 30, agent: "brand-designer" });
   expect(text).toContain("run-1");
-  expect(h.called("prototypes.dispatch")).toEqual([{ requirementId: REQ, name: "设置页", brief: "出设置页深色模式的界面原型", maxTurns: 30, agent: "brand-designer",
+  expect(h.called("prototypes.dispatch")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", brief: "出设置页深色模式的界面原型", maxTurns: 30, agent: "brand-designer",
     model: { provider: "prov", id: "mod" }, thinking: "high" }]);
 });
 
@@ -381,7 +400,7 @@ test("dispatch 动作没点名设计师时不带 agent", async () => {
   const h = await harness({ responses: { "prototypes.dispatch": () => ({ runId: "run-2", version: 1 }) } });
   await h.outcome({ action: "dispatch", repoId: REPO, requirementId: REQ, name: "设置页", brief: "出原型", maxTurns: 20 });
   const [params] = h.called("prototypes.dispatch");
-  expect(params).toEqual({ requirementId: REQ, name: "设置页", brief: "出原型", maxTurns: 20, model: { provider: "prov", id: "mod" }, thinking: "high" });
+  expect(params).toEqual({ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", brief: "出原型", maxTurns: 20, model: { provider: "prov", id: "mod" }, thinking: "high" });
 });
 
 test("status 动作调用 prototypes.board 并原样返回", async () => {
@@ -389,7 +408,7 @@ test("status 动作调用 prototypes.board 并原样返回", async () => {
   const h = await harness({ responses: { "prototypes.board": () => board } });
   const text = await h.outcome({ action: "status", repoId: REPO, requirementId: REQ });
   expect(JSON.parse(text)).toEqual(board);
-  expect(h.called("prototypes.board")).toEqual([{ requirementId: REQ }]);
+  expect(h.called("prototypes.board")).toEqual([{ requirementId: REQ, line: LINE }]);
 });
 
 test("repoId 不在当前工作区时返回原因，不调用守护进程", async () => {
@@ -595,7 +614,7 @@ test("选方案 B 回车：decide 收到 accept 和 B，绿字写明选了方案
   const view = await h.nextView();
   view.handleInput("\x1b[B");
   view.handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: "B" }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: "B" }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「设置页」第 2 版通过，已写进需求草稿。你选了方案 B：左侧导航。" }));
   expect(h.sendMessage).toHaveBeenCalledTimes(1);
   const [message, options] = h.sendMessage.mock.calls[0]!;
@@ -616,7 +635,7 @@ test("没有方案清单时选通过：option 为 null，绿字没有你选了�
   const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
   await h.emit("prototype.submitted", submitted("设置页", 2));
   (await h.nextView()).handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: null }]));
   await vi.waitFor(() => expect(h.appendEntry).toHaveBeenCalledWith(expect.any(String), { text: "已登记：原型「设置页」第 2 版通过，已写进需求草稿。" }));
   expect(h.appendEntry.mock.calls.map((call) => JSON.stringify(call[1])).join("")).not.toContain("你选了方案");
   expect(h.sendMessage).not.toHaveBeenCalled();
@@ -629,7 +648,7 @@ test("有方案清单时在其他一行写意见：option 为 null，消息逐�
   for (let i = 0; i < 3; i++) view.handleInput("\x1b[B");
   for (const char of "  侧栏窄一点 ") view.handleInput(char);
   view.handleInput("\r");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "opinion", opinion: "侧栏窄一点", option: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", version: 2, hash: HASH_V2, choice: "opinion", opinion: "侧栏窄一点", option: null }]));
   await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
   const [message, options] = h.sendMessage.mock.calls[0]!;
   expect(message.content).toBe(OPINION_MESSAGE("侧栏窄一点"));
@@ -640,7 +659,7 @@ test("有方案清单时按 Esc：decide 收到 abandon 和 option null", async 
   const h = await harness({ responses: { "prototypes.pending": () => withOptions(THREE_OPTIONS), "prototypes.decide": decideOk } });
   await h.emit("prototype.submitted", submitted("设置页", 2));
   (await h.nextView()).handleInput("\x1b");
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, option: null }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", version: 2, hash: HASH_V2, choice: "abandon", opinion: null, option: null }]));
   expect(h.sendMessage).not.toHaveBeenCalled();
 });
 
@@ -652,7 +671,7 @@ test("confirm 重开的窗口和自动弹出的窗口选项一样，选方案 B 
   view.handleInput("\x1b[B");
   view.handleInput("\r");
   await done;
-  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: "B" }]));
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toEqual([{ requirementId: REQ, line: LINE, anchor: ANCHOR, name: "设置页", version: 2, hash: HASH_V2, choice: "accept", opinion: null, option: "B" }]));
   await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
   expect(h.sendMessage.mock.calls[0]![0].content).toBe(CHOSEN_MESSAGE);
 });
@@ -679,17 +698,17 @@ test("chapterCountText 把 1 到 10 写成中文数字，2 写成两", () => {
 });
 
 test("design 是 created 时，在设计师的说明之后加一行普通颜色的新建提示", () => {
-  expect(designLines(withDesign({ state: "created" }))).toEqual([{ text: "通过后在仓库根目录新建 DESIGN.md，之后的原型、实现和审查都照它做。" }]);
+  expect(designLines(withDesign({ state: "created" }))).toEqual([{ text: "批准需求后随需求分支新建 DESIGN.md，之后这个需求的原型、实现和审查都照它做。" }]);
 });
 
 test("design 是 changed 且一份时，写改了哪几章，章名用顿号连接并带章数", () => {
   expect(designLines(withDesign({ state: "changed", changes: [{ letter: null, chapters: ["颜色", "组件"] }] })))
-    .toEqual([{ text: "通过后同时更新仓库根目录的 DESIGN.md：改了颜色、组件两章。" }]);
+    .toEqual([{ text: "批准需求后随需求分支更新 DESIGN.md：改了颜色、组件两章。" }]);
 });
 
 test("design 是 changed 且只改一章或只加了图表章、只改开头时，章数写一", () => {
-  expect(designLines(withDesign({ state: "changed", changes: [{ letter: null, chapters: ["图表"] }] }))[0]!.text).toBe("通过后同时更新仓库根目录的 DESIGN.md：改了图表一章。");
-  expect(designLines(withDesign({ state: "changed", changes: [{ letter: null, chapters: ["开头的说明"] }] }))[0]!.text).toBe("通过后同时更新仓库根目录的 DESIGN.md：改了开头的说明一章。");
+  expect(designLines(withDesign({ state: "changed", changes: [{ letter: null, chapters: ["图表"] }] }))[0]!.text).toBe("批准需求后随需求分支更新 DESIGN.md：改了图表一章。");
+  expect(designLines(withDesign({ state: "changed", changes: [{ letter: null, chapters: ["开头的说明"] }] }))[0]!.text).toBe("批准需求后随需求分支更新 DESIGN.md：改了开头的说明一章。");
 });
 
 test("design 是 changed 且每方案一份时，先一行总说明，下一行缩进两格逐个方案写改了几章或不变", () => {
@@ -697,7 +716,7 @@ test("design 是 changed 且每方案一份时，先一行总说明，下一行�
     { letter: "A", chapters: ["颜色", "组件"] }, { letter: "B", chapters: ["颜色"] }, { letter: "C", chapters: [] },
   ] }, THREE_OPTIONS));
   expect(lines).toEqual([
-    { text: "通过后同时更新仓库根目录的 DESIGN.md：" },
+    { text: "批准需求后随需求分支更新 DESIGN.md：" },
     { text: "  方案 A 改了颜色、组件两章；方案 B 改了颜色一章；方案 C 不变。" },
   ]);
 });
@@ -729,7 +748,7 @@ test("窗口里 design 的提示行不是灰色，紧跟在设计师的说明那
   await h.emit("prototype.submitted", submitted("设置页", 2));
   const lines = (await h.nextView()).render(80);
   const noteAt = lines.findIndex((line) => line.includes("设计师的说明"));
-  expect(lines[noteAt + 1]).toBe(" 通过后在仓库根目录新建 DESIGN.md，之后的原型、实现和审查都照它做。");
+  expect(lines[noteAt + 1]).toBe(" 批准需求后随需求分支新建 DESIGN.md，之后这个需求的原型、实现和审查都照它做。");
 });
 
 test("design 是 same 时窗口和改动前逐行一致", async () => {
@@ -783,4 +802,180 @@ test("选方案时守护进程返回 design_changed：同样提示并发对话�
   await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
   expect(h.sendMessage.mock.calls[0]![0].customType).toBe("one-company.prototype-design-changed");
   expect(h.appendEntry).not.toHaveBeenCalled();
+});
+
+const anchorCalls = (h: Awaited<ReturnType<typeof harness>>) => h.appendEntry.mock.calls.filter(([type]) => type === ANCHOR_ENTRY).map(([, data]) => data);
+
+test("dispatch 成功后把请求里的 anchor 记进对话线", async () => {
+  const h = await harness({ responses: { "prototypes.dispatch": () => ({ runId: "run-1", version: 1 }) } });
+  await h.outcome({ action: "dispatch", repoId: REPO, requirementId: REQ, name: "设置页", brief: "出原型", maxTurns: 20 });
+  const [params] = h.called("prototypes.dispatch");
+  expect(anchorCalls(h)).toEqual([{ repoId: REPO, requirementId: REQ, anchor: params!.anchor }]);
+});
+
+test("选通过后把 decide 请求里的 anchor 记进对话线", async () => {
+  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  (await h.nextView()).handleInput("\r");
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toHaveLength(1));
+  await vi.waitFor(() => expect(anchorCalls(h)).toEqual([{ repoId: REPO, requirementId: REQ, anchor: h.called("prototypes.decide")[0]!.anchor }]));
+});
+
+test("写意见和放弃也各把 decide 请求里的 anchor 记进对话线", async () => {
+  const opinion = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  await opinion.emit("prototype.submitted", submitted("设置页", 2));
+  const view = await opinion.nextView();
+  view.handleInput("\x1b[B");
+  view.handleInput("\x1b[B");
+  for (const char of "再亮一点") view.handleInput(char);
+  view.handleInput("\r");
+  await vi.waitFor(() => expect(anchorCalls(opinion)).toEqual([{ repoId: REPO, requirementId: REQ, anchor: opinion.called("prototypes.decide")[0]!.anchor }]));
+
+  const abandon = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  await abandon.emit("prototype.submitted", submitted("设置页", 2));
+  (await abandon.nextView()).handleInput("\x1b");
+  await vi.waitFor(() => expect(anchorCalls(abandon)).toEqual([{ repoId: REPO, requirementId: REQ, anchor: abandon.called("prototypes.decide")[0]!.anchor }]));
+});
+
+test("选移除后把 remove 请求里的 anchor 记进对话线", async () => {
+  const h = await harness({ responses: { "prototypes.removal": () => removal, "prototypes.remove": () => ({}) } });
+  const done = h.run({ action: "remove", repoId: REPO, requirementId: REQ, name: "旧外观弹窗" });
+  (await h.nextView()).handleInput("\r");
+  await done;
+  expect(anchorCalls(h)).toEqual([{ repoId: REPO, requirementId: REQ, anchor: h.called("prototypes.remove")[0]!.anchor }]);
+});
+
+test("请求里的 line 只含这个需求的锚点，别的需求的锚点不混进去", async () => {
+  const other = "01900000-0000-7000-8000-000000000002";
+  const branch = [anchorEntry(BASE_ANCHOR), anchorEntry("01900000-0000-7000-8000-0000000000b1", other), anchorEntry(DISPATCH_ANCHOR)];
+  const h = await harness({ branch, responses: { "prototypes.board": () => ({}) } });
+  await h.outcome({ action: "status", repoId: REPO, requirementId: REQ });
+  expect(h.called("prototypes.board")).toEqual([{ requirementId: REQ, line: LINE }]);
+});
+
+test("对话线上还没有这个需求的锚点时，请求里的 line 是空数组", async () => {
+  const h = await harness({ branch: [], responses: { "prototypes.board": () => ({}) } });
+  await h.outcome({ action: "status", repoId: REPO, requirementId: REQ });
+  expect(h.called("prototypes.board")).toEqual([{ requirementId: REQ, line: [] }]);
+});
+
+test("交稿事件的 dispatchAnchor 不在当前对话线上：不查待确认、不开浏览器、不弹窗", async () => {
+  const offLine = "01900000-0000-7000-8000-0000000000c1";
+  const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2, offLine));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(h.called("prototypes.pending")).toEqual([]);
+  expect(h.openFile).not.toHaveBeenCalled();
+  expect(h.custom).not.toHaveBeenCalled();
+});
+
+const SAVE_ANCHOR = "01900000-0000-7000-8000-0000000000a3";
+const withSavedWhileOpen = (h: () => Awaited<ReturnType<typeof harness>>, response: () => unknown) => () => {
+  h().switchBranch([...LINE, SAVE_ANCHOR].map((anchor) => anchorEntry(anchor)));
+  return response();
+};
+
+test("确认窗口开着时主代理又保存了草稿：用户点通过，decide 的 line 含这次保存的锚点", async () => {
+  let h!: Awaited<ReturnType<typeof harness>>;
+  h = await harness({ responses: { "prototypes.pending": withSavedWhileOpen(() => h, () => pendingV2), "prototypes.decide": decideOk } });
+  await h.emit("prototype.submitted", submitted("设置页", 2));
+  (await h.nextView()).handleInput("\r");
+  await vi.waitFor(() => expect(h.called("prototypes.decide")).toHaveLength(1));
+  expect(h.called("prototypes.decide")[0]!.line).toEqual([...LINE, SAVE_ANCHOR]);
+});
+
+test("确认窗口开着时主代理又保存了草稿：用户点移除，remove 的 line 含这次保存的锚点", async () => {
+  let h!: Awaited<ReturnType<typeof harness>>;
+  h = await harness({ responses: { "prototypes.removal": withSavedWhileOpen(() => h, () => removal), "prototypes.remove": () => ({}) } });
+  const done = h.run({ action: "remove", repoId: REPO, requirementId: REQ, name: "旧外观弹窗" });
+  (await h.nextView()).handleInput("\r");
+  await done;
+  expect(h.called("prototypes.remove")[0]!.line).toEqual([...LINE, SAVE_ANCHOR]);
+});
+
+const OTHER_ANCHOR = "01900000-0000-7000-8000-0000000000b1";
+const OTHER_LINE = [BASE_ANCHOR, OTHER_ANCHOR];
+const boardWith = (status: "awaiting" | "designing" | null) => () => ({ entries: [{ name: "设置页", inFlight: status ? { status, version: 2 } : null, draft: null }] });
+const switchEvents: Array<[string, Record<string, unknown>]> = [["session_tree", {}], ["session_start", { reason: "startup" }], ["session_start", { reason: "resume" }], ["session_start", { reason: "fork" }]];
+
+test.each(switchEvents)("换线（%s %j）后，新线上有交了稿等确认的原型：按新线查看板，先打开浏览器再弹确认原型窗口", async (event, payload) => {
+  const h = await harness({ responses: { "prototypes.board": boardWith("awaiting"), "prototypes.pending": () => pendingV2, "prototypes.decide": decideOk } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger(event, payload, h.ctx);
+  const view = await h.nextView();
+  expect(h.called("prototypes.board")).toContainEqual({ requirementId: REQ, line: OTHER_LINE });
+  expect(h.called("prototypes.pending")).toEqual([{ requirementId: REQ, line: OTHER_LINE, name: "设置页" }]);
+  expect(h.order).toEqual(["open", "window"]);
+  expect(view.render(80)).toEqual(CONFIRM_FRAME(true, 2));
+});
+
+test("换线后新线上没有等确认的原型：不弹窗", async () => {
+  const h = await harness({ responses: { "prototypes.board": boardWith(null), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger("session_tree", {}, h.ctx);
+  await vi.waitFor(() => expect(h.called("prototypes.board").length).toBeGreaterThan(0));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.custom).not.toHaveBeenCalled();
+  expect(h.called("prototypes.pending")).toEqual([]);
+});
+
+test("换线后新线上的原型设计师还在做（没交稿）：不弹窗", async () => {
+  const h = await harness({ responses: { "prototypes.board": boardWith("designing"), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger("session_tree", {}, h.ctx);
+  await vi.waitFor(() => expect(h.called("prototypes.board").length).toBeGreaterThan(0));
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.custom).not.toHaveBeenCalled();
+});
+
+test("session_start 原因为 reload：不查看板，不弹窗", async () => {
+  const h = await harness({ responses: { "prototypes.board": boardWith("awaiting"), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger("session_start", { reason: "reload" }, h.ctx);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.called("prototypes.board")).toEqual([]);
+  expect(h.custom).not.toHaveBeenCalled();
+});
+
+test("换线后线上没有任何需求锚点：不查看板，不弹窗", async () => {
+  const h = await harness({ responses: { "prototypes.board": boardWith("awaiting"), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch([]);
+  await h.fake.trigger("session_tree", {}, h.ctx);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.called("prototypes.board")).toEqual([]);
+  expect(h.custom).not.toHaveBeenCalled();
+});
+
+test("没有界面时换线：不查看板、不弹窗、不报错", async () => {
+  const h = await harness({ hasUI: false, responses: { "prototypes.board": boardWith("awaiting"), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await expect(h.fake.trigger("session_tree", {}, h.ctx)).resolves.toBeDefined();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.called("prototypes.board")).toEqual([]);
+  expect(h.custom).not.toHaveBeenCalled();
+  expect((h.ctx.ui.notify as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+});
+
+test("同一条线上有两份等确认的原型：换线后依次弹出两次，第一个关掉后才弹第二个", async () => {
+  const board = () => ({ entries: [{ name: "设置页", inFlight: { status: "awaiting", version: 2 }, draft: null }, { name: "引导页", inFlight: { status: "awaiting", version: 1 }, draft: null }] });
+  const h = await harness({ responses: { "prototypes.board": board, "prototypes.pending": (params) => pendingFor(params.name as string), "prototypes.decide": decideOk } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger("session_tree", {}, h.ctx);
+  const first = await h.nextView();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(h.views).toHaveLength(1);
+  expect(first.render(80)).toContain(" 原型：设置页（第 2 版）");
+  first.handleInput("\x1b");
+  const second = await h.nextView(1);
+  expect(second.render(80)).toContain(" 原型：引导页（第 1 版）");
+  expect(h.custom).toHaveBeenCalledTimes(2);
+});
+
+test.each(switchEvents)("窗口启动失败时换线（%s %j）：不弹警告也不弹窗", async (event, payload) => {
+  const h = await harness({ windowReady: () => Promise.reject(new Error("窗口未启动")), responses: { "prototypes.board": boardWith("awaiting"), "prototypes.pending": () => pendingV2 } });
+  h.switchBranch(OTHER_LINE.map((anchor) => anchorEntry(anchor)));
+  await h.fake.trigger(event, payload, h.ctx);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(h.ctx.ui.notify).not.toHaveBeenCalled();
+  expect(h.custom).not.toHaveBeenCalled();
 });

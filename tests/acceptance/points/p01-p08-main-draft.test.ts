@@ -3,6 +3,9 @@ import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { acceptanceConfig } from "../helpers/installed-host.ts";
 import { startMainPoint } from "../helpers/point-main.ts";
+import { repositoryDatabase, withDatabase } from "../../../src/core/storage/database.ts";
+import { currentLine, lineViewIn } from "../../../src/modules/requirement/line-anchors.ts";
+import { readDraftFiles } from "../../../src/modules/requirement/prd-storage.ts";
 
 const config = acceptanceConfig();
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -27,14 +30,22 @@ test.skipIf(!config || process.platform !== "darwin")("P1：主代理存好草�
   expect(approved(), JSON.stringify(judgement)).toBe(true);
 }, 20 * 60_000);
 
-test.skipIf(!config || process.platform !== "darwin")("P8：用户在需求里顺带定了一条长期规范，主代理把它提交为项目规范，弹出写入 AGENTS.md 的窗口", async () => {
+test.skipIf(!config || process.platform !== "darwin")("P8：用户在需求里顺带定了一条长期规范，主代理把它提交为项目规范，弹出写进需求草稿的窗口，选写进草稿后记进当前对话线上的草稿，主仓库根目录 AGENTS.md 不变", async () => {
   const point = await startMainPoint(config!, "p8");
   let judgement: unknown = null;
   cleanups.push(() => point.close(judgement));
   await point.say(SPRINT + "另外定一条项目规范：以后导出的常量一律用大写字母加下划线命名。" + DRAFT_ONLY);
-  const windows = point.host.dialogs.filter((dialog) => dialog.title === "把这些改动写入项目规范 AGENTS.md？");
-  const conventions = await readFile(join(point.repo, "AGENTS.md"), "utf8").catch(() => null);
-  judgement = { windows: windows.map((dialog) => dialog.answer), conventions, calls: point.calls(0).map((call) => `${call.name}:${String(call.args.action ?? "")}`) };
+  const windows = point.host.dialogs.filter((dialog) => dialog.title.startsWith("把这些改动写进需求「") && dialog.title.endsWith("」的草稿？"));
+  const rootConventions = await readFile(join(point.repo, "AGENTS.md"), "utf8").catch(() => null);
+  const line = currentLine(point.host.session.sessionManager);
+  const drafted = await Promise.all(point.requirements().map(async (item) => {
+    const commit = withDatabase(repositoryDatabase(point.dataRoot, point.repoId), (db) => lineViewIn(db, item.requirementId, line[item.requirementId] ?? []).tip?.fileCommit ?? null);
+    if (commit === null) return null;
+    const files = await readDraftFiles({ dataRoot: point.dataRoot, repoId: point.repoId, requirementId: item.requirementId, commit, authorize: () => true });
+    return files.agents === null ? null : Buffer.from(files.agents).toString("utf8");
+  }));
+  judgement = { windows: windows.map((dialog) => dialog.answer), rootConventions, drafted, calls: point.calls(0).map((call) => `${call.name}:${String(call.args.action ?? "")}`) };
   expect(windows.length, JSON.stringify(judgement)).toBeGreaterThan(0);
-  expect(conventions, JSON.stringify(judgement)).toMatch(/大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i);
+  expect(rootConventions, JSON.stringify(judgement)).toBeNull();
+  expect(drafted.some((agents) => agents !== null && /大写|upper_?case|UPPER_SNAKE|SCREAMING_SNAKE/i.test(agents)), JSON.stringify(judgement)).toBe(true);
 }, 20 * 60_000);

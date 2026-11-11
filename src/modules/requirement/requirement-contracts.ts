@@ -105,9 +105,9 @@ export const RequirementEvent = object({
 export type RequirementEvent = Static<typeof RequirementEvent>;
 export const commands = {
   reserve: object({ requestId: id, intentHash: hash }),
-  save: object({ requirementId: id, version: positive, operationId: id, reference: PrdReference }),
+  save: object({ requirementId: id, version: positive, operationId: id, reference: PrdReference, anchor: id, line: Type.Array(id) }),
   approve: object({ requirementId: id, version: positive, receiptId: id, reference: PrdReference,
-    manifest: ApprovalManifestReferenceSchema, docSpec: Type.Optional(RequirementDocSpecSchema), prototypes: Type.Optional(hash) }),
+    manifest: ApprovalManifestReferenceSchema, docSpec: Type.Optional(RequirementDocSpecSchema), prototypes: Type.Optional(hash), line: Type.Optional(Type.Array(id)) }),
   authorizeImplement: object({ requirementId: id, version: positive, receiptId: id, manifest: ApprovalManifestReferenceSchema }),
   bind: object({ requirementId: id, version: positive, path: Type.String({ minLength: 1, maxLength: 4096 }), prepareOperationId: id, baseCommit: commit }),
   acquire: object({ requirementId: id, version: positive, runId: id, expectedFence: counter }),
@@ -222,3 +222,14 @@ export function checkRequirement(value: unknown, requirementId: string, repoId: 
     (record.workspace !== null && (record.workspace.requirementId !== requirementId || record.workspace.repoId !== repoId))) throw new RequirementStateError("invalid_state");
   return record;
 }
+
+export const LineAnchorKind = Type.Union([
+  Type.Literal("save"), Type.Literal("decision"), Type.Literal("question"), Type.Literal("manifest"),
+  Type.Literal("prototype"), Type.Literal("conventions"), Type.Literal("approval"), Type.Literal("restore"),
+]);
+export const LineAnchorRecord = object({
+  format: Type.Literal("line-anchor/v1"), repoId: hash, requirementId: id, anchor: id, parent: nullable(id),
+  kind: LineAnchorKind, lineVersion: positive, sequence: positive, fileCommit: nullable(commit), saved: nullable(PrdReference), createdAt: counter,
+});
+export type LineAnchorRecord = Static<typeof LineAnchorRecord>;
+export const LineAnchorMemberRecord = object({ format: Type.Literal("line-anchor-member/v1"), requirementId: id, anchor: id });

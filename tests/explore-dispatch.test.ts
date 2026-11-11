@@ -282,3 +282,31 @@ test("PM 派检索时运行记录写入派工的轮数上限 maxTurns", async ()
   const run = await w.runStore.get(dispatched.runId);
   expect((run as { run: { maxTurns?: number } }).run.maxTurns).toBe(7);
 });
+
+test("PM 派出的 explore 任务说明里的项目 AGENTS.md 取自需求工作区，不取主仓库根目录", async () => {
+  const w = await world();
+  await writeFile(join(w.fixture.repositoryRoot, "AGENTS.md"), "# 项目规范\n- 主仓库的旧规范。\n");
+  await writeFile(join(w.workspace, "AGENTS.md"), "# 项目规范\n- 工作区里的规范。\n");
+  w.provider.queue.push(w.submit(w.readme, await w.hashOf(w.readme)), { type: "text", text: "PM 收到检索结果" });
+  await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 3 });
+  await until(() => w.provider.requests.some((request) => text(request).includes("explore-report")));
+  const prompt = w.exploreRequest(w.provider.requests)!.systemPrompt!;
+  expect(prompt).toContain("项目规范（来源：仓库根目录 AGENTS.md；本任务的改动必须遵守）：\n# 项目规范\n- 工作区里的规范。");
+  expect(prompt).not.toContain("主仓库的旧规范");
+});
+
+test("主窗口派出的 explore 任务说明里的项目 AGENTS.md 照旧取自主仓库根目录，不取需求工作区", async () => {
+  const w = await world();
+  await writeFile(join(w.fixture.repositoryRoot, "AGENTS.md"), "# 项目规范\n- 主仓库的规范。\n");
+  await writeFile(join(w.workspace, "AGENTS.md"), "# 项目规范\n- 工作区里的规范。\n");
+  const readme = join(await realpath(w.fixture.repositoryRoot), "README.md");
+  const parent = { role: "main" as const, sessionId: "session-a", connectionId: "connection-a", model: { provider: "team-model", id: "test" }, thinking: "off" };
+  w.manager.connectionOpened("connection-a");
+  w.provider.queue.push(w.submit(readme, await w.hashOf(readme)));
+  const run = await w.manager.dispatchExplore({ parent, request: { question: "仓库说明写了什么", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
+  await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === run.runId));
+  const prompt = w.exploreRequest(w.provider.requests)!.systemPrompt!;
+  expect(prompt).toContain("项目规范（来源：仓库根目录 AGENTS.md；本任务的改动必须遵守）：\n# 项目规范\n- 主仓库的规范。");
+  expect(prompt).not.toContain("工作区里的规范");
+});

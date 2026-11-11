@@ -86,8 +86,11 @@ export interface RequirementReceipt {
   version: number;
   epoch: number;
   revision: number;
+  anchor: string;
   approvalScope?: RequirementApprovalScope;
 }
+
+export type ApprovalReceipt = Omit<RequirementReceipt, "anchor">;
 
 export interface RequirementReadResult {
   requirementId: string;
@@ -98,6 +101,8 @@ export interface RequirementReadResult {
   epoch: number;
   title: string;
   body: string;
+  restoreFailure?: string;
+  lineAnchor?: string;
   approvalScope?: RequirementApprovalScope;
 }
 
@@ -126,6 +131,8 @@ export interface RequirementMetadataResult {
   approved: { commit: string; prdHash: `sha256:${string}` } | null;
   archivePath: string | null;
   savedOperationId: string | null;
+  restoreFailure?: string;
+  lineAnchor?: string;
   approvalScope?: RequirementApprovalScope;
 }
 

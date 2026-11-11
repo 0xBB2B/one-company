@@ -13,6 +13,7 @@ import shellUiExtension from "../../modules/shell/shell-ui-extension.ts";
 import commandsExtension from "./commands.ts";
 import searchExclusionExtension from "../../modules/agents/search-exclusion-extension.ts";
 import gitDeliveryExtension from "../../modules/delivery/git-delivery-extension.ts";
+import { lineRecordsV10Step } from "../../modules/requirement/line-migration.ts";
 import { prototypeRecordsV8Step, prototypeRecordsV9Step } from "../../modules/requirement/prototype-record-migration.ts";
 import conventionsGuardExtension from "../../modules/verification/conventions-guard-extension.ts";
 import { createTrustGate } from "./trust-gate.ts";
@@ -21,7 +22,7 @@ import { createTrustGate } from "./trust-gate.ts";
 // 单一入口用同一个 pi 依次调用各子扩展，才能让 lifecycle 等模块级共享状态在子扩展间保持同一份实例。
 export default function registerExtensions(realPi: ExtensionAPI): void {
   const pi = createTrustGate(realPi);
-  lifecycleExtension(pi, { databaseMigrationSteps: [prototypeRecordsV8Step, prototypeRecordsV9Step] });
+  lifecycleExtension(pi, { databaseMigrationSteps: [prototypeRecordsV8Step, prototypeRecordsV9Step, lineRecordsV10Step] });
   projectManageExtension(pi);
   knowledgeQueryExtension(pi);
   requirementManageExtension(pi);

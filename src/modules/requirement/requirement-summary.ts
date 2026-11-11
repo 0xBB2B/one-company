@@ -3,22 +3,19 @@ import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts
 const SUMMARIES = "requirement_summaries";
 export const SUMMARY_MAX_CHARS = 200;
 
-interface SummaryRecord { prdHash: string; summary: string }
+interface SummaryRecord { summary: string }
 
-const hex = (prdHash: string) => prdHash.replace(/^sha256:/u, "");
+const keyOf = (requirementId: string, prdHash: string) => `${requirementId}:${prdHash.replace(/^sha256:/u, "")}`;
 
-/** 记下某一版草稿的简介；只保留最新保存的那一版。 */
 export function saveRequirementSummary(dataRoot: string, repoId: string, requirementId: string, prdHash: string, summary: string): void {
-  const value: SummaryRecord = { prdHash: hex(prdHash), summary };
+  const key = keyOf(requirementId, prdHash), value: SummaryRecord = { summary };
   withDatabase(repositoryDatabase(dataRoot, repoId), (db) => db.transaction(() => {
-    const row = db.read<SummaryRecord>(SUMMARIES, requirementId);
-    if (row) db.update(SUMMARIES, requirementId, row.version, value);
-    else db.create(SUMMARIES, requirementId, value);
+    const row = db.read<SummaryRecord>(SUMMARIES, key);
+    if (row) db.update(SUMMARIES, key, row.version, value);
+    else db.create(SUMMARIES, key, value);
   }));
 }
 
-/** 只返回与给定草稿版本指纹对应的简介，版本对不上时为 undefined。 */
 export function requirementSummary(dataRoot: string, repoId: string, requirementId: string, prdHash: string): string | undefined {
-  const row = withDatabase(repositoryDatabase(dataRoot, repoId), (db) => db.read<SummaryRecord>(SUMMARIES, requirementId));
-  return row && row.data.prdHash === hex(prdHash) ? row.data.summary : undefined;
+  return withDatabase(repositoryDatabase(dataRoot, repoId), (db) => db.read<SummaryRecord>(SUMMARIES, keyOf(requirementId, prdHash)))?.data.summary;
 }

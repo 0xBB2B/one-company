@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "vitest";
+import { currentLine } from "../../../src/modules/requirement/line-anchors.ts";
 import { readPrototypeBoard } from "../../../src/modules/requirement/requirement-prototypes.ts";
 import { acceptanceConfig } from "../helpers/installed-host.ts";
 import { startMainPoint } from "../helpers/point-main.ts";
@@ -22,7 +23,8 @@ test.skipIf(!config || process.platform !== "darwin")("P13：用户提一个带�
   await point.say(PAUSE_MENU);
   if (!dispatched()) await point.say("按你的推荐继续。");
   const requirements = point.requirements();
-  const boards = await Promise.all(requirements.map((item) => readPrototypeBoard(point, item.requirementId)));
+  const lines = currentLine(point.host.session.sessionManager);
+  const boards = await Promise.all(requirements.map((item) => readPrototypeBoard(point, item.requirementId, lines[item.requirementId] ?? [])));
   judgement = { requirements: requirements.length, dispatched: dispatched(), boards,
     calls: point.calls(0).map((call) => ({ name: call.name, args: call.args })),
     prototypeResults: point.results(0).filter((result) => result.tool === "one_company_prototype"),

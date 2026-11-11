@@ -22,7 +22,8 @@ async function firstLine(real: string) {
   state.real = real;
   let first: { text: string; tone?: string } | undefined;
   await updateConventions({ repositoryRoot: "/work/repo", content: "新规范\n",
-    decide: async (window) => { first = window.lines[0]; return { choices: ["不写入"] }; } });
+    requirementTitle: "订单导出", draftBase: null, writeDraft: async () => {},
+    decide: async (window) => { first = window.lines[0]; return { choices: ["不写"] }; } });
   return first;
 }
 

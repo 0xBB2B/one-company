@@ -5,9 +5,12 @@ import { DatabaseSync } from "node:sqlite";
 import { repositoryDatabase, UUID_V7_PATTERN, withDatabase } from "../../core/storage/database.ts";
 import { assertDatabasePathReady, assertRegularDatabaseFiles, DATABASE_APPLICATION_IDS, DATABASE_SCHEMA_VERSIONS } from "../../core/storage/database-paths.ts";
 import { checkRequirement } from "./requirement-contracts.ts";
+import { rawLineCounter, rawLinedRequirement } from "./line-anchors.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { checkInteraction, PendingQuestion, VOIDED_INPUT_NEXT } from "./user-interaction-format.ts";
 import { checkDecisionRecord, decisionDigest } from "./short-decision-format.ts";
+import type { ShortDecisionRecord } from "./short-decision-format.ts";
+import { supersessionFrom, withSupersession } from "./short-decisions.ts";
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { approvalManifestReference } from "./approval-manifest.ts";
 import type { ApprovalManifest } from "./approval-manifest.ts";
@@ -59,6 +62,7 @@ const HOST_ADVICE: Record<string, FailureAdvice> = {
   result_decision_superseded: { why: "结果依据的用户决定已被新的决定取代", next: "重新读取需求，按用户最新的决定处理" },
   stale_result: { why: "返回结果前需求已被改动，这次结果作废", next: REREAD },
   result_records_changed: { why: "返回结果前依据的记录已被改动", next: REREAD },
+  manifest_scope_changed: { why: "返回结果前这次批准的范围已被改动，这次结果作废", next: REREAD },
   result_scope_changed: { why: "返回结果前批准范围已变化", next: REREAD },
   manifest_unregistered: { why: "批准清单没有登记", next: "先按用户原话确认批准范围" },
   unproven_result: { why: "结果不是本工具刚生成的", next: STOP },
@@ -169,29 +173,39 @@ export class HostAuthorizationManager {
       return result;
     } finally { db.close(); }
   }
-  snapshot(repoId: string, requirementId: string, sessionId: string): { id: string; version: number; data: RequirementRecord } {
+  /** 传了对话线时，草稿返回这条线上的视图：版本号和 saved 取这条线上最后一次保存；不传则是记录原样。 */
+  snapshot(repoId: string, requirementId: string, sessionId: string, line?: readonly string[]): { id: string; version: number; data: RequirementRecord } {
     this.assertRepository(repoId, sessionId);
     return this.#read(repoId, sessionId, (db) => {
       const row = db.prepare("SELECT id, version, data FROM records WHERE namespace='requirements' AND record_key=?").get(requirementId);
       if (!row || row.id !== requirementId || typeof row.data !== "string") throw new HostAuthorizationError("unknown_requirement");
-      return { id: requirementId, version: Number(row.version), data: checkRequirement(JSON.parse(row.data), requirementId, repoId) };
+      const record = { id: requirementId, version: Number(row.version), data: checkRequirement(JSON.parse(row.data), requirementId, repoId) };
+      return line === undefined ? record : rawLinedRequirement(db, record, line);
     });
   }
   /** 读取全部相关问题（包括旧基线）而非模型挑选的一题。 */
-  interactionRecords(repoId: string, requirementId: string, sessionId: string, context?: { basis: InteractionBasis; document: DocumentAnalysis }) {
-    const before = this.snapshot(repoId, requirementId, sessionId);
+  interactionRecords(repoId: string, requirementId: string, sessionId: string, context: { basis: InteractionBasis; document: DocumentAnalysis } | undefined, line: readonly string[]) {
+    const before = this.snapshot(repoId, requirementId, sessionId, line);
     if (!["draft", "active"].includes(before.data.lifecycle) || before.data.recovery !== "ready") throw new HostAuthorizationError("lifecycle_denied");
     if (context) {
       if (context.basis.requirementId !== requirementId || context.basis.version !== before.version || context.basis.epoch !== before.data.epoch) throw new HostAuthorizationError("state_changed");
-      const result = loadInteractionContinuity(this.#dataRoot, repoId, context.basis, context.document);
-      const after = this.snapshot(repoId, requirementId, sessionId);
+      const result = loadInteractionContinuity(this.#dataRoot, repoId, context.basis, context.document, undefined, line);
+      const after = this.snapshot(repoId, requirementId, sessionId, line);
       if (before.version !== after.version || decisionDigest(before.data) !== decisionDigest(after.data)) throw new HostAuthorizationError("state_changed");
       return result;
     }
     return this.#read(repoId, sessionId, (db) => {
+      const counted = rawLineCounter(db, requirementId, line);
       // 问题的requirementId位于basis；不以候选版本过滤来隐藏旧问题。
-      const questions = db.prepare("SELECT id, data FROM records WHERE namespace='interaction_questions_v1' AND json_extract(data,'$.basis.requirementId')=? ORDER BY id").all(requirementId);
-      const registered = db.prepare("SELECT data FROM records WHERE namespace='approval_manifests_v1' AND json_extract(data,'$.manifest.requirementId')=? AND json_extract(data,'$.admission.version')=? AND json_extract(data,'$.admission.epoch')=? ORDER BY id LIMIT 21").all(requirementId, before.version, before.data.epoch);
+      const questions = db.prepare("SELECT id, record_key, data FROM records WHERE namespace='interaction_questions_v1' AND json_extract(data,'$.basis.requirementId')=? ORDER BY id").all(requirementId)
+        .filter((row) => counted("interaction_questions_v1", String(row.record_key)));
+      const registered: Array<Record<string, unknown>> = [];
+      for (const row of db.prepare("SELECT record_key, data FROM records WHERE namespace='approval_manifests_v1' AND json_extract(data,'$.manifest.requirementId')=? AND json_extract(data,'$.admission.version')=? AND json_extract(data,'$.admission.epoch')=? ORDER BY id")
+        .iterate(requirementId, before.version, before.data.epoch)) {
+        if (!counted("approval_manifests_v1", String(row.record_key))) continue;
+        registered.push(row);
+        if (registered.length > 20) break;
+      }
       if (registered.length > 20) throw new HostAuthorizationError("interaction_context_limit");
       const ids = new Set<string>();
       for (const row of registered) {
@@ -200,7 +214,7 @@ export class HostAuthorizationManager {
         let manifest: ApprovalManifest;
         try {
           manifest = withDatabase(repositoryDatabase(this.#dataRoot, repoId), (current) =>
-            registeredApprovalManifestIn(current, repoId, approvalManifestReference(stored.manifest), before, stored.admission.receiptId));
+            registeredApprovalManifestIn(current, repoId, approvalManifestReference(stored.manifest), before, stored.admission.receiptId, line));
         } catch (error) {
           // 登记后用户又有新输入的清单已经过期，只是不再提供旧决定；若让读取失败，这一版草稿就再也存不了
           if ((error as { code?: unknown } | null)?.code === "manifest_input_changed") continue;
@@ -209,14 +223,17 @@ export class HostAuthorizationManager {
         for (const id of [...manifest.units, ...manifest.actions, ...manifest.questions].flatMap((u) => u.decisionIds)) ids.add(id);
       }
       if (ids.size > 20) throw new HostAuthorizationError("interaction_context_limit");
+      const successors = db.prepare("SELECT data FROM records WHERE namespace='short_decisions' AND json_extract(data,'$.requirementId')=?").all(requirementId)
+        .map((r) => JSON.parse(String(r.data)) as ShortDecisionRecord).filter((d) => d.supersedes.length);
+      const supersededBy = supersessionFrom(successors, (decisionId) => counted("short_decisions", decisionId));
       const priorDecisions = [...ids].map((id) => {
         const row = db.prepare("SELECT id,data FROM records WHERE namespace='short_decisions' AND record_key=?").get(id);
         if (!row || row.id !== id) throw new HostAuthorizationError("decision_identity");
         const record = checkDecisionRecord(JSON.parse(String(row.data)));
         if (record.repoId !== repoId || record.requirementId !== requirementId) throw new HostAuthorizationError("decision_identity");
-        return record;
+        return withSupersession(record, supersededBy(record));
       });
-      const after = this.snapshot(repoId, requirementId, sessionId);
+      const after = this.snapshot(repoId, requirementId, sessionId, line);
       if (before.version !== after.version || decisionDigest(before.data) !== decisionDigest(after.data)) throw new HostAuthorizationError("state_changed");
       return { questions: questions.map((row) => {
         const q = checkInteraction(PendingQuestion, JSON.parse(String(row.data)));

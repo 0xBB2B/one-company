@@ -61,6 +61,7 @@ export interface StartDaemonOptions {
   idleTimeoutMs: number;
   clockSkewFile?: string;
   modelProviderModulePath?: string;
+  logPath?: string;
 }
 
 function tempSocketPath(socketPath: string): string {
@@ -372,6 +373,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     authToken: controlToken(capturedOptions.dataRoot),
     repoId,
     startedAt,
+    logPath: capturedOptions.logPath,
     onActivity: () => idleExit?.touch(),
     // 显式 shutdown 是不可逆操作，读不到运行记录时无法确认真的没有活动运行，宁可拒绝也不能误关；
     // 与自动空闲退出的保守判定（runActivity）各自独立，这里把读失败原因直接带回给调用方

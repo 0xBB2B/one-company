@@ -11,7 +11,7 @@ import type { RequirementAccessChange, RequirementAccessState } from "../require
 import type { RequirementStoreOptions, StateAuthorizationRequest } from "../requirement/requirement-state.ts";
 import { object, id, counter, checked } from "../requirement/requirement-contracts.ts";
 import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
-import { ShortDecisionStore } from "../requirement/short-decisions.ts";
+import { ShortDecisionStore, supersessionIn } from "../requirement/short-decisions.ts";
 import type { DecisionAdmissionRequest } from "../requirement/short-decisions.ts";
 import { DecisionItem, decisionDigest, parseDecisionBatch, checkDecisionRecord, ShortDecisionError } from "../requirement/short-decision-format.ts";
 import type { DecisionAdmission, DecisionBatch, ShortDecisionRecord } from "../requirement/short-decision-format.ts";
@@ -25,6 +25,9 @@ import { adviceOf } from "../../core/exec/tool-failure.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE, recordInteractionResolutionIn, loadInteractionContinuity, assertRetainedEvidenceIn, continuityInputProofIn } from "../requirement/interaction-continuity.ts";
 import { validateDocumentReview, createApprovalManifest, checkApprovalManifest, approvalManifestReference } from "../requirement/approval-manifest.ts";
 import type { ApprovalManifest, ApprovalManifestReference } from "../requirement/approval-manifest.ts";
+import { createProcessAnchorIn, extendLine, isRecordCountedIn, lineOf, linedRequirementIn } from "../requirement/line-anchors.ts";
+import type { WorkingLines } from "../requirement/line-anchors.ts";
+import type { StoredRecord } from "../../core/storage/database.ts";
 
 export type { InteractionAction, InteractionBasis, CandidateBinding, PendingQuestion, InteractionContext, InteractionInterpretation } from "../requirement/user-interaction-format.ts";
 export { UserInteractionError } from "../requirement/user-interaction-format.ts";
@@ -40,6 +43,7 @@ export interface UserInteractionOptions extends RequirementStoreOptions {
   authorizeAction: (request: InteractionAuthorization) => boolean;
   /** 可信服务提供已核对的当前正文与候选准确diff；不能直接接模型工具传入的解释结论。 */
   loadContext: (requirementId: string, signal: AbortSignal) => Promise<InteractionContext>;
+  lines?: WorkingLines;
 }
 /** 仅对象身份有效，不可从JSON重建，不向模型工具暴露。 */
 export interface InteractionCapability { readonly kind: "interaction-capability" }
@@ -158,10 +162,14 @@ export class UserInteractionCore {
     const question = checkInteraction(PendingQuestion, { format: "interaction-question/v1", ...input,
       requestId: uuidv7(), repoId: this.#options.repoId, createdAt: this.#now() });
     this.#access("record-decisions", { requirementId: input.basis.requirementId });
+    let anchor: string | undefined;
     withDatabase(this.#path(), (db) => db.transaction(() => {
       this.#assertBasis(input.basis); this.#access("record-decisions", { requirementId: input.basis.requirementId });
       db.create(QUESTIONS, question.requestId, question, question.requestId);
+      if (this.#options.lines) anchor = createProcessAnchorIn(db, { repoId: this.#options.repoId, requirementId: input.basis.requirementId, kind: "question", lines: this.#options.lines,
+        now: this.#now(), members: [{ namespace: QUESTIONS, key: question.requestId }] });
     }));
+    if (anchor && this.#options.lines) extendLine(this.#options.lines, input.basis.requirementId, anchor);
     return question;
   }
   readQuestion(requestId: string, basis: InteractionBasis): PendingQuestion {
@@ -188,9 +196,9 @@ export class UserInteractionCore {
       if (context.basis.requirementId !== requirementId) throw new UserInteractionError("foreign_requirement");
       if (input.reconsiderations > 0 && !context.document) throw new UserInteractionError("document_review_required");
       this.#assertBasis(context.basis);
-      if (context.document && decisionDigest(this.#state.read(requirementId).data.saved) !== decisionDigest(context.document.candidate.to)) throw new UserInteractionError("candidate_not_saved");
+      if (context.document && decisionDigest(this.#row(requirementId).data.saved) !== decisionDigest(context.document.candidate.to)) throw new UserInteractionError("candidate_not_saved");
       this.#checkQuestions(context, true);
-      const inputProof = context.document || context.implementAuthorization ? context.inputProof ?? withDatabase(this.#path(), (db) => continuityInputProofIn(db, requirementId)) : undefined;
+      const inputProof = context.document || context.implementAuthorization ? context.inputProof ?? withDatabase(this.#path(), (db) => continuityInputProofIn(db, requirementId, undefined, this.#line(requirementId))) : undefined;
       for (const old of context.priorDecisions) if (decisionDigest(this.readDecision(requirementId, old.decisionId)) !== decisionDigest(old)) throw new UserInteractionError("decision_changed");
       if (Buffer.byteLength(JSON.stringify({ text: input.text, context: interpreterView(context) })) > 65_536) throw new UserInteractionError("request_limit");
       const source = await this.#options.interpreter.interpret({ text: input.text, context, model, signal: input.controller.signal });
@@ -366,7 +374,7 @@ export class UserInteractionCore {
       if (!row || row.id !== record.decisionId || row.version !== version || decisionDigest(row.data) !== decisionDigest(record)) throw new UserInteractionError("decision_changed");
     }
     if (v.continuitySaved && v.context.document &&
-      (!v.savedInputProof || continuityInputProofIn(db, v.context.basis.requirementId) !== v.savedInputProof)) throw new UserInteractionError("continuity_changed");
+      (!v.savedInputProof || continuityInputProofIn(db, v.context.basis.requirementId, undefined, this.#line(v.context.basis.requirementId)) !== v.savedInputProof)) throw new UserInteractionError("continuity_changed");
     if (v.continuitySaved && v.continuityRecord) {
       const fact = db.read(INTERACTION_CONTINUITY_NAMESPACE, v.saved.operationId);
       if (!fact || fact.version !== v.continuityRecord.version || decisionDigest(fact.data) !== v.continuityRecord.hash) throw new UserInteractionError("continuity_fact_changed");
@@ -375,9 +383,8 @@ export class UserInteractionCore {
       const replacements = records.filter(({ record }) => record.operationId === v.saved!.operationId && record.supersedes.includes(original.record.decisionId));
       if (!replacements.length && records !== v.savedRecords) continue;
       if (replacements.length !== 1) throw new UserInteractionError("revision_link_mismatch");
-      const replacement = replacements[0]!.record, row = db.read("short_decisions", original.record.decisionId);
-      if (!row || row.id !== original.record.decisionId || row.version !== original.version + 1 ||
-        decisionDigest(row.data) !== decisionDigest({ ...original.record, status: "superseded", supersededBy: replacement.decisionId })) throw new UserInteractionError("revision_source_changed");
+      const row = db.read("short_decisions", original.record.decisionId);
+      if (!row || row.id !== original.record.decisionId || row.version !== original.version || decisionDigest(row.data) !== decisionDigest(original.record)) throw new UserInteractionError("revision_source_changed");
     }
   }
   #finishSaved(v: Verified): void {
@@ -388,7 +395,7 @@ export class UserInteractionCore {
         this.#assertSavedRevisions(db, v);
         if (v.context.document) {
           const originals = new Map((v.originalRevisions ?? []).map(({ version, record }) => [record.decisionId, { id: record.decisionId, version, data: record }]));
-          if (continuityInputProofIn(db, v.context.basis.requirementId, { excludeOperationId: v.saved!.operationId, originals }) !== v.inputProof) throw new UserInteractionError("continuity_changed");
+          if (continuityInputProofIn(db, v.context.basis.requirementId, { excludeOperationId: v.saved!.operationId, originals }, this.#line(v.context.basis.requirementId)) !== v.inputProof) throw new UserInteractionError("continuity_changed");
         }
         for (const { version, record } of v.savedRecords!) {
           const row = db.read("short_decisions", record.decisionId);
@@ -397,7 +404,7 @@ export class UserInteractionCore {
         recordInteractionResolutionIn(db, this.#options.repoId, v.context, v.result, v.saved!, v.receiptId);
         const fact = db.read(INTERACTION_CONTINUITY_NAMESPACE, v.saved!.operationId);
         if (fact) v.continuityRecord = { version: fact.version, hash: decisionDigest(fact.data) };
-        if (v.context.document) v.savedInputProof = continuityInputProofIn(db, v.context.basis.requirementId);
+        if (v.context.document) v.savedInputProof = continuityInputProofIn(db, v.context.basis.requirementId, undefined, this.#line(v.context.basis.requirementId));
       }));
       v.continuitySaved = true;
     }
@@ -408,12 +415,10 @@ export class UserInteractionCore {
     if (verified?.saved && context.document) {
       withDatabase(this.#path(), (db) => this.#assertSavedRevisions(db, verified));
       inputCheck = { excludeOperationId: verified.saved.operationId,
-        originals: new Map((verified.originalRevisions ?? []).map(({ version, record }) => [record.decisionId, { id: record.decisionId, version, data: record }])),
-        replacements: new Map(verified.savedRecords!.filter(({ record }) => record.operationId === verified.saved!.operationId)
-          .map(({ version, record }) => [record.decisionId, { id: record.decisionId, version, data: record }])) };
+        originals: new Map((verified.originalRevisions ?? []).map(({ version, record }) => [record.decisionId, { id: record.decisionId, version, data: record }])) };
     }
     if (context.document && context.savedOperationId && (checkView || inputCheck)) {
-      const actual = loadInteractionContinuity(this.#options.dataRoot, this.#options.repoId, context.basis, context.document, inputCheck);
+      const actual = loadInteractionContinuity(this.#options.dataRoot, this.#options.repoId, context.basis, context.document, inputCheck, this.#line(context.basis.requirementId));
       if (decisionDigest(actual.questions) !== decisionDigest(context.questions) || decisionDigest(actual.effectiveQuestions) !== decisionDigest(context.effectiveQuestions ?? []) ||
         decisionDigest(actual.retainedEvidence) !== decisionDigest(context.retainedEvidence ?? []) || decisionDigest(actual.continuityIssues) !== decisionDigest(context.continuityIssues ?? []) ||
         decisionDigest(actual.revisionSources) !== decisionDigest(context.revisionSources ?? []) || decisionDigest(actual.priorDecisions) !== decisionDigest(context.priorDecisions) || actual.inputProof !== context.inputProof) throw new UserInteractionError("continuity_changed");
@@ -424,10 +429,11 @@ export class UserInteractionCore {
         if (!row || row.id !== q.requestId || decisionDigest(row.data) !== decisionDigest(q)) throw new UserInteractionError("question_changed");
         if (!context.savedOperationId && decisionDigest(q.basis) !== decisionDigest(context.basis)) throw new UserInteractionError("question_identity_mismatch");
       }
+      const superseded = this.#supersededCheck(db, context.basis.requirementId);
       for (const e of context.retainedEvidence ?? []) {
         if (inputCheck?.originals.has(e.decision.id)) continue; // 已在同一输入对照中验证本次准确取代，不能进入新manifest。
         if (!context.document) throw new UserInteractionError("document_review_required");
-        assertRetainedEvidenceIn(db, this.#options.repoId, context.basis, context.document, e);
+        assertRetainedEvidenceIn(db, this.#options.repoId, context.basis, context.document, e, superseded);
       }
     });
   }
@@ -454,13 +460,15 @@ export class UserInteractionCore {
       // 任一审核依据变化均保守失效；独立范围的后续续行需要可信局部影响复核，本组件不提供恢复通路。
       const records = v.savedRecords;
       for (const { record } of records) if (record.status === "superseded" || decisionDigest(this.readDecision(v.context.basis.requirementId, record.decisionId)) !== decisionDigest(record)) return null;
-      const current = this.#state.read(v.context.basis.requirementId);
+      const current = this.#row(v.context.basis.requirementId);
       this.#assertInput(v.input); this.#assertModel(v.model);
       // 所有宿主回调结束后，同步只读快照核对状态与全部审核依据；待确认描述也不能被静默换绑。
       const unchanged = withDatabase(this.#path(), (db) => db.transaction(() => {
         this.#assertSavedRevisions(db, v);
-        for (const e of manifest.retainedSources ?? []) assertRetainedEvidenceIn(db, this.#options.repoId, v.context.basis, doc, e);
-        const state = db.read("requirements", v.context.basis.requirementId);
+        const superseded = this.#supersededCheck(db, v.context.basis.requirementId);
+        for (const e of manifest.retainedSources ?? []) assertRetainedEvidenceIn(db, this.#options.repoId, v.context.basis, doc, e, superseded);
+        const raw = db.read<RequirementRecord>("requirements", v.context.basis.requirementId);
+        const state = raw && linedRequirementIn(db, raw, this.#line(v.context.basis.requirementId) ?? []);
         if (!state || state.id !== current.id || state.version !== current.version || current.version !== v.context.basis.version ||
           decisionDigest(state.data) !== decisionDigest(current.data) || current.data.epoch !== v.context.basis.epoch ||
           current.data.recovery !== "ready" || !["draft", "active"].includes(current.data.lifecycle) ||
@@ -468,7 +476,7 @@ export class UserInteractionCore {
           decisionDigest(current.data.lifecycle === "active" ? current.data.approved : current.data.saved) !== decisionDigest(v.context.basis.prd)) return false;
         return records.every(({ version, record }) => {
           const stored = db.read("short_decisions", record.decisionId);
-          return stored?.id === record.decisionId && stored.version === version && record.status !== "superseded" &&
+          return stored?.id === record.decisionId && stored.version === version && !superseded(record) &&
             decisionDigest(stored.data) === decisionDigest(record);
         });
       }));
@@ -494,8 +502,8 @@ export class UserInteractionCore {
         const state = db.read<RequirementRecord>("requirements", basis.requirementId), stored = db.read("short_decisions", record.decisionId);
         return state !== null && state.version === basis.version && state.data.epoch === basis.epoch && state.data.recovery === "ready" && state.data.lifecycle === "active" &&
           decisionDigest(state.data.saved) === decisionDigest(basis.prd) && decisionDigest(state.data.approved) === decisionDigest(basis.prd) &&
-          continuityInputProofIn(db, basis.requirementId) === v.inputProof &&
-          stored?.version === version && record.status !== "superseded" && decisionDigest(stored.data) === decisionDigest(record);
+          continuityInputProofIn(db, basis.requirementId, undefined, this.#line(basis.requirementId)) === v.inputProof &&
+          stored?.version === version && !this.#supersededCheck(db, basis.requirementId)(record) && decisionDigest(stored.data) === decisionDigest(record);
       }));
       if (!unchanged || this.#verified !== v || this.#input !== v.input || !this.#session || v.input.controller.signal.aborted) return null;
       return { receiptId: v.receiptId, version: basis.version, epoch: basis.epoch, inputProof: v.inputProof, decisionId: v.saved.decisionIds[0]! };
@@ -505,6 +513,17 @@ export class UserInteractionCore {
     } finally { this.#authorizing = false; }
   }
   #path(): string { return repositoryDatabase(this.#options.dataRoot, this.#options.repoId); }
+  #line(requirementId: string): readonly string[] | undefined { return lineOf(this.#options.lines, requirementId); }
+  /** 每个事务只读一遍这个需求的短决定，返回逐条判断是否已在当前线上被取代的函数。 */
+  #supersededCheck(db: LocalDatabase, requirementId: string): (decision: ShortDecisionRecord) => boolean {
+    const line = this.#line(requirementId);
+    const supersededBy = supersessionIn(db, requirementId, line && ((decisionId: string) => isRecordCountedIn(db, { namespace: "short_decisions", key: decisionId, requirementId, line })));
+    return (decision) => supersededBy(decision) !== null;
+  }
+  #row(requirementId: string): StoredRecord<RequirementRecord> {
+    const raw = this.#state.read(requirementId);
+    return withDatabase(this.#path(), (db) => linedRequirementIn(db, raw, this.#line(requirementId) ?? []));
+  }
   #now(): number { return checked(counter, this.#options.now?.() ?? Date.now()); }
   #requireSession(sessionId?: string): void {
     if (!this.#session || sessionId !== undefined && this.#session.sessionId !== sessionId) throw new UserInteractionError("untrusted_session");
@@ -519,7 +538,7 @@ export class UserInteractionCore {
     if (decisionDigest(this.#options.interpreter.identity()) !== decisionDigest(model)) throw new UserInteractionError("model_changed");
   }
   #assertBasis(basis: InteractionBasis): void {
-    const current = this.#state.read(basis.requirementId);
+    const current = this.#row(basis.requirementId);
     const prd = current.data.lifecycle === "active" ? current.data.approved : current.data.saved;
     if (!["draft", "active"].includes(current.data.lifecycle) || current.data.recovery !== "ready" ||
       current.version !== basis.version || current.data.epoch !== basis.epoch || decisionDigest(prd) !== decisionDigest(basis.prd)) {
@@ -537,7 +556,7 @@ export class UserInteractionCore {
     this.#assertInput(v.input); this.#assertBasis(v.context.basis); this.#assertModel(v.model);
     if (v.saved && !v.savedRecords) this.#captureSavedRecords(v);
     this.#checkQuestions(v.context, !v.saved, v);
-    if (!v.saved && (v.context.document || v.context.implementAuthorization) && withDatabase(this.#path(), (db) => continuityInputProofIn(db, v.context.basis.requirementId)) !== v.inputProof) throw new UserInteractionError("continuity_changed");
+    if (!v.saved && (v.context.document || v.context.implementAuthorization) && withDatabase(this.#path(), (db) => continuityInputProofIn(db, v.context.basis.requirementId, undefined, this.#line(v.context.basis.requirementId))) !== v.inputProof) throw new UserInteractionError("continuity_changed");
     if (!v.saved) for (const old of v.context.priorDecisions) if (decisionDigest(this.readDecision(v.context.basis.requirementId, old.decisionId)) !== decisionDigest(old)) throw new UserInteractionError("decision_changed");
     this.#assertInput(v.input);
     if (this.#verified !== v) throw new UserInteractionError("input_changed");

@@ -181,7 +181,7 @@ export async function startInstalledHost(options: { installed: string; repo: str
         return decision;
       }
       const confirm = window.choices.includes("确认");
-      const decision = window.title === "确认原型" ? PROTOTYPE_ACCEPT : window.choices.includes("写入") ? "写入" : confirm;
+      const decision = window.title === "确认原型" ? PROTOTYPE_ACCEPT : window.choices.includes("写进草稿") ? "写进草稿" : confirm;
       dialogs.push({ kind: confirm ? "confirm" : "select", title: window.title, message: window.text, options: window.choices, answer: decision, at: Date.now() });
       return decision;
     }).custom,

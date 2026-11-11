@@ -42,6 +42,7 @@ export default function projectManageExtension(pi: ExtensionAPI, deps: ProjectMa
     resolveHost: async (ctx) => hostContext(await awaitWindow(), ctx),
     currentHost: (ctx) => hostContext(readWindow(), ctx),
     openService: deps.openService ?? daemonService(readWindow),
+    appendEntry: (type, data) => pi.appendEntry(type, data),
   });
 
   // 窗口就绪前 session 已关闭时，不能用迟到的窗口重新激活工具

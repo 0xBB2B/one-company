@@ -156,6 +156,8 @@ describe("内置默认团队", () => {
     const main = await readFile(join(defaultRoleDir(), "..", "rules", "01-main-session.md"), "utf8");
     expect(main).toMatch(/规范与需求分流[\s\S]*长期遵守的约定[\s\S]*conventions-update[\s\S]*用户确认[\s\S]*这次要做成的行为或功能写进需求草稿[\s\S]*两样都有就拆开/);
     expect(main).toContain("不要用 write、edit 或命令直接改 AGENTS.md");
+    expect(main).toMatch(/规范与需求分流[\s\S]*conventions-update[\s\S]*要带一个草稿需求[\s\S]*内容记进这个需求的草稿/);
+    expect(main).not.toMatch(/conventions-update[^\n]*用户选"写入"才写文件/);
     expect(main).toMatch(/status=written[\s\S]*status=cancelled[\s\S]*status=revise，feedback 是用户的原话/);
     expect(main).toContain("程序会拒绝 write 与 edit");
     expect(main).not.toContain("conventionsNotice");

@@ -29,7 +29,7 @@ import { implementScope, latestRound, readPlanIn, terminationPending } from "../
 import type { TaskRecord, TaskStatus } from "../pm/plan-manage.ts";
 import { endRequirementExploreSessionsIn } from "../explore/explore-session.ts";
 import { readGit } from "../../core/exec/git-read.ts";
-import { prototypeArchivePathFor } from "../requirement/requirement-identity.ts";
+import { IMPLEMENTATION_RECORD_HEADING, prototypeArchivePathFor } from "../requirement/requirement-identity.ts";
 import { prototypeFilePath } from "../requirement/requirement-prototypes.ts";
 import { commitArchive } from "./archive-commit.ts";
 import { prototypesAtRevision } from "../requirement/requirement-prototype-revisions.ts";
@@ -271,7 +271,7 @@ const TASK_STATUS: Record<TaskStatus, string> = { pending: "待派出", running:
 
 /** 插在实现板块末尾的实现记录：worker 任务取计划登记值，说明取用户验收通过的完成报告，PM 说明是模型文字，进引用块；不列提交号，交付时的 rebase 与 squash 会改掉它们，改写需求编号查法。 */
 function implementationRecord(requirementId: string, tasks: readonly TaskRecord[], report: CompletionReport): string {
-  const lines = ["### 实现记录（关闭时由程序生成）", "", "#### worker 任务", "", "任务名与可写范围是 PM 在计划中登记的值。", ""];
+  const lines = [IMPLEMENTATION_RECORD_HEADING, "", "#### worker 任务", "", "任务名与可写范围是 PM 在计划中登记的值。", ""];
   const workers = tasks.filter((task) => task.role === "worker");
   if (!workers.length) lines.push("- 无");
   for (const task of workers) {
@@ -640,8 +640,9 @@ export class RequirementCloseService {
       let existing: Buffer | null = null;
       try { const stats = await lstat(target); if (!stats.isFile()) throw new Error("archive_target_not_file"); existing = await readFile(target); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-      if (existing && sha256(existing) !== archiveHash) { save({ status: "blocked", attempts: archive.attempts + 1, lastError: "archive_conflict" }); throw new CloseError("archive_conflict"); }
-      if (!existing) {
+      const approvedAlready = existing !== null && sha256(existing) === archive.prdHash;
+      if (existing && !approvedAlready && sha256(existing) !== archiveHash) { save({ status: "blocked", attempts: archive.attempts + 1, lastError: "archive_conflict" }); throw new CloseError("archive_conflict"); }
+      if (!existing || approvedAlready) {
         await writeFileAtomic(target, content.toString("utf8"));
         if (sha256(await readFile(target)) !== archiveHash) throw new Error("archive_write_mismatch");
       }

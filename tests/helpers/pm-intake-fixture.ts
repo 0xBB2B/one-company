@@ -268,7 +268,7 @@ export async function createPmIntakeFixture(options: { retained?: boolean; body?
   let interpreted = await core.interpret(ticket, saved.requirementId);
   let decisions = core.save(interpreted.capability);
   if (options.retained) {
-    saved = await service.updateDraft({ requirementId: saved.requirementId, version: state.read(saved.requirementId).version,
+    saved = await service.updateDraft({ requirementId: saved.requirementId, version: (await service.metadata(saved.requirementId)).version,
       operationId: uuidv7(), title, body: body.replace("错误验证码显示失败。", "错误验证码显示失败并提示重试。") });
     confirmOperationId = uuidv7(); context = await load(); useRetained = true;
     interpreted = await core.interpret(core.captureInput({ source: "interactive", text: "确认需求身份；正常登录保留，修改验证码失败提示并允许实施。" }, "fixture-core"), saved.requirementId);

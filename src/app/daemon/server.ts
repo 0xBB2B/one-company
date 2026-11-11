@@ -38,6 +38,7 @@ export interface DaemonServerOptions {
   authToken: string;
   repoId: string;
   startedAt: string;
+  logPath?: string;
   onActivity?: () => void;
   hasActiveRuns?: () => Promise<{ active: boolean; reason?: string }>;
   isReady?: () => boolean;
@@ -280,6 +281,7 @@ export class DaemonServer {
         repoId: this.options.repoId,
         protocolVersion: PROTOCOL_VERSION,
         startedAt: this.options.startedAt,
+        logPath: this.options.logPath,
         daemonInstanceId: info.daemonInstanceId,
         connectionId: info.connectionId,
       },

@@ -10,6 +10,8 @@ import { VERDICTS } from "../src/modules/pm/verdicts.ts";
 import type { Verdict } from "../src/modules/pm/verdicts.ts";
 import type { TaskRecord, TaskReview } from "../src/modules/pm/plan-manage.ts";
 import { PM_INTAKE_TOOL } from "../src/modules/pm/pm-intake-runtime.ts";
+import { CHECK_ROUNDS } from "../src/modules/verification/check-round.ts";
+import type { CheckRound } from "../src/modules/verification/check-round.ts";
 import type { TaskSpec } from "../src/modules/pm/plan-manage.ts";
 import type { ScriptedReply } from "./helpers/controlled-provider.ts";
 import { runGit } from "./helpers/git-run.ts";
@@ -35,6 +37,12 @@ async function world() {
   const review = (key: string, maxTurns = 2) => w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task(key).taskId, retry: null, review: { maxTurns } });
   const rework = (key: string, reason = "按审查意见返修", maxTurns = 2) => w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task(key).taskId, retry: null, rework: { reason, maxTurns } });
   return { ...w, task, dispatch, review, rework };
+}
+const worktreeOf = (w: { fixture: { state: { read(id: string): { data: { workspace: { path: string } | null } } }; requirementId: string } }) => w.fixture.state.read(w.fixture.requirementId).data.workspace!.path;
+async function commitInWorktree(w: Parameters<typeof worktreeOf>[0], name: string, content: string) {
+  const root = worktreeOf(w);
+  await writeFile(join(root, name), content);
+  await runGit(["add", name], root); await runGit(["commit", "-qm", `改 ${name}`], root);
 }
 const read = (n: number): ScriptedReply => ({ type: "toolcall", name: "read", input: { path: `README.md#${n}` } });
 const lastPrompt = (request: Context | undefined) => JSON.stringify(request?.messages.at(-1) ?? "");
@@ -324,16 +332,16 @@ test("派审查时可写范围内没有未跟踪新文件，任务说明不出�
   expect(prompt).not.toContain("本次新建的文件");
 });
 
-test("M8D2-AC2：worker 与 reviewer 的上下文含各自启动那一刻项目 AGENTS.md 的磁盘内容，文件改动后新派出的子代理读到新内容", async () => {
+test("M8D2-AC2：worker 与 reviewer 的上下文含各自启动那一刻需求工作区里 AGENTS.md 的磁盘内容，不读主仓库根目录的，文件改动后新派出的子代理读到新内容", async () => {
   const w = await world();
-  const file = join(w.fixture.repositoryRoot, "AGENTS.md");
-  await writeFile(file, "# 项目规范\n- 不使用泛型。\n");
+  await writeFile(join(w.fixture.repositoryRoot, "AGENTS.md"), "# 项目规范\n- 主仓库的旧规范。\n");
+  await commitInWorktree(w, "AGENTS.md", "# 项目规范\n- 不使用泛型。\n");
   await w.plan.execute({ action: "propose", tasks: [spec("a", { writePaths: ["src/a/"] }), spec("b", { writePaths: ["lib/"], goalUnitIds: ["scenario.failure"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
   w.provider.queue.push(submit("完成 a"), pmAck);
   await w.dispatch("a");
   await until(() => w.task("a").status === "awaiting_review");
-  await writeFile(file, "# 项目规范\n- 不使用泛型。\n- 文件名用小写。\n");
+  await commitInWorktree(w, "AGENTS.md", "# 项目规范\n- 不使用泛型。\n- 文件名用小写。\n");
   w.provider.queue.push(submit("a 符合目标"), pmAck);
   await w.review("a");
   await until(() => w.task("a").status === "completed");
@@ -341,12 +349,43 @@ test("M8D2-AC2：worker 与 reviewer 的上下文含各自启动那一刻项目 
   expect(prompt("任务：a（")).toContain("项目规范（来源：仓库根目录 AGENTS.md；本任务的改动必须遵守）：\n# 项目规范\n- 不使用泛型。");
   expect(prompt("任务：a（")).not.toContain("文件名用小写");
   expect(prompt("审查任务：a（")).toContain("- 不使用泛型。\n- 文件名用小写。");
+  expect(prompt("任务：a（")).not.toContain("主仓库的旧规范");
+  expect(prompt("审查任务：a（")).not.toContain("主仓库的旧规范");
 });
 
-test("仓库根目录有 DESIGN.md 时 worker 与 reviewer 的任务说明开头一行写明来源并接全文；没有文件或内容为空时不含", async () => {
+test("qa 的上下文含派出那一刻需求工作区里 AGENTS.md 的磁盘内容，不读主仓库根目录的", async () => {
+  const w = await world();
+  await writeFile(join(w.fixture.repositoryRoot, "AGENTS.md"), "# 项目规范\n- 主仓库的旧规范。\n");
+  await commitInWorktree(w, "AGENTS.md", "# 项目规范\n- 不使用泛型。\n");
+  await w.plan.execute({ action: "propose", tasks: [spec("a", { writePaths: ["src/a/"] }), spec("b", { writePaths: ["lib/"], goalUnitIds: ["scenario.failure"] }),
+    spec("qa", { role: "qa", writePaths: [], objective: "黑盒验收登录" })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  w.provider.queue.push(submit("完成 a"), pmAck);
+  await w.dispatch("a");
+  await until(() => w.task("a").status === "awaiting_review");
+  w.provider.queue.push(submit("a 符合目标"), pmAck);
+  await w.review("a");
+  await until(() => w.task("a").status === "completed");
+  const record = w.fixture.state.read(w.fixture.requirementId).data;
+  const round: CheckRound = { format: "check-round/v1", checkRoundId: uuidv7(), requirementId: w.fixture.requirementId, repoId: w.fixture.repoId, workspaceId: record.workspace!.workspaceId,
+    branch: record.workspace!.branch, epoch: record.epoch, fence: w.lease.fence, runId: w.lease.runId,
+    baseline: { revision: 1, approved: record.approved!, codeHead: record.workspace!.baseCommit, inputHash: "d".repeat(64), inputCount: 0,
+      environment: { node: process.version, platform: process.platform, arch: process.arch } },
+    status: "open", invalidation: null, decision: null, verifications: [], active: [], createdAt: Date.now(), updatedAt: Date.now() };
+  withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) => db.create(CHECK_ROUNDS, round.checkRoundId, round, round.checkRoundId));
+  w.provider.queue.push({ type: "text", text: "验收完" }, pmAck);
+  await w.dispatch("qa");
+  await until(() => w.provider.requests.some((request) => request.systemPrompt?.includes("任务：qa（")));
+  const prompt = w.provider.requests.find((request) => request.systemPrompt?.includes("任务：qa（"))!.systemPrompt!;
+  expect(prompt).toContain("项目规范（来源：仓库根目录 AGENTS.md；本任务的改动必须遵守）：\n# 项目规范\n- 不使用泛型。");
+  expect(prompt).not.toContain("主仓库的旧规范");
+});
+
+test("需求工作区里有 DESIGN.md 时 worker 与 reviewer 的任务说明开头一行写明来源并接全文；工作区里没有文件或内容为空时不含，主仓库根目录的 DESIGN.md 不读", async () => {
   const header = "界面设计规范（来源：仓库根目录 DESIGN.md；界面改动必须遵守）：\n";
   const w = await world();
-  await writeFile(join(w.fixture.repositoryRoot, "DESIGN.md"), "# 风格\n- 主题：明亮\n");
+  await writeFile(join(w.fixture.repositoryRoot, "DESIGN.md"), "# 风格\n- 主题：主仓库的旧外观\n");
+  await commitInWorktree(w, "DESIGN.md", "# 风格\n- 主题：明亮\n");
   await w.plan.execute({ action: "propose", tasks: [spec("a", { writePaths: ["src/a/"] }), spec("b", { writePaths: ["lib/"], goalUnitIds: ["scenario.failure"] })] });
   await w.plan.execute({ action: "confirm", planVersion: 1 });
   w.provider.queue.push(submit("完成 a"), pmAck);
@@ -358,9 +397,12 @@ test("仓库根目录有 DESIGN.md 时 worker 与 reviewer 的任务说明开头
   const prompt = (marker: string) => w.provider.requests.find((request) => request.systemPrompt?.includes(marker))!.systemPrompt!;
   expect(prompt("任务：a（")).toContain(`${header}# 风格\n- 主题：明亮`);
   expect(prompt("审查任务：a（")).toContain(`${header}# 风格\n- 主题：明亮`);
+  expect(prompt("任务：a（")).not.toContain("主仓库的旧外观");
+  expect(prompt("审查任务：a（")).not.toContain("主仓库的旧外观");
 
   const empty = await world();
-  await writeFile(join(empty.fixture.repositoryRoot, "DESIGN.md"), "  \n");
+  await writeFile(join(empty.fixture.repositoryRoot, "DESIGN.md"), "# 风格\n- 主题：主仓库的旧外观\n");
+  await commitInWorktree(empty, "DESIGN.md", "  \n");
   await empty.plan.execute({ action: "propose", tasks: [spec("a", { writePaths: ["src/a/"] }), spec("b", { writePaths: ["lib/"], goalUnitIds: ["scenario.failure"] })] });
   await empty.plan.execute({ action: "confirm", planVersion: 1 });
   empty.provider.queue.push(submit("完成 a"), pmAck);

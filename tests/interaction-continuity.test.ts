@@ -13,6 +13,9 @@ import { interpreterView } from "../src/modules/requirement/user-interaction-for
 import type { InteractionContext, InteractionInterpretation } from "../src/modules/requirement/user-interaction-format.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE, loadInteractionContinuity } from "../src/modules/requirement/interaction-continuity.ts";
 import { ApprovalManifestStore, summarizeApprovalManifest } from "../src/modules/requirement/approval-manifest-store.ts";
+import { HostAuthorizationManager } from "../src/modules/requirement/host-authorization.ts";
+import { attachRecordIn } from "../src/modules/requirement/line-anchors.ts";
+import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
 
 const exec = promisify(execFile), clean: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const c of clean.splice(0).reverse()) await c(); });
@@ -422,3 +425,87 @@ test("沿用的原依据很多时，按发给解释器的内容算 48K 上限：
   w.core.save(last.capability);
   expect(w.core.authorizeDocument(last.capability, w.loaded)).toBeTruthy();
 }, 120_000);
+
+function rewriteSupersededRowInOldFormat(w: Awaited<ReturnType<typeof world>>, decisionId: string) {
+  withDatabase(w.path, (db) => {
+    const row = db.read<{ status: string }>("short_decisions", decisionId)!;
+    const successor = db.list<{ supersedes: string[] }>("short_decisions").find((r) => r.data.supersedes.includes(decisionId))!;
+    if (row.data.status !== "superseded") db.update("short_decisions", decisionId, row.version, { ...row.data, status: "superseded", supersededBy: successor.id });
+  });
+}
+
+test("旧库里被取代的待改决定（那一行被改成已取代、版本号加 1）：读取解读依据不报 continuity_issue_source_changed，照常解读并批准", async () => {
+  const w = await world();
+  w.setOutput((ctx) => {
+    const r = review(ctx); r.documentReview!.faithful = false;
+    r.entries.splice(2, 0, { ...r.entries[0]!, conclusion: "A必须限定内测用户", resolution: "modify" });
+    r.documentReview!.units[1]!.conclusionIndexes = [1, 2]; r.documentReview!.units[2]!.conclusionIndexes = [3];
+    r.documentReview!.actions[0]!.conclusionIndexes = [4]; return r;
+  });
+  const saved = w.core.save((await w.interpret("A必须限定内测用户，B目标明确，只分析B")).capability);
+  const pending = saved.decisionIds[2]!;
+  expect(w.context().priorDecisions.map((d) => d.decisionId)).toContain(pending);
+  w.setOutput((ctx) => {
+    const r = review(ctx); r.entries[1] = { ...r.entries[1]!, conclusion: "A仅限内测用户", supersedes: [pending] };
+    r.documentReview!.units[1]!.conclusionIndexes = [1]; return r;
+  });
+  const fixed = await w.interpret("确认A仅限内测用户，B仍按原目标，只分析B"); w.core.save(fixed.capability);
+  rewriteSupersededRowInOldFormat(w, pending);
+  expect(() => w.context()).not.toThrow();
+  w.setOutput((ctx) => { const r = review(ctx); r.entries[1]!.conclusion = "A仅限内测用户"; return r; });
+  const again = await w.interpret("再确认一次：A仅限内测用户，B仍按原目标，只分析B"); w.core.save(again.capability);
+  expect(w.core.authorizeDocument(again.capability, w.loaded)).not.toBeNull();
+});
+
+test("旧库格式：段落的当前确认被取代（那一行被改成已取代）、而取代它的那次没被接受时，不退回更早那次已被替换的确认", async () => {
+  const w = await world();
+  w.core.save((await w.interpret("A、B 都是目标")).capability);
+  w.setOutput((ctx) => { const r = review(ctx); r.entries[1] = { ...r.entries[1]!, kind: "constraint", conclusion: "A作为约束" }; return r; });
+  w.core.save((await w.interpret("A 只作约束")).capability);
+  const constraintA = w.context().priorDecisions.find((d) => d.conclusion === "A作为约束")!;
+  w.setOutput((ctx) => { const r = review(ctx); r.documentReview!.faithful = false; r.entries[1] = { ...r.entries[1]!, conclusion: "A重新定", supersedes: [constraintA.decisionId] }; return r; });
+  w.core.save((await w.interpret("A 重新定，草稿还没改")).capability);
+  rewriteSupersededRowInOldFormat(w, constraintA.decisionId);
+  const [first] = factIds(w);
+  expect(w.context().retainedEvidence!.some((e) => e.unitId === "A" && e.fact.id === first)).toBe(false);
+});
+
+async function manifestsOnOtherLines(otherLines: number, extraOnCurrentLine: number) {
+  const w = await world();
+  const config = { dataRoot: w.dataRoot, repositoryRoot: w.repo, repoId: w.repoId };
+  const created = await (await RequirementService.open({ ...config, authorize: () => true })).create({ requestId: uuidv7(), operationId: uuidv7(), title: "候选", body: "# A {#A}\nA目标。\n" });
+  const requirementId = created.requirementId;
+  const lines: Record<string, string[]> = { [requirementId]: [created.anchor] };
+  const otherSave = await (await RequirementService.open({ ...config, authorize: () => true, lines: { [requirementId]: [created.anchor] } }))
+    .updateDraft({ requirementId, operationId: uuidv7(), version: created.version, title: "候选", body: "# A {#A}\nA目标改。\n" });
+  const confirm = await manifestConfirmInput({ ...config, lines }, { requirementId, savedOperationId: created.operationId });
+  const stored = withDatabase(w.path, (db) => db.read<{ manifest: { units: Array<{ decisionIds: string[] }>; actions: Array<{ decisionIds: string[] }>; questions: Array<{ decisionIds: string[] }> } }>(
+    "approval_manifests_v1", confirm.manifest.manifestHash))!;
+  const ownDecisionIds = new Set([...stored.data.manifest.units, ...stored.data.manifest.actions, ...stored.data.manifest.questions].flatMap((u) => u.decisionIds));
+  const plant = (count: number, anchor: string, prefix: string) => withDatabase(w.path, (db) => {
+    for (let i = 0; i < count; i++) {
+      const key = `planted-${prefix}-${i}`;
+      db.create("approval_manifests_v1", key, stored.data, `${prefix}0000000-0000-7000-8000-${String(i).padStart(12, "0")}`);
+      attachRecordIn(db, { namespace: "approval_manifests_v1", key, requirementId, anchor });
+    }
+  });
+  plant(otherLines, otherSave.anchor, "0");
+  plant(extraOnCurrentLine, created.anchor, "f");
+  const auth = new HostAuthorizationManager({ dataRoot: w.dataRoot });
+  auth.startWindow({ kind: "main", windowId: "b3", sessionId: "b3", repoIds: [w.repoId] });
+  return { records: () => auth.interactionRecords(w.repoId, requirementId, "b3", undefined, lines[requirementId]!), ownDecisionIds };
+}
+
+test("别的线上已登记 22 份批准清单、当前线上只有 1 份时，当前线的批准清单和先前决定都读得到", async () => {
+  const { records, ownDecisionIds } = await manifestsOnOtherLines(22, 0);
+  const result = records();
+  expect(ownDecisionIds.size).toBeGreaterThan(0);
+  expect(result.priorDecisions.map((d) => d.decisionId).sort()).toEqual([...ownDecisionIds].sort());
+});
+
+test("当前线上自己登记超过 20 份批准清单时仍报 interaction_context_limit", async () => {
+  for (const otherLines of [22, 0]) {
+    const { records } = await manifestsOnOtherLines(otherLines, 21);
+    expect(records).toThrowError(expect.objectContaining({ code: "interaction_context_limit" }));
+  }
+});
