@@ -25,12 +25,13 @@ const actions = {
   next: Type.Object({ action: Type.Literal("next"), repoId, requirementId: id, cursor: Type.String({ pattern: "^[0-9a-f]{64}$", maxLength: 64 }) }, { additionalProperties: false }),
   metadata: Type.Object({ action: Type.Literal("metadata"), repoId, requirementId: id }, { additionalProperties: false }),
   list: Type.Object({ action: Type.Literal("list"), repoId: Type.Optional(repoId) }, { additionalProperties: false }),
+  authorizeImplement: Type.Object({ action: Type.Literal("authorizeImplement"), repoId, requirementId: id }, { additionalProperties: false }),
 };
 export const REQUIREMENT_MANAGE_PARAMETERS = requestParameters(Object.values(actions));
 export function createRequirementManageTool(options: { interaction: MainRequirementInteraction }): ToolDefinition<typeof REQUIREMENT_MANAGE_PARAMETERS, Record<string, unknown>> {
   const interaction = options.interaction;
   return { name: "one_company_requirement_manage", label: "管理活动需求",
-    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requirementId、version、savedOperationId 取自此前工具结果，不要自编。保存需求草稿，create 与 updateDraft 都要写 summary：一段话（最多 200 字）说明这个功能是什么，用户批准时的确认窗口会显示它；正文板块按系统提示里的需求文档规范写，每个标题（含各级小节标题）末尾都写唯一编号（字母开头，只含字母数字._-，不重复），缺编号或重复时批准被拒；confirmUpdate只接真实saved操作ID，不接正文或批准声明。只消费当前真实用户输入。list 列出本窗口各仓库草稿与进行中需求的编号、标题与状态（不含正文，不列已关闭的），给 repoId 时只列该仓库；不知道需求编号时先 list。read默认当前approved，草稿可指定saved，章节及UTF8分页逐次核权，完整封装不超过50KiB；结果的coverage.nextCursor不为空时，用next带上它读下一页。无当前输入或模型不可用明确拒绝。",
+    description: "参数写成 {request:{action,...}}，只填该 action 格式里的字段；requirementId、version、savedOperationId 取自此前工具结果，不要自编。保存需求草稿，create 与 updateDraft 都要写 summary：一段话（最多 200 字）说明这个功能是什么，用户批准时的确认窗口会显示它；正文板块按系统提示里的需求文档规范写，每个标题（含各级小节标题）末尾都写唯一编号（字母开头，只含字母数字._-，不重复），缺编号或重复时批准被拒；confirmUpdate只接真实saved操作ID，不接正文或批准声明。只消费当前真实用户输入。list 列出本窗口各仓库草稿与进行中需求的编号、标题与状态（不含正文，不列已关闭的），给 repoId 时只列该仓库；不知道需求编号时先 list。需求已批准、批准清单里没有实施，而用户说要实施时，用 authorizeImplement 补登记实施授权（只接 repoId 与 requirementId，按用户当前原话判断）。read默认当前approved，草稿可指定saved，章节及UTF8分页逐次核权，完整封装不超过50KiB；结果的coverage.nextCursor不为空时，用next带上它读下一页。无当前输入或模型不可用明确拒绝。",
     promptSnippet: "整理当前需求、按范围记录决定，读取当前获准目标", parameters: REQUIREMENT_MANAGE_PARAMETERS, executionMode: "sequential",
     async execute(toolCallId, raw, signal, _update, ctx) {
       try { return await run(toolCallId, raw, signal, ctx); }
@@ -55,6 +56,7 @@ export function createRequirementManageTool(options: { interaction: MainRequirem
         case "confirmUpdate": return interaction.confirm(ctx, { repoId: p.repoId, requirementId: p.requirementId!, savedOperationId: p.savedOperationId!, operationId: uuidv7(), version: p.version! });
         case "read": case "diff": return interaction.read(ctx, { ...p, action: p.action, requirementId: p.requirementId! });
         case "next": return interaction.read(ctx, { action: "next", repoId: p.repoId, requirementId: p.requirementId!, cursor: p.cursor! });
+        case "authorizeImplement": return interaction.authorizeImplement(ctx, { repoId: p.repoId, requirementId: p.requirementId! });
         case "metadata": return interaction.metadata(ctx, p.repoId, p.requirementId!);
       }
     }, signal ?? ctx.signal);

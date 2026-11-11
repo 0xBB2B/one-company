@@ -23,6 +23,7 @@ import { registerControlledProvider, scriptReplies } from "./helpers/controlled-
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { createPmIntakeFixture } from "./helpers/pm-intake-fixture.ts";
+import { adviceOf } from "../src/core/exec/tool-failure.ts";
 import { createFakeTimeSource } from "./helpers/fake-clock.ts";
 import { notePlanRejection, planRejectionsIn, stallIn } from "../src/modules/pm/pm-attention.ts";
 
@@ -98,6 +99,14 @@ async function world(clock?: ReturnType<typeof createClock>) {
 function toolNames(request: Context | undefined): string[] {
   return (request?.tools ?? []).map((tool) => tool.name).sort();
 }
+
+test("批准清单没有实施时派 PM 被拒，建议请用户说要实施并用 authorizeImplement 补授权", async () => {
+  const error = await (await plainWorld()).dispatch().then(() => undefined, (failure: unknown) => failure);
+  expect(error).toMatchObject({ code: "implement_not_authorized" });
+  const next = adviceOf(error)?.next ?? "";
+  expect(next).toContain("authorizeImplement");
+  expect(next).not.toContain("在批准需求时授权实施");
+});
 
 test("M7-AC13、M8A-AC7：PM 只在工作区 ready、需求 active 且有实施授权时派出，已生效但没有工作区时被拒，受限接手上下文不含 PRD 正文", async () => {
   await expect((await plainWorld({ prepare: false })).dispatch()).rejects.toMatchObject({ code: "workspace_not_ready" });

@@ -2,13 +2,14 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, readdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { ModelRegistry, ModelRuntime, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { registerControlledProvider, scriptReplies } from "./helpers/controlled-provider.ts";
+import type { ControlledProvider } from "./helpers/controlled-provider.ts";
 import { scriptReview } from "./helpers/interpreter-reply.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { UUID_V7_PATTERN, uuidv7, repositoryDatabase, withDatabase } from "../src/core/storage/database.ts";
@@ -30,7 +31,7 @@ import { resolveRepositoryRequirementDoc } from "../src/modules/requirement/requ
 import type { ConfirmationContext } from "../src/modules/requirement/requirement-manage-contracts.ts";
 import type { Static } from "typebox";
 import { ModelInterpretation } from "../src/modules/interaction/interaction-derivation.ts";
-import { requirementSummary } from "../src/modules/requirement/requirement-summary.ts";
+import { requirementSummary, saveRequirementSummary } from "../src/modules/requirement/requirement-summary.ts";
 import { beginDesign, decidePrototype, pendingConfirmation, prototypeFilePath, readPrototypeBoard, removeFromDraft, submitDesign } from "../src/modules/requirement/requirement-prototypes.ts";
 import { prototypesAtRevision } from "../src/modules/requirement/requirement-prototype-revisions.ts";
 import { answeringUi } from "./helpers/window-host.ts";
@@ -38,6 +39,16 @@ import type { ShownWindow, WindowDecision } from "./helpers/window-host.ts";
 import { techAgreeText, techRecordText } from "../src/modules/interaction/tech-list.ts";
 import { TECHS } from "./helpers/tech-sample.ts";
 import { VALID_DESIGN } from "./helpers/design-sample.ts";
+import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
+import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { RunManager } from "../src/app/daemon/run-manager.ts";
+import { createClock } from "../src/core/policy/clock.ts";
+import { NetworkPauseGate } from "../src/core/host/network-pause.ts";
+import { ShellRegistry } from "../src/core/host/shell-registry.ts";
+import { RunStore } from "../src/modules/agents/run-store.ts";
+import { defaultRoleDir, loadRoleCatalog } from "../src/modules/agents/roles.ts";
+import { readAgentSettings } from "../src/modules/settings/agent-settings.ts";
+import { implementAuthorized } from "../src/modules/pm/pm-intake-runtime.ts";
 
 
 const exec = promisify(execFile), cleanup: Array<() => Promise<void>> = [];
@@ -2010,5 +2021,357 @@ describe("ask-tech 需求澄清用法", () => {
     expect(w.windows.length).toBe(before);
     const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
     expect(state.read(input.requirementId).data.lifecycle).toBe("draft");
+  });
+});
+
+const IMPLEMENT_ENTRY = { kind: "action", basis: "explicit", resolution: "direct", candidateId: null, requestId: null, actions: ["implement"],
+  conclusion: "开始实施", scope: "整份已批准需求", references: [], supersedes: [] };
+const UNRESOLVED_ENTRY = { ...IMPLEMENT_ENTRY, kind: "unresolved", basis: "uncertain", resolution: "unclear", actions: [], conclusion: "是否实施没说清", scope: "实施授权" };
+/** 只回答"是否授权实施"的解读请求，其余请求不接。 */
+function scriptImplement(provider: ControlledProvider, entry: object = IMPLEMENT_ENTRY, chunkDelayMs?: number): void {
+  provider.awaitReply = async (request) => {
+    const content = request.messages[0]?.content;
+    const text = typeof content === "string" ? content : (content as Array<{ text?: string }> | undefined)?.map((block) => block.text ?? "").join("");
+    try { if (!JSON.parse(text ?? "").context?.implementAuthorization) return undefined; } catch { return undefined; }
+    return { type: "text", text: JSON.stringify({ format: "interaction-interpretation/v1", referenceResolution: "none", entries: [entry] }),
+      ...(chunkDelayMs === undefined ? {} : { chunkDelayMs }) };
+  };
+}
+/** 工作区已绑定、按 phoneReview 批准过一次的需求；implement=false 时批准清单里没有实施。 */
+async function approvedWorld(implement = false, review: typeof phoneReview = (c) => phoneReview(c, implement ? "implement" : "analyze"), utterance = "同意") {
+  const w = await world(), created = await w.create();
+  const worktree = join(w.root, "worktree"); await git(w.repositoryRoot, ["worktree", "add", "-b", "requirement-test", worktree, "HEAD"]);
+  const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+  const baseCommit = await git(w.repositoryRoot, ["rev-parse", "HEAD"]);
+  const bound = await state.bindWorkspace({ requirementId: String(created.requirementId), version: Number(created.version), path: worktree, baseCommit, prepareOperationId: uuidv7() });
+  const { input } = await w.request({ ...created, version: bound.version });
+  w.capture(utterance); scriptReview(w.provider, review);
+  const approved = await w.call({ action: "confirmUpdate", ...input });
+  const requirementId = input.requirementId;
+  const authorize = () => w.call({ action: "authorizeImplement", requirementId });
+  const record = () => state.read(requirementId);
+  const decisions = () => withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"));
+  return { w, state, input, approved, requirementId, authorize, record, decisions, worktree, baseCommit };
+}
+const rejectionOf = async (promise: Promise<unknown>) => (await promise.then(() => { throw new Error("应被拒绝"); }, (error: unknown) => error)) as Error & { code?: string };
+const manifestSummary = (record: { data: { approvalManifest?: unknown } }) => {
+  const { confirmed, pending, excluded } = record.data.approvalManifest as { confirmed: string[]; pending: string[]; excluded: string[] };
+  return { confirmed, pending, excluded };
+};
+
+describe("补授权实施 authorizeImplement", () => {
+  test("原话 @ 到需求：不弹窗，登记实施授权；版本加 1、epoch 不变、各段落确认情况不变，之后清单里有实施", async () => {
+    const { w, authorize, record, decisions } = await approvedWorld();
+    const before = record(), beforeDecisions = decisions().length;
+    expect(implementAuthorized({ dataRoot: w.dataRoot, repoId: w.repoId }, before)).toBe(false);
+    w.capture("授权实施"); scriptImplement(w.provider);
+    const result = await authorize();
+    expect(result).toMatchObject({ status: "authorized", implementAuthorization: "已授权实施",
+      next: "照规矩继续：工作区没建就先用 workspace-prepare 建，建好了用 agent_manage role=pm 派 PM" });
+    expect(w.windows).toHaveLength(0);
+    const after = record();
+    expect(decisions()).toHaveLength(beforeDecisions + 1);
+    const newDecision = decisions().at(-1)!;
+    expect(JSON.stringify(result)).toContain(newDecision.id);
+    expect(after.version).toBe(before.version + 1);
+    expect(after.data.epoch).toBe(before.data.epoch);
+    expect(manifestSummary(after)).toEqual(manifestSummary(before));
+    expect(implementAuthorized({ dataRoot: w.dataRoot, repoId: w.repoId }, after)).toBe(true);
+  });
+
+  test("原话没 @ 到需求：弹出授权实施确认窗口，内容与选项按规定，选确认后登记", async () => {
+    const { w, authorize, record, requirementId } = await approvedWorld();
+    const revision = record().data.revision;
+    w.capture("授权实施", "interactive", false); scriptImplement(w.provider); w.answerWindows(true);
+    expect(await authorize()).toMatchObject({ status: "authorized", implementAuthorization: "已授权实施" });
+    expect(w.windows).toHaveLength(1);
+    const shown = w.windows[0]!;
+    expect(shown.title).toBe("授权实施");
+    expect(shown.choices).toEqual(["确认", "取消"]);
+    expect(shown.text).toContain("↑↓ 选择 · 回车确认 · Esc 取消");
+    const lines = [`需求：登录（已批准第 ${revision} 版）`, `编号：${requirementId} · 仓库：${basename(w.repositoryRoot)}`, "简介：手机号登录，保留邮箱登录"];
+    const positions = lines.map((line) => shown.text.indexOf(line));
+    expect(positions.every((position) => position >= 0), shown.text).toBe(true);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(shown.text).toMatch(new RegExp(`简介：手机号登录，保留邮箱登录\\s*\\n\\s*\\n\\s*确认后登记.实施.授权，PM 按已批准的第 ${revision} 版规划和派工。`, "u"));
+    expect(shown.text.indexOf("授权实施")).toBeLessThan(positions[0]!);
+  });
+
+  test.each([["选取消", "取消"], ["按 Esc", false]] as const)("确认窗口%s：拒绝，不登记实施授权", async (_name, answer) => {
+    const { w, authorize, record, decisions } = await approvedWorld();
+    const before = record(), count = decisions().length;
+    w.capture("授权实施", "interactive", false); scriptImplement(w.provider); w.answerWindows(answer);
+    const error = await rejectionOf(authorize());
+    expect(error.message).toContain("原因：用户取消了确认，没有登记实施授权");
+    expect(error.message).toContain("建议：不要重试；告诉用户这句话没有登记成实施授权");
+    expect(record()).toEqual(before);
+    expect(decisions()).toHaveLength(count);
+  });
+
+  test("原话来自提问窗口里点选的回答：拒绝，原因与建议按规定，优先于生效状态的判断，不弹窗、不解读", async () => {
+    const { w, input, ask } = await askedWorld();
+    await ask("5 分钟");
+    const windows = w.windows.length, requests = w.provider.requests.length;
+    scriptImplement(w.provider);
+    const error = await rejectionOf(w.call({ action: "authorizeImplement", requirementId: input.requirementId }));
+    expect(error.message).toContain("原因：用户是在提问窗口里选的，这只算回答，不能用来补授权实施");
+    expect(error.message).toContain("建议：请用户在主窗口直接说要不要开始实施");
+    expect(w.windows).toHaveLength(windows);
+    expect(w.provider.requests).toHaveLength(requests);
+  });
+
+  test("需求还是草稿：拒绝，原因与建议按规定，不弹窗、不解读", async () => {
+    const w = await world(), created = await w.create();
+    scriptImplement(w.provider);
+    const error = await rejectionOf(w.call({ action: "authorizeImplement", requirementId: String(created.requirementId) }));
+    expect(error.message).toContain("原因：需求不在生效状态（还是草稿、已关闭或已取消），不能补授权实施");
+    expect(error.message).toContain("建议：草稿请用户批准时在同一句话里说'批准并开始实施'；已关闭或已取消的需求不能再授权");
+    expect(w.windows).toHaveLength(0);
+    expect(w.provider.requests.filter((r) => r.systemPrompt?.includes("需求解释器"))).toHaveLength(0);
+  });
+
+  test("需求已取消：拒绝，原因与建议同草稿", async () => {
+    const { w, state, requirementId, authorize, record } = await approvedWorld();
+    const intent = { operationId: uuidv7(), reason: "cancelled" as const, receiptId: uuidv7() };
+    const closing = state.beginClose({ requirementId, version: record().version, intent });
+    state.finishClose({ requirementId, version: closing.version, operationId: intent.operationId });
+    w.capture("授权实施"); scriptImplement(w.provider);
+    const error = await rejectionOf(authorize());
+    expect(error.message).toContain("原因：需求不在生效状态（还是草稿、已关闭或已取消），不能补授权实施");
+    expect(error.message).toContain("建议：草稿请用户批准时在同一句话里说'批准并开始实施'；已关闭或已取消的需求不能再授权");
+  });
+
+  test("草稿有未批准的修改：拒绝，不调用解读模型，建议请用户连同实施一起批准新版本", async () => {
+    const { w, approved, authorize, record } = await approvedWorld();
+    w.capture("再补一句邮箱约束"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    await w.call({ action: "updateDraft", requirementId: String(approved.requirementId), version: Number(approved.version), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充邮箱约束。\n" });
+    const before = record(), requests = w.provider.requests.length;
+    w.capture("授权实施"); scriptImplement(w.provider);
+    const error = await rejectionOf(authorize());
+    expect(error.message).toContain("原因：草稿有未批准的修改，补授权只能作用在已批准的版本上");
+    expect(error.message).toContain("建议：请用户把新版本连同'实施'一起批准（例如说'批准并开始实施'），不要用补授权");
+    expect(w.provider.requests).toHaveLength(requests);
+    expect(record()).toEqual(before);
+  });
+
+  test("当前清单已有实施：不弹窗、不解读、不登记，返回 already_authorized", async () => {
+    const { w, authorize, record, decisions } = await approvedWorld(true);
+    const before = record(), count = decisions().length, requests = w.provider.requests.length;
+    expect(implementAuthorized({ dataRoot: w.dataRoot, repoId: w.repoId }, before)).toBe(true);
+    w.capture("授权实施", "interactive", false); scriptImplement(w.provider);
+    const result = await authorize();
+    expect(result).toMatchObject({ status: "already_authorized", implementAuthorization: "已授权实施" });
+    expect(JSON.stringify(result)).toContain("这一版已经授权实施");
+    expect(w.windows).toHaveLength(0);
+    expect(w.provider.requests).toHaveLength(requests);
+    expect(decisions()).toHaveLength(count);
+    expect(record()).toEqual(before);
+  });
+
+  test("实施目标为空：拒绝，原因按规定，不登记", async () => {
+    const { w, authorize, record, decisions } = await approvedWorld(false, (c) => {
+      const review = phoneReview(c);
+      const frame = review.entries.find((entry) => entry.kind === "constraint")!;
+      frame.unitIds = frame.unitIds!.filter((id) => id !== "features");
+      review.entries.find((entry) => entry.kind === "unresolved")!.unitIds!.push("features");
+      return review;
+    });
+    const before = record(), count = decisions().length;
+    w.capture("授权实施"); scriptImplement(w.provider);
+    const error = await rejectionOf(authorize());
+    expect(error.message).toContain("原因：已批准版本的实施目标板块下没有已确认的段落，授权实施也没有可做的内容");
+    expect(record()).toEqual(before);
+    expect(decisions()).toHaveLength(count);
+  });
+
+  test("解读中途用户说了新话：报处理期间用户又说了新的话，不登记", async () => {
+    const { w, authorize, record } = await approvedWorld();
+    const before = record();
+    w.capture("授权实施"); scriptImplement(w.provider, IMPLEMENT_ENTRY, 500);
+    const count = w.provider.requests.length, pending = authorize().catch((caught: unknown) => caught);
+    const deadline = Date.now() + 3000;
+    while (w.provider.requests.length === count && Date.now() < deadline) await new Promise((r) => setTimeout(r, 1));
+    expect(w.provider.requests.length).toBe(count + 1);
+    w.capture("换个说法，授权实施");
+    const error = await pending as Error;
+    expect(error).toMatchObject({ code: "input_changed" });
+    expect(error.message).toContain(`原因：${new HostAuthorizationError("input_changed").advice.why}`);
+    await new Promise((r) => setTimeout(r, 510));
+    expect(record()).toEqual(before);
+  });
+
+  test("原话没有明确说实施：拒绝，原话作废，同一句话再调仍被拒，不登记", async () => {
+    const { w, authorize, record } = await approvedWorld();
+    const before = record();
+    w.capture("继续"); scriptImplement(w.provider, UNRESOLVED_ENTRY);
+    const error = await rejectionOf(authorize());
+    expect(error.message).toContain("原因：这句话没有明确说要实施");
+    expect(record()).toEqual(before);
+    scriptImplement(w.provider);
+    await rejectionOf(authorize());
+    expect(record()).toEqual(before);
+  });
+
+  test("最后核对被宿主拒绝：建议请用户在主窗口重新说一次授权实施，不引导重新批准，不登记", async () => {
+    const { w, authorize, record } = await approvedWorld();
+    const before = record();
+    const check = vi.spyOn(UserInteractionCore.prototype, "authorizeImplement").mockReturnValue(null);
+    try {
+      w.capture("授权实施"); scriptImplement(w.provider);
+      const error = await rejectionOf(authorize());
+      expect(error.message).toContain("建议：请用户在主窗口重新说一次授权实施");
+      expect(error.message).not.toContain("重新确认批准");
+      expect(error.message).not.toContain("重新批准");
+      expect(record()).toEqual(before);
+    } finally { check.mockRestore(); }
+  });
+
+  test("补授权后用户只说\"批准这一版\"批准新版本：新清单没有实施", async () => {
+    const { w, state, requirementId, authorize, record } = await approvedWorld();
+    w.capture("授权实施"); scriptImplement(w.provider);
+    await authorize();
+    expect(implementAuthorized({ dataRoot: w.dataRoot, repoId: w.repoId }, record())).toBe(true);
+    w.capture("再补一句邮箱约束"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    const updated = await w.call({ action: "updateDraft", requirementId, version: record().version, summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充邮箱约束。\n" });
+    const { input } = await w.request(updated);
+    w.capture("批准这一版"); scriptReview(w.provider, phoneReview);
+    expect(await w.call({ action: "confirmUpdate", ...input })).toMatchObject({ prdActivated: true });
+    expect(implementAuthorized({ dataRoot: w.dataRoot, repoId: w.repoId }, state.read(requirementId))).toBe(false);
+  });
+
+  async function pmDispatcher(w: Awaited<ReturnType<typeof approvedWorld>>["w"], requirementId: string, baseCommit: string, worktree: string) {
+    withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => {
+      db.create("managed_workspaces", requirementId, { format: "managed-workspace/v1", requirementId, title: "登录", operationId: uuidv7(),
+        baseCommit, branch: "requirement-test", path: worktree, status: "ready", recycleOperationId: null });
+    });
+    const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, modelsStorePath: join(w.root, "pm-models.json"), refreshOnCreate: false });
+    const pm = registerControlledProvider(runtime, { providerId: "pm-model", modelId: "test" });
+    const clock = createClock(), base = { repositoryRoot: w.repositoryRoot, dataRoot: w.dataRoot, repoId: w.repoId };
+    const runStore = new RunStore({ dataRoot: w.dataRoot, repoId: w.repoId, daemonStartedAt: new Date().toISOString() });
+    const catalog = await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir: join(w.root, "none-u"), projectDir: join(w.root, "none-p"), parseFrontmatter, projectTrusted: false });
+    const runs = new RunManager({ ...base, runStore, shellRegistry: new ShellRegistry({ clock, database: repositoryDatabase(w.dataRoot, w.repoId) }),
+      networkGate: new NetworkPauseGate(), roleCatalog: catalog.roles,
+      loadAgentSettings: () => readAgentSettings({ agentDir: join(w.root, "none-a"), repositoryRoot: join(w.root, "none-r"), projectTrusted: false }),
+      runtime, clock, workspaceRepoIds: [w.repoId], emit: vi.fn() });
+    runs.markStarted();
+    cleanup.push(async () => { clock.stopGapWatcher(); for (const run of (await runStore.list({ limit: 100 })).items) await runs.stop(run.id, { reason: "main_agent" }).catch(() => {}); });
+    const dispatch = () => runs.dispatchPm({ requirementId, model: { provider: "pm-model", id: "test" }, thinking: "off" });
+    return { dispatch, pm };
+  }
+
+  test("补授权后能派出 PM；补授权前派 PM 被拒", async () => {
+    const { w, authorize, requirementId, baseCommit, worktree } = await approvedWorld();
+    const { dispatch, pm } = await pmDispatcher(w, requirementId, baseCommit, worktree);
+    await expect(dispatch()).rejects.toMatchObject({ code: "implement_not_authorized" });
+    w.capture("授权实施"); scriptImplement(w.provider);
+    await authorize();
+    scriptReplies(pm, [{ type: "text", text: "等待" }]);
+    expect(await dispatch()).toMatchObject({ runId: expect.any(String) });
+  }, 30000);
+
+  test("批准原话含实施：结果写明已授权实施，之后能派出 PM", async () => {
+    const { w, approved, requirementId, baseCommit, worktree } = await approvedWorld(true, undefined, "批准并开始实施");
+    expect(approved).toMatchObject({ prdActivated: true, implementAuthorization: "已授权实施" });
+    const { dispatch, pm } = await pmDispatcher(w, requirementId, baseCommit, worktree);
+    scriptReplies(pm, [{ type: "text", text: "等待" }]);
+    expect(await dispatch()).toMatchObject({ runId: expect.any(String) });
+  }, 30000);
+
+  test("批准原话没说实施：结果写明没有授权实施，并告诉主代理不建工作区、不派 PM，用户说授权实施再登记", async () => {
+    const { approved } = await approvedWorld(false);
+    expect(approved).toMatchObject({ prdActivated: true, implementAuthorization: "没有授权实施",
+      next: "需求已生效但没有授权实施：不建工作区、不派 PM；告诉用户要开始实施就说'授权实施'；等用户说了，再用 authorizeImplement 登记" });
+  });
+
+  test("没授权实施时派 PM 被拒，建议提到 authorizeImplement", async () => {
+    const { w, requirementId, baseCommit, worktree } = await approvedWorld(false);
+    const { dispatch } = await pmDispatcher(w, requirementId, baseCommit, worktree);
+    const error = await rejectionOf(dispatch());
+    expect(error).toMatchObject({ code: "implement_not_authorized" });
+    const next = adviceOf(error)?.next ?? "";
+    expect(next).toContain("authorizeImplement");
+    expect(next).not.toContain("在批准需求时授权实施");
+  }, 30000);
+
+  test("确认窗口打开期间用户又说了新话：之后选确认也报处理期间用户又说了新的话，不登记、不解读新话", async () => {
+    const { w, authorize, record, decisions } = await approvedWorld();
+    const before = record(), count = decisions().length;
+    w.capture("授权实施", "interactive", false); scriptImplement(w.provider); w.answerWindows(true);
+    const requests = w.provider.requests.length;
+    w.beforeAnswer(async () => { w.capture("等一下，我再想想", "interactive", false); });
+    const error = await rejectionOf(authorize());
+    expect(error).toMatchObject({ code: "input_changed" });
+    expect(error.message).toContain(`原因：${new HostAuthorizationError("input_changed").advice.why}`);
+    expect(w.windows).toHaveLength(1);
+    expect(w.provider.requests).toHaveLength(requests);
+    expect(record()).toEqual(before);
+    expect(decisions()).toHaveLength(count);
+  });
+
+  test.each([
+    ["登记补授权清单时缺少用户确认", () => vi.spyOn(ApprovalManifestStore.prototype, "registerImplementSupplement"), "manifest_admission_required"],
+    ["登记补授权清单时宿主没有授权清单", () => vi.spyOn(ApprovalManifestStore.prototype, "registerImplementSupplement"), "manifest_authorization_required"],
+    ["需求服务补授权时宿主没有授权清单", () => vi.spyOn(RequirementService.prototype, "authorizeImplement"), "manifest_authorization_required"],
+    ["需求服务补授权时没有授权", () => vi.spyOn(RequirementService.prototype, "authorizeImplement"), "authorization_required"],
+  ] as const)("解读完成后%s：建议请用户在主窗口重新说一次授权实施，不引导确认批准或重新批准，需求记录不变", async (_name, spy, code) => {
+    const { w, authorize, record } = await approvedWorld();
+    const before = record(), mocked = spy();
+    mocked.mockRejectedValue(new RequirementServiceError(code, "模拟宿主核对失败"));
+    try {
+      w.capture("授权实施"); scriptImplement(w.provider);
+      const error = await rejectionOf(authorize());
+      expect(error.message).toContain("建议：请用户在主窗口重新说一次授权实施");
+      expect(error.message).not.toContain("确认批准");
+      expect(error.message).not.toContain("重新批准");
+      expect(record()).toEqual(before);
+    } finally { mocked.mockRestore(); }
+  });
+
+  test("解读完成后、登记前用户说了新话：报处理期间用户又说了新的话，不登记", async () => {
+    const { w, authorize, record } = await approvedWorld();
+    const before = record(), original = ApprovalManifestStore.prototype.registerImplementSupplement;
+    const spy = vi.spyOn(ApprovalManifestStore.prototype, "registerImplementSupplement").mockImplementation(function (this: ApprovalManifestStore, ...args) {
+      w.capture("换个说法，授权实施");
+      return original.apply(this, args);
+    });
+    try {
+      w.capture("授权实施"); scriptImplement(w.provider);
+      const error = await rejectionOf(authorize());
+      expect(error).toMatchObject({ code: "input_changed" });
+      expect(error.message).toContain(`原因：${new HostAuthorizationError("input_changed").advice.why}`);
+      expect(record()).toEqual(before);
+    } finally { spy.mockRestore(); }
+  });
+
+  test("原话只 @ 了另一个需求：补授权的这个需求不算已 @，弹出授权实施确认窗口", async () => {
+    const { w, authorize, record } = await approvedWorld();
+    const other = String((await w.create()).requirementId);
+    w.capture(`@[登录#${other.slice(-4)}] 授权实施`, "interactive", false); scriptImplement(w.provider); w.answerWindows(true);
+    expect(await authorize()).toMatchObject({ status: "authorized" });
+    expect(w.windows.filter((window) => window.title === "授权实施")).toHaveLength(1);
+    expect(record().data.revision).toBeGreaterThan(0);
+  });
+
+  test("需求没有简介时，确认窗口不显示简介一行", async () => {
+    const { w, authorize, record, requirementId } = await approvedWorld();
+    saveRequirementSummary(w.dataRoot, w.repoId, requirementId, "0".repeat(64), "别的版本的简介");
+    expect(requirementSummary(w.dataRoot, w.repoId, requirementId, record().data.saved!.hash)).toBeUndefined();
+    w.capture("授权实施", "interactive", false); scriptImplement(w.provider); w.answerWindows(true);
+    await authorize();
+    expect(w.windows).toHaveLength(1);
+    expect(w.windows[0]!.text).toContain("编号：");
+    expect(w.windows[0]!.text).not.toContain("简介：");
+  });
+
+  test("需求已完成关闭：拒绝，原因与建议同草稿", async () => {
+    const { w, state, requirementId, authorize, record } = await approvedWorld();
+    const intent = { operationId: uuidv7(), reason: "completed" as const, receiptId: uuidv7() };
+    const closing = state.beginClose({ requirementId, version: record().version, intent });
+    state.finishClose({ requirementId, version: closing.version, operationId: intent.operationId });
+    expect(record().data.lifecycle).toBe("closed");
+    w.capture("授权实施"); scriptImplement(w.provider);
+    const error = await rejectionOf(authorize());
+    expect(error.message).toContain("原因：需求不在生效状态（还是草稿、已关闭或已取消），不能补授权实施");
+    expect(error.message).toContain("建议：草稿请用户批准时在同一句话里说'批准并开始实施'；已关闭或已取消的需求不能再授权");
   });
 });

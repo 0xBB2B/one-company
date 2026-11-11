@@ -6,6 +6,7 @@ import { ApprovalPartition, ApprovalUnitIds, CandidateBinding, UnitReview, Actio
   checkInteraction, UserInteractionError, RetainedUnitEvidence, resolvesContinuityIssue } from "./user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, InteractionEntry } from "./user-interaction-format.ts";
 import type { PrdApprovalPartition } from "./prd-view.ts";
+import type { RequirementDocSection } from "./requirement-doc.ts";
 
 const id = CandidateBinding.properties.candidateId, hash = CandidateBinding.properties.intentHash;
 const decisionIds = Type.Array(id, { minItems: 1, maxItems: 16, uniqueItems: true });
@@ -221,4 +222,33 @@ export function createApprovalManifest(context: InteractionContext, result: Inte
     actions: review.actions.map(({ conclusionIndexes, ...a }) => ({ ...a, decisionIds: mapped(conclusionIndexes) })),
     questions: review.questions.map(({ conclusionIndexes, ...q }) => ({ ...q, decisionIds: mapped(conclusionIndexes) })) };
   return checkApprovalManifest({ ...payload, manifestHash: approvalManifestDigest(payload) }, { requirementId: context.basis.requirementId, candidate: doc.candidate, partition: doc.partition });
+}
+
+export function manifestAuthorizesImplement(manifest: Pick<ApprovalManifest, "actions">): boolean {
+  return manifest.actions.some((action) => action.action === "implement" && !action.unknown);
+}
+export function implementGoalUnitIds(manifest: Pick<ApprovalManifest, "units">, sections: readonly RequirementDocSection[]): string[] {
+  const goals = sections.filter((section) => section.goal).map((section) => section.id);
+  return manifest.units.filter((unit) => unit.disposition === "confirmed" &&
+    goals.some((goal) => unit.id === goal || unit.id.startsWith(`${goal}.`))).map((unit) => unit.id);
+}
+export function supplementImplementAction(input: { manifest: ApprovalManifest; goalIds: string[]; decisionId: string }): ApprovalManifest {
+  const { manifest, goalIds, decisionId } = input;
+  if (manifestAuthorizesImplement(manifest)) deny("implement_already_authorized");
+  if (!goalIds.length) deny("implement_scope_empty");
+  const constraintIds = approvalDependencyClosure(manifest.units, goalIds).filter((unitId) => !goalIds.includes(unitId));
+  const payload = { ...structuredClone(manifest), actions: [...structuredClone(manifest.actions),
+    { action: "implement" as const, goalIds: [...goalIds], constraintIds, unknown: false, decisionIds: [decisionId] }] };
+  return checkApprovalManifest({ ...payload, manifestHash: approvalManifestDigest(payload) }, { requirementId: manifest.requirementId, candidate: manifest.candidate,
+    partition: { prdHash: manifest.candidate.to.hash, totalBytes: manifest.totalBytes,
+      units: manifest.units.map(({ id, hash, startByte, endByte }) => ({ id, hash, startByte, endByte })) } });
+}
+export function checkImplementSupplement(input: { base: ApprovalManifest; next: ApprovalManifest; decisionId: string }): void {
+  const { base, next, decisionId } = input;
+  if (manifestAuthorizesImplement(base)) deny("implement_already_authorized");
+  const added = next.actions[next.actions.length - 1];
+  if (next.actions.length !== base.actions.length + 1 || !added || added.action !== "implement" || added.unknown) deny("implement_supplement_mismatch");
+  if (added.decisionIds.length !== 1 || added.decisionIds[0] !== decisionId ||
+    [...base.units, ...base.actions, ...base.questions].some((item) => item.decisionIds.includes(decisionId))) deny("implement_supplement_mismatch");
+  if (approvalManifestDigest({ ...next, actions: next.actions.slice(0, -1) }) !== base.manifestHash) deny("implement_supplement_mismatch");
 }

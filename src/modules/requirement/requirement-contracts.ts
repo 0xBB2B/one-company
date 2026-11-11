@@ -97,7 +97,7 @@ export const OwnerClaim = object({ requirementId: id, workspaceId: hash });
 export const RequestRecord = object({ requirementId: id, intentHash: hash });
 export const RequirementEvent = object({
   requirementId: id, repoId: hash, kind: Type.Union([
-    Type.Literal("reserved"), Type.Literal("workspace.bound"), Type.Literal("prd.saved"), Type.Literal("prd.approved"),
+    Type.Literal("reserved"), Type.Literal("workspace.bound"), Type.Literal("prd.saved"), Type.Literal("prd.approved"), Type.Literal("implement.authorized"),
     Type.Literal("pm.acquired"), Type.Literal("pm.released"), Type.Literal("update.assessed"), Type.Literal("closing"), Type.Literal("closed"), Type.Literal("recovery.blocked"),
   ]), version: positive, epoch: positive, revision: counter, from: nullable(PrdReference), to: nullable(PrdReference), receiptId: nullable(id), recoveryReason: nullable(RecoveryReason),
   approvalManifest: Type.Optional(ApprovalSummary),
@@ -108,6 +108,7 @@ export const commands = {
   save: object({ requirementId: id, version: positive, operationId: id, reference: PrdReference }),
   approve: object({ requirementId: id, version: positive, receiptId: id, reference: PrdReference,
     manifest: ApprovalManifestReferenceSchema, docSpec: Type.Optional(RequirementDocSpecSchema), prototypes: Type.Optional(hash) }),
+  authorizeImplement: object({ requirementId: id, version: positive, receiptId: id, manifest: ApprovalManifestReferenceSchema }),
   bind: object({ requirementId: id, version: positive, path: Type.String({ minLength: 1, maxLength: 4096 }), prepareOperationId: id, baseCommit: commit }),
   acquire: object({ requirementId: id, version: positive, runId: id, expectedFence: counter }),
   close: object({ requirementId: id, version: positive, intent: CloseIntent }),
@@ -155,6 +156,9 @@ const REQUIREMENT_STATE_ADVICE = {
   prototype_digest_required: { why: "这个需求有原型，批准时必须带上草稿原型集合的指纹", next: "通过主窗口的批准流程重新批准" },
   saved_version_mismatch: { why: "要批准的版本不是当前保存的版本", next: "重新读取当前保存版本，按它重新确认" },
   approval_conflict: { why: "这个版本已按另一份批准清单批准过", next: REREAD },
+  draft_unapproved_changes: { why: "草稿有未批准的修改，补授权只能作用在已批准的版本上", next: "请用户把新版本连同“实施”一起批准（例如说“批准并开始实施”）" },
+  implement_already_authorized: { why: "这一版已经授权实施", next: "重新读取需求状态，不用再补授权" },
+  manifest_supplement_mismatch: { why: "补授权清单和需求当前的批准清单对不上", next: "重新读取需求后按最新版本再试" },
   manifest_stale: { why: "批准期间需求记录被并发改动", next: "重新读取后再批准" },
   workspace_not_ready: { why: "需求还没有准备好工作区", next: "先用项目管理工具准备需求工作区" },
   pm_already_owned: { why: "这个需求已有一个有效的 PM", next: "查询现有 PM 的运行状态，不要重复派出" },

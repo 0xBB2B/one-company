@@ -19,6 +19,7 @@ import { partitionPrdDocument } from "./prd-view.ts";
 import { assertApprovalScopeReturnIn, registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
 import type { RequirementWriteOwner } from "./requirement-coordination.ts";
 import {
+  AuthorizeImplementInput,
   ConfirmUpdateInput,
   LoadConfirmationInput,
   CreateRequirementInput,
@@ -67,6 +68,7 @@ const STATE_SCOPE: Record<RequirementServiceAction, ReadonlySet<RequirementActio
   create: new Set(["open", "reserve", "read", "saved-version", "block-recovery"]),
   updateDraft: new Set(["open", "read", "saved-version", "block-recovery"]),
   confirmUpdate: new Set(["open", "read", "approved-version", "block-recovery"]),
+  authorizeImplement: new Set(["open", "read", "implement-authorization", "block-recovery"]),
   readSaved: new Set(["open", "read", "block-recovery"]),
   readApproved: new Set(["open", "read", "events", "block-recovery"]),
   diff: new Set(["open", "read", "events", "block-recovery"]),
@@ -308,6 +310,19 @@ export class RequirementService {
   async confirmUpdate(input: ConfirmInput): Promise<RequirementReceipt> {
     const request = checkServiceInput(ConfirmUpdateInput, input);
     return this.approve(request);
+  }
+
+  async authorizeImplement(input: AuthorizeImplementInput): Promise<Pick<RequirementReceipt, "requirementId" | "version" | "epoch" | "revision" | "approvalScope">> {
+    const request = checkServiceInput(AuthorizeImplementInput, input);
+    const authorization: ServiceAuthorizationRequest = { action: "authorizeImplement", repoId: this.options.repoId,
+      requirementId: request.requirementId, version: request.version, receiptId: request.receiptId, manifest: request.manifest };
+    this.authorize(authorization);
+    const state = await this.state(authorization);
+    available(state.read(request.requirementId).data);
+    const updated = await state.recordImplementAuthorization(request);
+    this.authorize(authorization);
+    return { requirementId: request.requirementId, version: updated.version, epoch: updated.data.epoch, revision: updated.data.revision,
+      ...this.approvalScope(updated) };
   }
 
   private async approve(input: ConfirmInput): Promise<RequirementReceipt> {
