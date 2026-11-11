@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "vitest";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { approvedFilesConflictAdvice, commitApprovedFiles, mergeWithBase, planApprovedFiles } from "../src/modules/delivery/approved-files.ts";
 import { createRepoFixture, removeRepoFixture } from "./helpers/repo-fixture.ts";
@@ -11,6 +11,7 @@ const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 const ID = "01941f29-7c00-7000-8000-000000000001";
+const FILE_COMMIT = "0123456789abcdef0123456789abcdef01234567";
 const PRD = "# 角色跳跃\n\n## 目标\n保留移动。\n";
 const text = (value: Uint8Array | string) => Buffer.from(value).toString("utf8");
 const bytes = (value: string) => Buffer.from(value);
@@ -153,13 +154,14 @@ async function repoWithDesign() {
 test("提交：写入的文件和删除的文件落成一个提交，说明末尾单独一行 Requirement，文件内容与传入一致", async () => {
   const repo = await repoWithDesign();
   const before = (await runGit(["rev-parse", "HEAD"], repo.root)).trim();
-  await commitApprovedFiles({ worktree: repo.root, requirementId: ID, writes: { "DESIGN.md": bytes(DESIGN_DRAFT), [mdPath("新标题")]: bytes(PRD) }, deletes: [mdPath("旧标题")] });
+  await commitApprovedFiles({ worktree: repo.root, requirementId: ID, fileCommit: FILE_COMMIT, writes: { "DESIGN.md": bytes(DESIGN_DRAFT), [mdPath("新标题")]: bytes(PRD) }, deletes: [mdPath("旧标题")] });
   expect((await runGit(["rev-list", "--count", `${before}..HEAD`], repo.root)).trim()).toBe("1");
   const status = (await runGit(["-c", "core.quotePath=false", "show", "--name-status", "--format=", "HEAD"], repo.root)).trim().split("\n").sort();
   expect(status).toEqual([`A\t${mdPath("新标题")}`, `D\t${mdPath("旧标题")}`, "M\tDESIGN.md"].sort());
   expect(await readFile(join(repo.root, "DESIGN.md"), "utf8")).toBe(DESIGN_DRAFT);
   expect(await runGit(["show", `HEAD:${mdPath("新标题")}`], repo.root)).toBe(PRD);
   const message = (await runGit(["log", "-1", "--format=%B"], repo.root)).trimEnd().split("\n");
+  expect(message.filter((line) => line !== "")).toEqual(["docs(prd): 提交批准的需求文件 " + ID, `Approved-Files: ${FILE_COMMIT}`, `Requirement: ${ID}`]);
   expect(message.at(-1)).toBe(`Requirement: ${ID}`);
   expect(message.slice(0, -1).filter((line) => line.startsWith("Requirement:"))).toEqual([]);
   expect((await runGit(["status", "--porcelain"], repo.root)).trim()).toBe("");
@@ -169,7 +171,7 @@ test("提交：用户已暂存的无关文件留在暂存区，不进这次提�
   const repo = await repoWithDesign();
   await writeFile(join(repo.root, "别的.txt"), "暂存的\n");
   await runGit(["add", "别的.txt"], repo.root);
-  await commitApprovedFiles({ worktree: repo.root, requirementId: ID, writes: { [mdPath("新标题")]: bytes(PRD) }, deletes: [] });
+  await commitApprovedFiles({ worktree: repo.root, requirementId: ID, fileCommit: FILE_COMMIT, writes: { [mdPath("新标题")]: bytes(PRD) }, deletes: [] });
   expect((await runGit(["-c", "core.quotePath=false", "show", "--name-only", "--format=", "HEAD"], repo.root)).trim()).toBe(mdPath("新标题"));
   expect((await runGit(["-c", "core.quotePath=false", "status", "--porcelain"], repo.root)).trim()).toBe("A  别的.txt");
 });
@@ -177,7 +179,7 @@ test("提交：用户已暂存的无关文件留在暂存区，不进这次提�
 test("提交：写入的内容和分支 HEAD 完全相同，不报错也不多提交", async () => {
   const repo = await repoWithDesign();
   const before = (await runGit(["rev-parse", "HEAD"], repo.root)).trim();
-  await expect(commitApprovedFiles({ worktree: repo.root, requirementId: ID, writes: { "DESIGN.md": bytes(DESIGN_BASE), [mdPath("旧标题")]: bytes("旧正文\n") }, deletes: [] })).resolves.toBeUndefined();
+  await expect(commitApprovedFiles({ worktree: repo.root, requirementId: ID, fileCommit: FILE_COMMIT, writes: { "DESIGN.md": bytes(DESIGN_BASE), [mdPath("旧标题")]: bytes("旧正文\n") }, deletes: [] })).resolves.toBeUndefined();
   expect((await runGit(["rev-parse", "HEAD"], repo.root)).trim()).toBe(before);
   expect((await runGit(["status", "--porcelain"], repo.root)).trim()).toBe("");
 });
@@ -186,7 +188,7 @@ test("提交：提交者身份取这个仓库自己的 git 配置", async () => 
   const repo = await repoWithDesign();
   await runGit(["config", "user.name", "工作区作者"], repo.root);
   await runGit(["config", "user.email", "author@example.com"], repo.root);
-  await commitApprovedFiles({ worktree: repo.root, requirementId: ID, writes: { [mdPath("新标题")]: bytes(PRD) }, deletes: [] });
+  await commitApprovedFiles({ worktree: repo.root, requirementId: ID, fileCommit: FILE_COMMIT, writes: { [mdPath("新标题")]: bytes(PRD) }, deletes: [] });
   expect((await runGit(["log", "-1", "--format=%an <%ae>"], repo.root)).trim()).toBe("工作区作者 <author@example.com>");
 });
 
@@ -194,7 +196,7 @@ test("提交：git commit 失败时抛出错误，不留下新提交", async () 
   const repo = await repoWithDesign();
   const before = (await runGit(["rev-parse", "HEAD"], repo.root)).trim();
   await withoutGitIdentity(repo.root, async () => {
-    await expect(commitApprovedFiles({ worktree: repo.root, requirementId: ID, writes: { [mdPath("新标题")]: bytes(PRD) }, deletes: [] })).rejects.toThrow();
+    await expect(commitApprovedFiles({ worktree: repo.root, requirementId: ID, fileCommit: FILE_COMMIT, writes: { [mdPath("新标题")]: bytes(PRD) }, deletes: [] })).rejects.toThrow();
   });
   expect((await runGit(["rev-parse", "HEAD"], repo.root)).trim()).toBe(before);
 });
@@ -202,6 +204,29 @@ test("提交：git commit 失败时抛出错误，不留下新提交", async () 
 test("提交：写进子目录时自动建目录", async () => {
   const repo = await createRepoFixture(); cleanups.push(() => removeRepoFixture(repo));
   await setLocalIdentity(repo.root);
-  await commitApprovedFiles({ worktree: repo.root, requirementId: ID, writes: { [htmlPath("设置页")]: bytes(PROTOTYPE_HTML) }, deletes: [] });
+  await commitApprovedFiles({ worktree: repo.root, requirementId: ID, fileCommit: FILE_COMMIT, writes: { [htmlPath("设置页")]: bytes(PROTOTYPE_HTML) }, deletes: [] });
   expect(await readFile(join(repo.root, htmlPath("设置页")), "utf8")).toBe(PROTOTYPE_HTML);
+});
+
+test("提交：写到一半有个目标位置写不进去，已写的文件全部恢复成写之前的样子，修好后再调用能提交", async () => {
+  const repo = await repoWithDesign();
+  const before = (await runGit(["rev-parse", "HEAD"], repo.root)).trim();
+  await mkdir(join(repo.root, htmlPath("设置页")), { recursive: true });
+  const writes = { "DESIGN.md": bytes(DESIGN_DRAFT), [mdPath("新标题")]: bytes(PRD), [htmlPath("设置页")]: bytes(PROTOTYPE_HTML) };
+  await expect(commitApprovedFiles({ worktree: repo.root, requirementId: ID, fileCommit: FILE_COMMIT, writes, deletes: [] })).rejects.toThrow();
+  expect((await runGit(["rev-parse", "HEAD"], repo.root)).trim()).toBe(before);
+  expect(await readFile(join(repo.root, "DESIGN.md"), "utf8")).toBe(DESIGN_BASE);
+  expect((await runGit(["-c", "core.quotePath=false", "status", "--porcelain"], repo.root)).trim()).toBe("");
+  await rm(join(repo.root, htmlPath("设置页")), { recursive: true });
+  await commitApprovedFiles({ worktree: repo.root, requirementId: ID, fileCommit: FILE_COMMIT, writes, deletes: [] });
+  expect((await runGit(["-c", "core.quotePath=false", "show", "--name-only", "--format=", "HEAD"], repo.root)).trim().split("\n").sort()).toEqual(["DESIGN.md", mdPath("新标题"), htmlPath("设置页")].sort());
+});
+
+test("提交：回滚时某个目标路径是已存在的空目录，抛出的是带原因和建议的「提交批准的文件失败」错误，已写的文件全部恢复", async () => {
+  const repo = await repoWithDesign();
+  await mkdir(join(repo.root, mdPath("新标题")), { recursive: true });
+  const writes = { "DESIGN.md": bytes(DESIGN_DRAFT), [mdPath("新标题")]: bytes(PRD) };
+  await expect(commitApprovedFiles({ worktree: repo.root, requirementId: ID, fileCommit: FILE_COMMIT, writes, deletes: [] })).rejects.toThrow(/提交批准的文件失败/);
+  expect(await readFile(join(repo.root, "DESIGN.md"), "utf8")).toBe(DESIGN_BASE);
+  expect((await runGit(["-c", "core.quotePath=false", "status", "--porcelain"], repo.root)).trim()).toBe("");
 });

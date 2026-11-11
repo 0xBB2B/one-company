@@ -16,6 +16,7 @@ import { runGit } from "./helpers/git-run.ts";
 import { setLocalIdentity, withoutGitIdentity } from "./helpers/git-identity.ts";
 import { adviceOf } from "../src/core/exec/tool-failure.ts";
 import { addDraftFiles, AGENTS_BASE, AGENTS_DRAFT, approvedPrdBytes, DESIGN_BASE, DESIGN_DRAFT, DESIGN_MAIN_COLOR, DESIGN_MAIN_COMPONENT, SCENARIO_CHANGES } from "./helpers/approved-files-fixture.ts";
+import { approvalFileCommit, commitApprovedFiles, planApprovedFromDraft } from "../src/modules/delivery/approved-files.ts";
 import { parseGitVersion, versionAtLeast } from "../src/core/exec/git-read.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 
@@ -62,7 +63,7 @@ async function world(options: { draft?: boolean; emptyRepo?: boolean; gitVersion
     return closer.close({ requirementId, reason: "cancelled", receiptId: receipt });
   }
   if (!options.draft) await activate();
-  return { ...paths, repo, state, requirementId, location, workspace, prompts, setAnswer, close, activate };
+  return { ...paths, lines, repo, state, requirementId, location, workspace, prompts, setAnswer, close, activate };
 }
 
 test("M8A-AC7：草稿阶段创建工作区被拒，不弹确认、不建目录或记录", async () => {
@@ -502,4 +503,194 @@ test("批准之前主仓库根目录的 DESIGN.md、AGENTS.md 不变，也没有
   const w = await world({ draft: true, mainFiles: MAIN_FILES, draftFiles: SCENARIO_CHANGES });
   expect(await readMain(w)).toEqual([Buffer.from(DESIGN_BASE), Buffer.from(AGENTS_BASE)]);
   expect((await runGit(["for-each-ref", "--format=%(refname)", "refs/heads"], w.repo.root)).trim()).toBe("refs/heads/main");
+}, 60000);
+
+/** 再批准一个新版本：可先往草稿线追加文件改动；有工作区时按批准流程算出要写的文件并提交。 */
+async function approveAgain(w: World, options: { body?: string; changes?: Record<string, string>; commitTo?: string } = {}) {
+  const line = w.lines[w.requirementId]!;
+  if (options.changes) line.push(await addDraftFiles(w, { requirementId: w.requirementId, line, changes: options.changes }));
+  await w.activate(options.body);
+  if (!options.commitTo) return;
+  const fileCommit = approvalFileCommit(w.dataRoot, w.repoId, w.requirementId);
+  const plan = await planApprovedFromDraft({ dataRoot: w.dataRoot, repoId: w.repoId, requirementId: w.requirementId,
+    fileCommit, cwd: options.commitTo, rev: "HEAD", checkDirty: true });
+  await commitApprovedFiles({ worktree: options.commitTo, requirementId: w.requirementId, fileCommit, writes: plan.writes, deletes: plan.deletes });
+}
+const V2_BODY = `${BODY}验证码六位。\n`;
+const lastCommitFiles = async (w: World) => (await runGit(["-c", "core.quotePath=false", "show", "--name-only", "--format=", branchOf(w)], w.repo.root)).trim().split("\n").sort();
+
+test("再次批准：草稿 DESIGN.md 和底稿都没变，分支里别人改过的 DESIGN.md 不动，这次提交只有正文", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  const merged = DESIGN_BASE.replace("- 主色：#0f766e", "- 主色：#2563eb").replace("- 按钮：圆角 4px", "- 按钮：圆角 8px");
+  expect(await showOnBranch(w, "DESIGN.md")).toBe(merged);
+  await approveAgain(w, { body: V2_BODY, commitTo: ready.path });
+  expect(await commitsOnBranch(w, ready.baseCommit)).toBe("2");
+  expect(await lastCommitFiles(w)).toEqual([mdOf(w)]);
+  expect(await showOnBranch(w, "DESIGN.md")).toBe(merged);
+}, 60000);
+
+test("再次批准：草稿 AGENTS.md 和底稿都没变，分支里别人改过的 AGENTS.md 不动，这次提交只有正文", async () => {
+  const mainAgents = "# 项目规范\n## 构建\n- 用 pnpm。\n## 命名\n- 文件名用小写。\n";
+  const w = await approvedWithFiles({ "AGENTS.md": mainAgents });
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  const merged = await showOnBranch(w, "AGENTS.md");
+  expect(merged).toContain("用 pnpm");
+  expect(merged).toContain("每个功能配一个测试");
+  await approveAgain(w, { body: V2_BODY, commitTo: ready.path });
+  expect(await lastCommitFiles(w)).toEqual([mdOf(w)]);
+  expect(await showOnBranch(w, "AGENTS.md")).toBe(merged);
+}, 60000);
+
+test("再次批准：这一版又改了 DESIGN.md 的另一章，分支里是别人的颜色加两版的改动", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await approveAgain(w, { body: V2_BODY, changes: { "DESIGN.md": `${DESIGN_DRAFT}## 间距\n- 外边距：8px\n` }, commitTo: ready.path });
+  expect(await showOnBranch(w, "DESIGN.md")).toBe(`${DESIGN_BASE.replace("- 主色：#0f766e", "- 主色：#2563eb").replace("- 按钮：圆角 4px", "- 按钮：圆角 8px")}## 间距\n- 外边距：8px\n`);
+}, 60000);
+
+test("已就绪的工作区补提交：新版本正文不变、只多了一份原型，批准时没提交进分支，再调 prepare 后分支里有这份原型", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  const newHtml = `docs/prd/${w.requirementId}.命令行.html`;
+  await approveAgain(w, { changes: { "prototypes/命令行.v1.html": "<html><body>命令行</body></html>\n" } });
+  await w.workspace.prepare({ requirementId: w.requirementId });
+  expect(await showOnBranch(w, newHtml)).toBe("<html><body>命令行</body></html>\n");
+  expect(await commitsOnBranch(w, ready.baseCommit)).toBe("2");
+}, 60000);
+
+test("已就绪的工作区补提交：新版本正文不变、只改了 AGENTS.md，批准时没提交进分支，再调 prepare 后分支里有新的 AGENTS.md", async () => {
+  const w = await approvedWithFiles();
+  await w.workspace.prepare({ requirementId: w.requirementId });
+  const newAgents = `${AGENTS_DRAFT}## 构建\n- 用 pnpm。\n`;
+  await approveAgain(w, { changes: { "AGENTS.md": newAgents } });
+  await w.workspace.prepare({ requirementId: w.requirementId });
+  expect(await showOnBranch(w, "AGENTS.md")).toBe(newAgents);
+}, 60000);
+
+test("已就绪的工作区补提交：用户把工作区切到了别的分支，prepare 报分支冲突，别的分支没有新提交，需求分支也没被改", async () => {
+  const w = await world();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await approveAgain(w, { body: V2_BODY });
+  await runGit(["switch", "-q", "-c", "外部分支"], ready.path);
+  const reqTip = (await runGit(["rev-parse", branchOf(w)], w.repo.root)).trim();
+  const otherTip = (await runGit(["rev-parse", "外部分支"], w.repo.root)).trim();
+  await expect(w.workspace.prepare({ requirementId: w.requirementId })).rejects.toMatchObject({ code: "path_conflict" });
+  expect((await runGit(["rev-parse", "外部分支"], w.repo.root)).trim()).toBe(otherTip);
+  expect((await runGit(["rev-parse", branchOf(w)], w.repo.root)).trim()).toBe(reqTip);
+}, 60000);
+
+const DESIGN_V1 = DESIGN_BASE.replace("- 主色：#0f766e", "- 主色：#2563eb").replace("- 按钮：圆角 4px", "- 按钮：圆角 8px");
+const SPACING = "## 间距\n- 外边距：8px\n";
+const FONT = "## 字体\n- 正文：14px\n";
+const V3_BODY = `${V2_BODY}提示语中文。\n`;
+const tipOf = async (w: World) => (await runGit(["rev-parse", branchOf(w)], w.repo.root)).trim();
+
+test("中间一版批准后没写进分支：第 3 版只改正文并提交、再调 prepare，分支里的 DESIGN.md 带着第 2 版的「间距」", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await approveAgain(w, { body: V2_BODY, changes: { "DESIGN.md": `${DESIGN_DRAFT}${SPACING}` } });
+  await approveAgain(w, { body: V3_BODY, commitTo: ready.path });
+  await w.workspace.prepare({ requirementId: w.requirementId });
+  expect(await showOnBranch(w, "DESIGN.md")).toBe(`${DESIGN_V1}${SPACING}`);
+}, 60000);
+
+test("中间一版提交时被工作区里 DESIGN.md 的未提交改动拒绝，清掉改动后第 3 版只改正文并提交，分支里的 DESIGN.md 带着第 2 版的「间距」", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await writeFile(join(ready.path, "DESIGN.md"), "脏改动\n");
+  await expect(approveAgain(w, { body: V2_BODY, changes: { "DESIGN.md": `${DESIGN_DRAFT}${SPACING}` }, commitTo: ready.path })).rejects.toThrow();
+  await runGit(["checkout", "--", "DESIGN.md"], ready.path);
+  await approveAgain(w, { body: V3_BODY, commitTo: ready.path });
+  expect(await showOnBranch(w, "DESIGN.md")).toBe(`${DESIGN_V1}${SPACING}`);
+}, 60000);
+
+test("中间一版批准后没写进分支：第 3 版又改了 DESIGN.md 的另一章，分支里第 2、3 版的改动和别人的颜色都在，不报冲突", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await approveAgain(w, { body: V2_BODY, changes: { "DESIGN.md": `${DESIGN_DRAFT}${SPACING}` } });
+  await approveAgain(w, { body: V3_BODY, changes: { "DESIGN.md": `${DESIGN_DRAFT}${SPACING}${FONT}` }, commitTo: ready.path });
+  expect(await showOnBranch(w, "DESIGN.md")).toBe(`${DESIGN_V1}${SPACING}${FONT}`);
+}, 60000);
+
+test("已就绪工作区上 worker 已提交改了 DESIGN.md，没有新批准时再调 prepare：分支没有新提交，worker 的改动保留", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await writeFile(join(ready.path, "DESIGN.md"), DESIGN_V1.replace("圆角 8px", "圆角 4px"));
+  await runGit(["commit", "-qam", "worker 改按钮"], ready.path);
+  const tip = await tipOf(w);
+  await w.workspace.prepare({ requirementId: w.requirementId });
+  expect(await tipOf(w)).toBe(tip);
+  expect(await showOnBranch(w, "DESIGN.md")).toBe(DESIGN_V1.replace("圆角 8px", "圆角 4px"));
+}, 60000);
+
+test("已就绪工作区上 worker 已提交改了正文文件，没有新批准时再调 prepare：分支没有新提交，worker 的改动保留", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await writeFile(join(ready.path, mdOf(w)), "worker 改过的正文\n");
+  await runGit(["commit", "-qam", "worker 改正文"], ready.path);
+  const tip = await tipOf(w);
+  await w.workspace.prepare({ requirementId: w.requirementId });
+  expect(await tipOf(w)).toBe(tip);
+  expect(await showOnBranch(w, mdOf(w))).toBe("worker 改过的正文\n");
+}, 60000);
+
+test("已就绪工作区上 worker 把 DESIGN.md 改成和批准内容冲突的值，没有新批准时再调 prepare：不报冲突，分支不变", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await writeFile(join(ready.path, "DESIGN.md"), DESIGN_V1.replace("圆角 8px", "圆角 12px"));
+  await runGit(["commit", "-qam", "worker 改按钮"], ready.path);
+  const tip = await tipOf(w);
+  await expect(w.workspace.prepare({ requirementId: w.requirementId })).resolves.toMatchObject({ status: "ready" });
+  expect(await tipOf(w)).toBe(tip);
+}, 60000);
+
+test("已就绪工作区里 DESIGN.md 有未提交改动，没有新批准时调 prepare：成功，不报未提交的改动，改动原样保留", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await writeFile(join(ready.path, "DESIGN.md"), "未提交的改动\n");
+  await expect(w.workspace.prepare({ requirementId: w.requirementId })).resolves.toMatchObject({ status: "ready" });
+  expect(await readFile(join(ready.path, "DESIGN.md"), "utf8")).toBe("未提交的改动\n");
+}, 60000);
+
+test("程序批准提交被 git revert 之后调 prepare：不崩溃", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await runGit(["revert", "--no-edit", "HEAD"], ready.path);
+  await expect(w.workspace.prepare({ requirementId: w.requirementId })).resolves.toMatchObject({ status: "ready" });
+}, 60000);
+
+test("程序批准提交被 git revert 之后再批准新版本：不崩溃，新版本的正文提交进分支", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await runGit(["revert", "--no-edit", "HEAD"], ready.path);
+  await approveAgain(w, { body: V2_BODY, commitTo: ready.path });
+  expect(await showOnBranch(w, mdOf(w))).toContain("验证码六位。");
+}, 60000);
+
+test("两个程序批准提交被压成一个、说明里先后有两行 Approved-Files：worker 提交改了正文后再调 prepare，分支没有新的程序提交，worker 的改动保留", async () => {
+  const w = await approvedWithFiles();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await approveAgain(w, { body: V2_BODY, commitTo: ready.path });
+  const filesLines = (await runGit(["log", "-2", "--format=%B", branchOf(w)], w.repo.root)).split("\n").filter((line) => line.startsWith("Approved-Files: ")).reverse();
+  expect(filesLines).toHaveLength(2);
+  await runGit(["reset", "-q", "--soft", ready.baseCommit], ready.path);
+  await runGit(["commit", "-q", "-m", `docs(prd): 提交批准的需求文件 ${w.requirementId}`, "-m", `${filesLines.join("\n")}\nRequirement: ${w.requirementId}`], ready.path);
+  await writeFile(join(ready.path, mdOf(w)), "worker 改过的正文\n");
+  await runGit(["commit", "-qam", "worker 改正文"], ready.path);
+  const tip = await tipOf(w);
+  await w.workspace.prepare({ requirementId: w.requirementId });
+  expect(await tipOf(w)).toBe(tip);
+  expect(await showOnBranch(w, mdOf(w))).toBe("worker 改过的正文\n");
+}, 60000);
+
+test("工作区已就绪、用户切到别的分支后再批准新版本：批准被拒，别的分支和需求分支都没有新提交", async () => {
+  const w = await world();
+  const ready = await w.workspace.prepare({ requirementId: w.requirementId });
+  await runGit(["switch", "-q", "-c", "外部分支"], ready.path);
+  const reqTip = await tipOf(w);
+  const otherTip = (await runGit(["rev-parse", "外部分支"], w.repo.root)).trim();
+  await expect(approveAgain(w, { body: V2_BODY, commitTo: ready.path })).rejects.toThrow(/workspace_binding_changed/);
+  expect(await tipOf(w)).toBe(reqTip);
+  expect((await runGit(["rev-parse", "外部分支"], w.repo.root)).trim()).toBe(otherTip);
 }, 60000);

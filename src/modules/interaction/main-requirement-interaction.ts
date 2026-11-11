@@ -812,8 +812,9 @@ export class MainRequirementInteraction {
         r.receiptId === receiptId && (r.epoch === undefined || r.epoch === loaded.epoch) && same(r.manifest, reference), authorizeManifest);
       await verifyDraftFiles(prototypeRef, request.requirementId, line);
       const workspace = this.#snapshot(this.#host(ctx), request.repoId, request.requirementId).data.workspace;
+      const fileCommit = withDatabase(repositoryDatabase(this.#options.dataRoot, request.repoId), (db) => lineViewIn(db, request.requirementId, line).tip?.fileCommit)!;
       const approvedPlan = workspace ? await planApprovedFromDraft({ dataRoot: this.#options.dataRoot, repoId: request.repoId, requirementId: request.requirementId,
-        fileCommit: withDatabase(repositoryDatabase(this.#options.dataRoot, request.repoId), (db) => lineViewIn(db, request.requirementId, line).tip?.fileCommit)!,
+        fileCommit,
         cwd: workspace.path, rev: "HEAD", checkDirty: true }) : null;
       const receipt = await service.confirmUpdate({ requirementId: request.requirementId, operationId: request.operationId, version: loaded.version,
         title: loaded.title, body: loaded.body, receiptId, manifest: reference, docSpec, prototypes: draft.digest })
@@ -822,7 +823,7 @@ export class MainRequirementInteraction {
           throw error;
         });
       if (workspace && approvedPlan) {
-        await commitApprovedFiles({ worktree: workspace.path, requirementId: request.requirementId, writes: approvedPlan.writes, deletes: approvedPlan.deletes }).catch((error: unknown) => {
+        await commitApprovedFiles({ worktree: workspace.path, requirementId: request.requirementId, fileCommit, writes: approvedPlan.writes, deletes: approvedPlan.deletes }).catch((error: unknown) => {
           throw new AdvisedError("approved_files_not_committed", { why: `批准已生效，文件还没进需求分支：${adviceOf(error)?.why ?? (error as Error).message}`, next: "处理好 Git 问题后调 workspace-prepare 补提交" });
         });
       }
