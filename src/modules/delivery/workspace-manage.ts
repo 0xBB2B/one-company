@@ -138,6 +138,7 @@ export class WorkspaceManageService {
     let baseCommit = existing?.baseCommit ?? await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
     const unbornBranch = baseCommit ? null : await gitOutput(this.options.repositoryRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
     if (!baseCommit && !unbornBranch) throw new WorkspaceManageError("git_failed", ["rev-parse HEAD"]);
+    // 空仓库没有基线提交，建工作区之前没有可合并的文件
     if (!(await exists(location.path))) await this.planApproved(input.requirementId, this.options.repositoryRoot, baseCommit, false);
     if (!existing) {
       const title = await this.approvedTitle(input.requirementId);
@@ -185,7 +186,6 @@ export class WorkspaceManageService {
       fileCommit: approvalFileCommit(this.options.dataRoot, this.options.repoId, requirementId), cwd, rev, checkDirty });
   }
 
-  // 空仓库没有基线提交，建工作区之前没有可合并的文件
   private async commitApproved(workspace: ManagedWorkspace): Promise<void> {
     const { requirementId } = workspace;
     const fileCommit = approvalFileCommit(this.options.dataRoot, this.options.repoId, requirementId);

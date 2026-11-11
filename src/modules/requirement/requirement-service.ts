@@ -153,9 +153,15 @@ export class RequirementService {
 
   private lineDraftState(record: { version: number; data: RequirementRecord }, anyLifecycle = false, forcedFailure?: string): DraftLineView {
     const line = this.options.lines?.[record.data.requirementId] ?? [];
-    return withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => forcedFailure === RESTORE_FAILURE.gitUnreadable
-      ? db.transaction(() => retreatViewIn(db, record, line, this.options.repoId, Date.now()))
-      : draftLineViewIn(db, record, line, anyLifecycle, forcedFailure));
+    return withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => {
+      const last = line.at(-1);
+      const tipMissing = !anyLifecycle && !forcedFailure && record.data.lifecycle === "draft" && last !== undefined && !readAnchorIn(db, last)
+        && line.some((anchor) => readAnchorIn(db, anchor));
+      const failure = tipMissing ? RESTORE_FAILURE.anchorMissing : forcedFailure;
+      return failure === RESTORE_FAILURE.gitUnreadable || failure === RESTORE_FAILURE.anchorMissing
+        ? db.transaction(() => retreatViewIn(db, record, line, this.options.repoId, Date.now(), failure))
+        : draftLineViewIn(db, record, line, anyLifecycle, forcedFailure);
+    });
   }
 
   private async unreadableTipFailure(record: { version: number; data: RequirementRecord }, authorization: ServiceAuthorizationRequest): Promise<string | undefined> {
@@ -527,7 +533,7 @@ export class RequirementService {
       const restoreFailure = action === "create" ? undefined : await this.unreadableTipFailure(before, authorization);
       const view = this.lineDraftState(before, false, restoreFailure);
       const configured = this.options.lines?.[before.id] ?? [];
-      const line = restoreFailure ? [...configured, view.tip!.anchor] : configured.length || !view.tip ? configured : [view.tip.anchor];
+      const line = restoreFailure || view.tip?.kind === "restore" ? [...configured, view.tip!.anchor] : configured.length || !view.tip ? configured : [view.tip.anchor];
       if (action !== "create" && view.version !== (input as UpdateInput).version) {
         throw new RequirementServiceError("stale_version");
       }

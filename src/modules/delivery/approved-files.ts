@@ -66,7 +66,6 @@ const approvedMessage = (requirementId: string) => ({ subject: `docs(prd): 提�
 const FILES_KEY = "Approved-Files: ";
 const DIRTY_NEXT = "先提交或丢弃工作区里这些文件的改动，再批准";
 
-/** 分支（或基线提交）里现有的 DESIGN.md、AGENTS.md 和这个需求已提交的 docs/prd 文件路径。 */
 export async function readBranchFiles(cwd: string, rev: string, requirementId: string): Promise<{ current: { design: string | null; agents: string | null }; existingPaths: string[] }> {
   const blob = (file: ConventionFile) => gitIn(cwd, ["cat-file", "blob", `${rev}:${file}`]).then((out) => out.stdout, () => null);
   const listed = await gitIn(cwd, ["ls-tree", "-r", "--name-only", "-z", rev, "--", "docs/prd/"]).then((out) => out.stdout, () => "");
@@ -88,7 +87,6 @@ function approvedFilesAdvice(conflicts: ApprovedConflict[], dirty: string[]): Fa
   return { why: parts.map((part) => part.why).join("；"), next: parts.map((part) => part.next).join("；") };
 }
 
-/** 批准那一刻这条线的文件提交。 */
 export function approvalFileCommit(dataRoot: string, repoId: string, requirementId: string): string {
   const anchors = withDatabase(repositoryDatabase(dataRoot, repoId), (db) => db.list<LineAnchorRecord>("line_anchors"))
     .map((row) => row.data).filter((row) => row.requirementId === requirementId && row.kind === "approval");
@@ -107,7 +105,6 @@ async function lastApprovedFileCommit(cwd: string, rev: string, requirementId: s
   return undefined;
 }
 
-/** 写进去后会和 HEAD 不同的路径。 */
 async function changedPaths(worktree: string, writes: Record<string, Uint8Array>, deletes: string[]): Promise<{ writes: Array<[string, Uint8Array]>; deletes: string[] }> {
   const inHead = (path: string) => gitIn(worktree, ["cat-file", "blob", `HEAD:${path}`]).then((out) => out.stdout, () => null);
   const changedWrites: Array<[string, Uint8Array]> = [];

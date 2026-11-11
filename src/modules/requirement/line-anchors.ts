@@ -153,20 +153,21 @@ export function draftLineView(
   return { version: tip.lineVersion, saved, fileCommit: tip.fileCommit, tip, updatedAt: Math.max(row.data.createdAt, tip.createdAt), ...restore };
 }
 
-/** 线尖那一版的正文读不出时，在这条线末尾记一个锚点，把最近保存的那一份记在这条线上；同一对线尖和最近保存只记一次。 */
+/** 线尖那一版读不出时，在这条线末尾记一个锚点，把最近保存的那一份记在这条线上；同一对线尖和最近保存只记一次。 */
 export function retreatViewIn(
   db: LocalDatabase, row: Pick<StoredRecord<RequirementRecord>, "version" | "data">, line: readonly string[], repoId: string, now: number,
+  failure: string,
 ): DraftLineView {
   const requirementId = row.data.requirementId;
   const all = anchorsOf(db, requirementId);
   const tip = viewOf(all, line).tip;
   const latest = latestSaveOf(all);
-  if (!tip || tip.kind === "restore" || !latest?.saved || !latest.fileCommit) return draftLineView(row, all, line, RESTORE_FAILURE.gitUnreadable);
+  if (!tip || (tip.kind === "restore" && failure === RESTORE_FAILURE.gitUnreadable) || !latest?.saved || !latest.fileCommit) return draftLineView(row, all, line, failure);
   const saved = latest.saved;
   const restore = all.find((record) => record.kind === "restore" && record.parent === tip.anchor && record.fileCommit === latest.fileCommit
     && record.saved?.commit === saved.commit && record.saved.hash === saved.hash)
     ?? createLineAnchorIn(db, { repoId, requirementId, anchor: uuidv7(), kind: "restore", line, now, fileCommit: latest.fileCommit, lineVersion: latest.lineVersion, saved });
-  return { ...draftLineView(row, anchorsOf(db, requirementId), [...line, restore.anchor]), restoreFailure: RESTORE_FAILURE.gitUnreadable };
+  return { ...draftLineView(row, anchorsOf(db, requirementId), [...line, restore.anchor]), restoreFailure: failure };
 }
 
 export function draftLineViewIn(

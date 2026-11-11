@@ -11,6 +11,8 @@ import type { RequirementServiceOptions } from "../src/modules/requirement/requi
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
 import { ShortDecisionStore } from "../src/modules/requirement/short-decisions.ts";
+import { loadInteractionContinuity } from "../src/modules/requirement/interaction-continuity.ts";
+import { UserInteractionCore } from "../src/modules/interaction/user-interaction.ts";
 import { createLineAnchorIn, currentLine } from "../src/modules/requirement/line-anchors.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
@@ -474,4 +476,146 @@ test("停在退回锚点上、之后别的线又保存了新版本，再 resume�
   await f.run.trigger("session_start", { reason: "resume" });
   expect(f.run.texts()).toHaveLength(2);
   expect(f.run.texts()[1]).toMatch(/已恢复至版本 10|仍是版本/);
+});
+
+async function missingAnchorSession(trailing: "decision-and-question" | "none" | "restored-then-missing") {
+  const w = await world();
+  const req = await build(w, "订单导出", 10);
+  const config = { repositoryRoot: w.repo.root, dataRoot: w.options.dataRoot, repoId: w.options.repoId };
+  const lineA: Record<string, string[]> = { [req.requirementId]: [...req.anchors] };
+  let decisionId = "";
+  let questionId = "";
+  if (trailing !== "none") {
+    const ctxA = await (await w.open(lineA)).loadConfirmationContext({ requirementId: req.requirementId, savedOperationId: req.receipts[8]!.operationId, operationId: uuidv7() });
+    const asker = await UserInteractionCore.open({ ...config, lines: lineA, authorize: () => true, authorizeAction: () => true,
+      loadContext: async () => { throw new Error("ask does not load"); }, interpreter: { identity: () => ({ provider: "fixture", id: "ask", configurationHash: "a".repeat(64) }), interpret: async () => "{}" } } as never);
+    cleanups.push(async () => asker.shutdown());
+    asker.startSession({ sessionId: "line-switch", windowId: "line-switch" });
+    questionId = asker.ask(JSON.stringify({ basis: ctxA.basis, candidate: ctxA.candidate, partition: ctxA.partition, unitIds: [ctxA.partition.units[0]!.id], actions: ["analyze"], proposal: { conclusion: "是否保留邮箱登录", scope: "整份需求", references: [], supersedes: [] } })).requestId;
+    const basisReceiptId = uuidv7();
+    const decisions = await ShortDecisionStore.open({ ...config, lines: lineA, authorize: () => true, now: () => 1_000_000,
+      admit: ({ requestHash, batch }: { requestHash: string; batch: { decisions: unknown[] } }) => ({ requestHash, subjects: batch.decisions.map(() => ({ actor: "user" as const, status: "confirmed" as const, basisReceiptId })) }) } as never);
+    const written = await decisions.append(JSON.stringify({ operationId: uuidv7(), requirementId: req.requirementId, version: 10, epoch: ctxA.epoch, prd: ctxA.basis.prd,
+      decisions: [{ conclusion: "线 A 上做的短决定", scope: "本轮只分析", references: [], supersedes: [] }] }));
+    decisionId = written.decisionIds[0]!;
+  }
+  const otherLine = [...req.anchors.slice(0, 4)];
+  const otherSave = await (await w.open({ [req.requirementId]: otherLine })).updateDraft({ requirementId: req.requirementId, operationId: uuidv7(), version: 5, title: "订单导出", body: "另一条线保存的版本 6" });
+  expect(otherSave.version).toBe(6);
+  const lineABeforeMissing = [...lineA[req.requirementId]!];
+  const database = repositoryDatabase(w.options.dataRoot, w.options.repoId);
+  const savedRecord = (anchor: string) => withDatabase(database, (db) => db.list<{ anchor: string; fileCommit: string; lineVersion: number; saved: never }>("line_anchors").map((row) => row.data).find((data) => data.anchor === anchor))!;
+  let latestSave = otherSave;
+  let restoreAnchor = "";
+  if (trailing === "restored-then-missing") {
+    const saved = savedRecord(otherSave.anchor);
+    restoreAnchor = uuidv7();
+    withDatabase(database, (db) => db.transaction(() => createLineAnchorIn(db, { repoId: w.options.repoId, requirementId: req.requirementId, anchor: restoreAnchor, kind: "restore", line: lineABeforeMissing,
+      now: Date.now(), fileCommit: saved.fileCommit, lineVersion: saved.lineVersion, saved: saved.saved })));
+    latestSave = await (await w.open({ [req.requirementId]: [...otherLine, otherSave.anchor] })).updateDraft({ requirementId: req.requirementId, operationId: uuidv7(), version: 6, title: "订单导出", body: "另一条线又保存的版本 7" });
+    expect(latestSave.version).toBe(7);
+  }
+  const tip = [...lineABeforeMissing, ...(restoreAnchor ? [restoreAnchor] : []), UNKNOWN_ANCHOR];
+  const other = trailing === "none" ? { [req.requirementId]: [UNKNOWN_ANCHOR] } : { [req.requirementId]: tip };
+  const run = await session(w, other);
+  await run.trigger("session_start", { reason: "startup" });
+  const lines = () => Object.fromEntries(Object.entries(run.line()).map(([id, anchors]) => [id, [...anchors]])) as Record<string, string[]>;
+  const decisionStore = (on: Record<string, string[]>) => ShortDecisionStore.open({ ...config, lines: on, authorize: () => true } as never);
+  const questionsOn = async (on: Record<string, string[]>, savedOperationId: string) => {
+    const ctx = await (await w.open(on)).loadConfirmationContext({ requirementId: req.requirementId, savedOperationId, operationId: uuidv7() });
+    return loadInteractionContinuity(config.dataRoot, config.repoId, ctx.basis, { candidate: ctx.candidate, title: ctx.title, body: ctx.body, partition: ctx.partition }, undefined, on[req.requirementId]).questions.map((q) => q.requestId);
+  };
+  return { w, req, run, otherSave, latestSave, otherLine, lineABeforeMissing, database, config, decisionId, questionId, lines, decisionStore, questionsOn };
+}
+
+test("锚点找不到：换线消息报告恢复失败（原因是锚点找不到），需求读到最近保存的版本 6", async () => {
+  const f = await missingAnchorSession("decision-and-question");
+  const text = f.run.texts()[0]!;
+  expect(text).toMatch(/^「订单导出」没能恢复至对话里的那一版，仍是版本 6/);
+  expect(text).toMatch(/- 原因：.*找不到/);
+  const service = await f.w.open(f.lines());
+  expect((await service.metadata(f.req.requirementId)).version).toBe(6);
+  expect((await service.read({ requirementId: f.req.requirementId, source: "saved" })).body).toBe("另一条线保存的版本 6");
+});
+
+test("锚点找不到：这条线上原有的短决定仍算数，待答提问仍在", async () => {
+  const f = await missingAnchorSession("decision-and-question");
+  const store = await f.decisionStore(f.lines());
+  expect(store.read(f.req.requirementId, f.decisionId).decisionId).toBe(f.decisionId);
+  expect(await f.questionsOn(f.lines(), f.otherSave.operationId)).toEqual([f.questionId]);
+});
+
+test("锚点找不到：这条线上照显示的版本号 6 保存成功，保存后短决定仍算数、提问仍在", async () => {
+  const f = await missingAnchorSession("decision-and-question");
+  const lines = f.lines();
+  const receipt = await (await f.w.open(lines)).updateDraft({ requirementId: f.req.requirementId, operationId: uuidv7(), version: 6, title: "订单导出", body: "线 A 退回后的新正文" });
+  expect(receipt.version).toBe(7);
+  const after = { [f.req.requirementId]: [...lines[f.req.requirementId]!, receipt.anchor] };
+  expect((await (await f.decisionStore(after)).read(f.req.requirementId, f.decisionId)).decisionId).toBe(f.decisionId);
+  expect(await f.questionsOn(after, receipt.operationId)).toEqual([f.questionId]);
+});
+
+test("锚点找不到：别的窗口再保存这个需求后，这条线显示的版本号仍是 6，短决定仍算数", async () => {
+  const f = await missingAnchorSession("decision-and-question");
+  const lines = f.lines();
+  expect((await (await f.w.open(lines)).metadata(f.req.requirementId)).version).toBe(6);
+  await (await f.w.open({ [f.req.requirementId]: [...f.otherLine, f.otherSave.anchor] })).updateDraft({ requirementId: f.req.requirementId, operationId: uuidv7(), version: 6, title: "订单导出", body: "别的窗口的版本 7" });
+  const service = await f.w.open(f.lines());
+  expect((await service.metadata(f.req.requirementId)).version).toBe(6);
+  expect((await service.read({ requirementId: f.req.requirementId, source: "saved" })).body).toBe("另一条线保存的版本 6");
+  expect((await f.decisionStore(f.lines())).read(f.req.requirementId, f.decisionId).decisionId).toBe(f.decisionId);
+});
+
+test("锚点找不到：同一对话里另一个需求照常恢复", async () => {
+  const w = await world();
+  const broken = await build(w, "订单导出", 4);
+  const fine = await build(w, "消息通知", 4);
+  const run = await session(w, { [broken.requirementId]: [broken.anchors[0]!, UNKNOWN_ANCHOR], [fine.requirementId]: fine.anchors.slice(0, 2) });
+  await run.trigger("session_start", { reason: "startup" });
+  const blocks = run.texts()[0]!.split("\n\n");
+  expect(blocks).toHaveLength(2);
+  expect(blocks).toContain("「消息通知」已恢复至版本 3");
+  expect(blocks.find((block) => block.startsWith("「订单导出」没能恢复"))).toMatch(/找不到/);
+});
+
+test("锚点一个都不在库里：报告恢复失败、用最近保存的版本 6，照版本 6 保存成功，不报错", async () => {
+  const f = await missingAnchorSession("none");
+  expect(f.run.texts()[0]).toMatch(/^「订单导出」没能恢复至对话里的那一版，仍是版本 6/);
+  const receipt = await (await f.w.open(f.lines())).updateDraft({ requirementId: f.req.requirementId, operationId: uuidv7(), version: 6, title: "订单导出", body: "整条线都找不到锚点时保存" });
+  expect(receipt.version).toBe(7);
+});
+
+test("锚点找不到：换线报告恢复失败后、保存之前，照显示的版本号 6 记一条新短决定成功，它和原有那条都算数", async () => {
+  const f = await missingAnchorSession("decision-and-question");
+  const lines = f.lines();
+  const ctx = await (await f.w.open(lines)).loadConfirmationContext({ requirementId: f.req.requirementId, savedOperationId: f.otherSave.operationId, operationId: uuidv7() });
+  const basisReceiptId = uuidv7();
+  const decisions = await ShortDecisionStore.open({ ...f.config, lines, authorize: () => true, now: () => 1_000_000,
+    admit: ({ requestHash, batch }: { requestHash: string; batch: { decisions: unknown[] } }) => ({ requestHash, subjects: batch.decisions.map(() => ({ actor: "user" as const, status: "confirmed" as const, basisReceiptId })) }) } as never);
+  const written = await decisions.append(JSON.stringify({ operationId: uuidv7(), requirementId: f.req.requirementId, version: 6, epoch: ctx.epoch, prd: ctx.basis.prd,
+    decisions: [{ conclusion: "恢复失败后做的短决定", scope: "本轮只分析", references: [], supersedes: [] }] }));
+  const readBack = await f.decisionStore(lines);
+  expect(readBack.read(f.req.requirementId, written.decisionIds[0]!).decisionId).toBe(written.decisionIds[0]);
+  expect(readBack.read(f.req.requirementId, f.decisionId).decisionId).toBe(f.decisionId);
+});
+
+test("锚点找不到：换线报告之后那个锚点又补进库里，这条线显示的版本号仍是 6，原有短决定仍算数", async () => {
+  const f = await missingAnchorSession("decision-and-question");
+  withDatabase(f.database, (db) => db.transaction(() =>
+    createLineAnchorIn(db, { repoId: f.w.options.repoId, requirementId: f.req.requirementId, anchor: UNKNOWN_ANCHOR, kind: "decision", line: f.lineABeforeMissing, now: Date.now() })));
+  const lines = f.lines();
+  const service = await f.w.open(lines);
+  expect((await service.metadata(f.req.requirementId)).version).toBe(6);
+  expect((await service.read({ requirementId: f.req.requirementId, source: "saved" })).body).toBe("另一条线保存的版本 6");
+  expect((await f.decisionStore(lines)).read(f.req.requirementId, f.decisionId).decisionId).toBe(f.decisionId);
+});
+
+test("对话线形如 […, R, X]（R 是退回锚点，X 在库里找不到）、另一条线又保存：报告恢复失败，读到最近保存的版本 7，原有短决定仍算数", async () => {
+  const f = await missingAnchorSession("restored-then-missing");
+  expect(f.run.texts()[0]).toMatch(/^「订单导出」没能恢复至对话里的那一版，仍是版本 7/);
+  const lines = f.lines();
+  const service = await f.w.open(lines);
+  expect((await service.metadata(f.req.requirementId)).version).toBe(7);
+  expect((await service.read({ requirementId: f.req.requirementId, source: "saved" })).body).toBe("另一条线又保存的版本 7");
+  expect((await f.decisionStore(lines)).read(f.req.requirementId, f.decisionId).decisionId).toBe(f.decisionId);
 });

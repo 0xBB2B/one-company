@@ -520,7 +520,6 @@ export class UserInteractionCore {
     const supersededBy = supersessionIn(db, requirementId, line && ((decisionId: string) => isRecordCountedIn(db, { namespace: "short_decisions", key: decisionId, requirementId, line })));
     return (decision) => supersededBy(decision) !== null;
   }
-  /** 需求在这条对话线上的样子：草稿的版本号和保存版本取线尖那一版。 */
   #row(requirementId: string): StoredRecord<RequirementRecord> {
     const raw = this.#state.read(requirementId);
     return withDatabase(this.#path(), (db) => linedRequirementIn(db, raw, this.#line(requirementId) ?? []));

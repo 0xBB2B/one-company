@@ -2593,7 +2593,7 @@ describe("需求草稿跟着对话线：钉住、保存开始记录与半路保�
     expect(Number(first.version)).toBe(Number(shown.version) + 1);
   });
 
-  test("对话线上最后一个锚点在库里找不到：read 成功返回最近一次保存并带恢复失败原因，对话里钉住最近一次保存的锚点", async () => {
+  test("对话线上最后一个锚点在库里找不到：read 成功返回最近一次保存并带恢复失败原因，对话里记一个接在原线尖后的退回锚点", async () => {
     const w = await world(), created = await w.create();
     allow(w);
     const v3 = await saveOn(w, created, created.version, BODY + "第三版。\n");
@@ -2605,7 +2605,14 @@ describe("需求草稿跟着对话线：钉住、保存开始记录与半路保�
     expect(typeof read.restoreFailure).toBe("string");
     const anchors = entriesOf(w, "one-company.line-anchor");
     expect(anchors.length).toBe(before + 1);
-    expect(anchors.at(-1)!.data).toEqual({ repoId: w.repoId, requirementId: created.requirementId, anchor: v3.anchor });
+    const recorded = anchors.at(-1)!.data as { repoId: string; requirementId: string; anchor: string };
+    expect(recorded).toMatchObject({ repoId: w.repoId, requirementId: created.requirementId });
+    expect(recorded.anchor).not.toBe(v3.anchor);
+    const rows = withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list<{ anchor: string; kind: string; parent: string | null; saved: unknown }>("line_anchors").map((row) => row.data));
+    const restore = rows.find((row) => row.anchor === recorded.anchor)!;
+    expect(restore.kind).toBe("restore");
+    expect(restore.parent).toBe(v3.anchor);
+    expect(restore.saved).toEqual(rows.find((row) => row.anchor === v3.anchor)!.saved);
   });
 });
 
