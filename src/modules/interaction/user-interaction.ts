@@ -11,7 +11,7 @@ import type { RequirementAccessChange, RequirementAccessState } from "../require
 import type { RequirementStoreOptions, StateAuthorizationRequest } from "../requirement/requirement-state.ts";
 import { object, id, counter, checked } from "../requirement/requirement-contracts.ts";
 import type { RequirementRecord } from "../requirement/requirement-contracts.ts";
-import { ShortDecisionStore, effectiveDecisionIn } from "../requirement/short-decisions.ts";
+import { ShortDecisionStore, supersessionIn } from "../requirement/short-decisions.ts";
 import type { DecisionAdmissionRequest } from "../requirement/short-decisions.ts";
 import { DecisionItem, decisionDigest, parseDecisionBatch, checkDecisionRecord, ShortDecisionError } from "../requirement/short-decision-format.ts";
 import type { DecisionAdmission, DecisionBatch, ShortDecisionRecord } from "../requirement/short-decision-format.ts";
@@ -433,10 +433,11 @@ export class UserInteractionCore {
         if (!row || row.id !== q.requestId || decisionDigest(row.data) !== decisionDigest(q)) throw new UserInteractionError("question_changed");
         if (!context.savedOperationId && decisionDigest(q.basis) !== decisionDigest(context.basis)) throw new UserInteractionError("question_identity_mismatch");
       }
+      const superseded = this.#supersededCheck(db, context.basis.requirementId);
       for (const e of context.retainedEvidence ?? []) {
         if (inputCheck?.originals.has(e.decision.id)) continue; // 已在同一输入对照中验证本次准确取代，不能进入新manifest。
         if (!context.document) throw new UserInteractionError("document_review_required");
-        assertRetainedEvidenceIn(db, this.#options.repoId, context.basis, context.document, e, (d) => this.#supersededOnLine(db, d));
+        assertRetainedEvidenceIn(db, this.#options.repoId, context.basis, context.document, e, superseded);
       }
     });
   }
@@ -468,7 +469,8 @@ export class UserInteractionCore {
       // 所有宿主回调结束后，同步只读快照核对状态与全部审核依据；待确认描述也不能被静默换绑。
       const unchanged = withDatabase(this.#path(), (db) => db.transaction(() => {
         this.#assertSavedRevisions(db, v);
-        for (const e of manifest.retainedSources ?? []) assertRetainedEvidenceIn(db, this.#options.repoId, v.context.basis, doc, e, (d) => this.#supersededOnLine(db, d));
+        const superseded = this.#supersededCheck(db, v.context.basis.requirementId);
+        for (const e of manifest.retainedSources ?? []) assertRetainedEvidenceIn(db, this.#options.repoId, v.context.basis, doc, e, superseded);
         const raw = db.read<RequirementRecord>("requirements", v.context.basis.requirementId);
         const state = raw && linedRequirementIn(db, raw, this.#line(v.context.basis.requirementId) ?? []);
         if (!state || state.id !== current.id || state.version !== current.version || current.version !== v.context.basis.version ||
@@ -478,7 +480,7 @@ export class UserInteractionCore {
           decisionDigest(current.data.lifecycle === "active" ? current.data.approved : current.data.saved) !== decisionDigest(v.context.basis.prd)) return false;
         return records.every(({ version, record }) => {
           const stored = db.read("short_decisions", record.decisionId);
-          return stored?.id === record.decisionId && stored.version === version && !this.#supersededOnLine(db, record) &&
+          return stored?.id === record.decisionId && stored.version === version && !superseded(record) &&
             decisionDigest(stored.data) === decisionDigest(record);
         });
       }));
@@ -505,7 +507,7 @@ export class UserInteractionCore {
         return state !== null && state.version === basis.version && state.data.epoch === basis.epoch && state.data.recovery === "ready" && state.data.lifecycle === "active" &&
           decisionDigest(state.data.saved) === decisionDigest(basis.prd) && decisionDigest(state.data.approved) === decisionDigest(basis.prd) &&
           continuityInputProofIn(db, basis.requirementId, undefined, this.#line(basis.requirementId)) === v.inputProof &&
-          stored?.version === version && !this.#supersededOnLine(db, record) && decisionDigest(stored.data) === decisionDigest(record);
+          stored?.version === version && !this.#supersededCheck(db, basis.requirementId)(record) && decisionDigest(stored.data) === decisionDigest(record);
       }));
       if (!unchanged || this.#verified !== v || this.#input !== v.input || !this.#session || v.input.controller.signal.aborted) return null;
       return { receiptId: v.receiptId, version: basis.version, epoch: basis.epoch, inputProof: v.inputProof, decisionId: v.saved.decisionIds[0]! };
@@ -516,10 +518,11 @@ export class UserInteractionCore {
   }
   #path(): string { return repositoryDatabase(this.#options.dataRoot, this.#options.repoId); }
   #line(requirementId: string): readonly string[] | undefined { return lineOf(this.#options.lines, requirementId); }
-  #supersededOnLine(db: LocalDatabase, decision: ShortDecisionRecord): boolean {
-    const line = this.#line(decision.requirementId);
-    const counted = line && ((decisionId: string) => isRecordCountedIn(db, { namespace: "short_decisions", key: decisionId, requirementId: decision.requirementId, line }));
-    return effectiveDecisionIn(db, decision, counted).status === "superseded";
+  /** 每个事务只读一遍这个需求的短决定，返回逐条判断是否已在当前线上被取代的函数。 */
+  #supersededCheck(db: LocalDatabase, requirementId: string): (decision: ShortDecisionRecord) => boolean {
+    const line = this.#line(requirementId);
+    const supersededBy = supersessionIn(db, requirementId, line && ((decisionId: string) => isRecordCountedIn(db, { namespace: "short_decisions", key: decisionId, requirementId, line })));
+    return (decision) => supersededBy(decision) !== null;
   }
   /** 需求在这条对话线上的样子：草稿的版本号和保存版本取线尖那一版。 */
   #row(requirementId: string): StoredRecord<RequirementRecord> {

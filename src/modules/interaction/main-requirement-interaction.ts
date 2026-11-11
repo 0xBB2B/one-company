@@ -41,7 +41,7 @@ import { approvalManifestReference, confirmed, implementGoalUnitIds, manifestAut
 import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from "../panel/adjudication.ts";
 import { requirementSummary, saveRequirementSummary } from "../requirement/requirement-summary.ts";
 import { isRecordCountedIn, linedRequirementIn, lineViewIn } from "../requirement/line-anchors.ts";
-import { effectiveDecisionIn } from "../requirement/short-decisions.ts";
+import { supersessionIn } from "../requirement/short-decisions.ts";
 import type { ShortDecisionRecord } from "../requirement/short-decision-format.ts";
 import { AdvisedError } from "../../core/exec/tool-failure.ts";
 import { commitApprovedFiles, planApprovedFromDraft } from "../delivery/approved-files.ts";
@@ -305,19 +305,29 @@ export class MainRequirementInteraction {
     if (active && (!["draft", "active"].includes(record.data.lifecycle) || record.data.recovery !== "ready")) denied("lifecycle_denied");
     return record;
   }
-  #row(db: LocalDatabase, namespace: string, key: string, line?: readonly string[]): RecordProof {
+  /** 每个需求在这次事务里只读一遍短决定，再逐条判断。 */
+  #supersededCheck(db: LocalDatabase, line?: readonly string[]): (decision: ShortDecisionRecord) => boolean {
+    const byRequirement = new Map<string, ReturnType<typeof supersessionIn>>();
+    return (decision) => {
+      let supersededBy = byRequirement.get(decision.requirementId);
+      if (!supersededBy) {
+        const own = line ?? this.#lines[decision.requirementId] ?? [];
+        supersededBy = supersessionIn(db, decision.requirementId, (decisionId) => isRecordCountedIn(db, { namespace: "short_decisions", key: decisionId, requirementId: decision.requirementId, line: own }));
+        byRequirement.set(decision.requirementId, supersededBy);
+      }
+      return supersededBy(decision) !== null;
+    };
+  }
+  #row(db: LocalDatabase, namespace: string, key: string, superseded: (decision: ShortDecisionRecord) => boolean): RecordProof {
     const row = db.read(namespace, key); if (!row) return denied("result_record_missing");
-    if (namespace === "short_decisions") {
-      const decision = row.data as ShortDecisionRecord, own = line ?? this.#lines[decision.requirementId] ?? [];
-      const counted = (decisionId: string) => isRecordCountedIn(db, { namespace: "short_decisions", key: decisionId, requirementId: decision.requirementId, line: own });
-      if (effectiveDecisionIn(db, decision, counted).status === "superseded") denied("result_decision_superseded");
-    }
+    if (namespace === "short_decisions" && superseded(row.data as ShortDecisionRecord)) denied("result_decision_superseded");
     return { namespace, key, id: row.id, version: row.version, hash: digest(row.data) };
   }
   #decisionProofs(repoId: string, ids: string[], operationId: string): RecordProof[] {
     return withDatabase(repositoryDatabase(this.#options.dataRoot, repoId), (db) => db.transaction(() => {
-      const rows = ids.map((id) => this.#row(db, "short_decisions", id));
-      if (db.read(INTERACTION_CONTINUITY_NAMESPACE, operationId)) rows.push(this.#row(db, INTERACTION_CONTINUITY_NAMESPACE, operationId));
+      const superseded = this.#supersededCheck(db);
+      const rows = ids.map((id) => this.#row(db, "short_decisions", id, superseded));
+      if (db.read(INTERACTION_CONTINUITY_NAMESPACE, operationId)) rows.push(this.#row(db, INTERACTION_CONTINUITY_NAMESPACE, operationId, superseded));
       return rows;
     }));
   }
@@ -332,7 +342,8 @@ export class MainRequirementInteraction {
       ? current.data.epoch === proof.record.data.epoch && current.data.approvalReceiptId === proof.record.data.approvalReceiptId && same(current.data.approved, proof.record.data.approved)
       : current.version === proof.record.version && same(current.data, proof.record.data));
     if (!unchanged) denied("stale_result");
-    for (const row of proof.rows) if (!same(this.#row(db, row.namespace, row.key, proof.line), row)) denied("result_records_changed");
+    const superseded = this.#supersededCheck(db, proof.line);
+    for (const row of proof.rows) if (!same(this.#row(db, row.namespace, row.key, superseded), row)) denied("result_records_changed");
     if (proof.scope.kind === "approved") {
       if (proof.settled) {
         if (!same(summarizeApprovalManifest(registeredApprovalManifestIn(db, proof.repoId, proof.scope.scope.summary.reference, current)), proof.scope.scope.summary)) denied("manifest_scope_changed");
@@ -356,13 +367,13 @@ export class MainRequirementInteraction {
         ? { kind: "approved", scope: { status: "available", summary: record.data.approvalManifest! } } : { kind: "none" });
       if (r.approvalScope !== undefined && actualScope.kind !== "none" && !same(r.approvalScope, actualScope.kind === "approved" ? actualScope.scope : { status: "available", summary: actualScope.proof.summary })) denied("result_scope_changed");
       const reference = actualScope.kind === "registered" ? actualScope.proof.reference : actualScope.kind === "approved" ? actualScope.scope.summary.reference : undefined;
-      const allRows = [...rows];
+      const allRows = [...rows], superseded = this.#supersededCheck(db);
       if (reference) {
         const manifestRow = db.read(APPROVAL_MANIFEST_NAMESPACE, reference.manifestHash);
         if (!manifestRow) denied("manifest_unregistered");
-        allRows.push(this.#row(db, APPROVAL_MANIFEST_NAMESPACE, reference.manifestHash));
+        allRows.push(this.#row(db, APPROVAL_MANIFEST_NAMESPACE, reference.manifestHash, superseded));
         const snapshots = (manifestRow.data as { decisionRecords: Array<{ id: string }> }).decisionRecords;
-        for (const d of snapshots) allRows.push(this.#row(db, "short_decisions", d.id));
+        for (const d of snapshots) allRows.push(this.#row(db, "short_decisions", d.id, superseded));
       }
       const proof: HostResultProof = { repoId, record: structuredClone(record), line, settled, resultHash: material.resultHash, rows: allRows, scope: structuredClone(actualScope),
         sessionId: material.sessionId, windowId: material.windowId, manager: material.manager,
@@ -649,7 +660,7 @@ export class MainRequirementInteraction {
           next: effect.choice === "accept" ? `以 workflow_manage close（reason=completed，receiptId=${decisionId}）关闭需求` : "返工意见已交回 PM，等待 PM 返修后重新提交完成报告" }, undefined, proofs);
       }
       const task = effect.task;
-      proofs.push(...withDatabase(repositoryDatabase(this.#options.dataRoot, request.repoId), (db) => [this.#row(db, "tasks", task.taskId)]));
+      proofs.push(...withDatabase(repositoryDatabase(this.#options.dataRoot, request.repoId), (db) => [this.#row(db, "tasks", task.taskId, () => false)]));
       return this.#prove(ctx, request.repoId, { ...base, status: "recorded", decisionId, choice: task.userDecision!.choice,
         maxTurns: task.userDecision!.maxTurns, taskStatus: task.status }, undefined, proofs);
     } finally { this.#adjudication = undefined; this.#recordNewAnchors(ctx, request.repoId); }
