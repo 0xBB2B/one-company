@@ -814,6 +814,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
           const db = repositoryDatabase(options.dataRoot, params.repoId);
           const row = withDatabase(db, (d) => d.read<RequirementRecord>("requirements", params.requirementId));
           if (!row || row.data.lifecycle !== "draft") return textResult({ action: params.action, status: "blocked", reason: "要先指定一个草稿需求", next: "用需求工具建一个草稿需求，或改用已有草稿需求的编号再提交" });
+          if (row.data.recovery !== "ready") return textResult({ action: params.action, status: "blocked", reason: "需求正在等用户恢复核对", next: "停止操作，请用户在主窗口完成恢复核对" });
           const originalLine = currentLine(ctx.sessionManager)[params.requirementId] ?? [];
           const originalView = withDatabase(db, (d) => draftLineViewIn(d, row, originalLine));
           const restored = originalView.restoreFailure !== undefined ? originalView.tip : null;
@@ -831,6 +832,9 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
             withDatabase(db, (d) => d.transaction(() => {
               if (d.read<RequirementRecord>("requirements", params.requirementId)?.data.lifecycle !== "draft") {
                 throw new ProjectManageToolError("conventions_failed", "要先指定一个草稿需求：这个需求已经不是草稿了");
+              }
+              if (d.read<RequirementRecord>("requirements", params.requirementId)?.data.recovery !== "ready") {
+                throw new ProjectManageToolError("conventions_failed", "需求记录需要先恢复核对才能提交项目规范：停止操作，请用户在主窗口完成恢复核对");
               }
               releaseDeadRequirementWriteIn(d, ref.repoId, ref.requirementId);
               claimRequirementWriteIn(d, { ...owner, ...ref, operationId: anchor, acquiredAt: Date.now() }, { allowDeadOriginalOperationRecovery: false });

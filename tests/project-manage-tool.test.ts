@@ -646,7 +646,11 @@ describe("project_manage 项目规范 AGENTS.md：只有用户在窗口里选写
     };
     const conventionsAnchors = () => db((d) => d.list<{ kind: string; requirementId: string; anchor: string; parent: string | null }>("line_anchors").map((row) => row.data)
       .filter((record) => record.requirementId === requirementId && record.kind === "conventions"));
-    return { ...world, rootFile, requirementId, baseAnchor, branch, shown, ctxFor, update, line, filesAt, conventionsAnchors, requirements, approveNow, reserveOnly };
+    const freeze = () => db((d) => {
+      const row = d.read<{ recovery: string; recoveryReason: string }>("requirements", requirementId)!;
+      d.update("requirements", requirementId, row.version, { ...row.data, recovery: "needs_review", recoveryReason: "history_unknown" });
+    });
+    return { ...world, rootFile, requirementId, baseAnchor, branch, shown, ctxFor, update, line, filesAt, conventionsAnchors, requirements, approveNow, reserveOnly, freeze };
   }
 
   test("conventions-update 必须带 requirementId：不带时参数校验失败，带了 approved 之类的字段也失败", async () => {
@@ -672,6 +676,19 @@ describe("project_manage 项目规范 AGENTS.md：只有用户在窗口里选写
     expect(outcome).toContain("要先指定一个草稿需求");
     expect(w.shown).toEqual([]);
     expect(w.conventionsAnchors()).toEqual([]);
+    await expect(readFile(w.rootFile, "utf8")).resolves.toBe(ROOT_RULES);
+  });
+
+  test("草稿需求被冻结（recovery 为 needs_review）：被拒，原因写清需求在等恢复核对，不弹窗、草稿里不多出 AGENTS.md 提交", async () => {
+    const w = await draftWorld();
+    w.freeze();
+    const outcome = await w.update(w.ctxFor(async () => { throw new Error("不应弹窗"); }), RULES_V1)
+      .then((result) => JSON.stringify(result), (error: { message?: string; advice?: unknown }) => JSON.stringify({ message: error.message, advice: error.advice }));
+    expect(outcome).toContain("恢复核对");
+    expect(w.shown).toEqual([]);
+    expect(w.conventionsAnchors()).toEqual([]);
+    expect(w.line()).toEqual([w.baseAnchor]);
+    expect(await w.filesAt(w.line())).toEqual({ agents: null, agentsBase: null });
     await expect(readFile(w.rootFile, "utf8")).resolves.toBe(ROOT_RULES);
   });
 
@@ -797,6 +814,17 @@ describe("project_manage 项目规范 AGENTS.md：只有用户在窗口里选写
     const outcome = await w.update(w.ctxFor(async () => { await w.approveNow(); return "写进草稿"; }), RULES_V1)
       .then((result) => JSON.stringify(result), (error: { message?: string; advice?: unknown }) => JSON.stringify({ message: error.message, advice: error.advice }));
     expect(outcome).toContain("要先指定一个草稿需求");
+    expect(w.conventionsAnchors()).toEqual([]);
+    expect(w.line()).toEqual([w.baseAnchor]);
+    expect(await w.filesAt(w.line())).toEqual({ agents: null, agentsBase: null });
+    await expect(readFile(w.rootFile, "utf8")).resolves.toBe(ROOT_RULES);
+  });
+
+  test("窗口开着时这个需求被冻结（recovery 变成 needs_review）：再选写进草稿被拒，原因写清需求在等恢复核对，草稿、对话、主仓库都不变", async () => {
+    const w = await draftWorld();
+    const outcome = await w.update(w.ctxFor(async () => { w.freeze(); return "写进草稿"; }), RULES_V1)
+      .then((result) => JSON.stringify(result), (error: { message?: string; advice?: unknown }) => JSON.stringify({ message: error.message, advice: error.advice }));
+    expect(outcome).toContain("恢复核对");
     expect(w.conventionsAnchors()).toEqual([]);
     expect(w.line()).toEqual([w.baseAnchor]);
     expect(await w.filesAt(w.line())).toEqual({ agents: null, agentsBase: null });

@@ -23,7 +23,7 @@ test("仓库根 AGENTS.md 是软链接：选写进草稿后软链接和真实文
   await mkdir(repo);
   await writeFile(real, "旧规范\n");
   await symlink(real, link);
-  const input = draftInput();
+  const input = draftInput({ draftBase: "旧规范\n" });
   const result = await updateConventions({ repositoryRoot: repo, content: "新规范\n", ...input, decide: async () => ({ choices: [DRAFT] }) });
   expect(result).toEqual({ status: "written" });
   expect((await lstat(link)).isSymbolicLink()).toBe(true);
@@ -57,7 +57,7 @@ test("仓库根 AGENTS.md 指向仓库外文件：差异窗口在说明行上方
   const real = join(root, "real.md");
   await writeFile(real, "旧规范\n");
   await symlink(real, join(repo, "AGENTS.md"));
-  const texts = await windowTexts(repo, "新规范\n");
+  const texts = await windowTexts(repo, "新规范\n", { draftBase: "旧规范\n" });
   const note = `AGENTS.md 是软链接，实际写到 ${await realpath(real)}`;
   expect(texts).toContain(note);
   expect(texts.indexOf(note)).toBeLessThan(texts.indexOf(DIFF_HEADER));
@@ -68,7 +68,7 @@ test("仓库根 AGENTS.md 指向仓库内 CLAUDE.md：差异窗口写出仓库�
   const claude = join(repo, "CLAUDE.md");
   await writeFile(claude, "旧规范\n");
   await symlink("CLAUDE.md", join(repo, "AGENTS.md"));
-  const texts = await windowTexts(repo, "新规范\n");
+  const texts = await windowTexts(repo, "新规范\n", { draftBase: "旧规范\n" });
   const note = `AGENTS.md 是软链接，实际写到 ${await realpath(claude)}`;
   expect(texts).toContain(note);
   expect(texts.indexOf(note)).toBeLessThan(texts.indexOf(DIFF_HEADER));
@@ -81,7 +81,7 @@ test("多级软链接：写出最终指向的真实文件路径", async () => {
   await writeFile(real, "旧规范\n");
   await symlink(real, middle);
   await symlink(middle, join(repo, "AGENTS.md"));
-  const texts = await windowTexts(repo, "新规范\n");
+  const texts = await windowTexts(repo, "新规范\n", { draftBase: "旧规范\n" });
   expect(texts).toContain(`AGENTS.md 是软链接，实际写到 ${await realpath(real)}`);
   expect(await readFile(real, "utf8")).toBe("旧规范\n");
   expect((await lstat(middle)).isSymbolicLink()).toBe(true);
@@ -98,7 +98,7 @@ test("悬空软链接：差异窗口没有软链接说明行", async () => {
 test("仓库根 AGENTS.md 是普通文件：差异窗口没有软链接说明行", async () => {
   const { repo } = await makeRepo();
   await writeFile(join(repo, "AGENTS.md"), "旧规范\n");
-  const texts = await windowTexts(repo, "新规范\n");
+  const texts = await windowTexts(repo, "新规范\n", { draftBase: "旧规范\n" });
   expect(texts.filter((text) => text.startsWith("AGENTS.md 是软链接"))).toEqual([]);
 });
 
@@ -106,7 +106,7 @@ test("仓库根 AGENTS.md 是 CRLF：差异窗口没有 \\r，未改的行显示
   const { repo } = await makeRepo();
   const file = join(repo, "AGENTS.md");
   await writeFile(file, "# 约定\r\n- 甲\r\n");
-  const input = draftInput();
+  const input = draftInput({ draftBase: "# 约定\r\n- 甲\r\n" });
   let seen: ConventionsWindow | undefined;
   await updateConventions({ repositoryRoot: repo, content: "# 约定\n- 甲\n- 乙\n", ...input, decide: async (window) => { seen = window; return { choices: [DRAFT] }; } });
   const texts = seen!.lines.map((line) => line.text);
@@ -122,7 +122,7 @@ test("仓库根 AGENTS.md 是 CRLF：差异窗口没有 \\r，未改的行显示
 test("窗口文字：标题含需求标题，说明行、三个选项、其他一行、Esc 说明与规定一字不差", async () => {
   const { repo } = await makeRepo();
   await writeFile(join(repo, "AGENTS.md"), "旧规范\n");
-  const window = (await windowOf(repo, "新规范\n"))!;
+  const window = (await windowOf(repo, "新规范\n", { draftBase: "旧规范\n" }))!;
   expect(window.title).toBe("把这些改动写进需求「订单导出」的草稿？");
   expect(window.lines.at(-1)).toEqual({ text: "批准需求后随需求分支写入，此后这个需求派出的 PM、worker、reviewer 都按新内容工作。", tone: "muted" });
   expect(window.choices).toEqual([{ label: "写进草稿" }, { label: "不写" }]);
@@ -139,6 +139,25 @@ test("草稿里已有 AGENTS.md：差异和草稿内容比，不和仓库根目�
   expect(texts).toContain("  - 草稿");
   expect(texts).toContain("+ - 新增");
   expect(texts.filter((text) => text.startsWith("- "))).toEqual([]);
+});
+
+test("调用方传入的对比基准是“无”：弹窗前仓库根目录新出现 AGENTS.md，窗口仍写明还没有并给出全文，不按新文件对比", async () => {
+  const { repo } = await makeRepo();
+  await writeFile(join(repo, "AGENTS.md"), "# 约定\n- 根\n");
+  const texts = await windowTexts(repo, "# 约定\n- 根\n- 新增\n", { draftBase: null });
+  expect(texts).toContain("仓库里还没有 AGENTS.md，要写入的全文如下：");
+  expect(texts).toContain("+ - 根");
+  expect(texts).toContain("+ - 新增");
+  expect(texts).not.toContain(DIFF_HEADER);
+});
+
+test("调用方传入的对比基准是“无”：内容恰好等于弹窗前新出现的仓库根目录文件，也不算 unchanged，照常弹窗", async () => {
+  const { repo } = await makeRepo();
+  await writeFile(join(repo, "AGENTS.md"), "根\n");
+  const decide = vi.fn(async () => ({ choices: [DRAFT] }));
+  const input = draftInput({ draftBase: null });
+  expect(await updateConventions({ repositoryRoot: repo, content: "根\n", ...input, decide })).toEqual({ status: "written" });
+  expect(decide).toHaveBeenCalledOnce();
 });
 
 test("草稿里没有 AGENTS.md 且仓库根目录也没有：窗口写明还没有，并给出全文", async () => {
@@ -161,7 +180,7 @@ test("内容和草稿里的 AGENTS.md 相同：返回 unchanged，不弹窗、�
 test("草稿里没有 AGENTS.md、内容和仓库根目录相同：返回 unchanged，不弹窗、不写草稿", async () => {
   const { repo } = await makeRepo();
   await writeFile(join(repo, "AGENTS.md"), "根\n");
-  const input = draftInput();
+  const input = draftInput({ draftBase: "根\n" });
   const decide = vi.fn();
   expect(await updateConventions({ repositoryRoot: repo, content: "根\n", ...input, decide })).toEqual({ status: "unchanged" });
   expect(decide).not.toHaveBeenCalled();

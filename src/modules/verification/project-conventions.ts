@@ -99,7 +99,7 @@ export async function updateConventions(input: { repositoryRoot: string; content
   writeDraft: (content: string) => Promise<void>; decide: (window: ConventionsWindow) => Promise<WindowAnswer | undefined> }): Promise<ConventionsUpdateResult> {
   if (Buffer.byteLength(input.content, "utf8") > MAX_CONVENTIONS_BYTES) throw new ProjectConventionsError("too_large");
   const file = join(input.repositoryRoot, CONVENTIONS_FILE);
-  const before = input.draftBase ?? await readOptional(file);
+  const before = input.draftBase;
   if (before === input.content) return { status: "unchanged" };
   const linkTarget = await symlinkTarget(file);
   const lines: WindowLine[] = [
