@@ -89,7 +89,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
         }
       }
     }
-    lineMemory.remember(line);
+    lineMemory.remember(currentLine(ctx.sessionManager));
     const text = restoreMessageText(lineSwitchReport(items));
     if (text) pi.sendMessage({ customType: "one-company.requirement-restore", content: text, display: true }, { triggerTurn: false });
   };

@@ -91,7 +91,9 @@ export function lineSwitchFactsIn(db: LocalDatabase, requirementId: string, line
   let save = tip;
   while (save && save.kind !== "save" && save.kind !== "restore") save = save.parent ? byAnchor.get(save.parent) ?? null : null;
   const saves = line.flatMap((anchor) => { const record = byAnchor.get(anchor); return record?.kind === "save" ? [record.createdAt] : []; });
-  return { tipVersion: tip?.lineVersion ?? null, tipSave: save?.anchor ?? null, afterApproval, lastSaved: saves.length ? Math.max(...saves) : null };
+  const latest = latestSaveOf(all);
+  const sameAsLatest = save?.kind === "restore" && latest?.saved && save.saved?.commit === latest.saved.commit && save.saved.hash === latest.saved.hash;
+  return { tipVersion: tip?.lineVersion ?? null, tipSave: (sameAsLatest ? latest.anchor : save?.anchor) ?? null, afterApproval, lastSaved: saves.length ? Math.max(...saves) : null };
 }
 
 export function memberAnchorIn(db: LocalDatabase, namespace: string, key: string): string | null {

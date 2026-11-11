@@ -455,3 +455,23 @@ test("退回显示版本 10 之后、保存之前，在这条线上照版本 10 
   const readBack = await ShortDecisionStore.open({ ...config, lines: { [f.req.requirementId]: [...lines[f.req.requirementId]!, receipt.anchor] }, authorize: () => true } as never);
   expect(readBack.read(f.req.requirementId, decisionId).decisionId).toBe(decisionId);
 });
+
+test("退回锚点已记进对话线之后原地再触发 session_tree（线没变）：不再插消息", async () => {
+  const f = await fallbackSession();
+  await f.run.trigger("session_tree");
+  expect(f.run.texts()).toHaveLength(1);
+});
+
+test.each(["resume", "fork"])("停在退回锚点上、期间没有别的保存，session_start 原因为 %s：不再插消息", async (reason) => {
+  const f = await fallbackSession();
+  await f.run.trigger("session_start", { reason });
+  expect(f.run.texts()).toHaveLength(1);
+});
+
+test("停在退回锚点上、之后别的线又保存了新版本，再 resume：按现有规则插一条已恢复至版本 10 的消息", async () => {
+  const f = await fallbackSession();
+  await (await f.w.open({ [f.req.requirementId]: f.req.anchors })).updateDraft({ requirementId: f.req.requirementId, operationId: uuidv7(), version: 10, title: "订单导出", body: "线 A 的 v11" });
+  await f.run.trigger("session_start", { reason: "resume" });
+  expect(f.run.texts()).toHaveLength(2);
+  expect(f.run.texts()[1]).toMatch(/已恢复至版本 10|仍是版本/);
+});
