@@ -19,7 +19,11 @@ import { readDraftFiles, prdRequirementPath } from "../src/modules/requirement/p
 import { RequirementOperations } from "../src/modules/requirement/requirement-operations.ts";
 import { LineAnchorRecord } from "../src/modules/requirement/requirement-contracts.ts";
 import { draftPrototypes, readPrototypeBoard } from "../src/modules/requirement/requirement-prototypes.ts";
-import { RequirementService } from "../src/modules/requirement/requirement-service.ts";
+import { save as savePrd } from "../src/modules/requirement/prd-storage.ts";
+import { createPrdDocument } from "../src/modules/requirement/requirement-identity.ts";
+import { RequirementService, requirementIntentHash } from "../src/modules/requirement/requirement-service.ts";
+import { WorkspaceManageService, workspaceLocation } from "../src/modules/delivery/workspace-manage.ts";
+import { approvalFileCommit } from "../src/modules/delivery/approved-files.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { requirementSummary } from "../src/modules/requirement/requirement-summary.ts";
 import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
@@ -72,7 +76,7 @@ async function git(cwd: string, ...args: string[]): Promise<string> {
   return (await exec("git", ["-c", "core.quotepath=off", ...args], { cwd, env: GIT_ENV })).stdout.trim();
 }
 
-async function oldWorld(options: { unfinished?: boolean; badApprovedBoard?: boolean; draftEntries?: unknown[]; fromVersion?: number; halfSavedPrototype?: boolean } = {}) {
+async function oldWorld(options: { unfinished?: boolean; badApprovedBoard?: boolean; draftEntries?: unknown[]; fromVersion?: number; halfSavedPrototype?: boolean; crashAfterStateSave?: boolean; approvedEntries?: unknown[]; reviseApproved?: boolean; scenario?: "interpretThenSave" | "interpretThenBind" | "sameSaves" } = {}) {
   const root = await mkdtemp(join(temporaryRoot(), "line-migration-"));
   cleanups.push(() => rm(root, { recursive: true, force: true }));
   const repo = await createRepoFixture();
@@ -100,6 +104,43 @@ async function oldWorld(options: { unfinished?: boolean; badApprovedBoard?: bool
   const approved = await saveChain(2, "已批准正文");
   const confirm = await manifestConfirmInput({ ...config, lines: approved.lines }, { requirementId: approved.requirementId, savedOperationId: approved.receipts.at(-1)!.operationId });
   await (await open(approved.lines)).confirmUpdate(confirm);
+  let revision: Awaited<ReturnType<RequirementService["updateDraft"]>> | undefined;
+  if (options.reviseApproved) {
+    const approvedVersion = withDatabase(dbPath, (db) => db.read("requirements", approved.requirementId)!.version);
+    revision = await (await open(approved.lines)).updateDraft(input(approved.requirementId, approvedVersion, "批准之后的修订正文"));
+  }
+
+  let extra: { requirementId: string; lastOperationId: string; rowVersion: number; bound: boolean } | undefined;
+  if (options.scenario) {
+    let requirementId: string, lines: Record<string, string[]>, interpretedOn: string, lastOperationId: string;
+    if (options.scenario === "sameSaves") {
+      const created = await (await open()).create({ requestId: uuidv7(), operationId: uuidv7(), title: "需求标题", body: "同一正文" });
+      requirementId = created.requirementId;
+      lines = { [requirementId]: [created.anchor] };
+      const again = await (await open(lines)).updateDraft(input(requirementId, created.version, "同一正文"));
+      if (!lines[requirementId]!.includes(again.anchor)) lines[requirementId]!.push(again.anchor);
+      interpretedOn = again.operationId;
+      await manifestConfirmInput({ ...config, lines }, { requirementId, savedOperationId: interpretedOn });
+      const third = await (await open(lines)).updateDraft(input(requirementId, again.version, "同一正文"));
+      lastOperationId = third.operationId;
+    } else {
+      const chain = await saveChain(6, "解读草稿");
+      requirementId = chain.requirementId;
+      lines = chain.lines;
+      await manifestConfirmInput({ ...config, lines }, { requirementId, savedOperationId: chain.receipts.at(-1)!.operationId });
+      lastOperationId = chain.receipts.at(-1)!.operationId;
+      if (options.scenario === "interpretThenSave") {
+        lastOperationId = (await (await open(lines)).updateDraft(input(requirementId, chain.receipts.at(-1)!.version, "解读之后又存的正文"))).operationId;
+      } else {
+        const worktree = await addWorktree(repo);
+        const baseCommit = await git(worktree.root, "rev-parse", "HEAD");
+        const state = await RequirementStateStore.open({ ...config, authorize: () => true });
+        await state.bindWorkspace({ requirementId, version: state.read(requirementId).version, path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
+      }
+    }
+    const rowVersion = withDatabase(dbPath, (db) => db.read("requirements", requirementId)!.version);
+    extra = { requirementId, lastOperationId, rowVersion, bound: options.scenario === "interpretThenBind" };
+  }
 
   let unfinishedUpdate: ReturnType<typeof input> | undefined;
   let unfinishedCreate: { requestId: string; operationId: string; title: string; body: string } | undefined;
@@ -115,7 +156,16 @@ async function oldWorld(options: { unfinished?: boolean; badApprovedBoard?: bool
     await expect((await open()).create(unfinishedCreate)).rejects.toThrow(/git-result failure/);
   }
 
+  let stateSavedCreate: { requestId: string; operationId: string; title: string; body: string } | undefined;
+  if (options.crashAfterStateSave) {
+    stateSavedCreate = { requestId: uuidv7(), operationId: uuidv7(), title: "状态库已存、日志没记的需求", body: "状态库已存" };
+    const original = RequirementOperations.prototype.recordSavedVersion;
+    vi.spyOn(RequirementOperations.prototype, "recordSavedVersion").mockImplementationOnce(() => { throw new Error("injected saved-version failure"); }).mockImplementation(original);
+    await expect((await open()).create(stateSavedCreate)).rejects.toThrow(/saved-version failure/);
+  }
+
   const requirementIds = withDatabase(dbPath, (db) => db.list("requirements").map((row) => row.key));
+  const stateSavedCreateId = stateSavedCreate ? requirementIds.find((id) => ![draft, approved].some((r) => r.requirementId === id)) : undefined;
   const unfinishedCreateId = unfinishedCreate ? requirementIds.find((id) => ![draft, approved, halfSaved!].some((r) => r.requirementId === id))! : undefined;
 
   const decisionKeys = [1, 2, 3, 4].map(() => uuidv7());
@@ -126,6 +176,10 @@ async function oldWorld(options: { unfinished?: boolean; badApprovedBoard?: bool
   const prototypeDirectory = join(directory, "prototypes", draft.requirementId);
   await mkdir(prototypeDirectory, { recursive: true });
   await writeFile(join(prototypeDirectory, `${NAME}.v1.html`), HTML);
+  const approvedDirectory = join(directory, "prototypes", approved.requirementId);
+  await mkdir(approvedDirectory, { recursive: true });
+  await writeFile(join(approvedDirectory, "设置页.v1.html"), "<html>设置页</html>");
+  await writeFile(join(approvedDirectory, "导出页.v2.html"), "<html>导出页</html>");
   if (options.halfSavedPrototype) {
     const halfDirectory = join(directory, "prototypes", halfSaved!.requirementId);
     await mkdir(halfDirectory, { recursive: true });
@@ -134,8 +188,11 @@ async function oldWorld(options: { unfinished?: boolean; badApprovedBoard?: bool
 
   withDatabase(dbPath, (db) => db.transaction(() => {
     for (const [index, key] of decisionKeys.entries()) {
-      db.create("short_decisions", key, { requirementId: draft.requirementId, conclusion: `决定${index + 1}` });
-      db.update("short_decisions", key, 1, { requirementId: draft.requirementId, conclusion: `决定${index + 1}（改）` });
+      const decision = (conclusion: string) => ({ format: "short-decision/v1", decisionId: key, operationId: uuidv7(), requirementId: draft.requirementId, repoId: config.repoId,
+        requirementVersion: 1, epoch: 1, prd: null, conclusion, scope: "导出", references: [], supersedes: [], actor: "user", status: "confirmed",
+        basisReceiptId: uuidv7(), supersededBy: null, recordedAt: 1_700_000_000_000 });
+      db.create("short_decisions", key, decision(`决定${index + 1}`));
+      db.update("short_decisions", key, 1, decision(`决定${index + 1}（改）`));
     }
     db.create("interaction_questions_v1", questionKey, { requirementId: draft.requirementId, text: "是否保留邮箱登录" });
     db.create("interaction_resolution_facts_v1", factKey, { requirementId: draft.requirementId, fact: "用户同意分析" });
@@ -143,7 +200,7 @@ async function oldWorld(options: { unfinished?: boolean; badApprovedBoard?: bool
     db.create(BOARD_NAMESPACE, draft.requirementId, board(draft.requirementId, options.draftEntries ?? DRAFT_ENTRIES));
     if (options.halfSavedPrototype) db.create(BOARD_NAMESPACE, halfSaved!.requirementId, board(halfSaved!.requirementId, DRAFT_ENTRIES));
     db.create(BOARD_NAMESPACE, approved.requirementId, board(approved.requirementId, options.badApprovedBoard
-      ? [...APPROVED_ENTRIES, entry("坏页", { approved: { version: 1 } })] : APPROVED_ENTRIES));
+      ? [...APPROVED_ENTRIES, entry("坏页", { approved: { version: 1 } })] : options.approvedEntries ?? APPROVED_ENTRIES));
     const savedHash = (requirementId: string) => (db.read("requirements", requirementId)!.data as { saved: { hash: string } }).saved.hash.replace(/^sha256:/u, "");
     db.create("requirement_summaries", draft.requirementId, { prdHash: savedHash(draft.requirementId), summary: "草稿简介" });
     db.create("requirement_summaries", approved.requirementId, { prdHash: savedHash(approved.requirementId), summary: "已批准简介" });
@@ -157,7 +214,7 @@ async function oldWorld(options: { unfinished?: boolean; badApprovedBoard?: bool
       for (const row of db.list(namespace)) db.remove(namespace, row.key, row.version);
     }
   }));
-  for (const requirementId of [draft, approved, halfSaved].flatMap((r) => r ? [r.requirementId] : []).concat(unfinishedCreateId ? [unfinishedCreateId] : [])) {
+  for (const requirementId of [draft, approved, halfSaved].flatMap((r) => r ? [r.requirementId] : []).concat(unfinishedCreateId ? [unfinishedCreateId] : []).concat(extra ? [extra.requirementId] : [])) {
     const cwd = prdRequirementPath({ dataRoot, repoId, requirementId });
     const refs = (await git(cwd, "for-each-ref", "--format=%(refname)", "refs/lines/")).split("\n").filter(Boolean);
     for (const name of refs) await git(cwd, "update-ref", "-d", name);
@@ -181,7 +238,7 @@ async function oldWorld(options: { unfinished?: boolean; badApprovedBoard?: bool
     return state.bindWorkspace({ requirementId, version: state.read(requirementId).version, path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
   };
   return {
-    repo, config, dbPath, directory, ref, open, input, draft, approved, halfSaved, unfinishedUpdate, unfinishedCreate, unfinishedCreateId, decisionKeys, questionKey, factKey,
+    repo, config, dbPath, directory, ref, open, input, draft, approved, revision, extra, halfSaved, unfinishedUpdate, unfinishedCreate, unfinishedCreateId, stateSavedCreate, stateSavedCreateId, decisionKeys, questionKey, factKey,
     designBytes, agentsBytes, migrate, rowOf, start, mainOf, commitCount, allCommitCount, startCommit, repoPath, worktreeAndBind, scope,
   };
 }
@@ -258,22 +315,47 @@ test("草稿需求有一个起点 save 锚点：父为空、版本号等于需�
   expect(anchors[0].anchor).toMatch(UUID_V7);
 });
 
-test("已批准需求：起点 save 锚点加以它为父的 approval 锚点，文件提交相同，需求文件仓库 main 不动，之后建工作区不报错", async () => {
-  const w = await oldWorld();
-  const id = w.approved.requirementId;
-  const oldVersion = w.rowOf(id).version;
-  const approvedRef = w.rowOf(id).data.approved!;
-  const mainBefore = await w.mainOf(id), countBefore = await w.commitCount(id);
-  await w.migrate();
+const approvedAnchors = (w: World, id: string) => {
   const anchors = w.start(id);
   expect(anchors).toHaveLength(2);
-  const save = anchors.find((record) => record.kind === "save")!, approval = anchors.find((record) => record.kind === "approval")!;
+  for (const record of anchors) expect(Value.Check(LineAnchorRecord, record)).toBe(true);
+  return { save: anchors.find((record) => record.kind === "save")!, approval: anchors.find((record) => record.kind === "approval")! };
+};
+
+test("已批准需求没有已通过原型：起点 save 锚点加以它为父的 approval 锚点，文件提交都等于 main，main 不动，之后建工作区不报错", async () => {
+  const w = await oldWorld({ approvedEntries: [] });
+  const id = w.approved.requirementId;
+  const approvedRef = w.rowOf(id).data.approved!;
+  const oldVersion = w.rowOf(id).version;
+  const mainBefore = await w.mainOf(id), countBefore = await w.commitCount(id);
+  await w.migrate();
+  const { save, approval } = approvedAnchors(w, id);
   expect(save).toMatchObject({ parent: null, lineVersion: oldVersion, sequence: 1, fileCommit: mainBefore });
   expect(approval).toMatchObject({ parent: save.anchor, fileCommit: mainBefore });
   expect(save.saved).toEqual({ commit: approvedRef.commit, hash: approvedRef.hash });
   expect(approval.saved).toBeNull();
   expect(approval.sequence).toBeGreaterThan(save.sequence);
-  for (const record of anchors) expect(Value.Check(LineAnchorRecord, record)).toBe(true);
+  expect(await w.mainOf(id)).toBe(mainBefore);
+  expect(await w.commitCount(id)).toBe(countBefore);
+  await expect(w.worktreeAndBind(id)).resolves.toBeDefined();
+});
+
+test("已批准需求有已通过原型：起点 save 锚点加以它为父的 approval 锚点，文件提交相同，是以 main 为父的迁移提交，树里是正文加已通过原型，main 不动，之后建工作区不报错", async () => {
+  const w = await oldWorld();
+  const id = w.approved.requirementId;
+  const approvedRef = w.rowOf(id).data.approved!;
+  const oldVersion = w.rowOf(id).version;
+  const mainBefore = await w.mainOf(id), countBefore = await w.commitCount(id);
+  await w.migrate();
+  const { save, approval } = approvedAnchors(w, id);
+  expect(save).toMatchObject({ parent: null, lineVersion: oldVersion, sequence: 1 });
+  expect(approval).toMatchObject({ parent: save.anchor, fileCommit: save.fileCommit });
+  expect(save.saved).toEqual({ commit: approvedRef.commit, hash: approvedRef.hash });
+  expect(approval.saved).toBeNull();
+  expect(approval.sequence).toBeGreaterThan(save.sequence);
+  expect(save.fileCommit).not.toBe(mainBefore);
+  expect(await git(w.repoPath(id), "rev-parse", `${save.fileCommit}^`)).toBe(mainBefore);
+  expect(await treeOf(w.repoPath(id), save.fileCommit)).toEqual(["prd.md", "prototypes/导出页.v2.html", "prototypes/设置页.v1.html"]);
   expect(await w.mainOf(id)).toBe(mainBefore);
   expect(await w.commitCount(id)).toBe(countBefore);
   await expect(w.worktreeAndBind(id)).resolves.toBeDefined();
@@ -328,26 +410,27 @@ test("需求还没有 saved：它的旧简介按记录自己的 prdHash 换成�
   expect(w.start(id)).toEqual([]);
 });
 
-test("升级前已有的保存操作记录各补一条操作锚点：产出某个起点链保存的那次操作用那个 save 锚点，其余用新锚点、父是该需求的起点锚点，没有起点时为空", async () => {
+test("升级前的保存操作记录：已完成的操作都没有映射，未完成的操作各有不同的新锚点映射", async () => {
   const w = await oldWorld({ unfinished: true });
   const operations = rowsOf(w.dbPath, "requirement_service_operations");
   expect(operations.length).toBeGreaterThanOrEqual(5);
   await w.migrate();
   const anchors = rowsOf(w.dbPath, "line_operation_anchors");
-  expect(anchors.map((row) => row.key).sort()).toEqual(operations.map((row) => row.key).sort());
+  const unfinished = operations.filter((operation) => operation.data.finalVersion === null);
+  const finished = operations.filter((operation) => operation.data.finalVersion !== null);
+  expect(unfinished.length).toBeGreaterThanOrEqual(2);
+  expect(finished.length).toBeGreaterThanOrEqual(1);
+  expect(anchors.map((row) => row.key).sort()).toEqual(unfinished.map((row) => row.key).sort());
   const issued = new Set<string>();
-  for (const operation of operations) {
+  for (const operation of unfinished) {
     const stored = anchors.find((row) => row.key === operation.key)!;
-    const chain = w.start(operation.data.requirementId);
-    const startOf = chain.find((record) => record.kind === "save" && record.sequence === 1);
-    const git = operation.data.finalVersion !== null ? operation.data.git as { commit: string; hash: string } | null : null;
-    const produced = git ? chain.find((record) => record.kind === "save" && record.saved?.commit === git.commit && record.saved?.hash === git.hash) : undefined;
+    const startOf = w.start(operation.data.requirementId).find((record) => record.kind === "save" && record.sequence === 1);
     expect(stored.data).toEqual({ format: "line-operation-anchor/v1", requirementId: operation.data.requirementId,
-      anchor: produced ? produced.anchor : expect.stringMatching(UUID_V7), parent: produced ? produced.parent : startOf?.anchor ?? null, unchangedTip: null });
+      anchor: expect.stringMatching(UUID_V7), parent: startOf?.anchor ?? null, unchangedTip: null });
     issued.add(stored.data.anchor);
   }
-  expect(issued.size).toBe(operations.length);
-  expect(operations.some((operation) => operation.data.requirementId === w.unfinishedCreateId)).toBe(true);
+  expect(issued.size).toBe(unfinished.length);
+  expect(unfinished.some((operation) => operation.data.requirementId === w.unfinishedCreateId)).toBe(true);
 });
 
 test("升级前没做完的保存：迁移后原样续完成功，版本号 4，操作记录收尾", async () => {
@@ -393,11 +476,11 @@ test("每个需求文件仓库的 main 都能从某个 refs/lines 到达，补�
   }
 });
 
-test("草稿需求的已通过原型搬进文件仓库：main 不动，迁移提交含原型 HTML 且只经 refs/lines 可达，原文件仍在，其他需求仓库不加提交", async () => {
+test("草稿需求的已通过原型搬进文件仓库：main 不动，迁移提交含原型 HTML 且只经 refs/lines 可达，原文件仍在，其他需求仓库的 main 不动", async () => {
   const w = await oldWorld();
   const id = w.draft.requirementId;
   const mainBefore = await w.mainOf(id), countBefore = await w.commitCount(id);
-  const otherCounts = await Promise.all([w.approved.requirementId].map(async (other) => [other, await w.allCommitCount(other)] as const));
+  const otherMains = await Promise.all([w.approved.requirementId].map(async (other) => [other, await w.mainOf(other)] as const));
   await w.migrate();
   expect(await w.mainOf(id)).toBe(mainBefore);
   expect(await w.commitCount(id)).toBe(countBefore);
@@ -414,7 +497,7 @@ test("草稿需求的已通过原型搬进文件仓库：main 不动，迁移提
   const files = await readDraftFiles({ ...w.config, requirementId: id, commit: migration, authorize: () => true } as never);
   expect(Object.values(files.prototypes).map((bytes) => Buffer.from(bytes).toString("utf8"))).toEqual([HTML]);
   expect(await readFile(join(w.directory, "prototypes", id, `${NAME}.v1.html`), "utf8")).toBe(HTML);
-  for (const [other, count] of otherCounts) expect(await w.allCommitCount(other)).toBe(count);
+  for (const [other, main] of otherMains) expect(await w.mainOf(other)).toBe(main);
 });
 
 test("主仓库根目录的 DESIGN.md、AGENTS.md 迁移前后字节不变", async () => {
@@ -595,4 +678,240 @@ test("迁移后在没有锚点的旧对话里启动（空线）：不插已恢�
   await fake.trigger("session_start", { reason: "startup" }, ctx);
   await new Promise((resolve) => setTimeout(resolve, 100));
   expect(sendMessage).not.toHaveBeenCalled();
+});
+
+const APPROVED_PROTOTYPES = { "设置页.v1": "<html>设置页</html>", "导出页.v2": "<html>导出页</html>" };
+const BOARD_V2_HTML = "<!doctype html><html><body><h1>第二次的草图</h1></body></html>";
+
+test("已批准需求有已通过原型：迁移后批准记录读出的批准文件包含这些原型的 HTML", async () => {
+  const w = await oldWorld();
+  const id = w.approved.requirementId;
+  await w.migrate();
+  const files = await readDraftFiles({ ...w.config, requirementId: id, commit: approvalFileCommit(w.config.dataRoot, w.config.repoId, id), authorize: () => true });
+  expect(Object.fromEntries(Object.entries(files.prototypes).map(([key, bytes]) => [key, Buffer.from(bytes).toString("utf8")]))).toEqual(APPROVED_PROTOTYPES);
+});
+
+test("已批准需求有已通过原型：迁移后建工作区，需求分支里 docs/prd/<需求编号>.<原型名>.html 存在且内容是那份原型", async () => {
+  const w = await oldWorld();
+  const id = w.approved.requirementId;
+  await w.migrate();
+  const location = workspaceLocation(w.repo.root, id);
+  cleanups.push(() => rm(join(location.path, "..", ".."), { recursive: true, force: true }));
+  const workspace = await WorkspaceManageService.open({ ...w.config, confirm: async () => true });
+  const ready = await workspace.prepare({ requirementId: id });
+  expect(await readFile(join(ready.path, "docs", "prd", `${id}.设置页.html`), "utf8")).toBe("<html>设置页</html>");
+  expect(await readFile(join(ready.path, "docs", "prd", `${id}.导出页.html`), "utf8")).toBe("<html>导出页</html>");
+});
+
+test.each([["已 git init 但还没有任何提交", true], ["已建目录但还没有 .git", false]])("旧版本建需求被打断、只留下%s的正文仓库：迁移成功，之后同一次创建原样续完", async (_label, initialized) => {
+  const w = await oldWorld();
+  const create = { requestId: uuidv7(), operationId: uuidv7(), title: "被打断的需求", body: "还没存的正文" };
+  const reservedId = uuidv7();
+  const source = w.rowOf(w.draft.requirementId).data;
+  const raw = new DatabaseSync(w.dbPath);
+  try {
+    raw.prepare("INSERT INTO records (id, namespace, record_key, version, data) VALUES (?, 'requirements', ?, 1, ?)")
+      .run(reservedId, reservedId, JSON.stringify({ ...source, requirementId: reservedId, requestId: create.requestId, intentHash: requirementIntentHash({ title: create.title, body: create.body }), saved: null, approved: null }));
+    raw.prepare("INSERT INTO records (id, namespace, record_key, version, data) VALUES (?, 'requirement_requests', ?, 1, ?)")
+      .run(uuidv7(), create.requestId, JSON.stringify({ requirementId: reservedId, intentHash: requirementIntentHash({ title: create.title, body: create.body }) }));
+  } finally { raw.close(); }
+  await mkdir(w.repoPath(reservedId), { recursive: true, mode: 0o700 });
+  if (initialized) {
+    await git(w.repoPath(reservedId), "init", "-q", "-b", "main");
+    expect(await git(w.repoPath(reservedId), "rev-list", "--all", "--count")).toBe("0");
+  } else expect(existsSync(join(w.repoPath(reservedId), ".git"))).toBe(false);
+  const receipt = await w.migrate();
+  expect(receipt.migratedData).toBe(true);
+  expect(dump(w.dbPath).version).toBe(11);
+  expect(w.start(reservedId)).toEqual([]);
+  const created = await (await w.open({})).create(create);
+  expect(created.requirementId).toBe(reservedId);
+  expect(created.version).toBe(2);
+  expect((await (await w.open({})).read({ requirementId: reservedId, source: "saved" })).body).toBe(create.body);
+});
+
+test.each([
+  ["原型文件内容变了", async (w: World) => writeFile(join(w.directory, "prototypes", w.draft.requirementId, `${NAME}.v1.html`), BOARD_V2_HTML), "prototypes/导出弹窗.v1.html"],
+  ["看板换成另一版原型", async (w: World) => {
+    await writeFile(join(w.directory, "prototypes", w.draft.requirementId, `${NAME}.v2.html`), BOARD_V2_HTML);
+    const raw = new DatabaseSync(w.dbPath);
+    try {
+      raw.prepare("UPDATE records SET data = ? WHERE namespace = ? AND record_key = ?")
+        .run(JSON.stringify(board(w.draft.requirementId, [entry(NAME, { lastVersion: 2, draft: protoFile(2, BOARD_V2_HTML) })])), BOARD_NAMESPACE, w.draft.requirementId);
+    } finally { raw.close(); }
+  }, "prototypes/导出弹窗.v2.html"],
+] as const)("第一次迁移建了迁移提交后整次回滚，再迁移时%s：不复用第一次的旧提交，迁移成功且读出的原型文件是第二次的内容", async (_label, change, wantedPath) => {
+  const w = await oldWorld({ badApprovedBoard: true });
+  const draftId = w.draft.requirementId, approvedId = w.approved.requirementId;
+  await expect(w.migrate()).rejects.toBeInstanceOf(DatabaseMigrationError);
+  const raw = new DatabaseSync(w.dbPath);
+  try {
+    raw.prepare("UPDATE records SET data = ? WHERE namespace = ? AND record_key = ?").run(JSON.stringify(board(approvedId, APPROVED_ENTRIES)), BOARD_NAMESPACE, approvedId);
+  } finally { raw.close(); }
+  await change(w);
+  await w.migrate();
+  const commit = w.startCommit(draftId);
+  expect(await treeOf(w.repoPath(draftId), commit)).toEqual(["prd.md", wantedPath]);
+  expect(await showFile(w.repoPath(draftId), commit, wantedPath)).toBe(BOARD_V2_HTML);
+});
+
+test("旧版本创建时状态库的保存已提交、操作日志还没记下保存版本就崩溃：迁移后按原内容重试创建成功续完，不报 operation_conflict", async () => {
+  const w = await oldWorld({ crashAfterStateSave: true });
+  const id = w.stateSavedCreateId!;
+  expect(w.rowOf(id).data.saved).not.toBeNull();
+  const operation = rowsOf(w.dbPath, "requirement_service_operations").find((row) => row.data.requirementId === id)!;
+  expect(operation.data.savedVersion).toBeNull();
+  await w.migrate();
+  const receipt = await (await w.open({})).create(w.stateSavedCreate!);
+  expect(receipt.requirementId).toBe(id);
+  expect(receipt.version).toBe(w.rowOf(id).version);
+  expect(rowsOf(w.dbPath, "requirement_service_operations").find((row) => row.key === w.stateSavedCreate!.operationId)!.data.finalVersion).toBe(receipt.version);
+});
+
+test("第一次迁移建了迁移提交后整次回滚，再迁移前需求的保存提交变了（main 从 A 变 B）：迁移提交的父提交是 B，不复用以 A 为父的旧提交", async () => {
+  const w = await oldWorld({ badApprovedBoard: true });
+  const draftId = w.draft.requirementId, approvedId = w.approved.requirementId;
+  await expect(w.migrate()).rejects.toBeInstanceOf(DatabaseMigrationError);
+  const oldSaved = w.rowOf(draftId).data.saved as { commit: string; hash: string };
+  const document = createPrdDocument(draftId, "需求标题", "回滚后又存过的正文");
+  const result = await savePrd({ ...w.config, requirementId: draftId, action: "updateDraft", operationId: uuidv7(), anchor: uuidv7(), expectedParent: oldSaved.commit, bytes: document.bytes, authorize: () => true });
+  expect(result.commit).not.toBe(oldSaved.commit);
+  const raw = new DatabaseSync(w.dbPath);
+  try {
+    const hash = oldSaved.hash.startsWith("sha256:") ? result.prdHash : result.prdHash.replace(/^sha256:/, "");
+    const row = raw.prepare("SELECT data FROM records WHERE namespace = 'requirements' AND record_key = ?").get(draftId) as { data: string };
+    raw.prepare("UPDATE records SET data = ? WHERE namespace = 'requirements' AND record_key = ?")
+      .run(JSON.stringify({ ...JSON.parse(row.data), saved: { commit: result.commit, hash } }), draftId);
+    raw.prepare("UPDATE records SET data = ? WHERE namespace = ? AND record_key = ?").run(JSON.stringify(board(approvedId, APPROVED_ENTRIES)), BOARD_NAMESPACE, approvedId);
+  } finally { raw.close(); }
+  await w.migrate();
+  const commit = w.startCommit(draftId);
+  expect(await git(w.repoPath(draftId), "rev-parse", `${commit}^`)).toBe(result.commit);
+  expect(await treeOf(w.repoPath(draftId), commit)).toEqual(["prd.md", `prototypes/${NAME}.v1.html`]);
+});
+
+test("已批准需求批准后又存过新版本、看板里有修订中的草稿原型：前两个锚点是批准时的文件，线尖锚点读出已通过原型加修订里没删掉的草稿原型，main 和需求记录不变", async () => {
+  const entries = [
+    entry("设置页", { lastVersion: 2, approved: protoFile(1, "<html>设置页</html>"), draft: protoFile(2, "<html>设置页改</html>") }),
+    entry("导出页", { lastVersion: 2, approved: protoFile(2, "<html>导出页</html>") }),
+    entry("新页", { draft: protoFile(1, "<html>新页</html>") }),
+    entry("删掉页", { draft: protoFile(1, "<html>删掉</html>"), removed: true }),
+  ];
+  const w = await oldWorld({ reviseApproved: true, approvedEntries: entries });
+  const id = w.approved.requirementId;
+  const directory = join(w.directory, "prototypes", id);
+  await writeFile(join(directory, "设置页.v2.html"), "<html>设置页改</html>");
+  await writeFile(join(directory, "新页.v1.html"), "<html>新页</html>");
+  await writeFile(join(directory, "删掉页.v1.html"), "<html>删掉</html>");
+  const row = w.rowOf(id);
+  expect(row.data.lifecycle).toBe("active");
+  expect(row.data.saved!.commit).not.toBe(row.data.approved!.commit);
+  const mainBefore = await w.mainOf(id);
+  const rowsBefore = rowsOf(w.dbPath, "requirements");
+  await w.migrate();
+  const anchors = w.start(id).sort((a, b) => a.sequence - b.sequence);
+  expect(anchors.map((record) => record.kind)).toEqual(["save", "approval", "save"]);
+  expect(anchors[1]!.fileCommit).toBe(anchors[0]!.fileCommit);
+  expect(await treeOf(w.repoPath(id), anchors[0]!.fileCommit)).toEqual(["prd.md", "prototypes/导出页.v2.html", "prototypes/设置页.v1.html"]);
+  expect(await treeOf(w.repoPath(id), anchors[2]!.fileCommit)).toEqual(["prd.md", "prototypes/导出页.v2.html", "prototypes/新页.v1.html", "prototypes/设置页.v2.html"]);
+  expect(await showFile(w.repoPath(id), anchors[2]!.fileCommit, "prototypes/设置页.v2.html")).toBe("<html>设置页改</html>");
+  expect(await w.mainOf(id)).toBe(mainBefore);
+  expect(rowsOf(w.dbPath, "requirements")).toEqual(rowsBefore);
+});
+
+test.each(["closing", "closed"] as const)("%s 的需求带已通过原型：迁移前后需求记录和 main 逐字节不变", async (lifecycle) => {
+  const w = await oldWorld();
+  const id = w.approved.requirementId;
+  const raw = new DatabaseSync(w.dbPath);
+  try {
+    const row = raw.prepare("SELECT data FROM records WHERE namespace = 'requirements' AND record_key = ?").get(id) as { data: string };
+    raw.prepare("UPDATE records SET data = ? WHERE namespace = 'requirements' AND record_key = ?")
+      .run(JSON.stringify({ ...JSON.parse(row.data), lifecycle, close: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } }), id);
+  } finally { raw.close(); }
+  const before = dump(w.dbPath);
+  const mainBefore = await w.mainOf(id);
+  await w.migrate();
+  const [beforeRows, afterRows] = unchangedRows(before, dump(w.dbPath), ["requirements"]);
+  expect(afterRows).toEqual(beforeRows);
+  expect(await w.mainOf(id)).toBe(mainBefore);
+});
+
+const reapprove = async (w: World, id: string, savedOperationId: string) => {
+  const lines = { [id]: [] as string[] };
+  const confirm = { ...(await manifestConfirmInput({ ...w.config, lines }, { requirementId: id, savedOperationId })), prototypes: (await draftPrototypes(w.ref, id, lines[id])).digest };
+  return (await w.open(lines)).confirmUpdate(confirm);
+};
+
+test("迁移后修订已批准需求（批准时保存的就是批准版）并再次批准：批准成功，不报 continuity_version_source", async () => {
+  const w = await oldWorld();
+  const id = w.approved.requirementId;
+  await w.migrate();
+  const service = await w.open({});
+  const revised = await service.updateDraft(w.input(id, (await service.metadata(id)).version, "迁移后的修订正文"));
+  const error = await reapprove(w, id, revised.operationId).then(() => null, (caught: unknown) => caught);
+  expect(error).not.toMatchObject({ code: "continuity_version_source" });
+  expect(error).toBeNull();
+  expect(w.rowOf(id).data.approved!.commit).toBe(revised.commit);
+});
+
+test("迁移后批准批准之后又存过的新版本：批准成功，不报 continuity_version_source；建工作区后需求分支里已通过原型保留", async () => {
+  const w = await oldWorld({ reviseApproved: true });
+  const id = w.approved.requirementId;
+  expect(w.rowOf(id).data.saved!.commit).not.toBe(w.rowOf(id).data.approved!.commit);
+  await w.migrate();
+  const error = await reapprove(w, id, w.revision!.operationId).then(() => null, (caught: unknown) => caught);
+  expect(error).not.toMatchObject({ code: "continuity_version_source" });
+  expect(error).toBeNull();
+  const location = workspaceLocation(w.repo.root, id);
+  cleanups.push(() => rm(join(location.path, "..", ".."), { recursive: true, force: true }));
+  const ready = await (await WorkspaceManageService.open({ ...w.config, confirm: async () => true })).prepare({ requirementId: id });
+  expect(await readFile(join(ready.path, "docs", "prd", `${id}.设置页.html`), "utf8")).toBe("<html>设置页</html>");
+  expect(await readFile(join(ready.path, "docs", "prd", `${id}.导出页.html`), "utf8")).toBe("<html>导出页</html>");
+});
+
+test("有保存记录、没有要搬的原型、需求目录里只剩 prd.md 而 .git 丢了：迁移失败，库保持迁移前的样子，原因写明缺失 .git", async () => {
+  const w = await oldWorld({ approvedEntries: [] });
+  const id = w.approved.requirementId;
+  await rm(join(w.repoPath(id), ".git"), { recursive: true, force: true });
+  expect(existsSync(join(w.repoPath(id), "prd.md"))).toBe(true);
+  const before = dump(w.dbPath);
+  const error = await w.migrate().then(() => undefined, (e: unknown) => e);
+  expect(error).toBeInstanceOf(DatabaseMigrationError);
+  expect((error as DatabaseMigrationError).code).toBe("migration_failed");
+  expect((error as DatabaseMigrationError).message).toContain(".git");
+  expect(dump(w.dbPath)).toEqual(before);
+});
+
+const approveScenario = async (w: World, bindFirst: boolean) => {
+  const { requirementId, lastOperationId } = w.extra!;
+  if (bindFirst) await w.worktreeAndBind(requirementId);
+  return reapprove(w, requirementId, lastOperationId).then(() => null, (caught: unknown) => caught);
+};
+
+test("草稿在旧版本保存 6 次、在第 6 次保存上解读、之后又保存一次：迁移后在空线上批准成功，不报 continuity_version_source", async () => {
+  const w = await oldWorld({ scenario: "interpretThenSave" });
+  await w.migrate();
+  const error = await approveScenario(w, true);
+  expect(error).not.toMatchObject({ code: "continuity_version_source" });
+  expect(error).toBeNull();
+});
+
+test("草稿保存 6 次、在第 6 次保存上解读、再绑定工作区（行版本变大但不是保存）：迁移后批准成功，读到的版本号等于迁移前的需求行版本", async () => {
+  const w = await oldWorld({ scenario: "interpretThenBind" });
+  const id = w.extra!.requirementId;
+  expect(w.extra!.rowVersion).toBeGreaterThan(7);
+  await w.migrate();
+  const shown = (await (await w.open({})).read({ requirementId: id, source: "saved" })).version;
+  expect(shown).toBe(w.extra!.rowVersion);
+  const error = await approveScenario(w, false);
+  expect(error).not.toMatchObject({ code: "continuity_version_source" });
+  expect(error).toBeNull();
+});
+
+test("几次保存的提交编号和正文摘要相同、共用一个锚点，解读发生在这几次保存之间：迁移后批准成功", async () => {
+  const w = await oldWorld({ scenario: "sameSaves" });
+  await w.migrate();
+  const error = await approveScenario(w, true);
+  expect(error).not.toMatchObject({ code: "continuity_version_source" });
+  expect(error).toBeNull();
 });

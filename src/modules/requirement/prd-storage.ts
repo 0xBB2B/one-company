@@ -1192,8 +1192,13 @@ export async function commitMigrationFiles(input: PrdStorageConfig & { expectedP
   }
   const operationId = uuidv7();
   const { paths, head, lineage } = await ensureReadyForRead(input, "commitDraftFiles", { operationId, expectedParent: input.expectedParent });
-  const done = (await runGit(input, paths, ["log", `--glob=${LINES_REF_PREFIX}*`, "--fixed-strings", `--grep=prd(${input.requirementId}): migration`, "--format=%H"])).stdout.toString("utf8").split("\n").find(Boolean);
-  if (done) return { commit: done };
+  const earlier = (await runGit(input, paths, ["log", `--glob=${LINES_REF_PREFIX}*`, "--fixed-strings", `--grep=prd(${input.requirementId}): migration`, "--format=%H"])).stdout.toString("utf8").split("\n").filter(Boolean);
+  const wanted = await treeWithChanges(input, paths, input.expectedParent, input.changes);
+  for (const candidate of earlier) {
+    if ((await parseCommitMetadata(input, paths, candidate)).parents[0] !== input.expectedParent) continue;
+    const actual = await repositoryFileTree(input, paths, candidate);
+    if (actual.size === wanted.size && [...wanted].every(([path, blob]) => actual.get(path) === blob)) return { commit: candidate };
+  }
   if (!lineage.has(input.expectedParent)) fail("parent_mismatch", "expectedParent 不是这个需求已有的提交");
   const parent = await verifyCommitMatches(input, paths, input.expectedParent);
   if (!(await mainSurvives(input, paths, head, input.expectedParent))) await createLineRef(input, paths, uuidv7(), head);
@@ -1203,7 +1208,10 @@ export async function commitMigrationFiles(input: PrdStorageConfig & { expectedP
   return { commit };
 }
 
-export async function keepMainReachable(input: PrdStorageConfig): Promise<void> {
+export async function keepMainReachable(input: PrdStorageConfig, hasSavedVersion = false): Promise<void> {
+  const prepared = await preparePaths(input, false);
+  if (!(await assertGitDirectory(prepared.requirementRoot, hasSavedVersion))) return;
+  if (!(await currentHead(input, prepared))) return;
   const { paths, head } = await ensureReadyForRead(input, "commitDraftFiles", {});
   const lines = await runGit(input, paths, ["for-each-ref", "--contains", head, "--count=1", "--format=%(refname)", LINES_REF_PREFIX]);
   if (lines.stdout.length === 0) await createLineRef(input, paths, uuidv7(), head);

@@ -71,7 +71,8 @@ function writeRequirementIn(db: LocalDatabase, repoId: string, record: StoredRec
 }
 
 export function recordSavedIn(db: LocalDatabase, repoId: string, now: number, record: StoredRecord<RequirementRecord>, request: Static<typeof commands.save>): StoredRecord<RequirementRecord> {
-  const { line: _line, ...identity } = request;
+  // anchor 不进摘要：要和升级前记下的旧操作摘要一致，迁移后中断的保存才能续完
+  const { line: _line, anchor: _anchor, ...identity } = request;
   const digest = createHash("sha256").update(canonicalJson(identity)).digest("hex");
   const existing = db.read("requirement_operations", request.operationId);
   if (existing) {

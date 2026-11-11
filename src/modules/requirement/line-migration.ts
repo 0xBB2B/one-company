@@ -10,6 +10,7 @@ import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts
 import { PrototypeBoard } from "./requirement-prototypes.ts";
 
 type MigrationCommits = ReadonlyMap<string, string>;
+const tipKey = (requirementId: string) => `${requirementId}:tip`;
 
 const requirementsOf = (records: Pick<MigrationRecords, "list">) =>
   records.list("requirements").map((row) => ({ version: row.version, data: row.data as RequirementRecord }));
@@ -37,17 +38,32 @@ async function moveDraftPrototypesIntoRepos(context: { dataRoot: string; repoId:
       if (existsSync(prdRequirementPath(config))) await inRequirement(requirementId, () => keepMainReachable(config));
       continue;
     }
-    const changes: Record<string, Uint8Array> = {};
-    if (requirement.lifecycle === "draft" && boards.has(requirementId)) {
-      for (const entry of validBoard(boards.get(requirementId), requirementId).entries) {
-        if (!entry.draft || entry.removed) continue;
-        const file = `${entry.name}.v${entry.draft.version}.html`;
+    const board = boards.has(requirementId) ? validBoard(boards.get(requirementId), requirementId) : undefined;
+    const prototypeFiles = async (pick: (entry: PrototypeBoard["entries"][number]) => { version: number } | null | undefined) => {
+      const changes: Record<string, Uint8Array> = {};
+      for (const entry of board?.entries ?? []) {
+        const staged = pick(entry);
+        if (!staged) continue;
+        const file = `${entry.name}.v${staged.version}.html`;
         changes[`prototypes/${file}`] = await readPrototypeFile(join(context.dataRoot, "repos", context.repoId, "prototypes", requirementId, file), entry.name);
       }
+      return changes;
+    };
+    const migrate = async (key: string, expectedParent: string, changes: Record<string, Uint8Array>) => {
+      if (Object.keys(changes).length === 0) return false;
+      const { commit } = await inRequirement(requirementId, () => commitMigrationFiles({ ...config, expectedParent, changes }));
+      commits.set(key, commit);
+      return true;
+    };
+    const draftPick = (entry: PrototypeBoard["entries"][number]) => entry.removed ? undefined : entry.draft;
+    const { approved, saved } = requirement;
+    let migrated: boolean;
+    if (requirement.lifecycle === "draft" || !approved) migrated = await migrate(requirementId, saved.commit, await prototypeFiles(draftPick));
+    else {
+      migrated = await migrate(requirementId, approved.commit, await prototypeFiles((entry) => entry.approved));
+      if (approved.commit !== saved.commit) migrated = await migrate(tipKey(requirementId), saved.commit, await prototypeFiles((entry) => entry.removed ? undefined : entry.draft ?? entry.approved)) || migrated;
     }
-    if (Object.keys(changes).length === 0) { await inRequirement(requirementId, () => keepMainReachable(config)); continue; }
-    const { commit } = await inRequirement(requirementId, () => commitMigrationFiles({ ...config, expectedParent: requirement.saved!.commit, changes }));
-    commits.set(requirementId, commit);
+    if (!migrated) await inRequirement(requirementId, () => keepMainReachable(config, true));
   }
   return commits;
 }
@@ -76,8 +92,11 @@ function createRootAnchors(records: MigrationRecords, commits: MigrationCommits)
     if (requirement.lifecycle === "draft" || !approved) {
       add("save", commits.get(requirement.requirementId) ?? saved.commit, version, saved);
     }
-    else if (approved.commit === saved.commit) { add("save", approved.commit, version, approved); add("approval", approved.commit, version, null); }
-    else { add("save", approved.commit, version - 1, approved); add("approval", approved.commit, version - 1, null); add("save", saved.commit, version, saved); }
+    else {
+      const approvedFiles = commits.get(requirement.requirementId) ?? approved.commit;
+      if (approved.commit === saved.commit) { const lineVersion = version; add("save", approvedFiles, lineVersion, approved); add("approval", approvedFiles, lineVersion, null); }
+      else { const lineVersion = version - 1; add("save", approvedFiles, lineVersion, approved); add("approval", approvedFiles, lineVersion, null); add("save", commits.get(tipKey(requirement.requirementId)) ?? saved.commit, version, saved); }
+    }
   }
   return { roots, saves };
 }
@@ -142,7 +161,8 @@ function migrateLineRecords(records: MigrationRecords, roots: Map<string, string
   }
   for (const operation of records.list("requirement_service_operations")) {
     const { requirementId, git, finalVersion } = operation.data as { requirementId: string; git: PrdReference | null; finalVersion: number | null };
-    const save = finalVersion !== null && git ? saves.get(saveKey(requirementId, { commit: git.commit, hash: git.hash })) : undefined;
+    if (finalVersion !== null) continue;
+    const save = git ? saves.get(saveKey(requirementId, { commit: git.commit, hash: git.hash })) : undefined;
     records.create("line_operation_anchors", operation.key, { format: "line-operation-anchor/v1", requirementId,
       anchor: save?.anchor ?? uuidv7(), unchangedTip: null, parent: save ? save.parent : roots.get(requirementId) ?? null });
   }

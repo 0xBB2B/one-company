@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import {
   create,
   diffVersions,
+  keepMainReachable,
   prdRequirementPath,
   PrdStorageError,
   readVersion,
@@ -522,4 +523,24 @@ test("M9：授权回调抛出带原因的拒绝时，存储层的报错带上这
   const rejected = await first(w).catch((error: unknown) => error);
   expect(rejected).toMatchObject({ name: "PrdStorageError", code: "permission_denied" });
   expect((rejected as Error).message).toContain("投递凭据已过期");
+});
+
+test("已 git init 但还没有任何提交的正文仓库：keepMainReachable 不报错，之后首次 create 仍能照常提交", async () => {
+  const w = await world();
+  const repository = prdRequirementPath(w.config);
+  await mkdir(repository, { recursive: true, mode: 0o700 });
+  await git(["init", "-q", "-b", "main"], repository, w.home);
+  await expect(keepMainReachable(w.config)).resolves.toBeUndefined();
+  const result = await first(w);
+  expect(result).toMatchObject({ status: "created", changed: true });
+  expect(await commitCount(result.repositoryRoot, w.home)).toBe(1);
+});
+
+test("需求目录已建但还没有 .git：keepMainReachable 不报错，之后首次 create 仍能照常提交", async () => {
+  const w = await world();
+  await mkdir(prdRequirementPath(w.config), { recursive: true, mode: 0o700 });
+  await expect(keepMainReachable(w.config)).resolves.toBeUndefined();
+  const result = await first(w);
+  expect(result).toMatchObject({ status: "created", changed: true });
+  expect(await commitCount(result.repositoryRoot, w.home)).toBe(1);
 });
