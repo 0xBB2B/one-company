@@ -3,7 +3,7 @@ import { HostAuthorizationError, HostAuthorizationManager } from "../requirement
 import { dataRoot } from "../../core/storage/identity.ts";
 import { DAEMON_CLIENT_LIFECYCLE_EVENTS, launchedDaemonLogPath } from "../../core/host/daemon-client.ts";
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
-import { currentLine, currentLineRepos, latestSaveAnchorIn, lineSwitchFactsIn } from "../requirement/line-anchors.ts";
+import { currentLine, currentLineRepos, latestSaveAnchorIn, lineSwitchFactsIn, recordLineAnchor } from "../requirement/line-anchors.ts";
 import { RequirementService } from "../requirement/requirement-service.ts";
 import { lineSwitchKind, lineSwitchReport, restoreMessageText, windowLineMemory } from "./line-switch.ts";
 import type { LineSwitchItem } from "./line-switch.ts";
@@ -75,6 +75,7 @@ export default function requirementManageExtension(pi: ExtensionAPI, deps: Requi
           const metadata = await service.metadata(requirementId);
           const { facts, previous } = withDatabase(repositoryDatabase(root, repoId), (db) => ({ facts: lineSwitchFactsIn(db, requirementId, anchors),
             previous: before === "window" ? lineMemory.tipOf(requirementId) : latestSaveAnchorIn(db, requirementId)?.anchor ?? null }));
+          if (metadata.restoreFailure && metadata.lineAnchor !== undefined && metadata.lineAnchor !== lineTip) recordLineAnchor(pi, { repoId, requirementId, anchor: metadata.lineAnchor });
           const failure = metadata.restoreFailure ? { reason: metadata.restoreFailure, conversationVersion: facts.tipVersion, logPath: logPathOf(repoId) } : undefined;
           const item: LineSwitchItem = { requirementId, title: "", lifecycle: metadata.lifecycle, before: previous,
             tip: before === "latestSave" ? facts.tipSave ?? lineTip : lineTip, tipVersion: facts.tipVersion, currentVersion: metadata.version,

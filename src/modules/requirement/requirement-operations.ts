@@ -5,8 +5,8 @@ import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/dat
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { checkRequirement, commit, counter, hash, id, object, positive } from "./requirement-contracts.ts";
 import type { PrdReference, RequirementRecord } from "./requirement-contracts.ts";
-import { prdRequirementPath } from "./prd-storage.ts";
-import type { PrdRepositoryIdentity, PrdStorageWriteResult } from "./prd-storage.ts";
+import { prdRequirementPath, settleAbandonedSave } from "./prd-storage.ts";
+import type { PrdRepositoryIdentity, PrdStorageConfig, PrdStorageWriteResult } from "./prd-storage.ts";
 import { archivePathFor } from "./requirement-identity.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
 import {
@@ -159,6 +159,18 @@ function mutableFields(input: Omit<PrepareRequirementOperation, "line" | "lineVe
   };
 }
 
+function gitRecordOf(result: PrdStorageWriteResult): NonNullable<RequirementOperation["git"]> {
+  return {
+    status: result.status,
+    commit: result.commit,
+    parent: result.changed ? result.parent : result.commit,
+    hash: result.prdHash.slice("sha256:".length),
+    changed: result.changed,
+    repositoryRoot: result.repositoryRoot,
+    repositoryIdentity: result.repositoryIdentity,
+  };
+}
+
 function available(requirement: RequirementRecord): void {
   if (requirement.recovery !== "ready") throw new RequirementServiceError("recovery_required");
   if (requirement.lifecycle !== "draft" && requirement.lifecycle !== "active") throw new RequirementServiceError("lifecycle_denied");
@@ -248,13 +260,68 @@ export class RequirementOperations {
     }));
   }
 
+  async settleAbandonedGit(requirementId: string, currentOperationId: string, configOf: (operation: RequirementOperation, validateOwned: () => void) => PrdStorageConfig): Promise<void> {
+    if (!existsSync(this.path)) return;
+    const candidates = withDatabase(this.path, (db) => {
+      const claim = readRequirementWriteClaimIn(db, this.repoId, requirementId);
+      if (claim !== null && processIsAlive(claim.data.pid)) return [];
+      return db.list(NAMESPACE)
+        .map((stored) => checkOperation(stored.data))
+        .filter((operation) => operation.requirementId === requirementId && operation.operationId !== currentOperationId && operation.finalVersion === null && operation.git === null && db.read(OPERATION_ANCHORS, operation.operationId) !== null);
+    });
+    for (const operation of candidates) {
+      const owner: RequirementWriteOwner = { ownerToken: uuidv7(), pid: process.pid };
+      withDatabase(this.path, (db) => db.transaction(() => {
+        releaseDeadRequirementWriteIn(db, this.repoId, requirementId);
+        try {
+          claimRequirementWriteIn(db, { ...owner, repoId: this.repoId, requirementId, operationId: operation.operationId, acquiredAt: this.checkedNow() }, { allowDeadOriginalOperationRecovery: false });
+        } catch (error) {
+          if ((error as { code?: unknown }).code === "requirement_write_pending") throw new RequirementServiceError("requirement_write_busy");
+          throw error;
+        }
+      }));
+      try {
+        const fresh = withDatabase(this.path, (db) => {
+          const stored = this.readIn(db, operation.operationId);
+          return stored && stored.data.finalVersion === null && stored.data.git === null ? db.read<{ anchor: string }>(OPERATION_ANCHORS, operation.operationId)?.data.anchor ?? null : null;
+        });
+        if (fresh === null) continue;
+        const config = configOf(operation, () => { this.assertOwned(operation.operationId, owner); });
+        const anchor = withDatabase(this.path, (db) => db.read<{ anchor: string }>(OPERATION_ANCHORS, operation.operationId))?.data.anchor;
+        if (anchor === undefined) continue;
+        const result = await settleAbandonedSave({
+          ...config,
+          operationId: operation.operationId,
+          anchor,
+          action: operation.action,
+          expectedParent: operation.expectedParent,
+          prdHash: `sha256:${operation.targetHash}`,
+        });
+        if (!result) continue;
+        withDatabase(this.path, (db) => db.transaction(() => {
+          const stored = this.readIn(db, operation.operationId);
+          if (!stored || stored.data.git !== null) return;
+          assertRequirementWriteOwnedIn(db, this.repoId, requirementId, operation.operationId, owner);
+          const updated = { ...stored.data, git: gitRecordOf(result), updatedAt: Math.max(stored.data.updatedAt, this.checkedNow()) };
+          checkOperation(updated);
+          db.update(NAMESPACE, operation.operationId, stored.version, updated);
+        }));
+      } finally {
+        withDatabase(this.path, (db) => db.transaction(() => {
+          const claim = readRequirementWriteClaimIn(db, this.repoId, requirementId);
+          if (claim?.data.operationId === operation.operationId && claim.data.ownerToken === owner.ownerToken) releaseRequirementWriteIn(db, this.repoId, requirementId, operation.operationId, owner);
+        }));
+      }
+    }
+  }
+
   private settleAbandoned(db: LocalDatabase, stored: StoredRecord<RequirementOperation>): void {
     const operation = stored.data;
     releaseDeadRequirementWriteIn(db, this.repoId, operation.requirementId);
     const row = db.read<RequirementRecord>("requirements", operation.requirementId)!;
     const anchors = db.read<{ anchor: string; parent: string | null }>(OPERATION_ANCHORS, operation.operationId);
     const applied = db.read("requirement_operations", operation.operationId) !== null;
-    if (!operation.git || !anchors || (!applied && row.version !== operation.saveVersion)) {
+    if (!operation.git || !anchors) {
       db.remove(NAMESPACE, operation.operationId, stored.version);
       if (anchors) db.remove(OPERATION_ANCHORS, operation.operationId, anchors.version);
       return;
@@ -262,7 +329,7 @@ export class RequirementOperations {
     const unchanged = operation.git.status === "unchanged" && operation.action === "updateDraft";
     const savedVersion = applied ? operation.saveVersion + (unchanged ? 0 : 1) : unchanged ? row.version : recordSavedIn(db, this.repoId, this.checkedNow(), { ...row, data: checkRequirement(row.data, operation.requirementId, this.repoId) }, {
       requirementId: operation.requirementId,
-      version: operation.saveVersion,
+      version: row.version,
       operationId: operation.operationId,
       reference: { commit: operation.git.commit, hash: operation.git.hash },
       anchor: anchors.data.anchor,
@@ -336,17 +403,10 @@ export class RequirementOperations {
     });
   }
 
-  recordGitResult(operationId: string, result: PrdStorageWriteResult, owner: RequirementWriteOwner): StoredRecord<RequirementOperation> {
+  recordGitResult(operationId: string, result: PrdStorageWriteResult, owner: RequirementWriteOwner, unchangedSaved: PrdReference | null = null): StoredRecord<RequirementOperation> {
     return this.update(operationId, owner, (operation) => {
-      const git: RequirementOperation["git"] = {
-        status: result.status,
-        commit: result.commit,
-        parent: result.changed ? result.parent : result.commit,
-        hash: result.prdHash.slice("sha256:".length),
-        changed: result.changed,
-        repositoryRoot: result.repositoryRoot,
-        repositoryIdentity: result.repositoryIdentity,
-      };
+      const recorded = gitRecordOf(result);
+      const git = result.status === "unchanged" && unchangedSaved?.hash === recorded.hash ? { ...recorded, commit: unchangedSaved.commit } : recorded;
       if (git.hash !== operation.targetHash || git.parent !== operation.expectedParent || git.repositoryRoot !== operation.repositoryRoot) {
         throw new RequirementServiceError("git_result_mismatch");
       }

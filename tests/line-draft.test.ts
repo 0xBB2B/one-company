@@ -1,10 +1,11 @@
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { RequirementService } from "../src/modules/requirement/requirement-service.ts";
 import type { RequirementServiceOptions } from "../src/modules/requirement/requirement-service.ts";
+import { RequirementOperations } from "../src/modules/requirement/requirement-operations.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
 import { REQUIREMENT_OPERATION_NAMESPACE } from "../src/modules/requirement/requirement-coordination.ts";
@@ -12,6 +13,11 @@ import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/da
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
+import { ShortDecisionStore } from "../src/modules/requirement/short-decisions.ts";
+import { loadInteractionContinuity } from "../src/modules/requirement/interaction-continuity.ts";
+import { UserInteractionCore } from "../src/modules/interaction/user-interaction.ts";
+import { VALID_DESIGN } from "./helpers/design-sample.ts";
+import { beginDesign, decidePrototype, draftPrototypes, pendingConfirmation, submitDesign } from "../src/modules/requirement/requirement-prototypes.ts";
 
 const exec = promisify(execFile);
 const cleanups: Array<() => Promise<void>> = [];
@@ -278,4 +284,110 @@ test("线尖就是最近一次保存、正文在需求文件仓库里读不出�
 
   const service = await w.open({ [a.requirementId]: a.anchors });
   await expect(service.read({ requirementId: a.requirementId, source: "saved" })).rejects.toThrow();
+});
+
+async function passPrototype(w: Awaited<ReturnType<typeof world>>, requirementId: string, line: string[]) {
+  const ref = { dataRoot: w.options.dataRoot, repoId: w.options.repoId };
+  const name = "导出弹窗", runId = uuidv7(), beginAnchor = uuidv7(), decideAnchor = uuidv7();
+  const started = await beginDesign(ref, { requirementId, name, runId, agent: "designer", designBase: null, line, anchor: beginAnchor });
+  await submitDesign(ref, { requirementId, name, runId, design: VALID_DESIGN, pages: [{ name: "页面", views: [{ name: "正常" }] }], html: "<!doctype html><html><body>草图</body></html>", note: "说明" });
+  const afterBegin = [...line, beginAnchor];
+  const pending = await pendingConfirmation(ref, { repositoryRoot: w.repo.root, requirementId, name, line: afterBegin });
+  await decidePrototype(ref, { repositoryRoot: w.repo.root, requirementId, name, version: started.version, hash: pending.hash, choice: "accept", option: null, opinion: null, line: afterBegin, anchor: decideAnchor });
+  return [...afterBegin, decideAnchor];
+}
+
+test("原型通过后用完全相同的正文再保存，照这次保存的回执批准成功，不报 saved_operation_mismatch", async () => {
+  const w = await world();
+  const created = await (await w.open()).create({ requestId: uuidv7(), operationId: uuidv7(), title: "需求标题", body: "正文" });
+  const line = await passPrototype(w, created.requirementId, [created.anchor]);
+  const service = await w.open({ [created.requirementId]: line });
+  const version = (await service.metadata(created.requirementId)).version;
+  const receipt = await save(service, created.requirementId, version, "正文");
+
+  const state = await RequirementStateStore.open({ ...w.options, authorize: () => true });
+  const worktree = await addWorktree(w.repo);
+  const baseCommit = (await exec("git", ["rev-parse", "HEAD"], { cwd: worktree.root, env: GIT_ENV })).stdout.trim();
+  await state.bindWorkspace({ requirementId: created.requirementId, version: state.read(created.requirementId).version, path: worktree.root, prepareOperationId: uuidv7(), baseCommit });
+  const ref = { dataRoot: w.options.dataRoot, repoId: w.options.repoId };
+  const lines = { [created.requirementId]: [...line, receipt.anchor] };
+  const confirm = await manifestConfirmInput({ ...w.options, lines }, { requirementId: created.requirementId, savedOperationId: receipt.operationId });
+  const prototypes = (await draftPrototypes(ref, created.requirementId, lines[created.requirementId]!)).digest;
+  const approved = await (await w.open(lines)).confirmUpdate({ ...confirm, prototypes });
+  expect(approved.lifecycle).toBe("active");
+});
+
+test("已批准的需求原型通过后用完全相同的正文再保存，同一次保存原样重试的回执校验不报 operation_state_mismatch", async () => {
+  const w = await world();
+  const service = await w.open();
+  const created = await service.create({ requestId: uuidv7(), operationId: uuidv7(), title: "需求标题", body: "批准正文" });
+  await approve(w, service, created);
+  const version = (await service.metadata(created.requirementId)).version;
+  const line = await passPrototype(w, created.requirementId, [created.anchor]);
+
+  const reader = await w.open({ [created.requirementId]: line });
+  const input = { requirementId: created.requirementId, operationId: uuidv7(), version, title: "需求标题", body: "批准正文" };
+  const receipt = await reader.updateDraft(input);
+  expect(receipt.requirementId).toBe(created.requirementId);
+  const replay = await (await w.open({ [created.requirementId]: line })).updateDraft(input);
+  expect(replay.operationId).toBe(input.operationId);
+});
+
+test("原型通过后用完全相同的正文保存，在记版本处中断，同一条线原样重试：续完成功，不报 git_result_mismatch", async () => {
+  const w = await world();
+  const created = await (await w.open()).create({ requestId: uuidv7(), operationId: uuidv7(), title: "需求标题", body: "正文" });
+  const line = await passPrototype(w, created.requirementId, [created.anchor]);
+  const lines = { [created.requirementId]: line };
+  const version = (await (await w.open(lines)).metadata(created.requirementId)).version;
+  const retry = { requirementId: created.requirementId, operationId: uuidv7(), version, title: "需求标题", body: "正文" };
+  const original = RequirementOperations.prototype.recordSavedVersion;
+  const spy = vi.spyOn(RequirementOperations.prototype, "recordSavedVersion").mockImplementationOnce(() => {
+    throw new Error("injected saved-version failure");
+  }).mockImplementation(original);
+  try {
+    await expect((await w.open(lines)).updateDraft(retry)).rejects.toThrow(/saved-version failure/);
+    const resumed = await (await w.open(lines)).updateDraft(retry);
+    expect(resumed.operationId).toBe(retry.operationId);
+  } finally { spy.mockRestore(); }
+});
+
+test("恢复失败退回用最近保存的那份并照版本 10 保存后：这条线上原有的短决定仍算数，没回答的提问仍在，读到新保存的正文", async () => {
+  const w = await world();
+  const a = await buildLineA(w);
+  const config = { repositoryRoot: w.repo.root, dataRoot: w.options.dataRoot, repoId: w.options.repoId };
+  const lineB = a.anchors.slice(0, 4);
+  const lines: Record<string, string[]> = { [a.requirementId]: [...lineB] };
+  const ctxB = await (await w.open(lines)).loadConfirmationContext({ requirementId: a.requirementId, savedOperationId: a.receipts[3]!.operationId, operationId: uuidv7() });
+
+  const asker = await UserInteractionCore.open({ ...config, lines, authorize: () => true, authorizeAction: () => true,
+    loadContext: async () => { throw new Error("ask does not load"); }, interpreter: { identity: () => ({ provider: "fixture", id: "ask", configurationHash: "a".repeat(64) }), interpret: async () => "{}" } } as never);
+  cleanups.push(async () => asker.shutdown());
+  asker.startSession({ sessionId: "line-draft", windowId: "line-draft" });
+  const question = asker.ask(JSON.stringify({ basis: ctxB.basis, candidate: ctxB.candidate, partition: ctxB.partition, unitIds: [ctxB.partition.units[0]!.id], actions: ["analyze"], proposal: { conclusion: "是否保留邮箱登录", scope: "整份需求", references: [], supersedes: [] } }));
+
+  const basisReceiptId = uuidv7();
+  const decisions = await ShortDecisionStore.open({ ...config, lines, authorize: () => true, now: () => 1_000_000,
+    admit: ({ requestHash, batch }: { requestHash: string; batch: { decisions: unknown[] } }) => ({ requestHash, subjects: batch.decisions.map(() => ({ actor: "user" as const, status: "confirmed" as const, basisReceiptId })) }) } as never);
+  const written = await decisions.append(JSON.stringify({ operationId: uuidv7(), requirementId: a.requirementId, version: 5, epoch: ctxB.epoch, prd: ctxB.basis.prd,
+    decisions: [{ conclusion: "线上做的短决定", scope: "本轮只分析", references: [], supersedes: [] }] }));
+  const decisionId = written.decisionIds[0]!;
+
+  const commit = anchorRecord(w, lineB.at(-1)!)!.fileCommit!;
+  const storage = join(w.options.dataRoot, "repos", w.options.repoId, "requirements", a.requirementId);
+  const blob = (await exec("git", ["rev-parse", `${commit}:prd.md`], { cwd: storage, env: GIT_ENV })).stdout.trim();
+  await rm(join(storage, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+
+  const service = await w.open(lines);
+  expect((await service.metadata(a.requirementId)).version).toBe(10);
+  const receipt = await save(service, a.requirementId, 10, "退回后新保存的正文");
+  expect(receipt.version).toBe(11);
+
+  const after = { [a.requirementId]: [...lines[a.requirementId]!, receipt.anchor] };
+  const reader = await w.open(after);
+  expect((await reader.read({ requirementId: a.requirementId, source: "saved" })).body).toBe("退回后新保存的正文");
+  const ctx = await reader.loadConfirmationContext({ requirementId: a.requirementId, savedOperationId: receipt.operationId, operationId: uuidv7() });
+  const view = loadInteractionContinuity(config.dataRoot, config.repoId, ctx.basis, { candidate: ctx.candidate, title: ctx.title, body: ctx.body, partition: ctx.partition }, undefined, after[a.requirementId]);
+  const readBack = await ShortDecisionStore.open({ ...config, lines: after, authorize: () => true } as never);
+  expect(readBack.read(a.requirementId, decisionId).decisionId).toBe(decisionId);
+  expect(view.questions.map((q) => q.requestId)).toEqual([question.requestId]);
 });

@@ -225,7 +225,7 @@ export function checkRequirement(value: unknown, requirementId: string, repoId: 
 
 export const LineAnchorKind = Type.Union([
   Type.Literal("save"), Type.Literal("decision"), Type.Literal("question"), Type.Literal("manifest"),
-  Type.Literal("prototype"), Type.Literal("conventions"), Type.Literal("approval"),
+  Type.Literal("prototype"), Type.Literal("conventions"), Type.Literal("approval"), Type.Literal("restore"),
 ]);
 export const LineAnchorRecord = object({
   format: Type.Literal("line-anchor/v1"), repoId: hash, requirementId: id, anchor: id, parent: nullable(id),

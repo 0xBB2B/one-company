@@ -31,14 +31,14 @@ const MEMBERS = "line_anchor_members";
 
 export function createLineAnchorIn(db: LocalDatabase, input: {
   repoId: string; requirementId: string; anchor: string; kind: LineAnchorRecord["kind"];
-  line: readonly string[]; now: number; fileCommit?: string;
-} & ({ kind: "save"; saved: PrdReference } | { kind: Exclude<LineAnchorRecord["kind"], "save">; saved?: undefined })): LineAnchorRecord {
+  line: readonly string[]; now: number; fileCommit?: string; lineVersion?: number;
+} & ({ kind: "save" | "restore"; saved: PrdReference } | { kind: Exclude<LineAnchorRecord["kind"], "save" | "restore">; saved?: undefined })): LineAnchorRecord {
   const all = anchorsOf(db, input.requirementId);
   const parent = viewOf(all, input.line).tip;
   const record = checked(LineAnchorRecord, {
     format: "line-anchor/v1", repoId: input.repoId, requirementId: input.requirementId, anchor: input.anchor,
     parent: parent?.anchor ?? null, kind: input.kind,
-    lineVersion: parent ? parent.lineVersion + (input.kind === "save" ? 1 : 0) : input.kind === "save" ? 2 : 1,
+    lineVersion: input.lineVersion ?? (parent ? parent.lineVersion + (input.kind === "save" ? 1 : 0) : input.kind === "save" ? 2 : 1),
     sequence: all.reduce((max, record) => Math.max(max, record.sequence), 0) + 1,
     fileCommit: input.fileCommit ?? parent?.fileCommit ?? null, saved: input.saved ?? null, createdAt: input.now,
   });
@@ -89,7 +89,7 @@ export function lineSwitchFactsIn(db: LocalDatabase, requirementId: string, line
   let afterApproval = false;
   for (let cursor = tip; cursor && !afterApproval; cursor = cursor.parent ? byAnchor.get(cursor.parent) ?? null : null) afterApproval = cursor.anchor === approval?.anchor;
   let save = tip;
-  while (save && save.kind !== "save") save = save.parent ? byAnchor.get(save.parent) ?? null : null;
+  while (save && save.kind !== "save" && save.kind !== "restore") save = save.parent ? byAnchor.get(save.parent) ?? null : null;
   const saves = line.flatMap((anchor) => { const record = byAnchor.get(anchor); return record?.kind === "save" ? [record.createdAt] : []; });
   return { tipVersion: tip?.lineVersion ?? null, tipSave: save?.anchor ?? null, afterApproval, lastSaved: saves.length ? Math.max(...saves) : null };
 }
@@ -146,9 +146,25 @@ export function draftLineView(
   if (!tip) return { version: row.version, saved: rowSaved, fileCommit: rowSaved?.commit ?? null, tip: null, updatedAt: row.data.updatedAt, ...restore };
   const byAnchor = new Map(anchors.map((record) => [record.anchor, record]));
   let save: LineAnchorRecord | null = tip;
-  for (const seen = new Set<string>(); save && save.kind !== "save" && !seen.has(save.anchor); save = save.parent ? byAnchor.get(save.parent) ?? null : null) seen.add(save.anchor);
+  for (const seen = new Set<string>(); save && save.kind !== "save" && save.kind !== "restore" && !seen.has(save.anchor); save = save.parent ? byAnchor.get(save.parent) ?? null : null) seen.add(save.anchor);
   const saved = save?.saved ?? null;
   return { version: tip.lineVersion, saved, fileCommit: tip.fileCommit, tip, updatedAt: Math.max(row.data.createdAt, tip.createdAt), ...restore };
+}
+
+/** 线尖那一版的正文读不出时，在这条线末尾记一个锚点，把最近保存的那一份记在这条线上；同一对线尖和最近保存只记一次。 */
+export function retreatViewIn(
+  db: LocalDatabase, row: Pick<StoredRecord<RequirementRecord>, "version" | "data">, line: readonly string[], repoId: string, now: number,
+): DraftLineView {
+  const requirementId = row.data.requirementId;
+  const all = anchorsOf(db, requirementId);
+  const tip = viewOf(all, line).tip;
+  const latest = latestSaveOf(all);
+  if (!tip || tip.kind === "restore" || !latest?.saved || !latest.fileCommit) return draftLineView(row, all, line, RESTORE_FAILURE.gitUnreadable);
+  const saved = latest.saved;
+  const restore = all.find((record) => record.kind === "restore" && record.parent === tip.anchor && record.fileCommit === latest.fileCommit
+    && record.saved?.commit === saved.commit && record.saved.hash === saved.hash)
+    ?? createLineAnchorIn(db, { repoId, requirementId, anchor: uuidv7(), kind: "restore", line, now, fileCommit: latest.fileCommit, lineVersion: latest.lineVersion, saved });
+  return { ...draftLineView(row, anchorsOf(db, requirementId), [...line, restore.anchor]), restoreFailure: RESTORE_FAILURE.gitUnreadable };
 }
 
 export function draftLineViewIn(

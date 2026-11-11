@@ -1,7 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import requirementManageExtension from "../src/modules/interaction/requirement-manage-extension.ts";
@@ -10,7 +10,8 @@ import { RequirementService } from "../src/modules/requirement/requirement-servi
 import type { RequirementServiceOptions } from "../src/modules/requirement/requirement-service.ts";
 import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
-import { createLineAnchorIn } from "../src/modules/requirement/line-anchors.ts";
+import { ShortDecisionStore } from "../src/modules/requirement/short-decisions.ts";
+import { createLineAnchorIn, currentLine } from "../src/modules/requirement/line-anchors.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
@@ -47,7 +48,7 @@ async function build(w: World, title: string, versions: number) {
     const previous = receipts.at(-1)!;
     receipts.push(await (await w.open({ [created.requirementId]: receipts.map((r) => r.anchor) })).updateDraft({ requirementId: created.requirementId, operationId: uuidv7(), version: previous.version, title, body: `正文 v${previous.version + 1}` }));
   }
-  return { requirementId: created.requirementId, created, anchors: receipts.map((r) => r.anchor) };
+  return { requirementId: created.requirementId, created, receipts, anchors: receipts.map((r) => r.anchor) };
 }
 
 async function approve(w: World, created: { requirementId: string; operationId: string }) {
@@ -73,14 +74,16 @@ async function session(w: World, initial: Line, owners: Owners = {}) {
   const authorization = new HostAuthorizationManager({ dataRoot: w.options.dataRoot });
   const client = { state: () => ({ status: "connected" as const }), subscribe: () => () => {}, call: async () => ({}) };
   const window = { windowId: "window-1", sessionId: "session-1", workspace: { repos: worlds.map((each) => ({ repoId: each.options.repoId, path: each.repo.root })) }, clients: { forRepo: () => client } };
-  requirementManageExtension({ ...fake.pi, sendMessage } as never, { authorization, dataRoot: w.options.dataRoot, windowReady: async () => window as never, windowContext: () => window as never,
+  const appendEntry = (customType: string, data: object) => { (branch as object[]).push({ type: "custom", customType, data }); };
+  requirementManageExtension({ ...fake.pi, sendMessage, appendEntry } as never, { authorization, dataRoot: w.options.dataRoot, windowReady: async () => window as never, windowContext: () => window as never,
     daemonLogPath: (repoId: string) => worlds.find((each) => each.options.repoId === repoId)!.logPath } as never);
   let branch = entriesOf(w, initial, owners);
   const ctx = { mode: "print", hasUI: false, sessionManager: { getSessionId: () => "session-1", getBranch: () => branch } };
   const switchTo = (line: Line) => { branch = entriesOf(w, line, owners); };
   const trigger = async (event: string, payload: object = {}) => { await fake.trigger(event, payload, ctx); await new Promise((resolve) => setTimeout(resolve, 100)); };
   const texts = () => sendMessage.mock.calls.map(([message]) => (message as { content: string }).content);
-  return { sendMessage, switchTo, trigger, texts };
+  const line = () => currentLine(ctx.sessionManager as never);
+  return { sendMessage, switchTo, trigger, texts, line };
 }
 
 async function mainScenario() {
@@ -349,4 +352,106 @@ test("窗口没起来（取当前窗口时抛错）时换线：不抛错也不�
   const ctx = { mode: "print", hasUI: false, sessionManager: { getSessionId: () => "session-1", getBranch: () => entriesOf(w, { [req.requirementId]: req.anchors.slice(0, 4) }, {}) } };
   await expect(fake.trigger("session_tree", {}, ctx)).resolves.toBeDefined();
   expect(sendMessage).not.toHaveBeenCalled();
+});
+
+const versionTold = (text: string) => Number(/仍是版本 (\d+)/.exec(text)![1]);
+
+test("换线后某需求恢复失败（锚点在库里找不到）：模型不先读取，直接按消息里告诉它的版本号保存，保存成功", async () => {
+  const w = await world();
+  const req = await build(w, "消息通知", 6);
+  const lineB = [...req.anchors.slice(0, 2), UNKNOWN_ANCHOR];
+  const run = await session(w, { [req.requirementId]: req.anchors });
+  await run.trigger("session_start", { reason: "startup" });
+  run.switchTo({ [req.requirementId]: lineB });
+  await run.trigger("session_tree");
+  const told = versionTold(run.texts()[0]!);
+  expect(told).toBe(6);
+
+  const receipt = await (await w.open({ [req.requirementId]: lineB })).updateDraft({ requirementId: req.requirementId, operationId: uuidv7(), version: told, title: "消息通知", body: "照消息里的版本号保存" });
+  expect(receipt.version).toBe(told + 1);
+});
+
+test("换线后某需求恢复失败（那一版的正文读不出）：模型不先读取，直接按消息里告诉它的版本号保存，保存成功", async () => {
+  const w = await world();
+  const req = await build(w, "订单导出", 10);
+  const lineB = req.anchors.slice(0, 4);
+  const record = withDatabase(repositoryDatabase(w.options.dataRoot, w.options.repoId), (db) =>
+    db.list<{ anchor: string; fileCommit?: string }>("line_anchors").map((row) => row.data).find((data) => data.anchor === lineB.at(-1)))!;
+  const storage = join(w.options.dataRoot, "repos", w.options.repoId, "requirements", req.requirementId);
+  const blob = (await exec("git", ["rev-parse", `${record.fileCommit}:prd.md`], { cwd: storage, env: GIT_ENV })).stdout.trim();
+  await rm(join(storage, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+  const run = await session(w, { [req.requirementId]: lineB });
+  await run.trigger("session_start", { reason: "startup" });
+  const told = versionTold(run.texts()[0]!);
+  expect(told).toBe(10);
+
+  const receipt = await (await w.open({ [req.requirementId]: lineB })).updateDraft({ requirementId: req.requirementId, operationId: uuidv7(), version: told, title: "订单导出", body: "照消息里的版本号保存" });
+  expect(receipt.version).toBe(told + 1);
+});
+
+async function fallbackSession() {
+  const w = await world();
+  const req = await build(w, "订单导出", 10);
+  const lineB = req.anchors.slice(0, 4);
+  const commit = withDatabase(repositoryDatabase(w.options.dataRoot, w.options.repoId), (db) =>
+    db.list<{ anchor: string; fileCommit?: string }>("line_anchors").map((row) => row.data).find((data) => data.anchor === lineB.at(-1)))!.fileCommit!;
+  const storage = join(w.options.dataRoot, "repos", w.options.repoId, "requirements", req.requirementId);
+  const blob = (await exec("git", ["rev-parse", `${commit}:prd.md`], { cwd: storage, env: GIT_ENV })).stdout.trim();
+  const objectPath = join(storage, ".git", "objects", blob.slice(0, 2), blob.slice(2));
+  const object = await readFile(objectPath);
+  await rm(objectPath);
+  const run = await session(w, { [req.requirementId]: lineB });
+  await run.trigger("session_start", { reason: "startup" });
+  expect(versionTold(run.texts()[0]!)).toBe(10);
+  const restoreObject = () => writeFile(objectPath, object, { mode: 0o444 });
+  const opened = () => w.open(Object.fromEntries(Object.entries(run.line()).map(([id, anchors]) => [id, [...anchors]])));
+  return { w, req, run, opened, restoreObject };
+}
+
+const saveV10 = (service: RequirementService, requirementId: string, body: string) =>
+  service.updateDraft({ requirementId, operationId: uuidv7(), version: 10, title: "订单导出", body });
+
+test("退回显示版本 10 之后线 A 又保存成 11：线 B 再读仍显示版本 10、正文是 v10，照版本 10 保存得到 11", async () => {
+  const f = await fallbackSession();
+  await (await f.w.open({ [f.req.requirementId]: f.req.anchors })).updateDraft({ requirementId: f.req.requirementId, operationId: uuidv7(), version: 10, title: "订单导出", body: "线 A 的 v11" });
+
+  const service = await f.opened();
+  const read = await service.read({ requirementId: f.req.requirementId, source: "saved" });
+  expect(read.version).toBe(10);
+  expect(read.body).toBe("正文 v10");
+  expect((await service.metadata(f.req.requirementId)).version).toBe(10);
+  const receipt = await saveV10(service, f.req.requirementId, "线 B 退回后的新正文");
+  expect(receipt.version).toBe(11);
+});
+
+test("退回显示版本 10 之后读不出的正文对象又能读出了：线 B 仍显示版本 10，照版本 10 保存成功", async () => {
+  const f = await fallbackSession();
+  await f.restoreObject();
+
+  const service = await f.opened();
+  expect((await service.metadata(f.req.requirementId)).version).toBe(10);
+  const read = await service.read({ requirementId: f.req.requirementId, source: "saved" });
+  expect(read.version).toBe(10);
+  expect(read.body).toBe("正文 v10");
+  const receipt = await saveV10(service, f.req.requirementId, "线 B 退回后的新正文");
+  expect(receipt.version).toBe(11);
+});
+
+test("退回显示版本 10 之后、保存之前，在这条线上照版本 10 记短决定成功，保存后这条决定仍算数", async () => {
+  const f = await fallbackSession();
+  const config = { repositoryRoot: f.w.repo.root, dataRoot: f.w.options.dataRoot, repoId: f.w.options.repoId };
+  const lines = Object.fromEntries(Object.entries(f.run.line()).map(([id, anchors]) => [id, [...anchors]]));
+  const ctx = await (await f.w.open(lines)).loadConfirmationContext({ requirementId: f.req.requirementId, savedOperationId: f.req.receipts[8]!.operationId, operationId: uuidv7() });
+  const basisReceiptId = uuidv7();
+  const decisions = await ShortDecisionStore.open({ ...config, lines, authorize: () => true, now: () => 1_000_000,
+    admit: ({ requestHash, batch }: { requestHash: string; batch: { decisions: unknown[] } }) => ({ requestHash, subjects: batch.decisions.map(() => ({ actor: "user" as const, status: "confirmed" as const, basisReceiptId })) }) } as never);
+  const written = await decisions.append(JSON.stringify({ operationId: uuidv7(), requirementId: f.req.requirementId, version: 10, epoch: ctx.epoch, prd: ctx.basis.prd,
+    decisions: [{ conclusion: "退回后做的短决定", scope: "本轮只分析", references: [], supersedes: [] }] }));
+  const decisionId = written.decisionIds[0]!;
+
+  const service = await f.w.open(lines);
+  const receipt = await saveV10(service, f.req.requirementId, "线 B 退回后的新正文");
+  expect(receipt.version).toBe(11);
+  const readBack = await ShortDecisionStore.open({ ...config, lines: { [f.req.requirementId]: [...lines[f.req.requirementId]!, receipt.anchor] }, authorize: () => true } as never);
+  expect(readBack.read(f.req.requirementId, decisionId).decisionId).toBe(decisionId);
 });

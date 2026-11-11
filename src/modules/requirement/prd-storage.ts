@@ -1127,6 +1127,49 @@ async function saveInternal(input: PrdStorageSaveInput, action: PrdStorageAction
   return { status: head ? "saved" : "created", action, operationId: input.operationId, commit, parent: input.expectedParent, prdHash, changed: true, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
 }
 
+export interface PrdStorageSettleAbandonedInput extends PrdStorageConfig {
+  operationId: string;
+  anchor: string;
+  action: PrdStorageAction;
+  expectedParent: string | null;
+  prdHash: `sha256:${string}`;
+}
+
+// 返回 null 表示这次保存没有进 Git；prd.md 里留着它未提交的正文时，已恢复成 HEAD 的内容
+export async function settleAbandonedSave(input: PrdStorageSettleAbandonedInput): Promise<PrdStorageWriteResult | null> {
+  assertAnchor(input.anchor);
+  const paths = await preparePaths(input, false);
+  if (!(await assertGitDirectory(paths.requirementRoot, false))) return null;
+  await assertCurrentUser(paths.requirementRoot);
+  await assertRepositoryLayout(input, paths);
+  const identity = await assertRepositoryIdentity(input, paths.requirementRoot);
+  await assertOnlyPrdAndGit(paths.requirementRoot);
+  const head = await currentHead(input, paths);
+  if (!head) return null;
+  const headMetadata = await parseCommitMetadata(input, paths, head);
+  requireAuthorized(input, { phase: "beforeWrite", action: "save", operationId: input.operationId, expectedParent: input.expectedParent, prdHash: input.prdHash });
+  const lined = await lineCommit(input, paths, input.anchor);
+  const committed = headMetadata.operationId === input.operationId ? head
+    : lined !== null && (await parseCommitMetadata(input, paths, lined)).operationId === input.operationId ? lined : null;
+  if (committed !== null) {
+    await verifyCommitMatches(input, paths, committed, input.prdHash, input.expectedParent, input.operationId, input.action);
+    if (committed === head) {
+      await assertWorktreeMatchesHash(paths.prdPath, input.prdHash);
+      await recoverManagedIndex(input, paths, head);
+    }
+    if (lined === null) await createLineRef(input, paths, input.anchor, committed);
+    await hardenGitPermissions(join(paths.requirementRoot, GIT_DIR));
+    return { status: "recovered", action: input.action, operationId: input.operationId, commit: committed, parent: input.expectedParent, prdHash: input.prdHash, changed: true, repositoryRoot: paths.requirementRoot, repositoryIdentity: identity };
+  }
+  const working = await readFileSnapshot(paths.prdPath);
+  if (working.exists && working.prdHash === input.prdHash && working.prdHash !== headMetadata.prdHash) {
+    const headBytes = await showPrd(input, paths, head);
+    await writePrdFile(paths.requirementRoot, paths.prdPath, headBytes, input.operationId, headMetadata.prdHash, working);
+    await assertWorktreeMatchesHash(paths.prdPath, headMetadata.prdHash);
+  }
+  return null;
+}
+
 export async function create(input: PrdStorageSaveInput): Promise<PrdStorageWriteResult> {
   if (input.expectedParent !== null) fail("invalid_parent", "create 的 expectedParent 必须为 null");
   return saveInternal(input, "create", "create");

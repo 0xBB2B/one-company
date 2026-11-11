@@ -14,7 +14,7 @@ import type { PrdRepositoryIdentity, PrdStorageConfig, PrdStorageWriteResult } f
 import { RequirementOperations } from "./requirement-operations.ts";
 import type { PrepareRequirementOperation, RequirementOperation, RequirementOperationAction } from "./requirement-operations.ts";
 import { uuidv7, repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
-import { draftLineViewIn, latestSaveAnchorIn, lineOf, linedRequirementIn, readAnchorIn, RESTORE_FAILURE } from "./line-anchors.ts";
+import { draftLineViewIn, latestSaveAnchorIn, lineOf, linedRequirementIn, readAnchorIn, RESTORE_FAILURE, retreatViewIn } from "./line-anchors.ts";
 import type { DraftLineView } from "./line-anchors.ts";
 import { decisionDigest } from "./short-decision-format.ts";
 import { partitionPrdDocument } from "./prd-view.ts";
@@ -152,8 +152,10 @@ export class RequirementService {
   }
 
   private lineDraftState(record: { version: number; data: RequirementRecord }, anyLifecycle = false, forcedFailure?: string): DraftLineView {
-    return withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) =>
-      draftLineViewIn(db, record, this.options.lines?.[record.data.requirementId] ?? [], anyLifecycle, forcedFailure));
+    const line = this.options.lines?.[record.data.requirementId] ?? [];
+    return withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => forcedFailure === RESTORE_FAILURE.gitUnreadable
+      ? db.transaction(() => retreatViewIn(db, record, line, this.options.repoId, Date.now()))
+      : draftLineViewIn(db, record, line, anyLifecycle, forcedFailure));
   }
 
   private async unreadableTipFailure(record: { version: number; data: RequirementRecord }, authorization: ServiceAuthorizationRequest): Promise<string | undefined> {
@@ -520,9 +522,12 @@ export class RequirementService {
       }
       if (operation.finalVersion === null) operation = this.operations.claim(operation.operationId, owner).data;
     } else {
-      const view = this.lineDraftState(before);
+      this.authorize(authorization);
+      await this.operations.settleAbandonedGit(before.id, input.operationId, (abandoned, validateOwned) => this.storageConfig(authorization, abandoned.requirementId, abandoned.expectedRepositoryIdentity, validateOwned));
+      const restoreFailure = action === "create" ? undefined : await this.unreadableTipFailure(before, authorization);
+      const view = this.lineDraftState(before, false, restoreFailure);
       const configured = this.options.lines?.[before.id] ?? [];
-      const line = configured.length || !view.tip ? configured : [view.tip.anchor];
+      const line = restoreFailure ? [...configured, view.tip!.anchor] : configured.length || !view.tip ? configured : [view.tip.anchor];
       if (action !== "create" && view.version !== (input as UpdateInput).version) {
         throw new RequirementServiceError("stale_version");
       }
@@ -561,7 +566,7 @@ export class RequirementService {
       }
       this.operations.assertOwned(operation.operationId, owner);
     };
-    const config = this.storageConfig(authorization, operation.requirementId, operation.expectedRepositoryIdentity, validateOwnedActive);
+    const config = this.storageConfig(authorization, operation.requirementId, operation.expectedRepositoryIdentity ?? operation.git?.repositoryIdentity ?? null, validateOwnedActive);
     const anchor = this.operations.newAnchorOf(operation.operationId);
     let git: PrdStorageWriteResult;
     if (operation.git) {
@@ -609,7 +614,10 @@ export class RequirementService {
       git = await saveStorage({ ...config, action, operationId: operation.operationId, anchor, expectedParent: operation.expectedParent, bytes: document.bytes });
     }
 
-    operation = this.operations.recordGitResult(operation.operationId, git, owner).data;
+    if (!operation.git) {
+      const unchangedSaved = git.status === "unchanged" && action === "updateDraft" ? this.lineDraftState(storageState.read(operation.requirementId)).saved : null;
+      operation = this.operations.recordGitResult(operation.operationId, git, owner, unchangedSaved).data;
+    }
     const reference: PrdReference = { commit: operation.git!.commit, hash: operation.git!.hash };
     if (operation.savedVersion === null) {
       const current = (await this.state(authorization)).read(operation.requirementId);
@@ -662,8 +670,9 @@ export class RequirementService {
       }
       return current.version;
     }
-    const anchor = withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => readAnchorIn(db, this.operations.anchorOf(operation.operationId)));
-    if (!anchor || anchor.requirementId !== operation.requirementId || anchor.fileCommit !== operation.git.commit) {
+    const anchorId = this.operations.anchorOf(operation.operationId);
+    const { anchor, saved } = withDatabase(repositoryDatabase(this.options.dataRoot, this.options.repoId), (db) => ({ anchor: readAnchorIn(db, anchorId), saved: draftLineViewIn(db, current, [anchorId]).saved }));
+    if (!anchor || anchor.requirementId !== operation.requirementId || !sameReference(saved, { commit: operation.git.commit, hash: operation.git.hash })) {
       throw new RequirementServiceError("operation_state_mismatch");
     }
     return anchor.lineVersion;
