@@ -328,7 +328,7 @@ test("需求还没有 saved：它的旧简介按记录自己的 prdHash 换成�
   expect(w.start(id)).toEqual([]);
 });
 
-test("升级前已有的保存操作记录各补一条操作锚点，父是该需求的起点锚点，没有起点时为空", async () => {
+test("升级前已有的保存操作记录各补一条操作锚点：产出某个起点链保存的那次操作用那个 save 锚点，其余用新锚点、父是该需求的起点锚点，没有起点时为空", async () => {
   const w = await oldWorld({ unfinished: true });
   const operations = rowsOf(w.dbPath, "requirement_service_operations");
   expect(operations.length).toBeGreaterThanOrEqual(5);
@@ -338,8 +338,12 @@ test("升级前已有的保存操作记录各补一条操作锚点，父是该�
   const issued = new Set<string>();
   for (const operation of operations) {
     const stored = anchors.find((row) => row.key === operation.key)!;
-    const startOf = w.start(operation.data.requirementId).find((record) => record.kind === "save" && record.sequence === 1);
-    expect(stored.data).toEqual({ format: "line-operation-anchor/v1", requirementId: operation.data.requirementId, anchor: expect.stringMatching(UUID_V7), parent: startOf?.anchor ?? null, unchangedTip: null });
+    const chain = w.start(operation.data.requirementId);
+    const startOf = chain.find((record) => record.kind === "save" && record.sequence === 1);
+    const git = operation.data.finalVersion !== null ? operation.data.git as { commit: string; hash: string } | null : null;
+    const produced = git ? chain.find((record) => record.kind === "save" && record.saved?.commit === git.commit && record.saved?.hash === git.hash) : undefined;
+    expect(stored.data).toEqual({ format: "line-operation-anchor/v1", requirementId: operation.data.requirementId,
+      anchor: produced ? produced.anchor : expect.stringMatching(UUID_V7), parent: produced ? produced.parent : startOf?.anchor ?? null, unchangedTip: null });
     issued.add(stored.data.anchor);
   }
   expect(issued.size).toBe(operations.length);

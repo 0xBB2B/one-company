@@ -52,8 +52,11 @@ async function moveDraftPrototypesIntoRepos(context: { dataRoot: string; repoId:
   return commits;
 }
 
-function createRootAnchors(records: MigrationRecords, commits: MigrationCommits): Map<string, string> {
-  const roots = new Map<string, string>();
+type SaveAnchors = Map<string, { anchor: string; parent: string | null }>;
+const saveKey = (requirementId: string, reference: PrdReference) => `${requirementId}:${reference.commit}:${reference.hash}`;
+
+function createRootAnchors(records: MigrationRecords, commits: MigrationCommits): { roots: Map<string, string>; saves: SaveAnchors } {
+  const roots = new Map<string, string>(), saves: SaveAnchors = new Map();
   for (const { version, data: requirement } of requirementsOf(records)) {
     const { saved, approved } = requirement;
     if (!saved) continue;
@@ -66,6 +69,7 @@ function createRootAnchors(records: MigrationRecords, commits: MigrationCommits)
         lineVersion, sequence: ++sequence, fileCommit, saved: savedReference, createdAt: requirement.updatedAt,
       });
       records.create("line_anchors", anchor, record);
+      if (savedReference) saves.set(saveKey(requirement.requirementId, savedReference), { anchor, parent });
       parent = anchor;
       if (sequence === 1) roots.set(requirement.requirementId, anchor);
     };
@@ -75,7 +79,7 @@ function createRootAnchors(records: MigrationRecords, commits: MigrationCommits)
     else if (approved.commit === saved.commit) { add("save", approved.commit, version, approved); add("approval", approved.commit, version, null); }
     else { add("save", approved.commit, version - 1, approved); add("approval", approved.commit, version - 1, null); add("save", saved.commit, version, saved); }
   }
-  return roots;
+  return { roots, saves };
 }
 
 type Change = { kind: string } & Record<string, unknown>;
@@ -131,14 +135,16 @@ function convertPrototypeBoards(records: MigrationRecords): void {
   }
 }
 
-function migrateLineRecords(records: MigrationRecords, roots: Map<string, string>): void {
+function migrateLineRecords(records: MigrationRecords, roots: Map<string, string>, saves: SaveAnchors): void {
   for (const { key, data } of records.list("requirement_summaries")) {
     records.create("requirement_summaries", `${key}:${(data as { prdHash: string }).prdHash}`, data);
     records.remove("requirement_summaries", key);
   }
   for (const operation of records.list("requirement_service_operations")) {
-    const requirementId = (operation.data as { requirementId: string }).requirementId;
-    records.create("line_operation_anchors", operation.key, { format: "line-operation-anchor/v1", requirementId, anchor: uuidv7(), unchangedTip: null, parent: roots.get(requirementId) ?? null });
+    const { requirementId, git, finalVersion } = operation.data as { requirementId: string; git: PrdReference | null; finalVersion: number | null };
+    const save = finalVersion !== null && git ? saves.get(saveKey(requirementId, { commit: git.commit, hash: git.hash })) : undefined;
+    records.create("line_operation_anchors", operation.key, { format: "line-operation-anchor/v1", requirementId,
+      anchor: save?.anchor ?? uuidv7(), unchangedTip: null, parent: save ? save.parent : roots.get(requirementId) ?? null });
   }
 }
 
@@ -147,8 +153,8 @@ export const lineRecordsV10Step: DataMigrationStep = {
   losses: ["这次迁移不会丢数据。"],
   prepareFiles: moveDraftPrototypesIntoRepos,
   migrate(records, prepared) {
-    const roots = createRootAnchors(records, prepared as MigrationCommits);
+    const { roots, saves } = createRootAnchors(records, prepared as MigrationCommits);
     convertPrototypeBoards(records);
-    migrateLineRecords(records, roots);
+    migrateLineRecords(records, roots, saves);
   },
 };
