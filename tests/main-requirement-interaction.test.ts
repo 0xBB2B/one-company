@@ -2643,6 +2643,26 @@ describe("过程记录跟着对话线：主窗口的批准结果", () => {
   });
 });
 
+describe("过程记录跟着对话线：批准结果换线后的送达", () => {
+  test("线 A 上批准成功后换到更早的线 B，线 A 那次批准的结果照常送达，不因换线报错", async () => {
+    const w = await world(), created = await w.create(), requirementId = String(created.requirementId);
+    w.provider.awaitReply = async () => ({ type: "text", text: '{"allow":true}' });
+    let latest: Record<string, unknown> = created;
+    for (const body of [BODY + "第三版。\n", BODY + "第四版。\n"]) {
+      w.capture("改一下");
+      const metadata = await w.call({ action: "metadata", requirementId });
+      latest = await w.call({ action: "updateDraft", requirementId, version: metadata.version, summary: "手机号登录，保留邮箱登录", title: "登录", body });
+    }
+    const { input } = await w.request(latest);
+    w.capture("同意"); scriptReview(w.provider, phoneReview);
+    const resultId = uuidv7();
+    await w.manage.execute(resultId, { request: { repoId: w.repoId, action: "confirmUpdate", ...input } } as never, undefined, undefined, w.ctx);
+
+    w.branch.splice(w.branch.findIndex((entry) => entry.customType === "one-company.line-anchor" && entry.data.anchor === created.anchor) + 1);
+    expect(() => w.interaction.assertDelivery(resultId, w.ctx)).not.toThrow();
+  });
+});
+
 describe("过程记录跟着对话线：主窗口的提问与重试", () => {
   const askParams = (requirementId: string, version: unknown, savedOperationId: unknown) =>
     ({ action: "ask", requirementId, version, savedOperationId, ...SMS_ASK, unitIds: ["background"] });

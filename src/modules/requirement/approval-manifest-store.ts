@@ -7,6 +7,7 @@ import type { ApprovalSummary, RequirementRecord } from "./requirement-contracts
 import { ApprovalManifest, approvalDependencyClosure, approvalManifestReference, checkApprovalManifest, checkImplementSupplement } from "./approval-manifest.ts";
 import type { ApprovalManifestExpected, ApprovalManifestReference } from "./approval-manifest.ts";
 import { checkDecisionRecord, decisionDigest } from "./short-decision-format.ts";
+import { supersessionIn, withSupersession } from "./short-decisions.ts";
 import { ApprovalPartition } from "./user-interaction-format.ts";
 import { RequirementServiceError } from "./requirement-manage-contracts.ts";
 import type { RequirementApprovalScope, RequirementServiceErrorCode } from "./requirement-manage-contracts.ts";
@@ -55,7 +56,7 @@ function current(db: LocalDatabase, repoId: string, requirementId: string): Stor
   if (data.recovery !== "ready" || !["draft", "active"].includes(data.lifecycle)) deny("lifecycle_denied");
   return { ...stored, data };
 }
-function supplementDecisionSnapshot(db: LocalDatabase, manifest: ApprovalManifest, supplement: ImplementSupplement, repoId: string) {
+function supplementDecisionSnapshot(db: LocalDatabase, manifest: ApprovalManifest, supplement: ImplementSupplement, repoId: string, supersededBy: (d: ReturnType<typeof checkDecisionRecord>) => string | null) {
   const stored = db.read("short_decisions", supplement.decisionId);
   if (!stored || stored.id !== supplement.decisionId) deny("manifest_decision_missing");
   const d = checkDecisionRecord(stored.data), { admission } = supplement;
@@ -63,11 +64,12 @@ function supplementDecisionSnapshot(db: LocalDatabase, manifest: ApprovalManifes
     d.epoch !== admission.epoch || d.requirementVersion !== admission.version || !same(d.prd, manifest.candidate.to) || d.supersedes.length ||
     ![manifest.candidate.to.commit, manifest.candidate.to.hash].every((ref) => d.references.includes(ref))) deny("manifest_decision_mismatch");
   if (d.actor !== "user") deny("manifest_action_not_user");
-  if (d.status !== "confirmed") deny("manifest_decision_not_confirmed");
+  if (withSupersession(d, supersededBy(d)).status !== "confirmed") deny("manifest_decision_not_confirmed");
   return { id: d.decisionId, version: stored.version, hash: decisionDigest(d) };
 }
 function decisionSnapshots(db: LocalDatabase, manifest: ApprovalManifest, admission: ManifestAdmission, repoId: string, line?: readonly string[], supplement?: ImplementSupplement) {
   const counted = (namespace: string, key: string) => line === undefined || isRecordCountedIn(db, { namespace, key, requirementId: manifest.requirementId, line });
+  const supersededBy = supersessionIn(db, manifest.requirementId, (decisionId) => counted("short_decisions", decisionId));
   const ids = [...new Set([...manifest.units, ...manifest.actions, ...manifest.questions].flatMap((u) => u.decisionIds))].filter((decisionId) => decisionId !== supplement?.decisionId);
   if (ids.length > 40) deny("manifest_store_limit");
   const records = ids.map((decisionId) => {
@@ -80,11 +82,12 @@ function decisionSnapshots(db: LocalDatabase, manifest: ApprovalManifest, admiss
       if (!used.length || manifest.actions.some((a) => a.decisionIds.includes(decisionId)) || manifest.questions.some((q) => q.decisionIds.includes(decisionId)) ||
         used.some((u) => !retained.some((e) => e.unitId === u.id && e.unitHash === u.hash && u.retainedFactIds?.includes(e.fact.id)))) deny("manifest_retained_escape");
       for (const e of retained) assertRetainedEvidenceIn(db, repoId, { requirementId: manifest.requirementId, version: admission.version, epoch: admission.epoch, prd: manifest.candidate.from },
-        { partition: { prdHash: manifest.candidate.to.hash, totalBytes: manifest.totalBytes, units: manifest.units.map(({ id, hash, startByte, endByte }) => ({ id, hash, startByte, endByte })) } }, e);
+        { partition: { prdHash: manifest.candidate.to.hash, totalBytes: manifest.totalBytes, units: manifest.units.map(({ id, hash, startByte, endByte }) => ({ id, hash, startByte, endByte })) } }, e,
+        (decision) => supersededBy(decision) !== null);
       return { stored, d, retained: true };
     }
     if (d.decisionId !== decisionId || d.requirementId !== manifest.requirementId || d.repoId !== repoId ||
-      d.epoch !== admission.epoch || d.requirementVersion !== admission.version || d.status === "superseded" || !same(d.prd, manifest.candidate.from) ||
+      d.epoch !== admission.epoch || d.requirementVersion !== admission.version || supersededBy(d) !== null || !same(d.prd, manifest.candidate.from) ||
       ![manifest.candidate.to.commit, manifest.candidate.to.hash].every((ref) => d.references.includes(ref))) deny("manifest_decision_mismatch");
     return { stored, d, retained: false };
   });
@@ -119,7 +122,7 @@ function decisionSnapshots(db: LocalDatabase, manifest: ApprovalManifest, admiss
   // 单次短决定仍限20条；额外20条仅容纳Core核验的独立约束原来源。
   if (sources > 20 || records.length - sources > 20) deny("manifest_store_limit");
   const snapshots = records.map(({ stored, d }) => ({ id: d.decisionId, version: stored.version, hash: decisionDigest(d) }));
-  return supplement ? [...snapshots, supplementDecisionSnapshot(db, manifest, supplement, repoId)] : snapshots;
+  return supplement ? [...snapshots, supplementDecisionSnapshot(db, manifest, supplement, repoId, supersededBy)] : snapshots;
 }
 export function summarizeApprovalManifest(m: ApprovalManifest): ApprovalSummary {
   return { reference: approvalManifestReference(m),
@@ -148,7 +151,7 @@ export function registeredApprovalManifestIn(db: LocalDatabase, repoId: string, 
   if (receiptId !== undefined) {
     if (admission.receiptId !== receiptId || record.version !== admission.version || !same(record.data.saved, ref.candidate.to)) deny("manifest_stale");
   } else if (!same(record.data.approvalManifest?.reference ?? null, ref) || !same(record.data.approved, ref.candidate.to)) deny("manifest_not_approved");
-  if (!same(decisionSnapshots(db, m, s.admission, repoId, receiptId === undefined ? undefined : line, s.supplement), s.decisionRecords)) deny("manifest_decisions_changed");
+  if (!same(decisionSnapshots(db, m, s.admission, repoId, receiptId === undefined ? line ?? [] : line, s.supplement), s.decisionRecords)) deny("manifest_decisions_changed");
   if (receiptId !== undefined && (!admission.inputProof || continuityInputProofIn(db, ref.requirementId, undefined, line) !== admission.inputProof)) deny("manifest_input_changed");
   return m;
 }
@@ -256,13 +259,13 @@ export class ApprovalManifestStore {
         if (base.requirementId !== ref.requirementId || !same(base.candidate, ref.candidate)) deny("manifest_binding_mismatch");
         if (before.version !== admission.version || before.data.epoch !== admission.epoch || !same(before.data.saved, ref.candidate.to) ||
           !same(before.data.approved, ref.candidate.to)) deny("manifest_stale");
-        if (continuityInputProofIn(db, ref.requirementId) !== admission.inputProof) deny("manifest_input_changed");
+        if (continuityInputProofIn(db, ref.requirementId, undefined, []) !== admission.inputProof) deny("manifest_input_changed");
         const baseManifest = registeredApprovalManifestIn(db, this.#options.repoId, base, before);
         checkImplementSupplement({ base: baseManifest, next: manifest, decisionId: input.decisionId });
         const baseRow = checked(Stored, db.read(APPROVAL_MANIFEST_NAMESPACE, base.manifestHash)!.data) as StoredManifest;
         const supplement: ImplementSupplement = { baseManifestHash: base.manifestHash, decisionId: input.decisionId, admission };
         const stored: StoredManifest = { format: "stored-approval-manifest/v1", repoId: this.#options.repoId, admission: baseRow.admission,
-          partition: baseRow.partition, supplement, manifest, decisionRecords: decisionSnapshots(db, manifest, baseRow.admission, this.#options.repoId, undefined, supplement) };
+          partition: baseRow.partition, supplement, manifest, decisionRecords: decisionSnapshots(db, manifest, baseRow.admission, this.#options.repoId, [], supplement) };
         checked(Stored, stored);
         if (Buffer.byteLength(JSON.stringify(stored)) > 65_536) deny("manifest_store_limit");
         const old = db.read(APPROVAL_MANIFEST_NAMESPACE, ref.manifestHash);
@@ -270,7 +273,7 @@ export class ApprovalManifestStore {
         if (!old) db.create(APPROVAL_MANIFEST_NAMESPACE, ref.manifestHash, stored);
         const after = current(db, this.#options.repoId, ref.requirementId);
         if (after.version !== before.version || !same(after.data, before.data) ||
-          !same(decisionSnapshots(db, manifest, baseRow.admission, this.#options.repoId, undefined, supplement), stored.decisionRecords)) deny("manifest_stale");
+          !same(decisionSnapshots(db, manifest, baseRow.admission, this.#options.repoId, [], supplement), stored.decisionRecords)) deny("manifest_stale");
         return ref;
       }));
     } finally { this.#busy = false; }

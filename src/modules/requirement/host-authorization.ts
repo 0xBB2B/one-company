@@ -9,6 +9,8 @@ import { rawLineCounter, rawLinedRequirement } from "./line-anchors.ts";
 import type { RequirementRecord } from "./requirement-contracts.ts";
 import { checkInteraction, PendingQuestion, VOIDED_INPUT_NEXT } from "./user-interaction-format.ts";
 import { checkDecisionRecord, decisionDigest } from "./short-decision-format.ts";
+import type { ShortDecisionRecord } from "./short-decision-format.ts";
+import { supersessionFrom, withSupersession } from "./short-decisions.ts";
 import { registeredApprovalManifestIn } from "./approval-manifest-store.ts";
 import { approvalManifestReference } from "./approval-manifest.ts";
 import type { ApprovalManifest } from "./approval-manifest.ts";
@@ -197,8 +199,13 @@ export class HostAuthorizationManager {
       // 问题的requirementId位于basis；不以候选版本过滤来隐藏旧问题。
       const questions = db.prepare("SELECT id, record_key, data FROM records WHERE namespace='interaction_questions_v1' AND json_extract(data,'$.basis.requirementId')=? ORDER BY id").all(requirementId)
         .filter((row) => counted("interaction_questions_v1", String(row.record_key)));
-      const registered = db.prepare("SELECT record_key, data FROM records WHERE namespace='approval_manifests_v1' AND json_extract(data,'$.manifest.requirementId')=? AND json_extract(data,'$.admission.version')=? AND json_extract(data,'$.admission.epoch')=? ORDER BY id LIMIT 21").all(requirementId, before.version, before.data.epoch)
-        .filter((row) => counted("approval_manifests_v1", String(row.record_key)));
+      const registered: Array<Record<string, unknown>> = [];
+      for (const row of db.prepare("SELECT record_key, data FROM records WHERE namespace='approval_manifests_v1' AND json_extract(data,'$.manifest.requirementId')=? AND json_extract(data,'$.admission.version')=? AND json_extract(data,'$.admission.epoch')=? ORDER BY id")
+        .iterate(requirementId, before.version, before.data.epoch)) {
+        if (!counted("approval_manifests_v1", String(row.record_key))) continue;
+        registered.push(row);
+        if (registered.length > 20) break;
+      }
       if (registered.length > 20) throw new HostAuthorizationError("interaction_context_limit");
       const ids = new Set<string>();
       for (const row of registered) {
@@ -216,12 +223,15 @@ export class HostAuthorizationManager {
         for (const id of [...manifest.units, ...manifest.actions, ...manifest.questions].flatMap((u) => u.decisionIds)) ids.add(id);
       }
       if (ids.size > 20) throw new HostAuthorizationError("interaction_context_limit");
+      const successors = db.prepare("SELECT data FROM records WHERE namespace='short_decisions' AND json_extract(data,'$.requirementId')=?").all(requirementId)
+        .map((r) => JSON.parse(String(r.data)) as ShortDecisionRecord).filter((d) => d.supersedes.length);
+      const supersededBy = supersessionFrom(successors, (decisionId) => counted("short_decisions", decisionId));
       const priorDecisions = [...ids].map((id) => {
         const row = db.prepare("SELECT id,data FROM records WHERE namespace='short_decisions' AND record_key=?").get(id);
         if (!row || row.id !== id) throw new HostAuthorizationError("decision_identity");
         const record = checkDecisionRecord(JSON.parse(String(row.data)));
         if (record.repoId !== repoId || record.requirementId !== requirementId) throw new HostAuthorizationError("decision_identity");
-        return record;
+        return withSupersession(record, supersededBy(record));
       });
       const after = this.snapshot(repoId, requirementId, sessionId, line);
       if (before.version !== after.version || decisionDigest(before.data) !== decisionDigest(after.data)) throw new HostAuthorizationError("state_changed");

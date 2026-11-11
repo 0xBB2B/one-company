@@ -29,6 +29,22 @@ function freeze<T>(value: T): T {
   if (value && typeof value === "object") { for (const item of Object.values(value)) freeze(item); Object.freeze(value); }
   return value;
 }
+/** successors 是同一需求里带取代关系的决定；被取代者在某条线上已取代，当且仅当取代者在这条线上（counted）。 */
+export function supersessionFrom(successors: readonly ShortDecisionRecord[], counted?: (decisionId: string) => boolean): (target: ShortDecisionRecord) => string | null {
+  return (target) => target.status === "superseded" ? target.supersededBy
+    : successors.find((d) => d.supersedes.includes(target.decisionId) && (!counted || counted(d.decisionId)))?.decisionId ?? null;
+}
+export function withSupersession(target: ShortDecisionRecord, supersededBy: string | null): ShortDecisionRecord {
+  return supersededBy && target.status !== "superseded" ? { ...target, status: "superseded", supersededBy } : target;
+}
+/** 一次读出本需求带取代关系的决定，返回按当前线（counted）取"谁取代了它"的函数；excludeOperationId 那次操作的决定不算。 */
+export function supersessionIn(db: LocalDatabase, requirementId: string, counted?: (decisionId: string) => boolean, excludeOperationId?: string): (target: ShortDecisionRecord) => string | null {
+  return supersessionFrom(db.list<ShortDecisionRecord>("short_decisions").map((row) => row.data)
+    .filter((d) => d.requirementId === requirementId && d.supersedes.length && d.operationId !== excludeOperationId), counted);
+}
+export function effectiveDecisionIn(db: LocalDatabase, target: ShortDecisionRecord, counted?: (decisionId: string) => boolean): ShortDecisionRecord {
+  return withSupersession(target, supersessionIn(db, target.requirementId, counted)(target));
+}
 function available(record: RequirementRecord): void {
   if (record.recovery !== "ready" || !["draft", "active"].includes(record.lifecycle)) throw new ShortDecisionError("lifecycle_denied");
 }
@@ -99,6 +115,8 @@ export class ShortDecisionStore {
       if (lined.version !== batch.version) throw new StaleVersionError();
       if (decisionDigest(batch.prd) !== decisionDigest(requirement.lifecycle === "active" ? requirement.approved : lined.data.saved)) throw new ShortDecisionError("prd_reference_changed");
       const counted = line && ((key: string) => isRecordCountedIn(db, { namespace: "short_decisions", key, requirementId: batch.requirementId, line }));
+            const countedDecision = line && ((decisionId: string) => isRecordCountedIn(db, { namespace: "short_decisions", key: decisionId, requirementId: batch.requirementId, line }));
+      const supersededBy = supersessionIn(db, batch.requirementId, countedDecision), supersedingNow = new Set<string>();
       for (const [index, item] of batch.decisions.entries()) {
         const subject = admission.subjects[index]!, decisionId = ids[index]!;
         const record: ShortDecisionRecord = { format: "short-decision/v1", decisionId, operationId: batch.operationId,
@@ -108,10 +126,10 @@ export class ShortDecisionStore {
         for (const target of item.supersedes) {
           const old = this.record(db, target, batch.requirementId);
           if (counted && !counted(target)) throw new ShortDecisionError("superseded_off_line");
-          if (old.status === "superseded" || (subject.actor === "ai" && old.actor === "user") ||
+          if (supersedingNow.has(target) || supersededBy(old) !== null || (subject.actor === "ai" && old.actor === "user") ||
             (subject.status === "pending" && old.status !== "pending")) throw new ShortDecisionError("supersede_denied");
-          const version = db.read("short_decisions", target)!.version;
-          db.update("short_decisions", target, version, { ...old, status: "superseded", supersededBy: decisionId });
+          supersedingNow.add(target);
+          if (!this.options.lines) db.update("short_decisions", target, db.read("short_decisions", target)!.version, { ...old, status: "superseded", supersededBy: decisionId });
         }
         db.create("short_decisions", decisionId, record, decisionId);
         db.append(stream(batch.requirementId), checked(Event, { requirementId: batch.requirementId, repoId: this.options.repoId,
@@ -138,7 +156,7 @@ export class ShortDecisionStore {
     const result = withDatabase(this.path(), (db) => {
       const record = this.record(db, decisionId, requirementId);
       if (line && !isRecordCountedIn(db, { namespace: "short_decisions", key: decisionId, requirementId, line })) throw new ShortDecisionError("unknown_decision");
-      return record;
+      return effectiveDecisionIn(db, record, line && ((id) => isRecordCountedIn(db, { namespace: "short_decisions", key: id, requirementId, line })));
     });
     const after = this.state.read(requirementId); available(after.data);
     if (after.version !== before.version || decisionDigest(after.data) !== decisionDigest(before.data)) throw new StaleVersionError();

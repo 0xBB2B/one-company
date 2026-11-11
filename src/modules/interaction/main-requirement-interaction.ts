@@ -40,7 +40,9 @@ import type { ApprovalManifestReference } from "../requirement/approval-manifest
 import { approvalManifestReference, confirmed, implementGoalUnitIds, manifestAuthorizesImplement, supplementImplementAction } from "../requirement/approval-manifest.ts";
 import { adjudicationItemLabel, adjudicationSubject, applyAdjudication } from "../panel/adjudication.ts";
 import { requirementSummary, saveRequirementSummary } from "../requirement/requirement-summary.ts";
-import { linedRequirementIn, lineViewIn } from "../requirement/line-anchors.ts";
+import { isRecordCountedIn, linedRequirementIn, lineViewIn } from "../requirement/line-anchors.ts";
+import { effectiveDecisionIn } from "../requirement/short-decisions.ts";
+import type { ShortDecisionRecord } from "../requirement/short-decision-format.ts";
 import { AdvisedError } from "../../core/exec/tool-failure.ts";
 import { commitApprovedFiles, planApprovedFromDraft } from "../delivery/approved-files.ts";
 import type { WorkingLines } from "../requirement/line-anchors.ts";
@@ -303,9 +305,13 @@ export class MainRequirementInteraction {
     if (active && (!["draft", "active"].includes(record.data.lifecycle) || record.data.recovery !== "ready")) denied("lifecycle_denied");
     return record;
   }
-  #row(db: LocalDatabase, namespace: string, key: string): RecordProof {
+  #row(db: LocalDatabase, namespace: string, key: string, line?: readonly string[]): RecordProof {
     const row = db.read(namespace, key); if (!row) return denied("result_record_missing");
-    if (namespace === "short_decisions" && (row.data as { status?: string }).status === "superseded") denied("result_decision_superseded");
+    if (namespace === "short_decisions") {
+      const decision = row.data as ShortDecisionRecord, own = line ?? this.#lines[decision.requirementId] ?? [];
+      const counted = (decisionId: string) => isRecordCountedIn(db, { namespace: "short_decisions", key: decisionId, requirementId: decision.requirementId, line: own });
+      if (effectiveDecisionIn(db, decision, counted).status === "superseded") denied("result_decision_superseded");
+    }
     return { namespace, key, id: row.id, version: row.version, hash: digest(row.data) };
   }
   #decisionProofs(repoId: string, ids: string[], operationId: string): RecordProof[] {
@@ -326,7 +332,7 @@ export class MainRequirementInteraction {
       ? current.data.epoch === proof.record.data.epoch && current.data.approvalReceiptId === proof.record.data.approvalReceiptId && same(current.data.approved, proof.record.data.approved)
       : current.version === proof.record.version && same(current.data, proof.record.data));
     if (!unchanged) denied("stale_result");
-    for (const row of proof.rows) if (!same(this.#row(db, row.namespace, row.key), row)) denied("result_records_changed");
+    for (const row of proof.rows) if (!same(this.#row(db, row.namespace, row.key, proof.line), row)) denied("result_records_changed");
     if (proof.scope.kind === "approved") {
       if (proof.settled) {
         if (!same(summarizeApprovalManifest(registeredApprovalManifestIn(db, proof.repoId, proof.scope.scope.summary.reference, current)), proof.scope.scope.summary)) denied("manifest_scope_changed");

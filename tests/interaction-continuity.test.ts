@@ -13,6 +13,9 @@ import { interpreterView } from "../src/modules/requirement/user-interaction-for
 import type { InteractionContext, InteractionInterpretation } from "../src/modules/requirement/user-interaction-format.ts";
 import { INTERACTION_CONTINUITY_NAMESPACE, loadInteractionContinuity } from "../src/modules/requirement/interaction-continuity.ts";
 import { ApprovalManifestStore, summarizeApprovalManifest } from "../src/modules/requirement/approval-manifest-store.ts";
+import { HostAuthorizationManager } from "../src/modules/requirement/host-authorization.ts";
+import { attachRecordIn } from "../src/modules/requirement/line-anchors.ts";
+import { manifestConfirmInput } from "./helpers/approval-fixture.ts";
 
 const exec = promisify(execFile), clean: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const c of clean.splice(0).reverse()) await c(); });
@@ -422,3 +425,43 @@ test("沿用的原依据很多时，按发给解释器的内容算 48K 上限：
   w.core.save(last.capability);
   expect(w.core.authorizeDocument(last.capability, w.loaded)).toBeTruthy();
 }, 120_000);
+
+async function manifestsOnOtherLines(otherLines: number, extraOnCurrentLine: number) {
+  const w = await world();
+  const config = { dataRoot: w.dataRoot, repositoryRoot: w.repo, repoId: w.repoId };
+  const created = await (await RequirementService.open({ ...config, authorize: () => true })).create({ requestId: uuidv7(), operationId: uuidv7(), title: "候选", body: "# A {#A}\nA目标。\n" });
+  const requirementId = created.requirementId;
+  const lines: Record<string, string[]> = { [requirementId]: [created.anchor] };
+  const otherSave = await (await RequirementService.open({ ...config, authorize: () => true, lines: { [requirementId]: [created.anchor] } }))
+    .updateDraft({ requirementId, operationId: uuidv7(), version: created.version, title: "候选", body: "# A {#A}\nA目标改。\n" });
+  const confirm = await manifestConfirmInput({ ...config, lines }, { requirementId, savedOperationId: created.operationId });
+  const stored = withDatabase(w.path, (db) => db.read<{ manifest: { units: Array<{ decisionIds: string[] }>; actions: Array<{ decisionIds: string[] }>; questions: Array<{ decisionIds: string[] }> } }>(
+    "approval_manifests_v1", confirm.manifest.manifestHash))!;
+  const ownDecisionIds = new Set([...stored.data.manifest.units, ...stored.data.manifest.actions, ...stored.data.manifest.questions].flatMap((u) => u.decisionIds));
+  const plant = (count: number, anchor: string, prefix: string) => withDatabase(w.path, (db) => {
+    for (let i = 0; i < count; i++) {
+      const key = `planted-${prefix}-${i}`;
+      db.create("approval_manifests_v1", key, stored.data, `${prefix}0000000-0000-7000-8000-${String(i).padStart(12, "0")}`);
+      attachRecordIn(db, { namespace: "approval_manifests_v1", key, requirementId, anchor });
+    }
+  });
+  plant(otherLines, otherSave.anchor, "0");
+  plant(extraOnCurrentLine, created.anchor, "f");
+  const auth = new HostAuthorizationManager({ dataRoot: w.dataRoot });
+  auth.startWindow({ kind: "main", windowId: "b3", sessionId: "b3", repoIds: [w.repoId] });
+  return { records: () => auth.interactionRecords(w.repoId, requirementId, "b3", undefined, lines[requirementId]!), ownDecisionIds };
+}
+
+test("别的线上已登记 22 份批准清单、当前线上只有 1 份时，当前线的批准清单和先前决定都读得到", async () => {
+  const { records, ownDecisionIds } = await manifestsOnOtherLines(22, 0);
+  const result = records();
+  expect(ownDecisionIds.size).toBeGreaterThan(0);
+  expect(result.priorDecisions.map((d) => d.decisionId).sort()).toEqual([...ownDecisionIds].sort());
+});
+
+test("当前线上自己登记超过 20 份批准清单时仍报 interaction_context_limit", async () => {
+  for (const otherLines of [22, 0]) {
+    const { records } = await manifestsOnOtherLines(otherLines, 21);
+    expect(records).toThrowError(expect.objectContaining({ code: "interaction_context_limit" }));
+  }
+});

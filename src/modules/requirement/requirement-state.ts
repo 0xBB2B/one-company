@@ -463,7 +463,7 @@ export class RequirementStateStore {
       const currentRef = record.data.approvalManifest?.reference;
       if (!currentRef) throw new RequirementStateError("approved_version_missing");
       if (manifestAuthorizesImplement(registeredApprovalManifestIn(db, this.options.repoId, currentRef, record))) throw new RequirementStateError("implement_already_authorized");
-      const manifest = registeredApprovalManifestIn(db, this.options.repoId, request.manifest, record, request.receiptId);
+      const manifest = registeredApprovalManifestIn(db, this.options.repoId, request.manifest, record, request.receiptId, []);
       const baseHash = db.read<{ supplement?: { baseManifestHash: string } }>(APPROVAL_MANIFEST_NAMESPACE, request.manifest.manifestHash)?.data.supplement?.baseManifestHash;
       if (baseHash !== currentRef.manifestHash) throw new RequirementStateError("manifest_supplement_mismatch");
       return this.write(db, record, { ...record.data, approvalManifest: summarizeApprovalManifest(manifest) }, "implement.authorized", null, null, request.receiptId).record;
