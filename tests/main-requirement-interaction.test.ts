@@ -38,6 +38,8 @@ import { answeringUi } from "./helpers/window-host.ts";
 import type { ShownWindow, WindowDecision } from "./helpers/window-host.ts";
 import { techAgreeText, techRecordText } from "../src/modules/interaction/tech-list.ts";
 import { TECHS } from "./helpers/tech-sample.ts";
+import { PmIntakeStore } from "../src/modules/pm/pm-intake-store.ts";
+import { pmSourceDirectory } from "../src/modules/pm/pm-intake-runtime.ts";
 import { VALID_DESIGN } from "./helpers/design-sample.ts";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -2267,6 +2269,26 @@ describe("补授权实施 authorizeImplement", () => {
     await authorize();
     scriptReplies(pm, [{ type: "text", text: "等待" }]);
     expect(await dispatch()).toMatchObject({ runId: expect.any(String) });
+  }, 30000);
+
+  test("补授权后派出的 PM 接手核对通过，核对绑定的是补授权后的批准清单", async () => {
+    const { w, authorize, record, requirementId, baseCommit, worktree } = await approvedWorld();
+    const { dispatch, pm } = await pmDispatcher(w, requirementId, baseCommit, worktree);
+    const before = record().data.approvalManifest!.reference.manifestHash;
+    w.capture("授权实施"); scriptImplement(w.provider);
+    await authorize();
+    scriptReplies(pm, [{ type: "text", text: "等待" }]);
+    await dispatch();
+    const ref = { dataRoot: w.dataRoot, repoId: w.repoId }, data = record().data;
+    const lease = withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) =>
+      (db.read("pm_ownership", requirementId)!.data as { lease: { runId: string; fence: number; contextGeneration: number } }).lease);
+    const basis = { repoId: w.repoId, requirementId, approvedPrdCommit: data.approved!.commit, approvedRevision: data.revision,
+      approvedPrdHash: data.approved!.hash, approvalManifestHash: data.approvalManifest!.reference.manifestHash,
+      workspaceId: data.workspace!.workspaceId, workspaceRef: data.workspace!.branch, epoch: data.epoch,
+      pmRunId: lease.runId, pmFence: lease.fence, contextGeneration: lease.contextGeneration };
+    const captured = new PmIntakeStore(ref).captureCurrent(basis, pmSourceDirectory(ref, requirementId));
+    expect(captured.binding.approvalManifestHash).toBe(data.approvalManifest!.reference.manifestHash);
+    expect(captured.binding.approvalManifestHash).not.toBe(before);
   }, 30000);
 
   test("批准原话含实施：结果写明已授权实施，之后能派出 PM", async () => {
