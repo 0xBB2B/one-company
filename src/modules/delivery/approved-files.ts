@@ -73,7 +73,6 @@ export async function readBranchFiles(cwd: string, rev: string, requirementId: s
     existingPaths: listed.split("\0").filter((path) => path.startsWith(`docs/prd/${requirementId}.`)) };
 }
 
-/** 这些路径在 worktree 里有未提交、已暂存或同名未跟踪的改动。 */
 async function dirtyPaths(worktree: string, paths: string[]): Promise<string[]> {
   if (paths.length === 0) return [];
   const status = (await gitIn(worktree, ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all", "--", ...paths.map((path) => `:(literal)${path}`)])).stdout;
@@ -93,7 +92,6 @@ export function approvalFileCommit(dataRoot: string, repoId: string, requirement
   return anchors.reduce((last, row) => row.sequence > last.sequence ? row : last).fileCommit!;
 }
 
-/** 分支上最近一个本需求的程序批准提交记下的草稿文件提交；没有这样的提交返回 undefined。 */
 async function lastApprovedFileCommit(cwd: string, rev: string, requirementId: string): Promise<string | undefined> {
   const subject = approvedMessage(requirementId).subject;
   const out = (await gitIn(cwd, ["log", "--format=%x01%s%x00%(trailers:key=Approved-Files,valueonly)", "--fixed-strings", `--grep=${subject}`, rev])).stdout;
@@ -165,7 +163,6 @@ export async function commitApprovedFiles(input: { worktree: string; requirement
   }
 }
 
-/** rev-list 范围里的提交全是程序提交的批准文件：固定提交说明、单个父提交，且只改了这个需求的批准文件路径。 */
 export async function onlyApprovedFilesCommits(cwd: string, tip: string, requirementId: string): Promise<boolean> {
   const message = approvedMessage(requirementId);
   const listed = (await gitIn(cwd, ["rev-list", "--parents", tip, "--not", "HEAD"])).stdout.trim();
