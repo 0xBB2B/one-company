@@ -58,6 +58,7 @@ date: 2026-11-10
 | requirement_manage · metadata | 需求状态 | 草稿 / 已生效 · 第 N 版 · 还有 K 段没确认（K 为 0 时不写这一项） |
 | requirement_manage · confirmUpdate；user_interact · reply | 确认更新 | 需求已生效（成功绿）· 第 N 版；没生效时写 blockedReason |
 | requirement_manage · list | 列出需求 | N 个需求 |
+| requirement_manage · authorizeImplement | 授权实施 | 已授权实施（成功绿）· 第 N 版；这一版之前就授权过时加"· 之前就已授权"；用户这句话里有内容没登记成决定时加"· K 处没登记成决定" |
 | user_interact · adjudicate 的 reply | 登记决定 | 状态和登记结果，一行 |
 | user_interact · pm-intake 的 ask、forward | 接手复核 | PM 理解已覆盖全部场景 / 还有 N 个场景没覆盖 · PM 决定 M 条（M 为 0 时不写这一项） |
 | user_interact · pm-intake 的 reply | 接手复核 | 已登记 · 复核通过 / 要 PM 改正 / 要改需求 / 要请用户澄清 · 问题 K 条（K 为 0 时不写这一项） |

@@ -212,6 +212,64 @@ test("失败：标题行加一行红字「失败：原因」，不含建议；�
   expect(joined).toContain("建议：重新读取需求后按最新版本再试");
 });
 
+function authorizeCase(extra: Record<string, unknown> = {}) {
+  const id = requirementId();
+  const args = manageArgs({ action: "authorizeImplement", requirementId: id });
+  const details = { requirementId: id, version: 3, epoch: 1, status: "authorized", implementAuthorization: "已授权实施", decisionIds: ["decision-1"], next: "可以派出 PM", ...extra };
+  return { id, args, details };
+}
+
+test("authorizeImplement 执行中：只有标题行，没有 request= 和 JSON，未知标题写「需求 前8位」", () => {
+  const { id, args } = authorizeCase();
+  const lines = draw(manage, args);
+  expect(lines).toEqual([`<b>授权实施</b>  <muted>需求 ${id.slice(0, 8)}</>`]);
+  expect(lines.join("\n")).not.toContain("request=");
+});
+
+test("authorizeImplement 已补上：摘要是「已授权实施 · 第 N 版」，标题用已登记的需求标题", () => {
+  const { id, args, details } = authorizeCase();
+  const created = updateDraftCase("saved");
+  draw(manage, { request: { ...created.args.request, requirementId: id } }, ok({ ...created.details, requirementId: id }));
+  expect(draw(manage, args, ok(details))).toEqual([`<b>授权实施</b>  <muted>${TITLE}</>`, "<success>已授权实施</>  <muted>· 第 3 版</>"]);
+});
+
+test("authorizeImplement 有 notRecorded：加「K 处没登记成决定」；空数组不加", () => {
+  const some = authorizeCase({ notRecorded: ["甲", "乙"] });
+  expect(draw(manage, some.args, ok(some.details)).at(-1)).toBe("<success>已授权实施</>  <muted>· 第 3 版</>  <muted>· 2 处没登记成决定</>");
+  const empty = authorizeCase({ notRecorded: [] });
+  expect(draw(manage, empty.args, ok(empty.details)).at(-1)).toBe("<success>已授权实施</>  <muted>· 第 3 版</>");
+});
+
+test("authorizeImplement 之前就授权过：加「之前就已授权」", () => {
+  const { id, args } = authorizeCase();
+  const details = { requirementId: id, version: 3, epoch: 1, status: "already_authorized", implementAuthorization: "已授权实施", next: "这一版已经授权实施" };
+  expect(draw(manage, args, ok(details))).toEqual([`<b>授权实施</b>  <muted>需求 ${id.slice(0, 8)}</>`, "<success>已授权实施</>  <muted>· 第 3 版</>  <muted>· 之前就已授权</>"]);
+});
+
+test("authorizeImplement 失败：第二行红字「失败：原因」不含建议，展开后有完整报错", () => {
+  const { id, args } = authorizeCase();
+  const text = "one_company_requirement_manage 的 authorizeImplement 动作失败。\n原因：用户这句话没有明确要实施\n建议：请用户说清楚后再登记";
+  const failed: Result = { content: [{ type: "text", text }] };
+  expect(draw(manage, args, failed, { isError: true })).toEqual([`<b>授权实施</b>  <muted>需求 ${id.slice(0, 8)}</>`, "<error>失败：用户这句话没有明确要实施</>"]);
+  const open = draw(manage, args, failed, { isError: true, expanded: true }).join("\n");
+  expect(open).toContain("<muted>调用参数</>");
+  expect(open).toContain("<muted>完整结果</>");
+  expect(open).toContain("建议：请用户说清楚后再登记");
+});
+
+test("authorizeImplement 展开：调用参数、参数 JSON、完整结果、完整结果 JSON（含 decisionIds）依次出现", () => {
+  const { args, details } = authorizeCase();
+  const lines = draw(manage, args, ok(details), { expanded: true });
+  expect(lines.slice(0, 2)).toEqual([expect.stringContaining("授权实施"), "<success>已授权实施</>  <muted>· 第 3 版</>"]);
+  const argsAt = lines.indexOf("<muted>调用参数</>");
+  const resultAt = lines.indexOf("<muted>完整结果</>");
+  expect(argsAt).toBeGreaterThan(1);
+  expect(resultAt).toBeGreaterThan(argsAt);
+  expect(lines.slice(argsAt, resultAt).join("\n")).toContain('"action": "authorizeImplement"');
+  expect(lines.slice(resultAt).join("\n")).toContain("decisionIds");
+  expect(draw(manage, args, ok(details), { expanded: false })).toHaveLength(2);
+});
+
 test("失败文字没有「原因：」时取第一行（pi 在执行前报的参数错误）", () => {
   const args = manageArgs({ action: "list" });
   const lines = draw(manage, args, { content: [{ type: "text", text: "Validation failed for tool\n第二行" }] }, { isError: true });
