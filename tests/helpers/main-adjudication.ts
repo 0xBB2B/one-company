@@ -23,8 +23,8 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
   let windowAnswer: WindowDecision = true, beforeAnswer: (() => Promise<void> | void) | undefined;
   const ctx = { cwd: w.fixture.repositoryRoot, mode: "tui", hasUI: true, modelRegistry: registry, model,
     ui: { notify: () => {}, confirm: () => { throw new Error("UI.confirm forbidden"); }, ...answeringUi(async (window) => { windows.push(window); await beforeAnswer?.(); return windowAnswer; }) },
-    sessionManager: { getSessionId: () => sessionId } } as unknown as ExtensionContext;
-  const interaction = new MainRequirementInteraction({ mainThinking: () => "off", dataRoot: w.fixture.dataRoot, authorization,
+    sessionManager: { getSessionId: () => sessionId, getBranch: () => [] } } as unknown as ExtensionContext;
+  const interaction = new MainRequirementInteraction({ mainThinking: () => "off", pi: { appendEntry: () => {} } as never, dataRoot: w.fixture.dataRoot, authorization,
     resolveHost: () => ({ windowId, sessionId, repositories: new Map([[w.fixture.repoId, { path: w.fixture.repositoryRoot }]]) }) });
   cleanups.push(() => { interaction.dispose(); authorization.shutdown(); });
   const tool = createUserInteractTool({ interaction });

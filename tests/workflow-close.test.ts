@@ -32,6 +32,7 @@ import { createRepoFixture, addWorktree, removeRepoFixture } from "./helpers/rep
 import { runGit } from "./helpers/git-run.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { setLocalIdentity, withoutGitIdentity } from "./helpers/git-identity.ts";
+import { approvedPrdBytes } from "./helpers/approved-files-fixture.ts";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -868,4 +869,45 @@ test("待重试时 HEAD 里已有内容一致的归档，再调 archive 直接 a
   const head = await gitText(w.worktree.root, "rev-parse", "HEAD");
   expect(await w.closeService.archive(w.created.requirementId)).toMatchObject({ status: "archived" });
   expect(await gitText(w.worktree.root, "rev-parse", "HEAD")).toBe(head);
+});
+
+async function commitIntoBranch(w: Awaited<ReturnType<typeof world>>, files: Record<string, Buffer>) {
+  for (const [path, bytes] of Object.entries(files)) {
+    await mkdir(join(w.worktree.root, path, ".."), { recursive: true });
+    await writeFile(join(w.worktree.root, path), bytes);
+  }
+  await runGit(["add", "--", ...Object.keys(files)], w.worktree.root);
+  await runGit(["commit", "-qm", "批准的文件", "-m", `Requirement: ${w.created.requirementId}`], w.worktree.root);
+}
+
+test("分支里已有批准时写下的正文文件：完成关闭的归档写到同一个路径，内容换成最终正文加实现记录，只改这一个文件", async () => {
+  const w = await world();
+  if (!darwin) return;
+  const archivePath = (await w.service.metadata(w.created.requirementId)).archivePath!;
+  expect(archivePath).toBe(`docs/prd/${w.created.requirementId}.角色跳跃.md`);
+  const approvedBytes = await approvedPrdBytes(w, w.created.requirementId);
+  await commitIntoBranch(w, { [archivePath]: approvedBytes });
+  const commitsBefore = Number(await gitText(w.worktree.root, "rev-list", "--count", "HEAD"));
+  expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { path: archivePath, status: "archived" } });
+  expect(await gitText(w.worktree.root, "-c", "core.quotePath=false", "show", "--name-status", "--format=", "HEAD")).toBe(`M\t${archivePath}`);
+  expect(Number(await gitText(w.worktree.root, "rev-list", "--count", "HEAD"))).toBe(commitsBefore + 1);
+  const record = await readFile(join(w.worktree.root, ...archivePath.split("/")), "utf8");
+  expect(record).toContain("### 实现记录（关闭时由程序生成）");
+  expect(record).toContain("### 验收记录（关闭时由程序生成）");
+  expect(record.startsWith(approvedBytes.toString("utf8").slice(0, approvedBytes.toString("utf8").indexOf("## 实现 {#implementation}")))).toBe(true);
+  expect(await gitText(w.worktree.root, "status", "--porcelain")).toBe("");
+});
+
+test("原型文件已随批准提交进分支且内容相同：完成关闭的归档直接通过，不重复提交这些原型", async () => {
+  const w = await world();
+  if (!darwin) return;
+  const archivePath = (await w.service.metadata(w.created.requirementId)).archivePath!;
+  const writes: Record<string, Buffer> = { [archivePath]: await approvedPrdBytes(w, w.created.requirementId) };
+  for (const item of PROTOTYPES) writes[`docs/prd/${w.created.requirementId}.${item.name}.html`] = Buffer.from(item.html);
+  await commitIntoBranch(w, writes);
+  await approvePrototypes(w);
+  expect(await closeCompleted(w)).toMatchObject({ status: "closed", archive: { status: "archived" } });
+  expect(await gitText(w.worktree.root, "-c", "core.quotePath=false", "show", "--name-status", "--format=", "HEAD")).toBe(`M\t${archivePath}`);
+  for (const item of PROTOTYPES) expect(await readFile(htmlTarget(w, item.name))).toEqual(Buffer.from(item.html));
+  expect(storedArchive(w).prototypes).toEqual(PROTOTYPES.map((item) => ({ path: `docs/prd/${w.created.requirementId}.${item.name}.html`, name: item.name, version: item.version, hash: sha(item.html) })));
 });

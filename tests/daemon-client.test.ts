@@ -29,6 +29,7 @@ import {
   DaemonCallError,
   WorkspaceClients,
   connectDaemon,
+  launchedDaemonLogPath,
 } from "../src/core/host/daemon-client.ts";
 import type { HelloInput } from "../src/core/host/daemon-client.ts";
 import {
@@ -2021,4 +2022,27 @@ describe("睡眠感知重连（连接正常时不误判）", () => {
     await expect(client.call("ping", {})).resolves.toBeDefined();
     daemonPids.push(await probeDaemonPid(fixture.socketPath));
   }, 20_000);
+});
+
+describe("守护进程日志路径", () => {
+  test("守护进程是另一个窗口拉起的：后连上的窗口也能拿到那个守护进程实际的日志文件", async () => {
+    const fixture = await createDaemonFixture();
+    fixtures.push(fixture);
+    const options = { repoDir: fixture.repoDir, dataRoot: fixture.dataRoot, sdkDir: resolveSdkDir(), execPath: resolveNodeExecutable() };
+    const launcher = await connectDaemon({ ...options, hello: { windowId: "window-launcher", sessionId: "session-launcher" } });
+    closables.push(launcher);
+    const launchedPath = launchedDaemonLogPath(fixture.repoId);
+    expect(launchedPath).toBeDefined();
+
+    vi.resetModules();
+    const fresh = await import("../src/core/host/daemon-client.ts");
+    expect(fresh.launchedDaemonLogPath(fixture.repoId)).toBeUndefined();
+    const joiner = await fresh.connectDaemon({ ...options, hello: { windowId: "window-joiner", sessionId: "session-joiner" } });
+    closables.push(joiner);
+
+    const joinedPath = fresh.launchedDaemonLogPath(fixture.repoId);
+    expect(joinedPath).toBe(launchedPath);
+    expect((await stat(joinedPath!)).isFile()).toBe(true);
+    daemonPids.push(await probeDaemonPid(fixture.socketPath));
+  }, 30_000);
 });

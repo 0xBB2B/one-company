@@ -78,6 +78,7 @@ function buildDaemonEnv(params: {
   sdkDir: string;
   repoDir: string;
   dataRoot: string;
+  logPath: string;
   env?: Record<string, string>;
 }): NodeJS.ProcessEnv {
   return {
@@ -86,6 +87,7 @@ function buildDaemonEnv(params: {
     ONE_COMPANY_SDK_DIR: params.sdkDir,
     ONE_COMPANY_REPO_DIR: params.repoDir,
     ONE_COMPANY_DATA_ROOT: params.dataRoot,
+    ONE_COMPANY_DAEMON_LOG_PATH: params.logPath,
   };
 }
 
@@ -124,6 +126,12 @@ function beginSpawnDaemon(options: DaemonLaunchOptions, identity: RepositoryIden
   return pending;
 }
 
+const launchedLogPaths = new Map<string, string>();
+
+export function launchedDaemonLogPath(repoId: string): string | undefined {
+  return launchedLogPaths.get(repoId);
+}
+
 async function launchDaemon(options: DaemonLaunchOptions, identity: RepositoryIdentity): Promise<SpawnedProcess> {
   const captured = {
     execPath: options.execPath ?? process.execPath,
@@ -141,7 +149,7 @@ async function launchDaemon(options: DaemonLaunchOptions, identity: RepositoryId
   const logFd = openSync(logPath, "ax", 0o600);
   let child: ReturnType<typeof spawn>;
   try {
-    const env = buildDaemonEnv({ sdkDir: captured.sdkDir, repoDir: captured.commonDir, dataRoot: captured.dataRoot, env: captured.env });
+    const env = buildDaemonEnv({ sdkDir: captured.sdkDir, repoDir: captured.commonDir, dataRoot: captured.dataRoot, logPath, env: captured.env });
     child = spawn(captured.execPath, [daemonBootstrapEntry], {
       stdio: ["ignore", logFd, logFd],
       detached: true,
@@ -790,6 +798,7 @@ class DaemonClientImpl implements DaemonClient {
         || typeof result.connectionId !== "string" || !uuid.test(result.connectionId)) {
         throw Object.assign(new Error("hello 响应身份字段缺失或不一致"), { code: "daemon_identity_mismatch" });
       }
+      if (typeof result.logPath === "string") launchedLogPaths.set(this.ctx.repoId, result.logPath);
       this.status = "connected";
       this.reason = undefined;
       this.reconnectDelayMs = RECONNECT_BASE_MS;

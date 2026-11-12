@@ -15,7 +15,7 @@ import { acceptanceConfig } from "../helpers/installed-host.ts";
 import { call, messageText, NA, pointEvidence, taskKey } from "../helpers/point-pm.ts";
 import { createRealModel } from "../helpers/real-model.ts";
 
-function promote(ref: { dataRoot: string; repoId: string }, input: { requirementId: string; digest: string }) {
+function promote(ref: { dataRoot: string; repoId: string }, input: { requirementId: string; digest: string; line: string[] }) {
   return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => promoteOnApprovalIn(db, input)));
 }
 
@@ -54,12 +54,16 @@ test.skipIf(!config || process.platform !== "darwin")("P10：需求第 1 版带�
 
   // 主窗口出原型、用户通过、随第 1 版需求批准，由脚本直接经看板与快照完成
   const designRun = uuidv7();
-  await beginDesign(ref, { requirementId, name: PROTOTYPE_NAME, runId: designRun, agent: "prototype", designBase: null });
+  const baseAnchor = w.db((db) => db.list<{ kind: string; sequence: number; requirementId: string; anchor: string }>("line_anchors")
+    .map((row) => row.data).filter((record) => record.requirementId === requirementId && record.kind === "save").sort((a, b) => a.sequence - b.sequence)[0]!.anchor);
+  const designAnchor = uuidv7(), decideAnchor = uuidv7();
+  await beginDesign(ref, { requirementId, name: PROTOTYPE_NAME, runId: designRun, agent: "prototype", designBase: null, line: [baseAnchor], anchor: designAnchor });
   await submitDesign(ref, { design: VALID_DESIGN, pages: PAGES, requirementId, name: PROTOTYPE_NAME, runId: designRun, html: PROTOTYPE, note: "表单居中，失败提示红色" });
-  const pending = await pendingConfirmation(ref, { repositoryRoot: w.fixture.repositoryRoot, requirementId, name: PROTOTYPE_NAME });
-  await decidePrototype(ref, { repositoryRoot: w.fixture.repositoryRoot, requirementId, name: PROTOTYPE_NAME, version: pending.version, hash: pending.hash, choice: "accept", opinion: null, option: null });
-  const draft = await draftPrototypes(ref, requirementId);
-  const promoted = promote(ref, { requirementId, digest: draft.digest });
+  const pending = await pendingConfirmation(ref, { repositoryRoot: w.fixture.repositoryRoot, requirementId, name: PROTOTYPE_NAME, line: [baseAnchor, designAnchor] });
+  await decidePrototype(ref, { repositoryRoot: w.fixture.repositoryRoot, requirementId, name: PROTOTYPE_NAME, version: pending.version, hash: pending.hash, choice: "accept", opinion: null, option: null, line: [baseAnchor, designAnchor], anchor: decideAnchor });
+  const draftLine = [baseAnchor, designAnchor, decideAnchor];
+  const draft = await draftPrototypes(ref, requirementId, draftLine);
+  const promoted = promote(ref, { requirementId, digest: draft.digest, line: draftLine });
   w.db((db) => writePrototypeRevision(db, { requirementId, revision: 1,
     prototypes: promoted.items.filter((item) => item.label !== "removed").map(({ name, version, hash, bytes, picked }) => ({ name, version, hash, bytes, picked })) }));
   const prototype = pending.path;
@@ -93,7 +97,7 @@ test.skipIf(!config || process.platform !== "darwin")("P10：需求第 1 版带�
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
 
-  const board = (await readPrototypeBoard(ref, requirementId)).entries.find((entry) => entry.name === PROTOTYPE_NAME);
+  const board = (await readPrototypeBoard(ref, requirementId, [])).entries.find((entry) => entry.name === PROTOTYPE_NAME);
   const snapshot = await prototypesAtRevision(ref, requirementId, 1);
   const qaPrompt = qaRequest?.systemPrompt ?? "";
   const calls = real.toolCalls();

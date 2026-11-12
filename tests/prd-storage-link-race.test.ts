@@ -66,6 +66,12 @@ const { create, save, PrdStorageError } = await import("../src/modules/requireme
 const GIT = "git";
 const REQUIREMENT_ID = "01941f29-7c00-7000-8000-000000000002";
 const roots: string[] = [];
+let anchorCounter = 0;
+
+function nextAnchor(): string {
+  anchorCounter += 1;
+  return `01941f29-7c00-7000-8000-${String(anchorCounter).padStart(12, "0")}`;
+}
 
 afterEach(async () => {
   renameRace.enabled = false;
@@ -108,7 +114,7 @@ test("rename 后路径被替换成链接时不会沿路径 chmod 外部目标", 
     repositoryRoot: business,
     worktreeRoots: [],
     authorize: () => true,
-    operationId: "rename-link-race",
+    operationId: "rename-link-race", anchor: nextAnchor(),
     expectedParent: null,
     bytes: Buffer.from("自有正文"),
   });
@@ -142,7 +148,7 @@ test(".git/config 在 lstat 后被替换成链接时不会修改外部文件权�
     repositoryRoot: business,
     worktreeRoots: [],
     authorize: () => true,
-    operationId: "permission-race-create",
+    operationId: "permission-race-create", anchor: nextAnchor(),
     expectedParent: null,
     bytes: Buffer.from("第一版"),
   });
@@ -164,7 +170,7 @@ test(".git/config 在 lstat 后被替换成链接时不会修改外部文件权�
     worktreeRoots: [],
     authorize: () => true,
     action: "updateDraft",
-    operationId: "permission-race-save",
+    operationId: "permission-race-save", anchor: nextAnchor(),
     expectedParent: initial.commit,
     bytes: Buffer.from("第二版"),
   })).rejects.toMatchObject({ name: "PrdStorageError", code: "git_invalid" });
@@ -184,7 +190,7 @@ test("遍历子文件前父目录被替换时不修改替代目录中的文件",
   await mkdir(outside, { mode: 0o700 });
   const config = { dataRoot: join(root, "private"), repoId: "repo-1", requirementId: REQUIREMENT_ID,
     repositoryRoot: business, worktreeRoots: [], authorize: () => true };
-  const initial = await create({ ...config, operationId: "parent-create", expectedParent: null, bytes: Buffer.from("第一版") });
+  const initial = await create({ ...config, operationId: "parent-create", anchor: nextAnchor(), expectedParent: null, bytes: Buffer.from("第一版") });
   const gitDir = join(initial.repositoryRoot, ".git");
   const original = await readFile(join(gitDir, "config"));
   const outsideConfig = join(outside, "config");
@@ -196,7 +202,7 @@ test("遍历子文件前父目录被替换时不修改替代目录中的文件",
   permissionRace.movedPath = join(root, "owned-git");
   permissionRace.occurrence = 2;
   permissionRace.enabled = true;
-  await expect(save({ ...config, action: "updateDraft", operationId: "parent-save",
+  await expect(save({ ...config, action: "updateDraft", operationId: "parent-save", anchor: nextAnchor(),
     expectedParent: initial.commit, bytes: Buffer.from("第二版") })).rejects.toMatchObject({ code: "git_invalid" });
   expect(permissionRace.enabled).toBe(false);
   expect((await stat(outsideConfig)).mode & 0o777).toBe(0o644);
@@ -233,7 +239,7 @@ test("dataRoot 目录在 lstat 后被替换成链接时不会修改外部目录�
     repositoryRoot: business,
     worktreeRoots: [],
     authorize: () => true,
-    operationId: "directory-permission-race",
+    operationId: "directory-permission-race", anchor: nextAnchor(),
     expectedParent: null,
     bytes: Buffer.from("正文"),
   })).rejects.toMatchObject({ name: "PrdStorageError", code: "unsafe_path" });
@@ -255,7 +261,7 @@ test("核对目录链期间别的进程往同一目录里放了文件，不算�
   siblingRace.newFile = join(repoDir, "data.db-wal");
   siblingRace.enabled = true;
   await expect(create({ dataRoot, repoId: "repo-1", requirementId: REQUIREMENT_ID, repositoryRoot: business, worktreeRoots: [], authorize: () => true,
-    operationId: "sibling-file", expectedParent: null, bytes: Buffer.from("自有正文") })).resolves.toBeDefined();
+    operationId: "sibling-file", anchor: nextAnchor(), expectedParent: null, bytes: Buffer.from("自有正文") })).resolves.toBeDefined();
   expect(siblingRace.enabled).toBe(false);
   expect(await readFile(join(repoDir, "requirements", REQUIREMENT_ID, "prd.md"), "utf8")).toBe("自有正文");
 });

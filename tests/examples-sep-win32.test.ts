@@ -67,5 +67,5 @@ test("Windows：选层窗口里用户层和项目层的目录结尾用反斜杠"
   await openPage(["golang"]);
   const descriptions = windows.calls[1]!.choices.map((choice) => choice.description);
   expect(descriptions[0]).toBe("~\\.pi\\agent\\ · 对你的所有项目生效");
-  expect(descriptions[1]).toBe("~\\shop\\ · 只对这个项目生效 · 选它会把本项目设为受信任");
+  expect(descriptions[1]).toBe("~\\shop\\ · 只对这个项目生效");
 });

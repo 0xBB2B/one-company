@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { approvedPrototypeListLines, prototypeContext, requirementPrototypeLines } from "../src/modules/prototype/prototype-dispatch.ts";
@@ -12,8 +13,8 @@ import {
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 import { VALID_DESIGN } from "./helpers/design-sample.ts";
 
-function promote(ref: { dataRoot: string; repoId: string }, input: { requirementId: string; digest: string }) {
-  return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => promoteOnApprovalIn(db, input)));
+function promote(ref: { dataRoot: string; repoId: string }, input: { requirementId: string; digest: string }, line: string[]) {
+  return withDatabase(repositoryDatabase(ref.dataRoot, ref.repoId), (db) => db.transaction(() => promoteOnApprovalIn(db, { ...input, line })));
 }
 
 vi.setConfig({ testTimeout: 60_000 });
@@ -50,13 +51,28 @@ async function world(options: { index?: boolean; disabled?: Set<string> } = {}) 
   const client = (connectionId: string) => ({ connectionId, sessionId: "session-a", windowId: "win" });
   const connect = (connectionId: string) => server.onHello!(client(connectionId));
   const disconnect = (connectionId: string) => server.onDisconnect!(client(connectionId));
-  const call = (method: string, params: Record<string, unknown>, connectionId = "connection-a") => handlers.get(method)!(params, client(connectionId));
+  const baseAnchor = w.db((db) => db.list<{ kind: string; sequence: number; requirementId: string; anchor: string }>("line_anchors")
+    .map((row) => row.data).filter((record) => record.requirementId === w.fixture.requirementId && record.kind === "save").sort((a, b) => a.sequence - b.sequence)[0]!.anchor);
+  const line = [baseAnchor];
+  const stamped = async <T>(run: (line: string[], anchor: string) => Promise<T>) => {
+    const anchor = uuidv7();
+    const result = await run([...line], anchor);
+    line.push(anchor);
+    return result;
+  };
+  const call = async (method: string, params: Record<string, unknown>, connectionId = "connection-a") => {
+    if (!method.startsWith("prototypes.") || !("requirementId" in params)) return handlers.get(method)!(params, client(connectionId));
+    const anchor = ["prototypes.dispatch", "prototypes.decide", "prototypes.remove"].includes(method) ? uuidv7() : undefined;
+    const result = await handlers.get(method)!({ ...params, line: [...line], ...(anchor ? { anchor } : {}) }, client(connectionId));
+    if (anchor) line.push(anchor);
+    return result;
+  };
   const dispatchParams = (patch: Record<string, unknown> = {}) => ({ requirementId: w.fixture.requirementId, name: "登录页", brief: "手机号加验证码登录界面",
     maxTurns: 12, model: MAIN_MODEL, thinking: "off", ...patch });
   const dispatch = (patch: Record<string, unknown> = {}, connectionId = "connection-a") =>
     call("prototypes.dispatch", dispatchParams(patch), connectionId) as Promise<{ runId: string; version: number }>;
   const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
-  const board = () => readPrototypeBoard(ref, w.fixture.requirementId);
+  const board = () => readPrototypeBoard(ref, w.fixture.requirementId, [...line]);
   const entry = async (name = "登录页") => (await board()).entries.find((item) => item.name === name);
   const events = (name: string) => w.emit.mock.calls.filter(([event]) => event === name).map(([, data]) => data as Record<string, unknown>);
   const requestsText = () => JSON.stringify(w.provider.requests);
@@ -65,13 +81,13 @@ async function world(options: { index?: boolean; disabled?: Set<string> } = {}) 
   const submit = (html: string) => ({ type: "toolcall" as const, name: "one_company_result_submit", input: { action: "prototype", design: VALID_DESIGN, pages: PAGES, html, note: "手机号输入框加验证码按钮" } });
   await connect("connection-a");
   await connect("connection-b");
-  return { ...w, repoRoot, insideFile, outsideFile, userDir, call, dispatch, dispatchParams, disconnect, ref, board, entry, events, requestsText, slow, submit, started };
+  return { ...w, line, stamped, repoRoot, insideFile, outsideFile, userDir, call, dispatch, dispatchParams, disconnect, ref, board, entry, events, requestsText, slow, submit, started };
 }
 
 function badParams(params: unknown): { code?: string; message?: string } | null {
   try { validateParams("prototypes.dispatch", params); return null; } catch (error) { return error as { code?: string; message?: string }; }
 }
-const validParams = { requirementId: uuidv7(), name: "登录页", brief: "手机号加验证码登录界面", maxTurns: 12, model: MAIN_MODEL, thinking: "off" };
+const validParams = { requirementId: uuidv7(), name: "登录页", brief: "手机号加验证码登录界面", maxTurns: 12, model: MAIN_MODEL, thinking: "off", line: [], anchor: uuidv7() };
 
 test("入口校验：缺名称、缺要求、名称或要求超长、轮数为 0 或 101、需求编号格式不对，都以 bad_params 拒绝并写明字段", () => {
   expect(badParams(validParams)).toBeNull();
@@ -187,10 +203,10 @@ test("提意见后重派时设计师能读上一版文件，任务说明带用�
   const opinion = "按钮放大一点，主色换成深蓝";
   const first = uuidv7();
   const params = { requirementId: w.fixture.requirementId, name: "登录页" };
-  await beginDesign(w.ref, { ...params, runId: first, agent: "prototype", designBase: null });
+  await w.stamped((line, anchor) => beginDesign(w.ref, { ...params, runId: first, agent: "prototype", designBase: null, line, anchor }));
   await submitDesign(w.ref, { design: VALID_DESIGN, pages: PAGES, ...params, runId: first, html: HTML, note: "第一版" });
-  const pending = await pendingConfirmation(w.ref, { ...params, repositoryRoot: w.fixture.repositoryRoot });
-  await decidePrototype(w.ref, { ...params, repositoryRoot: w.fixture.repositoryRoot, version: pending.version, hash: pending.hash, choice: "opinion", option: null, opinion });
+  const pending = await pendingConfirmation(w.ref, { ...params, repositoryRoot: w.fixture.repositoryRoot, line: w.line });
+  await w.stamped((line, anchor) => decidePrototype(w.ref, { ...params, repositoryRoot: w.fixture.repositoryRoot, version: pending.version, hash: pending.hash, choice: "opinion", option: null, opinion, line, anchor }));
   const previousPath = prototypeFilePath(w.ref, { ...params, version: 1 });
   const previousDesign = join(dirname(previousPath), "登录页.v1.design.md");
 
@@ -212,7 +228,7 @@ test("设计师交合格稿后看板变成 awaiting，收到 submitted 事件，
   w.provider.queue.push(w.submit(HTML), { type: "text", text: "已交稿" });
   const { version } = await w.dispatch();
   await until(() => w.events("prototype.submitted").length === 1);
-  expect(w.events("prototype.submitted")[0]).toEqual({ parentSessionId: "session-a", requirementId: w.fixture.requirementId, name: "登录页", version });
+  expect(w.events("prototype.submitted")[0]).toEqual({ parentSessionId: "session-a", requirementId: w.fixture.requirementId, name: "登录页", version, dispatchAnchor: expect.stringMatching(/^[0-9a-f-]{36}$/) });
   expect((await w.entry())?.inFlight).toMatchObject({ status: "awaiting", version, file: { note: "手机号输入框加验证码按钮" } });
   expect(w.events("prototype.changed").length).toBeGreaterThan(0);
   await until(async () => ((await w.call("prototypes.list", {})).items as unknown[]).length === 0);
@@ -237,7 +253,7 @@ test("设计师通过交稿工具附方案清单交稿后，待确认信息里�
   w.provider.queue.push(submitWithOptions(["顶部分栏", "左侧导航"]), { type: "text", text: "已交稿" });
   await w.dispatch();
   await until(() => w.events("prototype.submitted").length === 1);
-  expect((await pendingConfirmation(w.ref, { repositoryRoot: w.fixture.repositoryRoot, requirementId: w.fixture.requirementId, name: "登录页" })).options).toEqual(["顶部分栏", "左侧导航"]);
+  expect((await pendingConfirmation(w.ref, { repositoryRoot: w.fixture.repositoryRoot, requirementId: w.fixture.requirementId, name: "登录页", line: w.line })).options).toEqual(["顶部分栏", "左侧导航"]);
 });
 
 test("设计师通过交稿工具只附 1 个方案时交稿被退回并看到原因，看板仍是 designing", async () => {
@@ -310,7 +326,7 @@ test("连接断开后看板在途清空，记下的原因是主窗口断开，�
 
 test("守护进程重启后所有 designing 状态的在途原型被清掉", async () => {
   const w = await world();
-  await beginDesign(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", runId: uuidv7(), agent: "prototype", designBase: null });
+  await w.stamped((line, anchor) => beginDesign(w.ref, { requirementId: w.fixture.requirementId, name: "登录页", runId: uuidv7(), agent: "prototype", designBase: null, line, anchor }));
   expect((await w.entry())?.inFlight).toMatchObject({ status: "designing" });
   const restarted = new RunManager((w.manager as unknown as { options: ConstructorParameters<typeof RunManager>[0] }).options);
   restarted.markStarted();
@@ -357,7 +373,9 @@ test("派出途中会话创建失败时派出被拒，看板在途被清并记�
     createdAt: 1, updatedAt: 1 }));
   const before = w.provider.requests.length;
   await expect(w.dispatch({ requirementId: stuck })).rejects.toMatchObject({ code: "subagent_session_failed" });
-  const board = await readPrototypeBoard(w.ref, stuck);
+  const stuckLine = w.db((db) => db.list<{ requirementId: string; anchor: string; sequence: number }>("line_anchors")
+    .map((row) => row.data).filter((record) => record.requirementId === stuck).sort((a, b) => a.sequence - b.sequence).map((record) => record.anchor));
+  const board = await readPrototypeBoard(w.ref, stuck, stuckLine);
   expect(board.entries[0]).toMatchObject({ name: "登录页", inFlight: null, lastEnded: { version: 1, reason: expect.any(String) } });
   expect(w.provider.requests.length).toBe(before);
 });
@@ -450,8 +468,8 @@ test("prototypes.removal 已在需求里批准过的原型：approvedRevision �
   const w = await world();
   const version = await awaitingPrototype(w);
   await decideInput(w, "accept");
-  const { digest } = await draftPrototypes(w.ref, w.fixture.requirementId);
-  promote(w.ref, { requirementId: w.fixture.requirementId, digest });
+  const { digest } = await draftPrototypes(w.ref, w.fixture.requirementId, w.line);
+  promote(w.ref, { requirementId: w.fixture.requirementId, digest }, w.line);
   const revision = w.fixture.state.read(w.fixture.requirementId).data.revision;
   const removal = await w.call("prototypes.removal", pendingInput(w));
   expect(removal).toMatchObject({ draftVersion: revision + 1, name: "登录页", version, approvedRevision: revision });
@@ -652,12 +670,12 @@ test("设计师交的 DESIGN.md 合格时写成候选文件并记进 designs", a
 
 const rootDesign = (w: Awaited<ReturnType<typeof world>>) => join(w.repoRoot, "DESIGN.md");
 
-test("prototypes.pending 根目录没有 DESIGN.md 时 design 是 created，通过后根目录写入设计师交的那份", async () => {
+test("prototypes.pending 根目录没有 DESIGN.md 时 design 是 created，通过后根目录仍然没有 DESIGN.md", async () => {
   const w = await world();
   await awaitingPrototype(w);
   expect((await w.call("prototypes.pending", pendingInput(w))).design).toEqual({ state: "created" });
   await decideInput(w, "accept");
-  expect(await readFile(rootDesign(w), "utf8")).toBe(VALID_DESIGN);
+  expect(existsSync(rootDesign(w))).toBe(false);
 });
 
 test("prototypes.pending 根目录 DESIGN.md 和交的相同时 design 是 same", async () => {

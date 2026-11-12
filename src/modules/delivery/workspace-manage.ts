@@ -15,6 +15,7 @@ import { mutedLines } from "../../core/host/question-window.ts";
 import type { ProgramWindow } from "../../core/host/question-window.ts";
 import { verifyRequirementWorkspace } from "../requirement/requirement-workspace.ts";
 import { RequirementCloseService } from "./workflow-close.ts";
+import { approvalFileCommit, commitApprovedFiles, onlyApprovedFilesCommits, planApprovedFromDraft } from "./approved-files.ts";
 
 const execFileAsync = promisify(execFile);
 export const MANAGED_WORKSPACES = "managed_workspaces";
@@ -131,12 +132,14 @@ export class WorkspaceManageService {
     const record = this.state.read(input.requirementId);
     if (record.data.lifecycle !== "active") throw new WorkspaceManageError("requirement_not_active", ["需求批准生效后才能创建工作区"]);
     const existing = this.read(input.requirementId);
-    if (existing?.status === "ready") return existing;
+    if (existing?.status === "ready") { await this.assertOwnWorktree(existing); await this.commitApproved(existing); return existing; }
     const operationId = existing?.operationId ?? uuidv7();
     const location = workspaceLocation(this.options.repositoryRoot, input.requirementId);
     let baseCommit = existing?.baseCommit ?? await gitOutput(this.options.repositoryRoot, ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
     const unbornBranch = baseCommit ? null : await gitOutput(this.options.repositoryRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
     if (!baseCommit && !unbornBranch) throw new WorkspaceManageError("git_failed", ["rev-parse HEAD"]);
+    // 空仓库没有基线提交，建工作区之前没有可合并的文件
+    if (!(await exists(location.path))) await this.planApproved(input.requirementId, this.options.repositoryRoot, baseCommit, false);
     if (!existing) {
       const title = await this.approvedTitle(input.requirementId);
       const approved = await this.options.confirm({ title: "确认创建需求工作区", lines: [{ text: `需求：${title}` }, ...mutedLines([
@@ -155,10 +158,7 @@ export class WorkspaceManageService {
     if (branchTip !== null && branchTip !== plan.baseCommit && !(await exists(plan.path))) throw new WorkspaceManageError("branch_conflict");
     if (await exists(plan.path)) {
       // 续办中断的创建：目录必须正是本仓库登记分支的 worktree，否则不碰身份不明的目录
-      const head = await gitOutput(plan.path, ["symbolic-ref", "--quiet", "HEAD"]);
-      const common = await gitOutput(plan.path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-      const ownCommon = await gitOutput(this.options.repositoryRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-      if (head !== plan.branch || common === null || common !== ownCommon) throw new WorkspaceManageError("path_conflict");
+      await this.assertOwnWorktree(plan);
     } else {
       await mkdir(dirname(plan.path), { recursive: true });
       await writeGit(this.options.repositoryRoot, branchTip === null
@@ -170,7 +170,27 @@ export class WorkspaceManageService {
       prepareOperationId: plan.operationId, baseCommit: plan.baseCommit });
     const ready = { ...plan, status: "ready" as const };
     this.save(ready);
+    await this.commitApproved(ready);
     return ready;
+  }
+
+  private async assertOwnWorktree(plan: ManagedWorkspace): Promise<void> {
+    const head = await gitOutput(plan.path, ["symbolic-ref", "--quiet", "HEAD"]);
+    const common = await gitOutput(plan.path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    const ownCommon = await gitOutput(this.options.repositoryRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+    if (head !== plan.branch || common === null || common !== ownCommon) throw new WorkspaceManageError("path_conflict");
+  }
+
+  private planApproved(requirementId: string, cwd: string, rev: string | null, checkDirty: boolean) {
+    return planApprovedFromDraft({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId,
+      fileCommit: approvalFileCommit(this.options.dataRoot, this.options.repoId, requirementId), cwd, rev, checkDirty });
+  }
+
+  private async commitApproved(workspace: ManagedWorkspace): Promise<void> {
+    const { requirementId } = workspace;
+    const fileCommit = approvalFileCommit(this.options.dataRoot, this.options.repoId, requirementId);
+    const plan = await planApprovedFromDraft({ dataRoot: this.options.dataRoot, repoId: this.options.repoId, requirementId, fileCommit, cwd: workspace.path, rev: "HEAD", checkDirty: true });
+    await commitApprovedFiles({ worktree: workspace.path, requirementId, fileCommit, writes: plan.writes, deletes: plan.deletes });
   }
 
   // 用空树建提交并只在分支仍无提交时写入，不碰用户的暂存区和工作目录
@@ -263,7 +283,7 @@ export class WorkspaceManageService {
       if (!versionAtLeast(version, "2.38")) {
         tooOldGit = version;
         blockers.push(`本机 Git 版本 ${version} 低于 2.38，判断不了需求是否已合并`);
-      } else if (!(await this.mergedInto(tip))) {
+      } else if (!(await this.mergedInto(tip)) && !(await onlyApprovedFilesCommits(this.options.repositoryRoot, tip, plan.requirementId))) {
         unmerged = true;
         const mainBranch = await gitOutput(this.options.repositoryRoot, ["symbolic-ref", "--quiet", "--short", "HEAD"]);
         const target = mainBranch ? `主仓库当前分支 ${mainBranch}` : `主仓库当前提交 ${mainHead.slice(0, 7)}`;

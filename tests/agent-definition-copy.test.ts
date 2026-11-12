@@ -88,7 +88,7 @@ test("只写了 skills 没写 mcp 时，只补 mcp 空数组", async () => {
 async function viewOf(d: Dirs) {
   const catalog = await loadCatalog(d);
   const settings = await readAgentSettings({ agentDir: join(root, "agent"), repositoryRoot: join(root, "repo"), projectTrusted: true });
-  const view = new SettingsPageView({ catalog, theme, projectTrusted: true, untrustedProjectCount: 0, settings, models: [], mainModel: undefined, mainThinking: "high",
+  const view = new SettingsPageView({ catalog, theme, settings, models: [], mainModel: undefined, mainThinking: "high",
     onSaveSetting() {}, onClearSetting() {}, onSaveSwitch() {}, onClearSwitch() {}, nameTaken: () => undefined, onCopy() {}, onClose() {} });
   const lines = (width = 80) => view.render(width).map((line) => line.trimEnd());
   return { view, lines, text: (width = 80) => lines(width).join("\n") };

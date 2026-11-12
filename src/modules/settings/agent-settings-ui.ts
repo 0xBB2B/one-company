@@ -3,7 +3,6 @@ import type { ModelLike } from "../agents/agent-resolve.ts";
 import { thinkingSupported } from "../agents/agent-resolve.ts";
 import { SETTINGS_ROLES } from "./agent-settings.ts";
 import type { EffectiveSetting, RoleSetting, SettingsRoleKey } from "./agent-settings.ts";
-import type { ProjectTrust } from "./project-trust.ts";
 import { findDefinedModel } from "../agents/model-ref.ts";
 import { THINKING_LEVELS } from "../agents/roles.ts";
 import type { RoleSource, ThinkingLevel } from "../agents/roles.ts";
@@ -131,17 +130,10 @@ export function pickerHead(theme: PageTheme, title: string, step: string, width:
   return ` ${theme.bold(shown)}${visibleWidth(step) <= width - 1 - visibleWidth(shown) - 2 ? theme.fg("dim", `  ${step}`) : ""}`;
 }
 
-const DENIED_NOTE = "你在 pi 里选过不信任这个项目。要存到项目层，先在 pi 里输入 /trust 选 Trust，再重开本页";
-const UNSET_NOTE = "选项目层会把这个项目设为受信任，和在 pi 里输入 /trust 选 Trust 一样；项目里已有的 .pi 设置和角色定义也会一起生效";
-
-export const layerRows = (projectTrust: ProjectTrust): PickerRow[] => [
-  projectTrust === "denied" ? { name: "项目层", note: "你在 pi 里选过不信任这个项目", disabled: true }
-    : { name: "项目层", note: projectTrust === "unset" ? ".pi/settings.json · 选它会把本项目设为受信任" : ".pi/settings.json · 只对这个项目生效" },
+export const layerRows = (): PickerRow[] => [
+  { name: "项目层", note: ".pi/settings.json · 只对这个项目生效" },
   { name: "用户层", note: "~/.pi/agent/settings.json · 所有项目" },
 ];
-
-export const layerNote = (theme: PageTheme, width: number, projectTrust: ProjectTrust) =>
-  projectTrust === "trusted" ? [] : wrapText(projectTrust === "denied" ? DENIED_NOTE : UNSET_NOTE, width - 1).map((line) => ` ${theme.fg("dim", line)}`);
 
 export function modelChoices(models: readonly ModelLike[], mainModel: ModelLike | undefined, current: RoleSetting): ModelChoice[] {
   const currentModel = current.model === null ? undefined : findDefinedModel(current.model, models, mainModel?.provider);
@@ -174,7 +166,7 @@ export class SettingsTab {
   private chosenThinking: ThinkingLevel | null = null;
   private readonly options: {
     theme: PageTheme; settings: { values: Record<SettingsRoleKey, EffectiveSetting> }; models: readonly ModelLike[]; mainModel: ModelLike | undefined; mainThinking: string;
-    projectTrust: ProjectTrust; sourceTag(source: RoleSource): string;
+    sourceTag(source: RoleSource): string;
     onSave(request: SaveSettingRequest): void; onClear(request: ClearSettingRequest): void;
   };
 
@@ -239,7 +231,7 @@ export class SettingsTab {
         ? { name: FOLLOW, note: `现在是 ${thinkingLabel(this.role, this.options.mainThinking)}`, current: current === null, soft: true }
         : { name: thinkingLabel(this.role, choice.level), note: choice.unsupported ?? "", current: choice.level === current, disabled: !!choice.unsupported });
     }
-    return layerRows(this.options.projectTrust);
+    return layerRows();
   }
 
   renderList(width: number, cursor: number, fresh: string | undefined): string[] {
@@ -281,7 +273,6 @@ export class SettingsTab {
       const empty = this.options.models.length === 0;
       return [...head, "", ...(empty ? wrapText("本机还没有其他配了凭据的模型，先在 pi 里登录模型服务", width - 1).map((line) => ` ${muted(line)}`) : [` ${dim("只列出本机配了凭据的模型")}`])];
     }
-    if (this.step === 2) return head;
-    return [...head, "", ...layerNote(theme, width, this.options.projectTrust)];
+    return head;
   }
 }

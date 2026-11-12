@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, expect, test } from "vitest";
 import { registerProtocolHandlers } from "../../../src/app/daemon/run-manager.ts";
+import { uuidv7 } from "../../../src/core/storage/database.ts";
 import { readPrototypeBoard } from "../../../src/modules/requirement/requirement-prototypes.ts";
 import { createPmRunWorld } from "../../helpers/run-manager-fixture.ts";
 import { acceptanceConfig } from "../helpers/installed-host.ts";
@@ -34,10 +35,13 @@ test.skipIf(!config || process.platform !== "darwin")("P17：原型设计师收�
   registerProtocolHandlers({ server: server as never, manager: w.manager, shellRegistry: {} as never });
   const client = { connectionId: "connection-a", sessionId: "session-a", windowId: "win" };
   await server.onHello!(client);
-  await handlers.get("prototypes.dispatch")!({ requirementId: w.fixture.requirementId, name: NAME, brief: BRIEF, maxTurns: 20, model: { provider: "team-model", id: "test" }, thinking: "off" }, client);
+  const baseAnchor = w.db((db) => db.list<{ kind: string; sequence: number; requirementId: string; anchor: string }>("line_anchors")
+    .map((row) => row.data).filter((record) => record.requirementId === w.fixture.requirementId && record.kind === "save").sort((a, b) => a.sequence - b.sequence)[0]!.anchor);
+  const dispatchAnchor = uuidv7();
+  await handlers.get("prototypes.dispatch")!({ requirementId: w.fixture.requirementId, name: NAME, brief: BRIEF, maxTurns: 20, model: { provider: "team-model", id: "test" }, thinking: "off", line: [baseAnchor], anchor: dispatchAnchor }, client);
 
   const ref = { dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId };
-  const status = async () => (await readPrototypeBoard(ref, w.fixture.requirementId)).entries.find((entry) => entry.name === NAME)?.inFlight?.status;
+  const status = async () => (await readPrototypeBoard(ref, w.fixture.requirementId, [baseAnchor, dispatchAnchor])).entries.find((entry) => entry.name === NAME)?.inFlight?.status;
   for (let waited = 0; waited < 900 && await status() !== "awaiting"; waited++) await new Promise((resolve) => setTimeout(resolve, 1_000));
 
   const submits = real.toolCalls().filter((block) => block.name === "one_company_result_submit").map((block) => block.arguments as Submitted);

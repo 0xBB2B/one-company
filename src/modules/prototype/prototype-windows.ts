@@ -43,10 +43,10 @@ const changedText = (chapters: string[]) => chapters.length ? `改了${chapters.
 function designLines(design: DesignState): WindowLine[] {
   switch (design.state) {
     case "same": return [];
-    case "created": return [{ text: "通过后在仓库根目录新建 DESIGN.md，之后的原型、实现和审查都照它做。" }];
+    case "created": return [{ text: "批准需求后随需求分支新建 DESIGN.md，之后这个需求的原型、实现和审查都照它做。" }];
     case "conflict": return [{ text: "设计师交稿后，仓库根目录的 DESIGN.md 被改过。要通过，请在「其他」里写意见，让主代理按最新的 DESIGN.md 重派一版。" }];
     case "changed": {
-      const head = "通过后同时更新仓库根目录的 DESIGN.md：";
+      const head = "批准需求后随需求分支更新 DESIGN.md：";
       if (design.changes.length === 1 && design.changes[0]!.letter === null) return [{ text: `${head}${changedText(design.changes[0]!.chapters)}。` }];
       return [{ text: head }, { text: `  ${design.changes.map((change) => `方案 ${change.letter} ${changedText(change.chapters)}`).join("；")}。` }];
     }

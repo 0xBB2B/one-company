@@ -3,7 +3,8 @@ import { databaseFile } from "../../core/storage/database.ts";
 import { createHash, randomBytes } from "node:crypto";
 import { link, mkdir, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { ModelRuntime, parseFrontmatter, ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { readProjectTrust } from "../../core/host/project-trust.ts";
 import { createClock } from "../../core/policy/clock.ts";
 import type { Clock, TimeSource, TimerHandle } from "../../core/policy/clock.ts";
 import { daemonSocketPath, listWorktrees, repoDataDir, repositoryIdentity } from "../../core/storage/identity.ts";
@@ -29,7 +30,7 @@ function loadDaemonRoleCatalog(agentDir: string, repoRoot: string) {
     userDir: userRoleDir(agentDir),
     projectDir: projectRoleDir(repoRoot),
     parseFrontmatter,
-    projectTrusted: new ProjectTrustStore(agentDir).get(repoRoot) === true,
+    projectTrusted: readProjectTrust(agentDir, repoRoot).trust === "trusted",
   });
 }
 
@@ -60,6 +61,7 @@ export interface StartDaemonOptions {
   idleTimeoutMs: number;
   clockSkewFile?: string;
   modelProviderModulePath?: string;
+  logPath?: string;
 }
 
 function tempSocketPath(socketPath: string): string {
@@ -371,6 +373,7 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
     authToken: controlToken(capturedOptions.dataRoot),
     repoId,
     startedAt,
+    logPath: capturedOptions.logPath,
     onActivity: () => idleExit?.touch(),
     // 显式 shutdown 是不可逆操作，读不到运行记录时无法确认真的没有活动运行，宁可拒绝也不能误关；
     // 与自动空闲退出的保守判定（runActivity）各自独立，这里把读失败原因直接带回给调用方
@@ -528,10 +531,10 @@ export async function startDaemon(options: StartDaemonOptions): Promise<void> {
       workspaceRepoIds: [repoId],
       emit: (event, data, filter) => server.broadcast(event, data, filter ? (info) => filter(info.windowId) : undefined),
       index: indexHost,
-      loadAgentSettings: () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: new ProjectTrustStore(agentDir).get(repositoryRoot) === true }),
-      loadDisabledAgents: () => disabledAgentNames(readDisabledAgents({ agentDir, repositoryRoot, projectTrusted: new ProjectTrustStore(agentDir).get(repositoryRoot) === true })),
+      loadAgentSettings: () => readAgentSettings({ agentDir, repositoryRoot, projectTrusted: readProjectTrust(agentDir, repositoryRoot).trust === "trusted" }),
+      loadDisabledAgents: () => disabledAgentNames(readDisabledAgents({ agentDir, repositoryRoot, projectTrusted: readProjectTrust(agentDir, repositoryRoot).trust === "trusted" })),
       loadRoleCatalog: async () => (await loadDaemonRoleCatalog(agentDir, repositoryRoot)).roles,
-      skillDirs: [...(new ProjectTrustStore(agentDir).get(repositoryRoot) === true ? [join(repositoryRoot, ".pi", "skills")] : []),
+      loadSkillDirs: () => [...(readProjectTrust(agentDir, repositoryRoot).trust === "trusted" ? [join(repositoryRoot, ".pi", "skills")] : []),
         join(agentDir, "skills"), join(dirname(defaultRoleDir()), "skills")],
     });
     registerProtocolHandlers({ server, manager: runManager, shellRegistry });

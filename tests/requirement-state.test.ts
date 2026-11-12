@@ -103,7 +103,7 @@ test("预留或修改状态的事件写入失败时同库全部回滚，无半�
   const path = repositoryDatabase(w.options.dataRoot, w.identity.repoId);
   const restore = failDatabaseWrites(path, "events", "stream", `requirement_events:${reserved.id}`);
   try {
-    expect(() => w.store.recordSavedVersion({ requirementId: reserved.id, version: reserved.version, operationId: uuidv7(), reference: reference() })).toThrow();
+    expect(() => w.store.recordSavedVersion({ requirementId: reserved.id, version: reserved.version, operationId: uuidv7(), reference: reference(), anchor: uuidv7(), line: [] })).toThrow();
   } finally { restore(); }
   expect(w.store.read(reserved.id)).toEqual(reserved); expect(w.store.events(reserved.id)).toHaveLength(1);
 });
@@ -112,7 +112,7 @@ test("写入前及提交前核验权限，迟到撤权使状态和事件全部�
   let checks = 0;
   const w = await world(({ action }) => action !== "saved-version" || ++checks < 3);
   const record = w.reserve();
-  expect(() => w.store.recordSavedVersion({ requirementId: record.id, version: record.version, operationId: uuidv7(), reference: reference() })).toThrow(/authorization_required/);
+  expect(() => w.store.recordSavedVersion({ requirementId: record.id, version: record.version, operationId: uuidv7(), reference: reference(), anchor: uuidv7(), line: [] })).toThrow(/authorization_required/);
   expect(w.store.read(record.id)).toEqual(record); expect(w.store.events(record.id)).toHaveLength(1);
 });
 
@@ -129,11 +129,11 @@ test("主工作目录不能绑定，工作区和分支占用不可串给其他�
 
 test("M8A-AC7：没有现场也能批准生效，保存版本不等于批准；没有现场不能取得 PM 租约，绑定后可以；操作重试不重复事件", async () => {
   const w = await world(); const first = w.reserve();
-  const save = { requirementId: first.id, version: first.version, operationId: uuidv7(), reference: reference() };
+  const save = { requirementId: first.id, version: first.version, operationId: uuidv7(), reference: reference(), anchor: uuidv7(), line: [] };
   const saved = w.store.recordSavedVersion(save);
   expect(saved.data.lifecycle).toBe("draft"); expect(saved.data.approved).toBeNull();
   expect(w.store.recordSavedVersion(save)).toEqual(saved);
-  expect(w.store.recordSavedVersion({ ...save, version: saved.version, operationId: uuidv7() })).toEqual(saved);
+  expect(w.store.recordSavedVersion({ ...save, version: saved.version, operationId: uuidv7(), anchor: uuidv7() })).toEqual(saved);
   expect(w.store.events(first.id)).toHaveLength(2);
   expect(() => w.store.recordSavedVersion({ ...save, reference: reference("changed") })).toThrow(/operation_conflict/);
   const created = await w.draft(), requirementId = created.requirementId;
@@ -283,7 +283,7 @@ for (const reason of ["completed", "cancelled", "rejected"] as const) {
     expect(w.store.beginClose({ requirementId: record.id, version: current.version, intent })).toEqual(closing);
     expect(w.store.pmOwner(record.id)!.lease).toBeNull();
     await expect(w.store.checkPm(lease)).rejects.toThrow(/lifecycle_denied/);
-    expect(() => w.store.recordSavedVersion({ requirementId: record.id, version: closing.version, operationId: uuidv7(), reference: reference() })).toThrow(/lifecycle_denied/);
+    expect(() => w.store.recordSavedVersion({ requirementId: record.id, version: closing.version, operationId: uuidv7(), reference: reference(), anchor: uuidv7(), line: [] })).toThrow(/lifecycle_denied/);
     expect(() => w.store.finishClose({ requirementId: record.id, version: closing.version, operationId: intent.operationId })).toThrow(/authorization_required/);
     expect(w.store.read(record.id).data.lifecycle).toBe("closing");
     stopped = true;
@@ -317,7 +317,7 @@ test("仅归档线索或未知历史只阻塞，不猜测completed或恢复执�
   expect(blocked.data.lifecycle).toBe("active"); expect(blocked.data.recovery).toBe("needs_review"); expect(blocked.data.recoveryReason).toBe("archive_found");
   expect(w.store.pmOwner(record.id)!.lease).toBeNull();
   await expect(w.store.checkPm(lease)).rejects.toThrow(/recovery_required/);
-  expect(() => w.store.recordSavedVersion({ requirementId: record.id, version: blocked.version, operationId: uuidv7(), reference: reference() })).toThrow(/recovery_required/);
+  expect(() => w.store.recordSavedVersion({ requirementId: record.id, version: blocked.version, operationId: uuidv7(), reference: reference(), anchor: uuidv7(), line: [] })).toThrow(/recovery_required/);
   const reopened = await RequirementStateStore.open(w.options);
   expect(reopened.read(record.id).data.recovery).toBe("needs_review");
 });

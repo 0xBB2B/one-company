@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "vitest";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { LocalDatabase, uuidv7 } from "../src/core/storage/database.ts";
@@ -82,11 +82,12 @@ async function oldWorld(options: { data?: boolean; index?: boolean } = { data: t
 }
 
 const keepV9: DataMigrationStep = { from: 9, losses: [], migrate() {} };
+const keepV10: DataMigrationStep = { from: 10, losses: [], migrate() {} };
 const migrate = async (w: Awaited<ReturnType<typeof world>>, steps: DataMigrationStep[]) =>
   withMigrationLock(w.scope, async (permit) => await migrateRepositoryDatabases(permit, steps));
 
-test("可迁移版本表：data 为 8、9，index 为 1", () => {
-  expect(MIGRATABLE_VERSIONS.data).toEqual([8, 9]);
+test("可迁移版本表：data 为 8、9、10，index 为 1", () => {
+  expect(MIGRATABLE_VERSIONS.data).toEqual([8, 9, 10]);
   expect(MIGRATABLE_VERSIONS.index).toEqual([1]);
 });
 
@@ -96,13 +97,13 @@ test("data 版本 8、index 版本 1 判为 migratable 并带目标版本", asyn
     data: { kind: "data", status: "migratable", version: 8, target: DATABASE_SCHEMA_VERSIONS.data },
     index: { kind: "index", status: "migratable", version: 1, target: DATABASE_SCHEMA_VERSIONS.index },
   });
-  expect(DATABASE_SCHEMA_VERSIONS.data).toBe(10);
+  expect(DATABASE_SCHEMA_VERSIONS.data).toBe(11);
   expect(DATABASE_SCHEMA_VERSIONS.index).toBe(2);
 });
 
 test("当前版本判为 current，文件不存在判为 missing", async () => {
   const w = await world();
-  await createDatabase(w.dataPath, "data", 10, ROWS);
+  await createDatabase(w.dataPath, "data", 11, ROWS);
   const plan = readMigrationPlan(w.dataRoot, repoId);
   expect(plan.data).toEqual({ kind: "data", status: "current" });
   expect(plan.index).toEqual({ kind: "index", status: "missing" });
@@ -111,7 +112,7 @@ test("当前版本判为 current，文件不存在判为 missing", async () => {
 test("data 版本 5 判为 too_old", async () => {
   const w = await world();
   await createDatabase(w.dataPath, "data", 5, ROWS);
-  expect(readMigrationPlan(w.dataRoot, repoId).data).toEqual({ kind: "data", status: "too_old", version: 5, target: 10 });
+  expect(readMigrationPlan(w.dataRoot, repoId).data).toEqual({ kind: "data", status: "too_old", version: 5, target: 11 });
 });
 
 test("needsMigrationPrompt：有可迁移的库且 data 不过旧时为 true", async () => {
@@ -143,15 +144,15 @@ test("needsMigrationPrompt：都是 current 或 missing 时为 false", async () 
   expect(needsMigrationPrompt(plan)).toBe(false);
 });
 
-test("data 8 → 10 成功：备份是版本 8 原样数据，原库升到 10，被替换记录 version 加 1，其他不变", async () => {
+test("data 8 → 11 成功：备份是版本 8 原样数据，原库升到 11，被替换记录 version 加 1，其他不变", async () => {
   const w = await oldWorld({ data: true });
   const before = dump(w.dataPath);
-  const receipt = await migrate(w, [renameTitles, keepV9]);
+  const receipt = await migrate(w, [renameTitles, keepV9, keepV10]);
   expect(receipt.migratedData).toBe(true);
   expectBackupPath(w, receipt.backupPath);
   expect(dump(receipt.backupPath!)).toEqual(before);
   const after = dump(w.dataPath);
-  expect(after.version).toBe(10);
+  expect(after.version).toBe(11);
   const byKey = (rows: typeof before.records, key: string) => rows.find((row) => row.record_key === key)!;
   for (const key of ["T-1", "T-2"]) {
     expect(byKey(after.records, key).version).toBe(byKey(before.records, key).version + 1);
@@ -163,12 +164,12 @@ test("data 8 → 10 成功：备份是版本 8 原样数据，原库升到 10，
 
 test("只有 index 旧：不备份，删掉 index.db 及 -wal、-shm，data.db 不变", async () => {
   const w = await world();
-  await createDatabase(w.dataPath, "data", 10, ROWS);
+  await createDatabase(w.dataPath, "data", 11, ROWS);
   await createDatabase(w.indexPath, "index", 1);
   await writeFile(`${w.indexPath}-wal`, "", { mode: 0o600 });
   await writeFile(`${w.indexPath}-shm`, "", { mode: 0o600 });
   const before = dump(w.dataPath);
-  const receipt = await migrate(w, [renameTitles, keepV9]);
+  const receipt = await migrate(w, [renameTitles, keepV9, keepV10]);
   expect(receipt).toEqual({ backupPath: null, migratedData: false, removedIndex: true });
   expect(existsSync(join(w.directory, "backups"))).toBe(false);
   for (const suffix of ["", "-wal", "-shm"]) expect(existsSync(w.indexPath + suffix)).toBe(false);
@@ -177,7 +178,7 @@ test("只有 index 旧：不备份，删掉 index.db 及 -wal、-shm，data.db �
 
 test("data 和 index 都旧：data 迁移成功后 index.db 被删", async () => {
   const w = await oldWorld();
-  const receipt = await migrate(w, [renameTitles, keepV9]);
+  const receipt = await migrate(w, [renameTitles, keepV9, keepV10]);
   expectBackupPath(w, receipt.backupPath);
   expect(receipt).toEqual({ backupPath: receipt.backupPath, migratedData: true, removedIndex: true });
   expect(existsSync(w.indexPath)).toBe(false);
@@ -193,7 +194,7 @@ test("步骤对某条记录抛错：原库版本和记录原样，index.db 仍�
       throw new Error("T-2 缺少 owner 字段");
     },
   };
-  const error = await migrate(w, [failing, keepV9]).then(() => undefined, (e: unknown) => e);
+  const error = await migrate(w, [failing, keepV9, keepV10]).then(() => undefined, (e: unknown) => e);
   expect(error).toBeInstanceOf(DatabaseMigrationError);
   const failure = error as DatabaseMigrationError;
   expect(failure.code).toBe("migration_failed");
@@ -210,7 +211,7 @@ test("步骤对某条记录抛错：原库版本和记录原样，index.db 仍�
 test("缺少 from=8 的步骤：报 missing_step，库不变", async () => {
   const w = await oldWorld();
   const before = dump(w.dataPath);
-  const error = await migrate(w, [{ ...renameTitles, from: 7 }, keepV9]).then(() => undefined, (e: unknown) => e);
+  const error = await migrate(w, [{ ...renameTitles, from: 7 }, keepV9, keepV10]).then(() => undefined, (e: unknown) => e);
   expect(error).toBeInstanceOf(DatabaseMigrationError);
   expect((error as DatabaseMigrationError).code).toBe("missing_step");
   expect(dump(w.dataPath)).toEqual(before);
@@ -255,7 +256,7 @@ test("回调抛错后维护标记被删除，错误原样抛出", async () => {
 
 test("回调执行期间别的连接打不开该目录的 data.db", async () => {
   const w = await world();
-  await createDatabase(w.dataPath, "data", 10, ROWS);
+  await createDatabase(w.dataPath, "data", 11, ROWS);
   await withMigrationLock(w.scope, async () => {
     expect(existsSync(join(w.directory, DATABASE_MAINTENANCE_FILE))).toBe(true);
     expect(() => new LocalDatabase(w.dataPath)).toThrow(expect.objectContaining({ code: "maintenance_required" }));
@@ -266,7 +267,7 @@ test("备份 data.db 失败：报错写明是备份这一步，两个库都不�
   const w = await oldWorld();
   await chmod(w.dataPath, 0o644);
   const before = dump(w.dataPath);
-  const error = await migrate(w, [renameTitles, keepV9]).then(() => undefined, (e: unknown) => e);
+  const error = await migrate(w, [renameTitles, keepV9, keepV10]).then(() => undefined, (e: unknown) => e);
   expect(error).toBeInstanceOf(DatabaseMigrationError);
   const failure = error as DatabaseMigrationError;
   expect(failure.code).toBe("migration_failed");
@@ -281,10 +282,10 @@ test("备份 data.db 失败：报错写明是备份这一步，两个库都不�
 
 test("两个库都已是当前版本：不备份、库不变，回执三项都是没做", async () => {
   const w = await world();
-  await createDatabase(w.dataPath, "data", 10, ROWS);
+  await createDatabase(w.dataPath, "data", 11, ROWS);
   await createDatabase(w.indexPath, "index", 2);
   const before = dump(w.dataPath);
-  const receipt = await migrate(w, [renameTitles, keepV9]);
+  const receipt = await migrate(w, [renameTitles, keepV9, keepV10]);
   expect(receipt).toEqual({ backupPath: null, migratedData: false, removedIndex: false });
   expect(existsSync(join(w.directory, "backups"))).toBe(false);
   expect(dump(w.dataPath)).toEqual(before);
@@ -308,25 +309,116 @@ const boardRows = (fileExtra: Record<string, unknown>): Array<[string, string, u
   ],
 }]];
 
-test("v9 库用真实步骤迁到 10：在做和等确认的原型作废，已通过的和 lastOpinion 不变", async () => {
+test("v9 库用真实步骤迁到 11：在做和等确认的原型作废，已通过的和 lastOpinion 不变", async () => {
   const w = await world();
   await createDatabase(w.dataPath, "data", 9, boardRows({ options: [], picked: null }));
-  await migrate(w, [prototypeRecordsV8Step, prototypeRecordsV9Step]);
+  await migrate(w, [prototypeRecordsV8Step, prototypeRecordsV9Step, keepV10]);
   const after = dump(w.dataPath);
-  expect(after.version).toBe(10);
+  expect(after.version).toBe(11);
   const board = JSON.parse(after.records.find((row) => row.namespace === "requirement_prototypes")!.data);
   expect(board.entries[0]).toMatchObject({ name: "在做页", inFlight: null, lastEnded: { version: 2, reason: PROTO_REASON } });
   expect(board.entries[1]).toMatchObject({ name: "等确认页", inFlight: null, lastEnded: { version: 2, reason: PROTO_REASON }, lastOpinion: { version: 2, opinion: "再大一点" } });
   expect(board.entries[2]).toEqual(protoEntry("通过页", { draft: protoFile(1, { options: [], picked: null }), approved: protoFile(1, { options: [], picked: null }) }));
 });
 
-test("v8 库用真实步骤一路迁到 10", async () => {
+test("v8 库用真实步骤一路迁到 11", async () => {
   const w = await world();
   await createDatabase(w.dataPath, "data", 8, boardRows({ userNote: "旧补充说明" }));
-  await migrate(w, [prototypeRecordsV8Step, prototypeRecordsV9Step]);
+  await migrate(w, [prototypeRecordsV8Step, prototypeRecordsV9Step, keepV10]);
   const after = dump(w.dataPath);
-  expect(after.version).toBe(10);
+  expect(after.version).toBe(11);
   const board = JSON.parse(after.records.find((row) => row.namespace === "requirement_prototypes")!.data);
   expect(board.entries.map((entry: { inFlight: unknown }) => entry.inFlight)).toEqual([null, null, null]);
   expect(board.entries[2].approved).toEqual(protoFile(1, { options: [], picked: null }));
+});
+
+test.each([9, 10])("data 版本 %s 判为 migratable 并带目标版本 11", async (version) => {
+  const w = await world();
+  await createDatabase(w.dataPath, "data", version, ROWS);
+  expect(readMigrationPlan(w.dataRoot, repoId).data).toEqual({ kind: "data", status: "migratable", version, target: 11 });
+  expect(needsMigrationPrompt(readMigrationPlan(w.dataRoot, repoId))).toBe(true);
+});
+
+test("data 版本 10 → 11：只跑 from=10 的步骤，库升到 11", async () => {
+  const w = await world();
+  await createDatabase(w.dataPath, "data", 10, ROWS);
+  const ran: number[] = [];
+  const receipt = await migrate(w, [{ ...renameTitles, migrate() { ran.push(8); } }, { ...keepV9, migrate() { ran.push(9); } }, { ...keepV10, migrate() { ran.push(10); } }]);
+  expect(receipt.migratedData).toBe(true);
+  expect(ran).toEqual([10]);
+  expect(dump(w.dataPath).version).toBe(11);
+});
+
+test("records.create：新增记录版本号为 1，库里多一条；键已存在时抛错并回滚整个迁移", async () => {
+  const w = await world();
+  await createDatabase(w.dataPath, "data", 10, ROWS);
+  const create: DataMigrationStep = { ...keepV10, migrate(records) { records.create("fresh", "F-1", { n: 1 }); } };
+  await migrate(w, [create]);
+  const row = dump(w.dataPath).records.find((r) => r.namespace === "fresh")!;
+  expect(row).toMatchObject({ record_key: "F-1", version: 1 });
+  expect(JSON.parse(row.data)).toEqual({ n: 1 });
+  expect(row.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+
+  const w2 = await world();
+  await createDatabase(w2.dataPath, "data", 10, ROWS);
+  const before = dump(w2.dataPath);
+  const duplicate: DataMigrationStep = { ...keepV10, migrate(records) { records.create("fresh", "F-2", {}); records.create("tasks", "T-1", {}); } };
+  const error = await migrate(w2, [duplicate]).then(() => undefined, (e: unknown) => e);
+  expect(error).toBeInstanceOf(DatabaseMigrationError);
+  expect((error as DatabaseMigrationError).code).toBe("migration_failed");
+  expect(dump(w2.dataPath)).toEqual(before);
+});
+
+test("records.remove：删掉记录；记录不存在时抛错并回滚整个迁移", async () => {
+  const w = await world();
+  await createDatabase(w.dataPath, "data", 10, ROWS);
+  await migrate(w, [{ ...keepV10, migrate(records) { records.remove("tasks", "T-1"); } }]);
+  expect(dump(w.dataPath).records.map((r) => r.record_key)).toEqual(["N-1", "T-2"]);
+
+  const w2 = await world();
+  await createDatabase(w2.dataPath, "data", 10, ROWS);
+  const before = dump(w2.dataPath);
+  const error = await migrate(w2, [{ ...keepV10, migrate(records) { records.remove("tasks", "T-1"); records.remove("tasks", "不存在"); } }]).then(() => undefined, (e: unknown) => e);
+  expect(error).toBeInstanceOf(DatabaseMigrationError);
+  expect(dump(w2.dataPath)).toEqual(before);
+});
+
+test("prepareFiles：在 migrate 之前执行，拿到 dataRoot、仓库编号和 records.list", async () => {
+  const w = await world();
+  await createDatabase(w.dataPath, "data", 10, ROWS);
+  const log: string[] = [];
+  let seen: { dataRoot: string; repoId: string; keys: string[] } | undefined;
+  const step: DataMigrationStep = {
+    ...keepV10,
+    async prepareFiles(context) {
+      log.push("prepare");
+      seen = { dataRoot: await realpath(context.dataRoot), repoId: context.repoId, keys: context.records.list("tasks").map((record) => record.key) };
+    },
+    migrate() { log.push("migrate"); },
+  };
+  await migrate(w, [step]);
+  expect(log).toEqual(["prepare", "migrate"]);
+  expect(seen).toEqual({ dataRoot: await realpath(w.dataRoot), repoId, keys: ["T-1", "T-2"] });
+});
+
+test("prepareFiles 只在库真的要跑这个步骤时才执行", async () => {
+  const w = await world();
+  await createDatabase(w.dataPath, "data", 11, ROWS);
+  let called = false;
+  await migrate(w, [{ ...keepV10, prepareFiles() { called = true; } }]);
+  expect(called).toBe(false);
+});
+
+test("prepareFiles 抛错：迁移失败，库版本和记录原样，migrate 没执行，错误写明原因", async () => {
+  const w = await world();
+  await createDatabase(w.dataPath, "data", 10, ROWS);
+  const before = dump(w.dataPath);
+  let migrated = false;
+  const step: DataMigrationStep = { ...keepV10, prepareFiles() { throw new Error("需求 X 的文件仓库读不出来"); }, migrate() { migrated = true; } };
+  const error = await migrate(w, [step]).then(() => undefined, (e: unknown) => e);
+  expect(error).toBeInstanceOf(DatabaseMigrationError);
+  expect((error as DatabaseMigrationError).code).toBe("migration_failed");
+  expect((error as DatabaseMigrationError).message).toContain("需求 X 的文件仓库读不出来");
+  expect(migrated).toBe(false);
+  expect(dump(w.dataPath)).toEqual(before);
 });

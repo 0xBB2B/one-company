@@ -1,4 +1,5 @@
-import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { readProjectTrust, trustFilePath } from "../../core/host/project-trust.ts";
+import { tilde } from "../settings/settings-page-ui.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { dirname } from "node:path";
 import { Type } from "typebox";
@@ -89,7 +90,9 @@ export function registerGitDelivery(pi: ExtensionAPI, deps: () => GitDeliveryDep
       const facts: DeliveryFacts = { requirementId, closed: close.status === "closed", reason: close.reason ?? "", archive: close.archive ?? null, ...delivery };
       try {
         const agentDir = dirname(dataRoot(process.env));
-        const { gitDelivery, mergeMethods } = await readAgentSettings({ agentDir, repositoryRoot: mainRoot, projectTrusted: new ProjectTrustStore(agentDir).get(mainRoot) === true });
+        const { trust, reason } = readProjectTrust(agentDir, mainRoot);
+        if (trust === "unreadable") fail(`读不了授信记录 ${tilde(trustFilePath(agentDir))}：${reason}`, "改好这个文件后再交付");
+        const { gitDelivery, mergeMethods } = await readAgentSettings({ agentDir, repositoryRoot: mainRoot, projectTrusted: trust === "trusted" });
         const ui = { confirm: (window: Parameters<typeof confirmWindow>[1]) => confirmWindow(ctx, window), choose: (window: Parameters<typeof chooseWindow>[1]) => chooseWindow(ctx, window) };
         return result(gitDelivery.mode === "local"
           ? await deliverLocally(facts, ui, { repositoryRoot: mainRoot, mergeMethods: mergeMethods.methods })

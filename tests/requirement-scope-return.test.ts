@@ -8,7 +8,7 @@ import { RequirementStateStore } from "../src/modules/requirement/requirement-st
 import { ApprovalManifestStore } from "../src/modules/requirement/approval-manifest-store.ts";
 import { UserInteractionCore } from "../src/modules/interaction/user-interaction.ts";
 import { decisionDigest } from "../src/modules/requirement/short-decision-format.ts";
-import { repositoryDatabase, uuidv7, withDatabase } from "../src/core/storage/database.ts";
+import { uuidv7 } from "../src/core/storage/database.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
 import { createRequirementReadTool } from "../src/modules/pm/requirement-read-tool.ts";
 import { addWorktree, createRepoFixture, GIT_ENV, removeRepoFixture } from "./helpers/repo-fixture.ts";
@@ -73,7 +73,7 @@ async function fixture() {
   const supersede = () => { expect(changed).toBe(false); second.save(revision.capability); changed = true; };
   const verifyRevision = () => {
     expect(changed).toBe(true); expect(state.read(saved.requirementId)).toEqual(baseline);
-    expect(withDatabase(repositoryDatabase(options.dataRoot, options.repoId), (db) => db.read<any>("short_decisions", decisions.decisionIds[0]!)!.data.status)).toBe("superseded");
+    expect(second.readDecision(saved.requirementId, decisions.decisionIds[0]!).status).toBe("superseded");
     expect(() => store.read(reference)).toThrow(/manifest_decision/);
   };
   const tool = async (authorize: () => boolean = () => true) => {

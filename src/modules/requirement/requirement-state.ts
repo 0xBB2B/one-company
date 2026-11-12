@@ -15,11 +15,13 @@ import { promoteOnApprovalIn, readBoardIn } from "./requirement-prototypes.ts";
 import { writePrototypeRevision } from "./requirement-prototype-revisions.ts";
 import { readGit } from "../../core/exec/git-read.ts";
 import { assertNoRequirementWriteClaimIn, assertNoUnfinishedRequirementOperationsIn, releaseDeadRequirementWriteIn } from "./requirement-coordination.ts";
+import { createLineAnchorIn, linedRequirementIn } from "./line-anchors.ts";
 
-import { registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
+import { APPROVAL_MANIFEST_NAMESPACE, registeredApprovalManifestIn, summarizeApprovalManifest } from "./approval-manifest-store.ts";
+import { manifestAuthorizesImplement } from "./approval-manifest.ts";
 import type { ApprovalManifestReference } from "./approval-manifest.ts";
 
-export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "bind-workspace" | "acquire-pm" | "release-pm" | "check-pm" | "check-scheduling" | "record-pm-diff" | "events" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "assess-update" | "record-decisions" | "read-decisions";
+export type RequirementAction = "open" | "reserve" | "read" | "saved-version" | "approved-version" | "implement-authorization" | "bind-workspace" | "acquire-pm" | "release-pm" | "check-pm" | "check-scheduling" | "record-pm-diff" | "events" | "deliver-approved-event" | "acknowledge-approved-event" | "issue-approved-baseline" | "check-approved-return" | "begin-close" | "finish-close" | "block-recovery" | "assess-update" | "record-decisions" | "read-decisions";
 export interface StateAuthorizationRequest { action: RequirementAction; repoId: string; input: Readonly<Record<string, unknown>> }
 export interface RequirementAccessState { record: StoredRecord<RequirementRecord> | null; pmLeaseHash: string }
 export interface RequirementAccessChange {
@@ -56,6 +58,45 @@ function increment(value: number): number {
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object") { for (const child of Object.values(value)) deepFreeze(child); Object.freeze(value); }
   return value;
+}
+
+function writeRequirementIn(db: LocalDatabase, repoId: string, record: StoredRecord<RequirementRecord>, data: RequirementRecord, kind: RequirementEvent["kind"], from: PrdReference | null, to: PrdReference | null, receiptId: string | null, now: number) {
+  data.updatedAt = Math.max(data.updatedAt, now);
+  checkRequirement(data, data.requirementId, repoId);
+  const version = db.update("requirements", data.requirementId, record.version, data);
+  const event = checked(RequirementEvent, { requirementId: data.requirementId, repoId: data.repoId, kind, version, epoch: data.epoch, revision: data.revision, from, to, receiptId, recoveryReason: data.recoveryReason,
+    ...(kind === "prd.approved" ? { approvalManifest: data.approvalManifest } : {}) });
+  const queued = db.append(eventStream(data.requirementId), event);
+  return { record: { id: record.id, version, data }, event: queued };
+}
+
+export function recordSavedIn(db: LocalDatabase, repoId: string, now: number, record: StoredRecord<RequirementRecord>, request: Static<typeof commands.save>): StoredRecord<RequirementRecord> {
+  // anchor 不进摘要：要和升级前记下的旧操作摘要一致，迁移后中断的保存才能续完
+  const { line: _line, anchor: _anchor, ...identity } = request;
+  const digest = createHash("sha256").update(canonicalJson(identity)).digest("hex");
+  const existing = db.read("requirement_operations", request.operationId);
+  if (existing) {
+    const operation = checked(Operation, existing.data);
+    if (operation.requirementId !== record.id || operation.digest !== digest) throw new RequirementStateError("operation_conflict");
+    return record;
+  }
+  if (record.version !== request.version) throw new StaleVersionError();
+  const saveAnchor = () => createLineAnchorIn(db, { repoId, requirementId: request.requirementId, anchor: request.anchor, kind: "save",
+    line: request.line, fileCommit: request.reference.commit, saved: request.reference, now });
+  if (equal(record.data.saved, request.reference)) {
+    const existingSave = db.events(eventStream(record.id)).reverse().find((event) => {
+      const data = checked(RequirementEvent, event.data);
+      return data.requirementId === record.id && data.repoId === repoId && data.kind === "prd.saved" && equal(data.to, request.reference);
+    });
+    if (!existingSave) throw new RequirementStateError("saved_event_missing");
+    saveAnchor();
+    db.create("requirement_operations", request.operationId, { requirementId: record.id, digest, sequence: existingSave.sequence });
+    return record;
+  }
+  const result = writeRequirementIn(db, repoId, record, { ...record.data, saved: request.reference }, "prd.saved", record.data.saved, request.reference, null, now);
+  saveAnchor();
+  db.create("requirement_operations", request.operationId, { requirementId: record.id, digest, sequence: result.event.sequence });
+  return result.record;
 }
 
 /** 需求生命周期、PM 租约与已批准事件游标的内部存储；不创建PRD文件、不派工、不开放模型工具。 */
@@ -168,13 +209,7 @@ export class RequirementStateStore {
   }
   private version(record: StoredRecord, expected: number): void { if (record.version !== expected) throw new StaleVersionError(); }
   private write(db: LocalDatabase, record: StoredRecord<RequirementRecord>, data: RequirementRecord, kind: RequirementEvent["kind"], from: PrdReference | null = null, to: PrdReference | null = null, receiptId: string | null = null, now = this.now()) {
-    data.updatedAt = Math.max(data.updatedAt, now);
-    checkRequirement(data, data.requirementId, this.options.repoId);
-    const version = db.update("requirements", data.requirementId, record.version, data);
-    const event = checked(RequirementEvent, { requirementId: data.requirementId, repoId: data.repoId, kind, version, epoch: data.epoch, revision: data.revision, from, to, receiptId, recoveryReason: data.recoveryReason,
-      ...(kind === "prd.approved" ? { approvalManifest: data.approvalManifest } : {}) });
-    const queued = db.append(eventStream(data.requirementId), event);
-    return { record: { id: record.id, version, data }, event: queued };
+    return writeRequirementIn(db, this.options.repoId, record, data, kind, from, to, receiptId, now);
   }
   private owner(db: LocalDatabase, requirementId: string) {
     const stored = db.read("pm_ownership", requirementId);
@@ -304,6 +339,14 @@ export class RequirementStateStore {
     this.authorize("read", { requirementId }); return record;
   }
 
+  approvedHashes(requirementId: string): Set<string> {
+    checked(id, requirementId); this.authorize("read", { requirementId });
+    const path = this.path();
+    if (!pathExists(path)) throw new RequirementStateError("unknown_requirement");
+    const hashes = withDatabase(path, (db) => new Set(this.approvedEvents(db, requirementId).map((event) => event.data.to.hash)));
+    this.authorize("read", { requirementId }); return hashes;
+  }
+
   pmOwner(requirementId: string): PmRecord | null {
     checked(id, requirementId); this.authorize("read", { requirementId });
     if (!pathExists(this.path())) throw new RequirementStateError("unknown_requirement");
@@ -346,28 +389,9 @@ export class RequirementStateStore {
 
   recordSavedVersion(input: Static<typeof commands.save>): StoredRecord<RequirementRecord> {
     const request = checked(commands.save, input);
-    const digest = createHash("sha256").update(canonicalJson(request)).digest("hex");
     return this.mutate("saved-version", request, (db) => {
       const record = this.get(db, request.requirementId); this.active(record.data, true);
-      const existing = db.read("requirement_operations", request.operationId);
-      if (existing) {
-        const operation = checked(Operation, existing.data);
-        if (operation.requirementId !== record.id || operation.digest !== digest) throw new RequirementStateError("operation_conflict");
-        return record;
-      }
-      this.version(record, request.version);
-      if (equal(record.data.saved, request.reference)) {
-        const existingSave = db.events(eventStream(record.id)).reverse().find((event) => {
-          const data = checked(RequirementEvent, event.data);
-          return data.requirementId === record.id && data.repoId === this.options.repoId && data.kind === "prd.saved" && equal(data.to, request.reference);
-        });
-        if (!existingSave) throw new RequirementStateError("saved_event_missing");
-        db.create("requirement_operations", request.operationId, { requirementId: record.id, digest, sequence: existingSave.sequence });
-        return record;
-      }
-      const result = this.write(db, record, { ...record.data, saved: request.reference }, "prd.saved", record.data.saved, request.reference);
-      db.create("requirement_operations", request.operationId, { requirementId: record.id, digest, sequence: result.event.sequence });
-      return result.record;
+      return recordSavedIn(db, this.options.repoId, this.now(), record, request);
     });
   }
   async recordApprovedVersion(input: Static<typeof commands.approve>): Promise<StoredRecord<RequirementRecord>> {
@@ -389,9 +413,12 @@ export class RequirementStateStore {
       if (!equal(record.data.workspace, previous.data.workspace)) throw new RequirementStateError("workspace_binding_changed");
       if (record.data.workspace) this.checkClaims(db, record.data.workspace);
       assertNoUnfinishedRequirementOperationsIn(db, record.id);
+      releaseDeadRequirementWriteIn(db, this.options.repoId, record.id);
       assertNoRequirementWriteClaimIn(db, this.options.repoId, record.id);
-      if (!equal(record.data.saved, request.reference)) throw new RequirementStateError("saved_version_mismatch");
-      const digest = createHash("sha256").update(canonicalJson(request)).digest("hex");
+      const lined = linedRequirementIn(db, record, request.line ?? []);
+      if (!equal(lined.data.saved, request.reference)) throw new RequirementStateError("saved_version_mismatch");
+      const { line: _line, ...identity } = request;
+      const digest = createHash("sha256").update(canonicalJson(identity)).digest("hex");
       const consumed = db.read("requirement_approval_uses", request.receiptId);
       if (consumed) {
         const use = checked(Operation, consumed.data);
@@ -399,22 +426,48 @@ export class RequirementStateStore {
           !equal(record.data.approvalManifest?.reference ?? null, request.manifest)) throw new RequirementStateError("approval_conflict");
         return record;
       }
-      this.version(record, request.version);
+      this.version(lined, request.version);
       const final = this.get(db, request.requirementId);
       if (final.version !== record.version || !equal(final.data, record.data)) throw new RequirementStateError("manifest_stale");
-      const approvalManifest = summarizeApprovalManifest(registeredApprovalManifestIn(db, this.options.repoId, request.manifest, final, request.receiptId));
+      const approvalManifest = summarizeApprovalManifest(registeredApprovalManifestIn(db, this.options.repoId, request.manifest, linedRequirementIn(db, final, request.line ?? []), request.receiptId, request.line));
       const revision = increment(record.data.revision);
-      if (readBoardIn(db, record.id)?.data.entries.length) {
+      if (readBoardIn(db, record.id, request.line ?? []).entries.length) {
         if (!request.prototypes) throw new RequirementStateError("prototype_digest_required");
-        const prototypes = promoteOnApprovalIn(db, { requirementId: record.id, digest: request.prototypes }).items
+        const prototypes = promoteOnApprovalIn(db, { requirementId: record.id, digest: request.prototypes, line: request.line ?? [] }).items
           .filter((item) => item.label !== "removed").map(({ name, version, hash, bytes, picked }) => ({ name, version, hash, bytes, picked }));
         if (prototypes.length) writePrototypeRevision(db, { requirementId: record.id, revision, prototypes });
       }
       const result = this.write(db, record, { ...record.data, approvalManifest,
-        ...(!record.data.docSpec && request.docSpec ? { docSpec: request.docSpec } : {}), lifecycle: "active", revision, approved: request.reference, approvalReceiptId: request.receiptId,
+        ...(!record.data.docSpec && request.docSpec ? { docSpec: request.docSpec } : {}), lifecycle: "active", revision, saved: request.reference, approved: request.reference, approvalReceiptId: request.receiptId,
         pendingRevision: record.data.lifecycle === "active" ? revision : null }, "prd.approved", record.data.approved, request.reference, request.receiptId, approvalTime);
+      createLineAnchorIn(db, { repoId: this.options.repoId, requirementId: record.id, anchor: uuidv7(), kind: "approval", line: request.line ?? [], now: approvalTime });
       db.create("requirement_approval_uses", request.receiptId, { requirementId: record.id, digest, sequence: result.event.sequence });
       return result.record;
+    }, authorizeManifest);
+  }
+  async recordImplementAuthorization(input: Static<typeof commands.authorizeImplement>): Promise<StoredRecord<RequirementRecord>> {
+    const request = checked(commands.authorizeImplement, input); this.authorize("implement-authorization", request);
+    const authorizeManifest = () => {
+      const allowed = this.options.authorizeManifest?.(deepFreeze({ requirementId: request.requirementId,
+        version: request.version, receiptId: request.receiptId, manifest: structuredClone(request.manifest) }));
+      if (isPromise(allowed)) void Promise.prototype.then.call(allowed, () => undefined, () => undefined);
+      if (allowed !== true) throw new RequirementStateError("manifest_authorization_required");
+    };
+    return this.mutate("implement-authorization", request, (db) => {
+      const record = this.get(db, request.requirementId); this.active(record.data);
+      if (!equal(record.data.saved, record.data.approved)) throw new RequirementStateError("draft_unapproved_changes");
+      if (equal(record.data.approvalManifest?.reference ?? null, request.manifest) &&
+        db.read<{ supplement?: { admission: { receiptId: string } } }>(APPROVAL_MANIFEST_NAMESPACE, request.manifest.manifestHash)?.data.supplement?.admission.receiptId === request.receiptId) return record;
+      this.version(record, request.version);
+      assertNoUnfinishedRequirementOperationsIn(db, record.id);
+      assertNoRequirementWriteClaimIn(db, this.options.repoId, record.id);
+      const currentRef = record.data.approvalManifest?.reference;
+      if (!currentRef) throw new RequirementStateError("approved_version_missing");
+      if (manifestAuthorizesImplement(registeredApprovalManifestIn(db, this.options.repoId, currentRef, record))) throw new RequirementStateError("implement_already_authorized");
+      const manifest = registeredApprovalManifestIn(db, this.options.repoId, request.manifest, record, request.receiptId, []);
+      const baseHash = db.read<{ supplement?: { baseManifestHash: string } }>(APPROVAL_MANIFEST_NAMESPACE, request.manifest.manifestHash)?.data.supplement?.baseManifestHash;
+      if (baseHash !== currentRef.manifestHash) throw new RequirementStateError("manifest_supplement_mismatch");
+      return this.write(db, record, { ...record.data, approvalManifest: summarizeApprovalManifest(manifest) }, "implement.authorized", null, null, request.receiptId).record;
     }, authorizeManifest);
   }
 

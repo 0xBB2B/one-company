@@ -53,7 +53,7 @@ async function world(initialDisabled: Set<string> = new Set<string>()) {
   };
   const options = (w.manager as unknown as { options: Record<string, unknown> }).options;
   options.loadRoleCatalog = async () => (await loadRoleCatalog({ defaultDir: defaultRoleDir(), userDir, projectDir: join(root, "none"), parseFrontmatter, projectTrusted: false })).roles;
-  options.skillDirs = [skillDir];
+  options.loadSkillDirs = () => [skillDir];
   const task = (key: string) => withDatabase(repositoryDatabase(w.fixture.dataRoot, w.fixture.repoId), (db) =>
     db.list<{ key: string; taskId: string; status: string }>(TASKS).map((row) => row.data).find((entry) => entry.key === key)!);
   const dispatch = (key: string) => w.manager.dispatchTask({ pmRunId: w.pm.runId, taskId: task(key).taskId, retry: null });
@@ -96,6 +96,24 @@ test("M7-AC22/AC23：指定定义不存在、声明的 skill 缺失、模型不�
   await expect(w.dispatch("b")).rejects.toMatchObject({ code: "skill_unavailable" });
   await expect(w.dispatch("c")).rejects.toMatchObject({ code: "model_unavailable" });
   await expect(w.dispatch("d")).rejects.toMatchObject({ code: "thinking_unsupported" });
+});
+
+test("同一个 RunManager 两次派工之间 loadSkillDirs 的名单变了：第一次找不到项目 skill 报 skill_unavailable，名单加入项目 skill 目录后再派成功并加载项目那份", async () => {
+  const w = await world();
+  await w.define("proj-dev", "skills: [proj-kit]\n");
+  const projectSkills = join(w.fixture.repositoryRoot, ".pi", "skills");
+  await mkdir(join(projectSkills, "proj-kit"), { recursive: true });
+  await writeFile(join(projectSkills, "proj-kit", "SKILL.md"), "# 项目规范\nMARKER-PROJECT\n");
+  let trusted = false;
+  w.options.loadSkillDirs = () => trusted ? [projectSkills, w.skillDir] : [w.skillDir];
+  await w.plan.execute({ action: "propose", tasks: [spec("a", { agent: "proj-dev" }), spec("b", { agent: "proj-dev", goalUnitIds: ["scenario.failure"] })] });
+  await w.plan.execute({ action: "confirm", planVersion: 1 });
+  await expect(w.dispatch("a")).rejects.toMatchObject({ code: "skill_unavailable" });
+  trusted = true;
+  w.provider.queue.push({ type: "text", text: "开工" }, { type: "text", text: "PM 收到" });
+  const run = await w.dispatch("b");
+  const record = await w.runStore.get(run.runId);
+  expect(record.ok && record.run.agent).toMatchObject({ name: "proj-dev", skills: [{ name: "proj-kit", path: join(projectSkills, "proj-kit", "SKILL.md") }] });
 });
 
 test("PM 指定 prototype 类定义承担 worker 任务时派出失败，原因写明只能由主窗口派出；角色目录不列 prototype 类", async () => {
@@ -330,7 +348,7 @@ const packageSkills = join(defaultRoleDir(), "..", "skills");
 test("审 node-worker 的任务、名单里有开着的 node-reviewer：通用审查任务说明写明 typescript-coding、node-pitfalls 由 node-reviewer 核对，上下文不含这些 skill 正文，node-reviewer 的任务说明没有这句", async () => {
   const t = await reviewWorld();
   await t.define("node-reviewer", `skills: [${NODE_SKILLS}]\n`, "你是 node-reviewer。", "reviewer");
-  t.options.skillDirs = [t.skillDir, packageSkills];
+  t.options.loadSkillDirs = () => [t.skillDir, packageSkills];
   t.patchTask({ agent: "node-worker", reviewers: [{ agent: "node-reviewer", reason: "Node 服务" }] });
   await t.review();
   await until(() => genericReview(t) !== undefined && t.requestOf("你是 node-reviewer。") !== undefined);
@@ -481,7 +499,7 @@ test("第 2 轮 vue-reviewer 被跳过、通用审查没交结论，之后重新
 test("审 node-worker 的任务、node-reviewer 被关掉：通用审查上下文加载 node-worker 的全部 skill（typescript-coding、node-pitfalls），任务说明写明已加载给它核对", async () => {
   const t = await reviewWorld();
   await t.define("node-reviewer", `skills: [${NODE_SKILLS}]\n`, "你是 node-reviewer。", "reviewer");
-  t.options.skillDirs = [t.skillDir, packageSkills];
+  t.options.loadSkillDirs = () => [t.skillDir, packageSkills];
   t.patchTask({ agent: "node-worker", reviewers: [{ agent: "node-reviewer", reason: "Node 服务" }] });
   t.disabled.add("node-reviewer");
   await t.review();
@@ -599,7 +617,7 @@ test("项目 .pi/skills 放了同名 skill 时，专项审查的系统提示词�
   await mkdir(join(t.skillDir, "go-pitfalls"), { recursive: true });
   await writeFile(join(projectSkills, "go-pitfalls", "SKILL.md"), "# Go 坑\nMARKER-PROJECT\n");
   await writeFile(join(t.skillDir, "go-pitfalls", "SKILL.md"), "# Go 坑\nMARKER-PACKAGE\n");
-  t.options.skillDirs = [projectSkills, t.skillDir];
+  t.options.loadSkillDirs = () => [projectSkills, t.skillDir];
   await t.review();
   await until(() => t.requestOf("你是 go-reviewer。") !== undefined);
   expect(prompt(t.requestOf("你是 go-reviewer。"))).toContain("MARKER-PROJECT");

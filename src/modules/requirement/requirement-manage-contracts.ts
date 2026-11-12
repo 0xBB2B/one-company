@@ -22,6 +22,7 @@ export const RequirementServiceAction = Type.Union([
   Type.Literal("create"),
   Type.Literal("updateDraft"),
   Type.Literal("confirmUpdate"),
+  Type.Literal("authorizeImplement"),
   Type.Literal("readSaved"),
   Type.Literal("readApproved"),
   Type.Literal("diff"),
@@ -66,6 +67,8 @@ export const MetadataRequirementInput = id;
 export type CreateRequirementInput = Static<typeof CreateRequirementInput>;
 export type UpdateDraftInput = Static<typeof UpdateDraftInput>;
 export type ConfirmUpdateInput = Static<typeof ConfirmUpdateInput>;
+export const AuthorizeImplementInput = strictObject({ requirementId: id, version, receiptId: id, manifest: ApprovalManifestReferenceSchema });
+export type AuthorizeImplementInput = Static<typeof AuthorizeImplementInput>;
 export type ReadRequirementInput = Static<typeof ReadRequirementInput>;
 export type DiffRequirementInput = Static<typeof DiffRequirementInput>;
 
@@ -83,8 +86,11 @@ export interface RequirementReceipt {
   version: number;
   epoch: number;
   revision: number;
+  anchor: string;
   approvalScope?: RequirementApprovalScope;
 }
+
+export type ApprovalReceipt = Omit<RequirementReceipt, "anchor">;
 
 export interface RequirementReadResult {
   requirementId: string;
@@ -95,6 +101,8 @@ export interface RequirementReadResult {
   epoch: number;
   title: string;
   body: string;
+  restoreFailure?: string;
+  lineAnchor?: string;
   approvalScope?: RequirementApprovalScope;
 }
 
@@ -123,6 +131,8 @@ export interface RequirementMetadataResult {
   approved: { commit: string; prdHash: `sha256:${string}` } | null;
   archivePath: string | null;
   savedOperationId: string | null;
+  restoreFailure?: string;
+  lineAnchor?: string;
   approvalScope?: RequirementApprovalScope;
 }
 

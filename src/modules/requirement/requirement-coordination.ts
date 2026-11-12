@@ -26,7 +26,7 @@ export interface RequirementWriteClaimInput extends RequirementWriteOwner {
   acquiredAt: number;
 }
 
-function processIsAlive(pid: number): boolean {
+export function processIsAlive(pid: number): boolean {
   if (pid === process.pid) return true;
   try {
     process.kill(pid, 0);

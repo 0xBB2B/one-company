@@ -17,12 +17,15 @@ import type {
   ProjectManageHostContext,
 } from "../src/modules/project-index/project-manage-tool.ts";
 import { repositoryIdentity } from "../src/core/storage/identity.ts";
+import { RequirementStateStore } from "../src/modules/requirement/requirement-state.ts";
 import { RequirementService, requirementIntentHash } from "../src/modules/requirement/requirement-service.ts";
 import { RequirementCloseService } from "../src/modules/delivery/workflow-close.ts";
 import { MANAGED_WORKSPACES, workspaceLocation } from "../src/modules/delivery/workspace-manage.ts";
 import { draftApprover } from "./helpers/approval-fixture.ts";
 import type { WriteGrant } from "./helpers/approval-fixture.ts";
 import { createFakePi } from "./helpers/fake-pi.ts";
+import { LINE_ANCHOR_ENTRY, currentLine, lineViewIn } from "../src/modules/requirement/line-anchors.ts";
+import { readDraftFiles } from "../src/modules/requirement/prd-storage.ts";
 import { temporaryRoot } from "./helpers/temporary-root.ts";
 import { STALE_LSTART, exitedPid, writeMarker } from "./helpers/maintenance-marker.ts";
 
@@ -634,64 +637,293 @@ describe("取消、session_shutdown 与扩展接线", () => {
   });
 });
 
-describe("project_manage 项目规范 AGENTS.md：只有用户在窗口里选写入才写文件", () => {
-  const RULES_V1 = "# 项目规范\n\n- 导出常量用大写下划线命名。\n";
-  const RULES_V2 = "# 项目规范\n\n- 导出常量用大写下划线命名。\n- 不使用泛型。\n";
-  const service: OpenProjectIndexService = async () => ({ preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}) });
+describe("project_manage 项目规范 AGENTS.md：只有用户在窗口里选写进草稿才记进需求草稿", () => {
+  const ROOT_RULES = "# 项目规范\n\n- 导出常量用大写下划线命名。\n";
+  const RULES_V1 = ROOT_RULES + "- 不使用泛型。\n";
+  const RULES_V2 = RULES_V1 + "- 注释用中文。\n";
+  const BODY = "# 目标 {#goals}\n导出订单。\n";
+  const TITLE = "把这些改动写进需求「订单导出」的草稿？";
+  const NOTE = "批准需求后随需求分支写入，此后这个需求派出的 PM、worker、reviewer 都按新内容工作。";
+  const idle: OpenProjectIndexService = async () => ({ preview: async () => ({}), init: async () => ({}), refresh: async () => ({}), status: async () => ({}) });
   const details = (result: unknown) => (result as { details: Record<string, unknown> }).details;
-  const update = (world: Awaited<ReturnType<typeof fixture>>, content: string, ctx: ExtensionContext) =>
-    call(runtimeFor(world, service), { action: "conventions-update", repoId: world.repoId, content }, ctx);
+  const utf8 = (bytes: Uint8Array | null) => bytes === null ? null : Buffer.from(bytes).toString("utf8");
 
-  test("M8D2-AC3：首次提出时窗口展示全文，选写入才写文件；选不写入、按 Esc、没有界面、内容过长或参数里伪造确认都不写；再次提出时展示与磁盘现有内容的差异", async () => {
+  async function draftWorld(options: { rootRules?: string | null; approve?: boolean } = {}) {
     const world = await fixture();
-    const file = join(world.repositoryRoot, "AGENTS.md");
-    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: { action: "conventions-update", repoId: world.repoId, content: RULES_V1, approved: true } })).toBe(false);
-    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: { action: "conventions-status", repoId: world.repoId } })).toBe(false);
-    await expect(update(world, RULES_V1, context("session-main", async () => "写入", false))).rejects.toMatchObject({ code: "conventions_confirmation_required" });
-    for (const decision of ["不写入", false] as const) {
-      expect(details(await update(world, RULES_V1, context("session-main", async () => decision)))).toMatchObject({ status: "cancelled" });
-      await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    }
-    const noDialog = context("session-main", async () => { throw new Error("不应弹窗"); });
-    await expect(update(world, "x".repeat(16 * 1024 + 1), noDialog)).rejects.toMatchObject({ code: "invalid_shape" });
-    expect(details(await update(world, "规".repeat(6000), noDialog)))
-      .toMatchObject({ status: "blocked", reason: "项目规范内容超出大小上限", next: "精简 AGENTS.md 内容后再提交" });
+    const rootFile = join(world.repositoryRoot, "AGENTS.md");
+    const rootRules = options.rootRules === undefined ? ROOT_RULES : options.rootRules;
+    if (rootRules !== null) await writeFile(rootFile, rootRules);
+    const paths = { repositoryRoot: world.repositoryRoot, dataRoot: world.dataRoot, repoId: world.repoId };
+    const grants = new Map<string, { action: string; intent: string; receiptId?: string }>();
+    const requirements = await RequirementService.open({ ...paths, authorize: (request) => {
+      if (request.repoId !== paths.repoId) return false;
+      if (request.action === "metadata") return true;
+      const grant = request.operationId ? grants.get(request.operationId) : undefined;
+      return !!grant && grant.action === request.action && grant.intent === request.intentHash && grant.receiptId === request.receiptId;
+    }, authorizeManifest: () => true });
+    const create = { requestId: uuidv7(), operationId: uuidv7(), title: "订单导出", body: BODY };
+    grants.set(create.operationId, { action: "create", intent: requirementIntentHash({ title: create.title, body: BODY }) });
+    const { requirementId } = await requirements.create(create);
+    const approveNow = async () => {
+      const grantWrite: WriteGrant = (r) => grants.set(r.operationId, { action: r.action, intent: requirementIntentHash({ title: r.title, body: r.body }), receiptId: r.receiptId });
+      await draftApprover(paths, requirements, { requirementId, operationId: create.operationId, title: "订单导出", body: BODY }, grantWrite)();
+    };
+    if (options.approve) await approveNow();
+    const reserveOnly = async () => {
+      const store = await RequirementStateStore.open({ ...paths, authorize: () => true, authorizeManifest: () => true });
+      return store.reserve({ requestId: uuidv7(), intentHash: "b".repeat(64) }).id;
+    };
+    const db = <T>(run: Parameters<typeof withDatabase<T>>[1]) => withDatabase(repositoryDatabase(world.dataRoot, world.repoId), run);
+    const baseAnchor = db((d) => d.list<{ kind: string; sequence: number; requirementId: string; anchor: string }>("line_anchors")
+      .map((row) => row.data).filter((record) => record.requirementId === requirementId && record.kind === "save").sort((x, y) => x.sequence - y.sequence)[0]!.anchor);
+    const branch: unknown[] = [{ type: "custom", customType: LINE_ANCHOR_ENTRY, data: { repoId: world.repoId, requirementId, anchor: baseAnchor } }];
+    const fakePi = createFakePi();
+    const pi = { ...fakePi.pi, appendEntry: (customType: string, data: unknown) => { branch.push({ type: "custom", customType, data }); } };
+    const window = { windowId: world.host.windowId, sessionId: world.host.sessionId,
+      workspace: { repos: [{ repoId: world.repoId, path: world.repositoryRoot, commonDir: join(world.repositoryRoot, ".git") }], skipped: [] }, clients: { closeAll() {} } } as never;
+    projectManageExtension(pi as unknown as ExtensionAPI, { dataRoot: world.dataRoot, windowReady: async () => window, windowContext: () => window, openService: idle });
+    const shown: Array<{ title: string; text: string; choices: string[] }> = [];
+    const ctxFor = (decide: (window: { title: string; text: string; choices: string[] }) => WindowDecision | Promise<WindowDecision>, hasUI = true) => ({
+      cwd: "/not-used", mode: hasUI ? "rpc" : "print", hasUI,
+      ui: answeringUi((w) => { shown.push(w); return decide(w); }),
+      sessionManager: { getSessionId: () => world.host.sessionId, getBranch: () => branch } as never,
+    }) as unknown as ExtensionContext;
+    const first = ctxFor(async () => true);
+    await fakePi.trigger("session_start", { type: "session_start", reason: "startup" }, first);
+    const tool = fakePi.registeredTools()[0] as unknown as { execute: (...args: unknown[]) => Promise<unknown> };
+    const update = (ctx: ExtensionContext, content: string, id: string | null = requirementId) =>
+      tool.execute("tool-call", { request: { action: "conventions-update", repoId: world.repoId, ...(id === null ? {} : { requirementId: id }), content } }, undefined, undefined, ctx);
+    const line = () => currentLine({ getBranch: () => branch } as never)[requirementId] ?? [];
+    const filesAt = async (anchors: string[]) => {
+      const commit = db((d) => lineViewIn(d, requirementId, anchors).tip!.fileCommit!);
+      const files = await readDraftFiles({ dataRoot: world.dataRoot, repoId: world.repoId, requirementId, repositoryRoot: world.repositoryRoot, commit, authorize: () => true } as never);
+      return { agents: utf8(files.agents), agentsBase: utf8(files.agentsBase) };
+    };
+    const conventionsAnchors = () => db((d) => d.list<{ kind: string; requirementId: string; anchor: string; parent: string | null }>("line_anchors").map((row) => row.data)
+      .filter((record) => record.requirementId === requirementId && record.kind === "conventions"));
+    const freeze = () => db((d) => {
+      const row = d.read<{ recovery: string; recoveryReason: string }>("requirements", requirementId)!;
+      d.update("requirements", requirementId, row.version, { ...row.data, recovery: "needs_review", recoveryReason: "history_unknown" });
+    });
+    return { ...world, rootFile, requirementId, baseAnchor, branch, shown, ctxFor, update, line, filesAt, conventionsAnchors, requirements, approveNow, reserveOnly, freeze };
+  }
 
-    const shown: Array<{ title: string; text: string }> = [];
-    const write = context("session-main", async (title, text) => { shown.push({ title, text }); return "写入"; });
-    expect(details(await update(world, RULES_V1, write))).toMatchObject({ status: "written" });
-    expect(shown[0]!.title).toBe("把这些改动写入项目规范 AGENTS.md？");
-    expect(shown[0]!.text).toContain("仓库里还没有 AGENTS.md，要写入的全文如下：");
-    expect(shown[0]!.text).toContain("+ - 导出常量用大写下划线命名。");
-    expect(shown[0]!.text).toContain("写入后，此后派出的 PM、worker、reviewer 都按新内容工作。");
-    expect(shown[0]!.text).toMatch(/ → 写入\n {3}不写入\n {3}其他（自己输入修改意见）\n/u);
-    expect(shown[0]!.text).toContain("↑↓ 选择 · 回车确认 · Esc 取消（不写入）");
-    await expect(readFile(file, "utf8")).resolves.toBe(RULES_V1);
-    expect(details(await update(world, RULES_V1, write))).toMatchObject({ status: "unchanged" });
-    expect(shown).toHaveLength(1);
-
-    await writeFile(file, RULES_V1 + "- 手工加的一条。\n");
-    await update(world, RULES_V2, write);
-    expect(shown[1]!.text).toContain("与仓库里现有的 AGENTS.md 相比的改动：");
-    expect(shown[1]!.text).toContain("+ - 不使用泛型。");
-    expect(shown[1]!.text).toContain("- - 手工加的一条。");
-    expect(shown[1]!.text).toContain("  - 导出常量用大写下划线命名。");
-    expect(shown[1]!.text).not.toContain("指纹");
-    await expect(readFile(file, "utf8")).resolves.toBe(RULES_V2);
+  test("conventions-update 必须带 requirementId：不带时参数校验失败，带了 approved 之类的字段也失败", async () => {
+    const world = await fixture();
+    const base = { action: "conventions-update", repoId: world.repoId, content: RULES_V1 };
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: { ...base, requirementId: uuidv7() } })).toBe(true);
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: base })).toBe(false);
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: { ...base, requirementId: uuidv7(), approved: true } })).toBe(false);
+    expect(Value.Check(PROJECT_MANAGE_PARAMETERS, { request: { action: "conventions-status", repoId: world.repoId, requirementId: uuidv7() } })).toBe(false);
   });
 
-  test("M8D2-AC3：输入修改意见时不写文件，用户原话交回主窗口；确认期间磁盘被改时拒绝并写明原因", async () => {
-    const world = await fixture();
-    const file = join(world.repositoryRoot, "AGENTS.md");
-    await writeFile(file, RULES_V1);
-    const revised = details(await update(world, RULES_V2, context("session-main", async () => ({ other: "只禁止业务代码用泛型" }))));
+  test("不带 requirementId 调用工具：被拒、不弹窗、不写任何东西", async () => {
+    const w = await draftWorld();
+    await expect(w.update(w.ctxFor(async () => { throw new Error("不应弹窗"); }), RULES_V1, null)).rejects.toThrow(/requirementId/u);
+    expect(w.shown).toEqual([]);
+    expect(w.conventionsAnchors()).toEqual([]);
+  });
+
+  test("需求已批准：被拒，原因写清要先指定一个草稿需求，不弹窗、不写任何东西", async () => {
+    const w = await draftWorld({ approve: true });
+    const outcome = await w.update(w.ctxFor(async () => { throw new Error("不应弹窗"); }), RULES_V1)
+      .then((result) => JSON.stringify(result), (error: { message?: string; advice?: unknown }) => JSON.stringify({ message: error.message, advice: error.advice }));
+    expect(outcome).toContain("要先指定一个草稿需求");
+    expect(w.shown).toEqual([]);
+    expect(w.conventionsAnchors()).toEqual([]);
+    await expect(readFile(w.rootFile, "utf8")).resolves.toBe(ROOT_RULES);
+  });
+
+  test("草稿需求被冻结（recovery 为 needs_review）：被拒，原因写清需求在等恢复核对，不弹窗、草稿里不多出 AGENTS.md 提交", async () => {
+    const w = await draftWorld();
+    w.freeze();
+    const outcome = await w.update(w.ctxFor(async () => { throw new Error("不应弹窗"); }), RULES_V1)
+      .then((result) => JSON.stringify(result), (error: { message?: string; advice?: unknown }) => JSON.stringify({ message: error.message, advice: error.advice }));
+    expect(outcome).toContain("恢复核对");
+    expect(w.shown).toEqual([]);
+    expect(w.conventionsAnchors()).toEqual([]);
+    expect(w.line()).toEqual([w.baseAnchor]);
+    expect(await w.filesAt(w.line())).toEqual({ agents: null, agentsBase: null });
+    await expect(readFile(w.rootFile, "utf8")).resolves.toBe(ROOT_RULES);
+  });
+
+  test("没有界面时拒绝；内容过长时参数校验失败；超过规范大小上限时返回 blocked，都不弹窗", async () => {
+    const w = await draftWorld();
+    await expect(w.update(w.ctxFor(async () => true, false), RULES_V1)).rejects.toMatchObject({ code: "conventions_confirmation_required" });
+    const noDialog = w.ctxFor(async () => { throw new Error("不应弹窗"); });
+    await expect(w.update(noDialog, "x".repeat(16 * 1024 + 1))).rejects.toMatchObject({ code: "invalid_shape" });
+    expect(details(await w.update(noDialog, "规".repeat(6000))))
+      .toMatchObject({ status: "blocked", reason: "项目规范内容超出大小上限", next: "精简 AGENTS.md 内容后再提交" });
+    expect(w.conventionsAnchors()).toEqual([]);
+  });
+
+  test("窗口文字：标题、说明行、三个选项、Esc 说明与规定一字不差", async () => {
+    const w = await draftWorld();
+    expect(details(await w.update(w.ctxFor(async () => "写进草稿"), RULES_V1))).toMatchObject({ status: "written" });
+    expect(w.shown[0]!.title).toBe(TITLE);
+    expect(w.shown[0]!.choices.slice(-3)).toEqual(["写进草稿", "不写", "其他（自己输入修改意见）"]);
+    expect(w.shown[0]!.text).toContain(NOTE);
+    expect(w.shown[0]!.text).toContain("与仓库里现有的 AGENTS.md 相比的改动：");
+    expect(w.shown[0]!.text).toContain("+ - 不使用泛型。");
+    expect(w.shown[0]!.text).toContain("Esc 不写");
+    expect(w.shown[0]!.text).not.toContain("写入项目规范");
+    expect(w.shown[0]!.text).not.toContain("不写入");
+  });
+
+  test("选写进草稿：主仓库根目录 AGENTS.md 字节不变，这条线的文件状态有新 AGENTS.md 和 AGENTS.base.md，对话里多一条该需求的 conventions 锚点（父是原线尖）", async () => {
+    const w = await draftWorld();
+    const before = await readFile(w.rootFile);
+    expect(details(await w.update(w.ctxFor(async () => "写进草稿"), RULES_V1))).toMatchObject({ status: "written" });
+    expect((await readFile(w.rootFile)).equals(before)).toBe(true);
+    expect(w.line()).toHaveLength(2);
+    const [record] = w.conventionsAnchors();
+    expect(w.conventionsAnchors()).toHaveLength(1);
+    expect(record).toMatchObject({ anchor: w.line()[1], parent: w.baseAnchor });
+    expect(w.branch.at(-1)).toMatchObject({ customType: LINE_ANCHOR_ENTRY, data: { repoId: w.repoId, requirementId: w.requirementId, anchor: record!.anchor } });
+    expect(await w.filesAt(w.line())).toEqual({ agents: RULES_V1, agentsBase: ROOT_RULES });
+  });
+
+  test("同一条线上再改一次：窗口对比的是上一次写进草稿的内容，AGENTS.base.md 仍是第一次存下的主仓库内容", async () => {
+    const w = await draftWorld();
+    await w.update(w.ctxFor(async () => "写进草稿"), RULES_V1);
+    await w.update(w.ctxFor(async () => "写进草稿"), RULES_V2);
+    const text = w.shown[1]!.text;
+    expect(text).toContain("与仓库里现有的 AGENTS.md 相比的改动：");
+    expect(text).toContain("+ - 注释用中文。");
+    expect(text).toContain("  - 不使用泛型。");
+    expect(text).not.toContain("+ - 不使用泛型。");
+    expect(w.line()).toHaveLength(3);
+    expect(w.conventionsAnchors()).toHaveLength(2);
+    expect(await w.filesAt(w.line())).toEqual({ agents: RULES_V2, agentsBase: ROOT_RULES });
+    await expect(readFile(w.rootFile, "utf8")).resolves.toBe(ROOT_RULES);
+  });
+
+  test("对话线回到第一次修改之前：这个需求的文件状态里没有 AGENTS.md", async () => {
+    const w = await draftWorld();
+    await w.update(w.ctxFor(async () => "写进草稿"), RULES_V1);
+    expect(await w.filesAt(w.line())).toMatchObject({ agents: RULES_V1 });
+    w.branch.length = 1;
+    expect(w.line()).toEqual([w.baseAnchor]);
+    expect(await w.filesAt(w.line())).toEqual({ agents: null, agentsBase: null });
+  });
+
+  test("回到第一次修改之前后再改：窗口对比的是主仓库根目录的 AGENTS.md，不是被丢掉的那次内容", async () => {
+    const w = await draftWorld();
+    await w.update(w.ctxFor(async () => "写进草稿"), RULES_V1);
+    w.branch.length = 1;
+    await w.update(w.ctxFor(async () => "写进草稿"), RULES_V2);
+    expect(w.shown[1]!.text).toContain("+ - 不使用泛型。");
+    expect(w.shown[1]!.text).toContain("+ - 注释用中文。");
+    expect(await w.filesAt(w.line())).toEqual({ agents: RULES_V2, agentsBase: ROOT_RULES });
+  });
+
+  test("主仓库根目录原来没有 AGENTS.md：写进草稿后线上有 AGENTS.md、没有 AGENTS.base.md，窗口写明还没有", async () => {
+    const w = await draftWorld({ rootRules: null });
+    expect(details(await w.update(w.ctxFor(async () => "写进草稿"), RULES_V1))).toMatchObject({ status: "written" });
+    expect(w.shown[0]!.text).toContain("仓库里还没有 AGENTS.md，要写入的全文如下：");
+    expect(existsSync(w.rootFile)).toBe(false);
+    expect(await w.filesAt(w.line())).toEqual({ agents: RULES_V1, agentsBase: null });
+  });
+
+  test("选不写、按 Esc：返回 cancelled，不加锚点、不改草稿文件、不改主仓库根目录", async () => {
+    const w = await draftWorld();
+    for (const decision of ["不写", false] as const) {
+      expect(details(await w.update(w.ctxFor(async () => decision), RULES_V1))).toMatchObject({ status: "cancelled" });
+    }
+    expect(w.line()).toEqual([w.baseAnchor]);
+    expect(w.conventionsAnchors()).toEqual([]);
+    expect(await w.filesAt(w.line())).toEqual({ agents: null, agentsBase: null });
+    await expect(readFile(w.rootFile, "utf8")).resolves.toBe(ROOT_RULES);
+  });
+
+  test("选其他写修改意见：返回 revise 和用户原话，不加锚点、不改草稿文件", async () => {
+    const w = await draftWorld();
+    const revised = details(await w.update(w.ctxFor(async () => ({ other: "只禁止业务代码用泛型" })), RULES_V1));
     expect(revised).toMatchObject({ status: "revise", feedback: "只禁止业务代码用泛型" });
     expect(revised.next).toContain("重新提交 conventions-update");
-    await expect(readFile(file, "utf8")).resolves.toBe(RULES_V1);
+    expect(w.line()).toEqual([w.baseAnchor]);
+    expect(await w.filesAt(w.line())).toEqual({ agents: null, agentsBase: null });
+  });
 
-    const changed = details(await update(world, RULES_V2, context("session-main", async () => { await writeFile(file, "别处改的\n"); return "写入"; })));
-    expect(changed).toMatchObject({ status: "blocked", reason: "确认期间 AGENTS.md 被别处改动", next: "重新读取仓库根目录的 AGENTS.md，在最新内容上修改后再提交" });
-    await expect(readFile(file, "utf8")).resolves.toBe("别处改的\n");
+  test("内容和对比对象相同：线上没有草稿 AGENTS.md 时与主仓库根目录比，已有时与草稿比；相同时返回 unchanged、不弹窗", async () => {
+    const w = await draftWorld();
+    const noDialog = w.ctxFor(async () => { throw new Error("不应弹窗"); });
+    expect(details(await w.update(noDialog, ROOT_RULES))).toMatchObject({ status: "unchanged" });
+    await w.update(w.ctxFor(async () => "写进草稿"), RULES_V1);
+    const shownBefore = w.shown.length;
+    expect(details(await w.update(noDialog, RULES_V1))).toMatchObject({ status: "unchanged" });
+    expect(w.shown).toHaveLength(shownBefore);
+    expect(w.line()).toHaveLength(2);
+  });
+
+  test("草稿里已有 AGENTS.md 时，内容改回主仓库根目录的内容不算 unchanged：要弹窗并再写一次", async () => {
+    const w = await draftWorld();
+    await w.update(w.ctxFor(async () => "写进草稿"), RULES_V1);
+    expect(details(await w.update(w.ctxFor(async () => "写进草稿"), ROOT_RULES))).toMatchObject({ status: "written" });
+    expect(w.shown).toHaveLength(2);
+    expect(await w.filesAt(w.line())).toMatchObject({ agents: ROOT_RULES });
+  });
+
+  test("窗口开着时这个需求在别处被批准：再选写进草稿被拒，原因写清要先指定一个草稿需求，草稿、对话、主仓库都不变", async () => {
+    const w = await draftWorld();
+    const outcome = await w.update(w.ctxFor(async () => { await w.approveNow(); return "写进草稿"; }), RULES_V1)
+      .then((result) => JSON.stringify(result), (error: { message?: string; advice?: unknown }) => JSON.stringify({ message: error.message, advice: error.advice }));
+    expect(outcome).toContain("要先指定一个草稿需求");
+    expect(w.conventionsAnchors()).toEqual([]);
+    expect(w.line()).toEqual([w.baseAnchor]);
+    expect(await w.filesAt(w.line())).toEqual({ agents: null, agentsBase: null });
+    await expect(readFile(w.rootFile, "utf8")).resolves.toBe(ROOT_RULES);
+  });
+
+  test("窗口开着时这个需求被冻结（recovery 变成 needs_review）：再选写进草稿被拒，原因写清需求在等恢复核对，草稿、对话、主仓库都不变", async () => {
+    const w = await draftWorld();
+    const outcome = await w.update(w.ctxFor(async () => { w.freeze(); return "写进草稿"; }), RULES_V1)
+      .then((result) => JSON.stringify(result), (error: { message?: string; advice?: unknown }) => JSON.stringify({ message: error.message, advice: error.advice }));
+    expect(outcome).toContain("恢复核对");
+    expect(w.conventionsAnchors()).toEqual([]);
+    expect(w.line()).toEqual([w.baseAnchor]);
+    expect(await w.filesAt(w.line())).toEqual({ agents: null, agentsBase: null });
+    await expect(readFile(w.rootFile, "utf8")).resolves.toBe(ROOT_RULES);
+  });
+
+  test("确认期间主仓库根目录 AGENTS.md 被改动：照常写进草稿，AGENTS.base.md 是窗口弹出时对比的那份", async () => {
+    const w = await draftWorld();
+    const result = await w.update(w.ctxFor(async () => { await writeFile(w.rootFile, "# 别处改过\n"); return "写进草稿"; }), RULES_V1);
+    expect(details(result)).toMatchObject({ status: "written" });
+    expect(await w.filesAt(w.line())).toEqual({ agents: RULES_V1, agentsBase: ROOT_RULES });
+  });
+
+  test("需求编号存在但还没保存过正文：被拒，原因写清这个需求还没有保存过正文，不弹窗、不写东西", async () => {
+    const w = await draftWorld();
+    const reservedId = await w.reserveOnly();
+    const outcome = await w.update(w.ctxFor(async () => { throw new Error("不应弹窗"); }), RULES_V1, reservedId)
+      .then((result) => JSON.stringify(result), (error: { message?: string; advice?: unknown }) => JSON.stringify({ message: error.message, advice: error.advice }));
+    expect(outcome).toContain("这个需求还没有保存过正文");
+    expect(outcome).not.toContain("完整提交哈希");
+    expect(w.shown).toEqual([]);
+    expect(w.conventionsAnchors()).toEqual([]);
+  });
+
+  test("对话线上最后一个锚点在库里找不到：先把最近一次保存钉进对话，再在它后面写，新锚点的父就是那次保存", async () => {
+    const w = await draftWorld();
+    const missing = uuidv7();
+    w.branch.push({ type: "custom", customType: LINE_ANCHOR_ENTRY, data: { repoId: w.repoId, requirementId: w.requirementId, anchor: missing } });
+    expect(details(await w.update(w.ctxFor(async () => "写进草稿"), RULES_V1))).toMatchObject({ status: "written" });
+    const [record] = w.conventionsAnchors();
+    expect(w.conventionsAnchors()).toHaveLength(1);
+    expect(record).toMatchObject({ parent: w.baseAnchor });
+    expect(w.line().slice(-2)).toEqual([w.baseAnchor, record!.anchor]);
+    expect(await w.filesAt([record!.anchor])).toEqual({ agents: RULES_V1, agentsBase: ROOT_RULES });
+  });
+
+  test("工具说明里 conventions-update 一段：要带 requirementId，内容记进这个需求的草稿，批准需求、工作区建好后随需求分支写入", () => {
+    const world = { dataRoot: "/unused", resolveHost: async () => { throw new Error("unused"); }, currentHost: () => { throw new Error("unused"); }, openService: idle };
+    const description = createProjectManageTool(world as never).tool.description;
+    const segment = description.slice(description.indexOf("conventions-update 以"));
+    expect(segment).toMatch(/requirementId/u);
+    expect(segment).toMatch(/记进这个需求的草稿/u);
+    expect(segment).toMatch(/批准需求[、，]\s*工作区建好后随需求分支写入/u);
+    expect(segment).not.toContain("用户选「写入」后才写文件");
   });
 });
 
@@ -770,6 +1002,7 @@ describe("operationId 由程序生成：模型不填，中断后的续做由程�
   test("workspace-recycle 不填 operationId 成功且结果带 UUIDv7；带 operationId 被参数校验拒绝", async () => {
     const w = await requirementWorld();
     await call(w.runtime, { action: "workspace-prepare", repoId: w.repoId, requirementId: w.requirementId }, w.ctx);
+    await promisify(execFile)("git", ["merge", "-q", "--ff-only", `req/${w.requirementId}`], { cwd: w.repositoryRoot });
     await w.close();
     await expect(call(w.runtime, { action: "workspace-recycle", repoId: w.repoId, requirementId: w.requirementId, operationId: uuidv7() }, w.ctx))
       .rejects.toMatchObject({ code: "invalid_shape" });

@@ -20,9 +20,9 @@ pi install /absolute/path/to/one-company
 | `pnpm run test:integration` | 集成测试：真实守护进程、临时 SQLite、跨进程 |
 | `pnpm run test:integration:installed` | 同上，但先打包安装，守护进程从安装产物启动 |
 | `pnpm run test:installation` | 按真实 pi 安装方式装好再测；没有 Docker 时跳过 Docker 安装测试 |
-| `pnpm run test:acceptance:parallel` | 真实模型验收：21 个单点，单点每条 1～6 分钟，同时跑全部单点约 20 分钟，加两条完整流程约 35 分钟 |
+| `pnpm run test:acceptance:parallel` | 真实模型验收：23 个单点，单点每条 1～6 分钟，同时跑全部单点约 20 分钟，加两条完整流程约 35 分钟 |
 
-合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P21）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`src/modules/requirement/requirement-state.ts`、`src/modules/requirement/requirement-service.ts`、`src/modules/pm/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
+合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P23）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`src/modules/requirement/requirement-state.ts`、`src/modules/requirement/requirement-service.ts`、`src/modules/pm/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
 
 ### 测试注意事项
 
@@ -72,6 +72,8 @@ pnpm run test:acceptance:parallel [--only <编号…>]
 | P19 | 空的样例项目里要做网页版图书馆借还系统（要前端、后端、数据库）；另起一次在已有的 TypeScript 移动逻辑上加快跑 | 前一种在请用户批准前弹技术清单窗口，至少含一项数据库，选全部同意后草稿「实现」板块写进每一项；后一种不弹技术清单窗口 |
 | P20 | vue-reviewer 装上 Vue 样例定义后删掉正文里 auth-session 第 15 条那一行，只有 vue-worker 正文写明不适用；改动里有 refresh token 存 localStorage、refresh token 拼进 URL、v-html 渲染评论 | URL 和 v-html 两处列为阻塞，localStorage 那处不列 |
 | P21 | 样例项目已有顶栏导航"工作台、订单、客户、设置"、主色 `#0f766e` 和带"账号安全""通知"两块的设置页，要在设置页加"每日提醒时间" | 交稿被收下，页面里有 4 个导航文字、主色值和设置页原有的两块标题；DESIGN.md 明亮一节的主色是 `#0f766e` |
+| P22 | 用户只说"批准这一版"，之后说"授权实施" | 批准后主代理不建工作区、不派 PM，告诉用户还没授权实施；用户说"授权实施"后主代理用 authorizeImplement 补授权成功，再建工作区、派出 PM |
+| P23 | 需求已批准、还没授权实施，用户说"授权实施地面快跑，空中不变以后再说" | 主代理调 authorizeImplement 被拒（原因含范围限制），批准清单里仍没有实施，不建工作区、不派 PM，并告诉用户要先改需求草稿 |
 
 完整流程（2 条）：在临时目录真实安装本包、建样例项目，由真实模型扮演主代理和各角色，从提需求走到完成关闭。
 

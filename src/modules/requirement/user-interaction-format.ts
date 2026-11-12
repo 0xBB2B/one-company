@@ -3,7 +3,7 @@ import { adviceIn } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { Static, TSchema } from "typebox";
 import { Value } from "typebox/value";
-import { object, positive, counter, PrdReference } from "./requirement-contracts.ts";
+import { object, positive, counter, PrdReference, ApprovalManifestReferenceSchema } from "./requirement-contracts.ts";
 import { UUID_V7_PATTERN } from "../../core/storage/database.ts";
 import { DecisionItem, ShortDecisionRecord, checkDecisionRecord, parseDecisionBatch, decisionDigest, SHORT_DECISION_LIMITS } from "./short-decision-format.ts";
 import { parseStrictJson } from "../../core/storage/strict-json.ts";
@@ -73,6 +73,9 @@ export const AdjudicationSubject = object({
   summary: Type.String({ minLength: 1, maxLength: 2000 }),
 });
 export type AdjudicationSubject = Static<typeof AdjudicationSubject>;
+/** 由宿主从需求记录生成，解释器只能据此判断。 */
+export const ImplementAuthorizationSubject = object({ revision: positive, manifest: ApprovalManifestReferenceSchema });
+export type ImplementAuthorizationSubject = Static<typeof ImplementAuthorizationSubject>;
 export const ADJUDICATION_CHOICES = ["retry", "adjust", "keep", "terminate", "cancel", "reject", "accept", "rework"] as const;
 /** 这里看不出任务是否请求拆分，按任务细分的选项在登记生效时再判。 */
 const CHOICES_BY_SUBJECT: Readonly<Record<string, readonly string[]>> = { task: ["retry", "adjust", "keep", "terminate"], requirement: ["cancel", "reject"], report: ["accept", "rework"] };
@@ -91,6 +94,7 @@ export const InteractionContext = object({
   continuityIssues: Type.Optional(Type.Array(ContinuityIssue)),
   revisionSources: Type.Optional(Type.Array(RevisionSource, { maxItems: 20 })),
   adjudication: Type.Optional(AdjudicationSubject),
+  implementAuthorization: Type.Optional(ImplementAuthorizationSubject),
   addressed: Type.Optional(object({ how: enumeration(["mention", "window"]), others: Type.Optional(Type.Integer({ minimum: 0, maximum: 32 })),
     otherDrafts: Type.Optional(Type.Array(object({ title: Type.String(), version: Type.Integer({ minimum: 1 }) }), { minItems: 1, maxItems: 32 })) })),
 });
@@ -112,6 +116,20 @@ export const InteractionInterpretation = object({
 });
 export type InteractionInterpretation = Static<typeof InteractionInterpretation>;
 
+export const VOIDED_INPUT_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户在主窗口重新说一句后再登记";
+const MODEL_CONFIG_VOIDED_NEXT = "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户先检查模型配置或改选模型，再在主窗口重新说一句后登记";
+export const VOIDED_INPUT_NEXT_BY_CODE: Readonly<Record<string, string>> = {
+  implement_not_explicit: "这句用户原话已作废，不能直接重试；请用户在主窗口说清楚是否要实施，再用 authorizeImplement 登记",
+  implement_scope_restricted: "这句用户原话已作废，不能直接重试；把原因告诉用户：补授权只能整版授权实施，要缩小范围就先改需求草稿，再请用户连同'实施'一起批准",
+  interaction_context_limit: "这句用户原话已作废，重试结果相同；先请用户回答或处理掉已有的问题和待定事项，再请用户在主窗口重新说一句后登记",
+  model_auth_unavailable: MODEL_CONFIG_VOIDED_NEXT,
+  model_unavailable: MODEL_CONFIG_VOIDED_NEXT,
+  request_limit: "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户把要说的话精简后，再在主窗口重新说一句后登记",
+  pending_description_mismatch: "这句用户原话已作废，不能直接重试；先把这段里的未决事项拆到单独小节后重存草稿，再请用户在主窗口重新说一句后登记",
+  document_needs_resave: "这句用户原话已作废，不能直接重试；先按用户的修改更新并保存草稿，再请用户在主窗口重新说一句后登记",
+  continuity_resolution_required: "这句用户原话已作废，不能直接重试；先在草稿里把这些段落标成待定后重存，或请用户说明怎么解决，再请用户在主窗口重新说一句后登记",
+  continuity_action_unresolved: "这句用户原话已作废，不能直接重试；把原因告诉用户，请用户先说清这些段落怎么修订或澄清，或重说时不把它们写进授权范围，再在主窗口重新说一句后登记",
+};
 const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   action_candidate_required: { why: "用户原话的解读把它当成授权动作，但没有对应的待批准版本", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
   action_kind_required: { why: "用户原话的解读带了授权动作，但没有标成授权类决定", next: "重试一次；仍然失败就把这段原因告诉用户" },
@@ -124,7 +142,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   basis_changed: { why: "解读期间需求被改动", next: "重新读取需求后按最新版本再试" },
   candidate_baseline_mismatch: { why: "待批准版本不是基于当前批准版本", next: "重新读取需求后按最新版本再试" },
   candidate_not_resaved: { why: "需要先按用户的修改重新保存草稿", next: "先按用户的修改重新保存草稿，再确认" },
-  candidate_not_saved: { why: "待确认的版本不是当前保存的版本", next: "重新读取需求后按最新版本再试" },
+  candidate_not_saved: { why: "待确认的版本不是当前保存的版本", next: VOIDED_INPUT_NEXT },
   continuity_changed: { why: "确认期间用户又有新的输入", next: "按用户最新的原话重新确认" },
   continuity_decision_changed: { why: "沿用的原依据对应的用户决定已变化，或已不是用户确认的状态", next: "重新读取需求后按最新版本再试" },
   continuity_decision_mismatch: { why: "登记确认依据时，刚保存的决定与这次确认的需求、版本或操作对不上", next: "不要重试，重试结果相同；把这段原因告诉用户" },
@@ -145,7 +163,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   continuity_version_source: { why: "找不到确认依据对应的草稿保存记录，或两者对不上", next: "不要重试，重试结果相同；把这段原因告诉用户" },
   decision_changed: { why: "此前的决定在处理期间被改动", next: "重新读取需求后按最新版本再试" },
   delegation_kind_required: { why: "委托给 AI 的决定必须标成 AI 选择类", next: "重试一次；仍然失败就把这段原因告诉用户" },
-  delegation_required: { why: "用户没有明确把这件事委托给 AI 决定", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  delegation_required: { why: "用户没有明确把这件事委托给 AI 决定", next: VOIDED_INPUT_NEXT },
   document_candidate_mismatch: { why: "文档复核对应的不是唯一的待批准版本", next: "重新读取需求后按最新版本再试" },
   document_partition_mismatch: { why: "文档复核的章节划分与待批准版本不一致", next: "重新读取需求后按最新版本再试" },
   document_review_required: { why: "有待批准版本时必须同时给出文档复核结论，没有时不能给", next: "重试一次；仍然失败就把这段原因告诉用户" },
@@ -153,23 +171,27 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   duplicate_reference: { why: "同一个问题被重复引用", next: "重新读取需求后按最新版本再试" },
   empty_input: { why: "用户原话是空的", next: "等用户在主窗口说出新的一句话后再操作" },
   foreign_decision: { why: "引用了别的需求的决定", next: "重新读取需求后按最新版本再试" },
-  foreign_requirement: { why: "上下文属于别的需求", next: "重新读取需求后按最新版本再试" },
+  foreign_requirement: { why: "上下文属于别的需求", next: VOIDED_INPUT_NEXT },
   input_changed: { why: "处理期间用户又说了新的话", next: "按用户最新的原话重新处理" },
   input_unavailable: { why: "没有可用的用户原话（还没有，或已被撤销）", next: "等用户在主窗口说出新的一句话后再操作" },
   input_reentry: { why: "同一句用户原话被重复使用", next: "等用户在主窗口说出新的一句话后再操作" },
+  implement_action_invalid: { why: "补授权的动作条目不能带候选、问题、引用或取代", next: "去掉这些字段；拿不准用户是否要实施时不要输出动作条目，改列未决条目" },
+  implement_context_mismatch: { why: "授权实施的上下文和需求当前已批准的版本对不上", next: "重新读取需求后按最新版本再试" },
+  implement_not_explicit: { why: "这句话没有明确说要实施", next: VOIDED_INPUT_NEXT },
+  implement_scope_restricted: { why: "这句话除了授权实施，还带了范围限制或修改，补授权只能整版授权", next: VOIDED_INPUT_NEXT },
   interaction_context_limit: { why: "本需求累积的待答问题、以往决定或原依据太多，发给解释器的材料超出上限", next: "不要重试，重试结果相同；先回答或处理掉已有的问题和待定事项，仍不行就把这段原因告诉用户" },
-  interpretation_denied: { why: "解读用户原话时出了意外错误，没有得到解读结果（不是用户的话说得不清楚）", next: "重试一次；仍然失败就把这段原因告诉用户" },
+  interpretation_denied: { why: "解读用户原话时出了意外错误，没有得到解读结果（不是用户的话说得不清楚）", next: VOIDED_INPUT_NEXT },
   invalid_capability: { why: "确认能力无效或已用过", next: "重新读取需求后按最新版本再试" },
   invalid_input_ticket: { why: "用户原话的凭据无效或已用过", next: "等用户在主窗口说出新的一句话后再操作" },
   invalid_shape: { why: "参数或解读结果的格式不合规", next: "按原因改正后重试" },
-  lifecycle_denied: { why: "需求不在草稿或活动状态，或需要先恢复核对", next: "重新读取需求后按最新版本再试" },
+  lifecycle_denied: { why: "需求不在草稿或活动状态，或需要先恢复核对", next: VOIDED_INPUT_NEXT },
   model_auth_unavailable: { why: "解读用的模型没有配置凭据", next: "请用户检查模型配置或改选模型" },
-  model_cancelled: { why: "解读被取消", next: "需要时重新发起" },
+  model_cancelled: { why: "解读被取消", next: VOIDED_INPUT_NEXT },
   model_changed: { why: "解读期间模型被切换", next: "重试一次；仍然失败就把这段原因告诉用户" },
   model_configuration_changed: { why: "解读用的模型配置已变化", next: "重试一次；仍然失败就把这段原因告诉用户" },
-  model_interpretation_denied: { why: "调用解读模型或处理它的回答时出了意外错误，没有得到解读结果（不是用户的话说得不清楚）", next: "重试一次；仍然失败就把这段原因告诉用户" },
-  model_response_denied: { why: "解读模型的回答格式不对或没有正常结束", next: "重试一次；仍然失败就把这段原因告诉用户" },
-  model_unavailable: { why: "解读用的模型不可用", next: "请用户检查模型配置或改选模型" },
+  model_interpretation_denied: { why: "调用解读模型或处理它的回答时出了意外错误，没有得到解读结果（不是用户的话说得不清楚）", next: VOIDED_INPUT_NEXT },
+  model_response_denied: { why: "解读模型的回答格式不对或没有正常结束", next: VOIDED_INPUT_NEXT },
+  model_unavailable: { why: "解读用的模型不可用", next: MODEL_CONFIG_VOIDED_NEXT },
   action_not_explicit: { why: "授权动作不是用户明确说出的，或动作条目与授权范围对不上", next: "只把用户明确要求的动作写成 action 条目，并让它和授权范围一致" },
   continuity_action_unresolved: { why: "有待修订或待澄清的段落，却被写进了本次授权的动作范围", next: "先解决这些段落的修订或澄清，或本次授权不要包含它们" },
   continuity_resolution_required: { why: "之前待修订或待澄清的段落，这次既没有解决，也没有标成待定", next: "在草稿里把它标成待定，或按用户原话明确解决后再确认" },
@@ -184,6 +206,9 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   incomplete_action_closure: { why: "授权范围缺了目标依赖的段落或适用的全局约束", next: "把依赖段落和全局约束补进授权范围" },
   incomplete_document_review: { why: "逐段复核没有覆盖草稿的全部段落，或顺序不对", next: "按草稿分区逐段给出复核" },
   incomplete_question_review: { why: "没有逐一处理全部待回答的问题", next: "每个待回答的问题都要有对应的处理" },
+  implement_already_authorized: { why: "这一版已经授权实施", next: "重新读取需求状态，不用再补授权" },
+  implement_scope_empty: { why: "已批准版本的实施目标板块下没有已确认的段落", next: "请用户确认实施目标后批准新版本，并在同一句话里说实施" },
+  implement_supplement_mismatch: { why: "补授权清单和已批准的清单对不上", next: "重新读取需求后按最新版本再试" },
   invalid_action_scope: { why: "授权范围没有目标，或把元数据当成目标，或同一段既是目标又是约束", next: "只把正文段落作为目标，约束与目标不要重复" },
   invalid_global_scope: { why: "全局约束的影响范围写错了：非全局约束不能列影响范围，影响范围里有不存在的段落或引用了自己", next: "按真实段落修正影响范围" },
   manifest_binding_mismatch: { why: "批准清单与待批准版本不一致", next: "重新读取需求后按最新版本再试" },
@@ -216,14 +241,14 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
   question_view_mismatch: { why: "问题剩余的章节与原问题不一致", next: "重新读取需求后按最新版本再试" },
   reconsideration_denied: { why: "不能再次复核：文档复核已判定一致、复核次数已用完（最多 3 次），或正在保存", next: "按当前复核结果继续，不要再次复核" },
   request_limit: { why: "请求内容超出大小上限", next: "精简内容后重试" },
-  resave_not_finalized: { why: "重新保存还没完成", next: "用原来的内容再调一次，让它续完" },
-  resave_origin_mismatch: { why: "重新保存的起点与原复核不一致", next: "重新读取需求后按最新版本再试" },
-  resave_state_mismatch: { why: "重新保存前后需求状态不一致", next: "重新读取需求后按最新版本再试" },
+  resave_not_finalized: { why: "重新保存还没完成", next: VOIDED_INPUT_NEXT },
+  resave_origin_mismatch: { why: "重新保存的起点与原复核不一致", next: VOIDED_INPUT_NEXT },
+  resave_state_mismatch: { why: "重新保存前后需求状态不一致", next: VOIDED_INPUT_NEXT },
   retained_source_mismatch: { why: "保留的来源章节在待批准版本里不存在", next: "重新读取需求后按最新版本再试" },
   revision_link_mismatch: { why: "修订的决定与被取代的决定对应不上", next: "重新读取需求后按最新版本再试" },
-  revision_scope_mismatch: { why: "修订范围超出了原决定涉及的章节", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  revision_scope_mismatch: { why: "修订范围超出了原决定涉及的章节", next: VOIDED_INPUT_NEXT },
   revision_source_changed: { why: "被修订的原决定已变化", next: "重新读取需求后按最新版本再试" },
-  revision_source_reused: { why: "被修订的原决定又被当成新约束引用", next: "请用户把话说得更明确（说清针对哪个问题、哪个版本、要做什么）后重试" },
+  revision_source_reused: { why: "被修订的原决定又被当成新约束引用", next: VOIDED_INPUT_NEXT },
   save_reentry: { why: "上一次保存还没结束", next: "等上一次保存结束后再试" },
   saved_decision_changed: { why: "已保存的决定与预期不一致", next: "重新读取需求后按最新版本再试" },
   saved_decision_missing: { why: "找不到已保存的决定", next: "重新读取需求后按最新版本再试" },
@@ -236,7 +261,7 @@ const USER_INTERACTION_ADVICE: Record<string, FailureAdvice> = {
 export class UserInteractionError extends Error {
   readonly code: string;
   readonly advice: FailureAdvice;
-  constructor(code: string, detail?: string) { super(`用户交互被拒绝：${code}`); this.name = "UserInteractionError"; this.code = code; this.advice = adviceIn(USER_INTERACTION_ADVICE, code, detail); }
+  constructor(code: string, detail?: string, advice?: FailureAdvice) { super(`用户交互被拒绝：${code}`); this.name = "UserInteractionError"; this.code = code; this.advice = advice ?? adviceIn(USER_INTERACTION_ADVICE, code, detail); }
 }
 export function parseInteraction<T extends TSchema>(schema: T, source: string, maxBytes: number = SHORT_DECISION_LIMITS.requestBytes): Static<T> {
   if (typeof source !== "string" || Buffer.byteLength(source) > maxBytes) throw new UserInteractionError("request_limit");
@@ -278,6 +303,11 @@ export function checkContext(value: unknown): InteractionContext {
     new Set(context.questions.map((q) => q.requestId)).size !== context.questions.length) throw new UserInteractionError("duplicate_reference");
   if (new Set(context.candidates.map((c) => c.to.hash)).size !== context.candidates.length) throw new UserInteractionError("duplicate_document_candidate");
   for (const c of context.candidates) if (decisionDigest(c.from) !== decisionDigest(context.basis.prd)) throw new UserInteractionError("candidate_baseline_mismatch");
+  if (context.implementAuthorization) {
+    const { manifest } = context.implementAuthorization;
+    if (context.document || context.candidates.length > 0 || context.adjudication || manifest.requirementId !== context.basis.requirementId ||
+      decisionDigest(manifest.candidate.to) !== decisionDigest(context.basis.prd)) throw new UserInteractionError("implement_context_mismatch");
+  }
   if (context.document) {
     const doc = context.document;
     if (context.candidates.length !== 1 || decisionDigest(candidateBinding(context.candidates[0]!)) !== decisionDigest(doc.candidate)) throw new UserInteractionError("document_candidate_mismatch");
@@ -332,6 +362,9 @@ export function checkInterpretation(source: string, context: InteractionContext)
   const result = parseInteraction(InteractionInterpretation, source);
   if (Boolean(result.documentReview) !== Boolean(context.document)) throw new UserInteractionError("document_review_required");
   if (result.referenceResolution === "single-question" && context.questions.length !== 1) throw new UserInteractionError("ambiguous_reference");
+  if (context.implementAuthorization) {
+    for (const entry of result.entries) if (entry.kind === "action" && entry.basis === "explicit" && entry.resolution === "direct") implementActionOf(entry);
+  }
   for (const entry of result.entries) {
     checkProposal({ conclusion: entry.conclusion, scope: entry.scope, references: entry.references, supersedes: entry.supersedes }, context.basis);
     const candidate = context.candidates.find((c) => c.candidateId === entry.candidateId);
@@ -345,8 +378,8 @@ export function checkInterpretation(source: string, context: InteractionContext)
     if (!context.document && result.referenceResolution === "single-question" && ["explicit", "delegated"].includes(entry.basis) &&
       !["modify", "defer", "unclear"].includes(entry.resolution) &&
       (entry.requestId !== context.questions[0]!.requestId || entry.resolution !== "accept")) throw new UserInteractionError("single_question_scope_escape");
-    if (entry.actions.length > 0 && entry.kind !== "action") throw new UserInteractionError("action_kind_required");
-    if (entry.kind === "action" && (entry.actions.length === 0 || !candidate)) throw new UserInteractionError("action_candidate_required");
+    if (entry.actions.length > 0 && entry.kind !== "action" && !context.implementAuthorization) throw new UserInteractionError("action_kind_required");
+    if (entry.kind === "action" && (entry.actions.length === 0 || !candidate && !context.implementAuthorization)) throw new UserInteractionError("action_candidate_required");
     if (entry.basis === "delegated" && entry.kind !== "ai-choice") throw new UserInteractionError("delegation_kind_required");
     if (entry.kind === "ai-choice" && entry.basis !== "delegated" && entry.basis !== "proposed") throw new UserInteractionError("ai_subject_required");
     if (["future", "unresolved", "suggestion"].includes(entry.kind) && !["proposed", "uncertain"].includes(entry.basis)) throw new UserInteractionError("pending_basis_required");
@@ -377,4 +410,8 @@ export function adjudicationOf(entry: InteractionEntry, context: Pick<Interactio
   if (value("item") !== subject.itemId || value("version") !== subject.version || !choice || !CHOICES_BY_SUBJECT[subject.itemId.split(":")[0]!]?.includes(choice) ||
     (choice === "retry") !== (maxTurns !== null) || (choice !== "retry" && turns !== null) || entry.references.length !== expected) throw new UserInteractionError("adjudication_invalid");
   return { itemId: subject.itemId, version: subject.version, choice, maxTurns };
+}
+
+export function implementActionOf(entry: InteractionEntry): void {
+  if (entry.candidateId !== null || entry.requestId !== null || entry.supersedes.length > 0 || entry.references.length > 0) throw new UserInteractionError("implement_action_invalid");
 }

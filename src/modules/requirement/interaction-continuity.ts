@@ -3,12 +3,15 @@ import { DatabaseSync } from "node:sqlite";
 import { repositoryDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase, StoredRecord } from "../../core/storage/database.ts";
 import { checkRequirement, object } from "./requirement-contracts.ts";
+import type { RequirementRecord } from "./requirement-contracts.ts";
 import { decisionDigest, checkDecisionRecord } from "./short-decision-format.ts";
 import { InteractionBasis, CandidateBinding, ApprovalPartition, ContinuityRecordRef, InteractionEntry, PendingQuestion, checkInteraction, interpreterView, UserInteractionError, resolvesContinuityIssue } from "./user-interaction-format.ts";
 import type { InteractionContext, InteractionInterpretation, DocumentAnalysis, RetainedUnitEvidence, EffectiveQuestion, ContinuityIssue, RevisionSource } from "./user-interaction-format.ts";
 import type { ShortDecisionRecord } from "./short-decision-format.ts";
 import { REQUIREMENT_OPERATION_NAMESPACE } from "./requirement-coordination.ts";
 import type { RequirementOperation } from "./requirement-operations.ts";
+import { supersessionIn, supersessionFrom, withSupersession } from "./short-decisions.ts";
+import { attachRecordIn, isRecordCountedIn, memberAnchorIn, rawLineCounter, rawLineView } from "./line-anchors.ts";
 
 export const INTERACTION_CONTINUITY_NAMESPACE = "interaction_resolution_facts_v1";
 const id = CandidateBinding.properties.candidateId;
@@ -40,10 +43,13 @@ function checkedFact(row: StoredRecord): FactData {
     (f.byteReview.units.length !== f.partition.units.length || f.byteReview.units.some((u, i) => u.id !== f.partition.units[i]!.id || u.hash !== f.partition.units[i]!.hash))) deny("continuity_fact_identity");
   return f;
 }
-function savedMatches(row: StoredRecord, f: FactData): void {
+type Read = Pick<LocalDatabase, "read">["read"];
+function savedMatches(read: Read, row: StoredRecord, f: FactData): void {
   const op = row.data as RequirementOperation;
+  const anchors = read<{ anchor: string; unchangedTip: string | null }>("line_operation_anchors", op.operationId)?.data;
+  const savedVersion = anchors ? read<{ lineVersion: number }>("line_anchors", anchors.unchangedTip ?? anchors.anchor)?.data.lineVersion : op.finalVersion;
   if (op.format !== "requirement-service-operation/v1" || op.repoId !== f.repoId || op.requirementId !== f.basis.requirementId ||
-    op.epoch !== f.basis.epoch || !op.finalVersion || op.finalVersion > f.basis.version || op.git?.hash !== f.candidate.to.hash ||
+    op.epoch !== f.basis.epoch || !op.finalVersion || !savedVersion || savedVersion > f.basis.version || op.git?.hash !== f.candidate.to.hash ||
     op.git.commit !== f.candidate.to.commit) deny("continuity_version_source");
 }
 /** 只在真实Core短决定保存后调用；仅保存来源元数据，固定operation使失败补登记不再写决定。 */
@@ -62,7 +68,7 @@ export function recordInteractionResolutionIn(db: LocalDatabase, repoId: string,
       const row = db.read("short_decisions", saved.decisionIds[index]!); if (!row) return deny("continuity_decision_missing");
       const d = checkDecisionRecord(row.data);
       if (d.operationId !== saved.operationId || d.requirementVersion !== context.basis.version || d.epoch !== context.basis.epoch ||
-        d.requirementId !== context.basis.requirementId || d.status === "superseded") deny("continuity_decision_mismatch");
+        d.requirementId !== context.basis.requirementId) deny("continuity_decision_mismatch");
       return { record: ref(row), kind: entry.kind, basis: entry.basis, resolution: entry.resolution, requestId: entry.requestId,
         unitIds: units(review.units.filter((u) => u.conclusionIndexes.includes(index)).map((u) => u.id)) };
     }),
@@ -77,10 +83,14 @@ export function recordInteractionResolutionIn(db: LocalDatabase, repoId: string,
         result.entries[i]?.requestId === q.requestId && result.entries[i]?.resolution === "modify"));
       return { requestId: q.requestId, originalHash: decisionDigest(q), accepted: units(accepted), modified: units(modified), pending: units(mapped.pendingIds) };
     }) };
-  checkInteraction(Fact, fact); savedMatches(savedOperation, fact);
+  checkInteraction(Fact, fact); savedMatches((ns, key) => db.read(ns, key), savedOperation, fact);
   const old = db.read(INTERACTION_CONTINUITY_NAMESPACE, saved.operationId);
   if (old && (old.version !== 1 || !same(old.data, fact))) deny("continuity_fact_conflict");
-  if (!old) db.create(INTERACTION_CONTINUITY_NAMESPACE, saved.operationId, fact, saved.operationId);
+  if (!old) {
+    db.create(INTERACTION_CONTINUITY_NAMESPACE, saved.operationId, fact, saved.operationId);
+    const anchor = memberAnchorIn(db, "short_decisions", saved.decisionIds[0]!);
+    if (anchor) attachRecordIn(db, { namespace: INTERACTION_CONTINUITY_NAMESPACE, key: saved.operationId, requirementId: context.basis.requirementId, anchor });
+  }
 }
 function acceptedUnit(fact: FactData, unitId: string, kind?: string): boolean {
   const unit = fact.byteReview.units.find((u) => u.id === unitId);
@@ -88,7 +98,8 @@ function acceptedUnit(fact: FactData, unitId: string, kind?: string): boolean {
     (kind === undefined || unit.disposition === (kind === "exclusion" ? "excluded" : "confirmed"));
 }
 /** 原来源只解释已接受的未改字节。 */
-export function assertRetainedEvidenceIn(db: Pick<LocalDatabase, "read">, repoId: string, basis: InteractionBasis, doc: Pick<DocumentAnalysis, "partition">, e: RetainedUnitEvidence): void {
+export function assertRetainedEvidenceIn(db: Pick<LocalDatabase, "read">, repoId: string, basis: InteractionBasis, doc: Pick<DocumentAnalysis, "partition">, e: RetainedUnitEvidence,
+  supersededOnLine?: (decision: ShortDecisionRecord) => boolean): void {
   const row = checkRef(db.read(INTERACTION_CONTINUITY_NAMESPACE, e.fact.id), e.fact), fact = checkedFact(row);
   const source = fact.decisions.find((d) => d.record.id === e.decision.id);
   if (fact.repoId !== repoId || fact.basis.requirementId !== basis.requirementId || fact.basis.epoch !== basis.epoch || fact.basis.version > basis.version ||
@@ -96,35 +107,37 @@ export function assertRetainedEvidenceIn(db: Pick<LocalDatabase, "read">, repoId
     source.kind !== e.kind || source.basis !== "explicit" || !["direct", "accept"].includes(source.resolution) || !acceptedUnit(fact, e.unitId, e.kind) ||
     !source.unitIds.some((u) => u.id === e.unitId && u.hash === e.unitHash) || !doc.partition.units.some((u) => u.id === e.unitId && u.hash === e.unitHash)) deny("continuity_source_mismatch");
   const decision = checkDecisionRecord(checkRef(db.read("short_decisions", e.decision.id), e.decision).data);
-  if (decision.actor !== "user" || decision.status !== "confirmed" || decision.basisReceiptId !== fact.receiptId ||
+  if (decision.actor !== "user" || decision.status !== "confirmed" || supersededOnLine?.(decision) || decision.basisReceiptId !== fact.receiptId ||
     decision.requirementId !== basis.requirementId || decision.requirementVersion !== fact.basis.version || decision.epoch !== basis.epoch ||
     !same(decision.prd, fact.basis.prd)) deny("continuity_decision_changed");
-  savedMatches(checkRef(db.read(REQUIREMENT_OPERATION_NAMESPACE, fact.savedOperation.id), fact.savedOperation), fact);
+  savedMatches((ns, key) => db.read(ns, key), checkRef(db.read(REQUIREMENT_OPERATION_NAMESPACE, fact.savedOperation.id), fact.savedOperation), fact);
 }
 type ProofRow = StoredRecord & { key?: string };
-function collectionProof(facts: ProofRow[], questions: ProofRow[], read: Pick<LocalDatabase, "read">["read"]): string {
+function collectionProof(facts: ProofRow[], questions: ProofRow[], read: Pick<LocalDatabase, "read">["read"], supersederOnLine: (decision: ShortDecisionRecord) => string | null): string {
   if (facts.length > 128 || questions.length > 256 || [...facts, ...questions].reduce((n, row) => n + Buffer.byteLength(JSON.stringify(row.data)), 0) > 2_097_152) deny("continuity_scan_limit");
   const ids = new Set(facts.flatMap((row) => checkedFact(row).decisions.map((decision) => decision.record.id)));
   const records = (rows: ProofRow[]) => rows.map((row) => ({ ...ref(row), key: row.key ?? row.id })).sort((a, b) => a.key.localeCompare(b.key) || a.id.localeCompare(b.id));
   return decisionDigest({ facts: records(facts), questions: records(questions), decisions: [...ids].sort().map((id) => {
-    const row = read("short_decisions", id); return { id, value: row ? ref(row) : null };
+    const row = read("short_decisions", id), supersededBy = row ? supersederOnLine(row.data as ShortDecisionRecord) : null;
+    return { id, value: row ? ref(row) : null, supersededBy };
   }) });
 }
 /** 在调用方现有SQLite快照中核对整个输入集合，覆盖新增/删除；不向调用方返回其他需求元数据。 */
-export function continuityInputProofIn(db: LocalDatabase, requirementId: string, inputCheck?: { excludeOperationId: string; originals: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>> }): string {
+export function continuityInputProofIn(db: LocalDatabase, requirementId: string, inputCheck?: { excludeOperationId: string; originals: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>> },
+  line?: readonly string[]): string {
   const belongs = (row: StoredRecord) => (row.data as { basis?: { requirementId?: unknown } } | null)?.basis?.requirementId === requirementId;
-  const facts = db.list(INTERACTION_CONTINUITY_NAMESPACE).filter((row) => belongs(row) && row.id !== inputCheck?.excludeOperationId);
-  const questions = db.list("interaction_questions_v1").filter(belongs);
+  const counted = (namespace: string, key: string) => line === undefined || isRecordCountedIn(db, { namespace, key, requirementId, line });
+  const facts = db.list(INTERACTION_CONTINUITY_NAMESPACE).filter((row) => belongs(row) && row.id !== inputCheck?.excludeOperationId && counted(INTERACTION_CONTINUITY_NAMESPACE, row.key));
+  const questions = db.list("interaction_questions_v1").filter((row) => belongs(row) && counted("interaction_questions_v1", row.key));
   const read = <T = unknown>(namespace: string, key: string): StoredRecord<T> | null => {
     const original = namespace === "short_decisions" ? inputCheck?.originals.get(key) : undefined;
     return original ? original as unknown as StoredRecord<T> : db.read<T>(namespace, key);
   };
-  return collectionProof(facts, questions, read);
+  return collectionProof(facts, questions, read, supersessionIn(db, requirementId, (decisionId) => counted("short_decisions", decisionId), inputCheck?.excludeOperationId));
 }
 /** 查询只读取有界元数据。超过扫描预算拒绝，绝不截掉未答问题。 */
 export function loadInteractionContinuity(dataRoot: string, repoId: string, basis: InteractionBasis, doc: DocumentAnalysis,
-  inputCheck?: { excludeOperationId: string; originals: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>>;
-    replacements: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>> }) {
+  inputCheck?: { excludeOperationId: string; originals: ReadonlyMap<string, StoredRecord<ShortDecisionRecord>> }, line?: readonly string[]) {
   const db = new DatabaseSync(repositoryDatabase(dataRoot, repoId), { readOnly: true, timeout: 5_000 });
   try {
     db.exec("BEGIN");
@@ -137,39 +150,40 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
       const actual = actualRead<T>(namespace, key);
       const original = namespace === "short_decisions" ? inputCheck?.originals.get(key) : undefined;
       if (!original) return actual;
-      const changed = actual?.data as ShortDecisionRecord | undefined;
-      const replacement = changed?.supersededBy ? inputCheck!.replacements.get(changed.supersededBy) : undefined;
-      if (!actual || actual.id !== original.id || actual.version !== original.version + 1 || !replacement ||
-        replacement.data.operationId !== inputCheck!.excludeOperationId || !replacement.data.supersedes.includes(key) ||
-        !same(actual.data, { ...original.data, status: "superseded", supersededBy: replacement.id }) ||
-        !same(actualRead("short_decisions", replacement.id), replacement)) deny("continuity_revision_changed");
+      if (!actual || actual.id !== original.id || actual.version !== original.version || !same(actual.data, original.data)) deny("continuity_revision_changed");
       return original as unknown as StoredRecord<T>;
     };
-    const current = read("requirements", basis.requirementId);
-    if (!current || current.version !== basis.version) deny("continuity_state_changed");
+    const current = read<RequirementRecord>("requirements", basis.requirementId);
+    if (!current) return deny("continuity_state_changed");
     const requirement = checkRequirement(current.data, basis.requirementId, repoId);
-    if (requirement.epoch !== basis.epoch || requirement.recovery !== "ready" || !["draft", "active"].includes(requirement.lifecycle) || !same(requirement.saved, doc.candidate.to)) deny("continuity_state_changed");
+    const view = rawLineView(db, { version: current.version, data: requirement }, line ?? []);
+    if (view.version !== basis.version) deny("continuity_state_changed");
+    if (requirement.epoch !== basis.epoch || requirement.recovery !== "ready" || !["draft", "active"].includes(requirement.lifecycle) || !same(view.saved, doc.candidate.to)) deny("continuity_state_changed");
+    const counted = line === undefined ? () => true : rawLineCounter(db, basis.requirementId, line);
+    const successors = db.prepare("SELECT data FROM records WHERE namespace='short_decisions' AND json_extract(data,'$.requirementId')=?").all(basis.requirementId)
+      .map((r) => JSON.parse(String(r.data)) as ShortDecisionRecord).filter((d) => d.supersedes.length && d.operationId !== inputCheck?.excludeOperationId);
+    const supersededByOnLine = supersessionFrom(successors, (decisionId) => counted("short_decisions", decisionId));
     const scan = (namespace: string, jsonPath: string, max: number) => {
       const rows = db.prepare("SELECT record_key,id,version,data FROM records WHERE namespace=? AND json_extract(data,?)=? ORDER BY id LIMIT ?").all(namespace, jsonPath, basis.requirementId, max + 1);
       if (rows.length > max || rows.reduce((n, r) => n + Buffer.byteLength(String(r.data)), 0) > 1_048_576) deny("continuity_scan_limit");
       return rows.map((r) => ({ id: String(r.id), key: String(r.record_key), version: Number(r.version), data: JSON.parse(String(r.data)) }));
     };
     const facts = scan(INTERACTION_CONTINUITY_NAMESPACE, "$.basis.requirementId", 128)
-      .filter((row) => row.id !== inputCheck?.excludeOperationId).map((row) => ({ row, fact: checkedFact(row) }));
+      .filter((row) => row.id !== inputCheck?.excludeOperationId && counted(INTERACTION_CONTINUITY_NAMESPACE, row.key)).map((row) => ({ row, fact: checkedFact(row) }));
     type Source = { row: StoredRecord; fact: FactData; decision: FactData["decisions"][number] };
     const sources = facts.flatMap(({ row, fact }) => fact.decisions.map((decision) => ({ row, fact, decision })));
     const byDecision = new Map(sources.map((source) => [source.decision.record.id, source]));
     const currentSource = (source: Source) => {
       const { fact, decision: d } = source;
       if (fact.repoId !== repoId || fact.basis.requirementId !== basis.requirementId || fact.basis.epoch !== basis.epoch || fact.basis.version > basis.version) return null;
-      savedMatches(checkRef(read(REQUIREMENT_OPERATION_NAMESPACE, fact.savedOperation.id), fact.savedOperation), fact);
+      savedMatches(read, checkRef(read(REQUIREMENT_OPERATION_NAMESPACE, fact.savedOperation.id), fact.savedOperation), fact);
       const row = read("short_decisions", d.record.id); if (!row) return null;
       const value = checkDecisionRecord(row.data);
       if (value.repoId !== repoId || value.requirementId !== basis.requirementId || value.epoch !== basis.epoch || value.operationId !== fact.operationId ||
         value.requirementVersion !== fact.basis.version || value.basisReceiptId !== null && value.basisReceiptId !== fact.receiptId || !same(value.prd, fact.basis.prd)) return null;
-      if (value.status !== "superseded") return same(ref(row), d.record) &&
-        value.basisReceiptId === (value.status === "confirmed" ? fact.receiptId : null) ? { row, value } : null;
-      // 原字段只能发生ShortDecisionStore的单次状态取代，不能把任意行变化解释成修订。
+      if (value.status !== "superseded") return same(ref(row), d.record) && value.basisReceiptId === (value.status === "confirmed" ? fact.receiptId : null)
+        ? { row, value: withSupersession(value, supersededByOnLine(value)) } : null;
+      // 升级前的旧库把被取代决定那一行改成了已取代、版本号加 1；只认这一种变化，不能把任意行变化解释成修订。
       if (row.version !== d.record.version + 1 || !["confirmed", "pending"].some((status) => decisionDigest({ ...value, status, supersededBy: null }) === d.record.hash)) return null;
       return { row, value };
     };
@@ -247,10 +261,10 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
           continuityIssues.some((issue) => issue.unitId === u.id)) continue;
         const e: RetainedUnitEvidence = { fact: ref(row), decision: d.record, sourceBasis: fact.basis, sourceBinding: fact.candidate,
           unitId: u.id, unitHash: u.hash, kind: d.kind as RetainedUnitEvidence["kind"] };
-        try { assertRetainedEvidenceIn({ read }, repoId, basis, doc, e); retainedEvidence.push(e); } catch { /* 无效来源不授予字节许可 */ }
+        try { assertRetainedEvidenceIn({ read }, repoId, basis, doc, e, (decision) => supersededByOnLine(decision) !== null); retainedEvidence.push(e); } catch { /* 无效来源不授予字节许可 */ }
       }
     }
-    const questionRows = scan("interaction_questions_v1", "$.basis.requirementId", 256);
+    const questionRows = scan("interaction_questions_v1", "$.basis.requirementId", 256).filter((row) => counted("interaction_questions_v1", row.key));
     for (const row of questionRows) {
       const q = checkInteraction(PendingQuestion, row.data);
       if (row.version !== 1 || row.id !== q.requestId || q.repoId !== repoId || !q.unitIds?.length || q.basis.epoch !== basis.epoch) deny("continuity_question_identity");
@@ -282,7 +296,7 @@ export function loadInteractionContinuity(dataRoot: string, repoId: string, basi
     }
     if (questions.length > 20 || priors.size > 20) deny("interaction_context_limit");
     const result = { questions, effectiveQuestions, retainedEvidence, continuityIssues, priorDecisions: [...priors.values()], revisionSources: [...revisionSources.values()],
-      inputProof: collectionProof(facts.map((item) => item.row), questionRows, read) };
+      inputProof: collectionProof(facts.map((item) => item.row), questionRows, read, supersededByOnLine) };
     if (Buffer.byteLength(JSON.stringify(interpreterView(result))) > 49_152) deny("interaction_context_limit");
     db.exec("COMMIT"); return result;
   } finally { db.close(); }

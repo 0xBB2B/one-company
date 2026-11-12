@@ -383,3 +383,31 @@ test("PM 规矩写明要当依据时先按运行编号取来源核对，检索�
   const rules = loadRoleRules("pm");
   expect(rules.split("\n")).toContain("- 子代理结果必须由你核对实际证据后整合：结束通知里的验证引用用 one_company_verification_run action=status 逐条查看；检索结果只有结论、没查到、没核实和来源条数，要当依据时先按运行编号取来源核对：结论要写进计划或任务时，先用 one_company_agent_manage action=sources 取来源，只用来决定下一步再查什么时不用取；非阻塞建议不自动变成任务。");
 });
+
+test("PM 派出的 explore 任务说明里的项目 AGENTS.md 取自需求工作区，不取主仓库根目录", async () => {
+  const w = await world();
+  await writeFile(join(w.fixture.repositoryRoot, "AGENTS.md"), "# 项目规范\n- 主仓库的旧规范。\n");
+  await writeFile(join(w.workspace, "AGENTS.md"), "# 项目规范\n- 工作区里的规范。\n");
+  w.provider.queue.push(w.submit(w.readme, await w.hashOf(w.readme)), { type: "text", text: "PM 收到检索结果" });
+  await w.manager.dispatchExplore({ parent: { role: "PM", pmRunId: w.pm.runId },
+    request: { question: "登录模块在哪里", clues: [], source: { kind: "local_file" } }, maxTurns: 3 });
+  await until(() => w.provider.requests.some((request) => text(request).includes("sourceCount")));
+  const prompt = w.exploreRequest(w.provider.requests)!.systemPrompt!;
+  expect(prompt).toContain("项目规范（来源：仓库根目录 AGENTS.md；本任务的改动必须遵守）：\n# 项目规范\n- 工作区里的规范。");
+  expect(prompt).not.toContain("主仓库的旧规范");
+});
+
+test("主窗口派出的 explore 任务说明里的项目 AGENTS.md 照旧取自主仓库根目录，不取需求工作区", async () => {
+  const w = await world();
+  await writeFile(join(w.fixture.repositoryRoot, "AGENTS.md"), "# 项目规范\n- 主仓库的规范。\n");
+  await writeFile(join(w.workspace, "AGENTS.md"), "# 项目规范\n- 工作区里的规范。\n");
+  const readme = join(await realpath(w.fixture.repositoryRoot), "README.md");
+  const parent = { role: "main" as const, sessionId: "session-a", connectionId: "connection-a", model: { provider: "team-model", id: "test" }, thinking: "off" };
+  w.manager.connectionOpened("connection-a");
+  w.provider.queue.push(w.submit(readme, await w.hashOf(readme)));
+  const run = await w.manager.dispatchExplore({ parent, request: { question: "仓库说明写了什么", clues: [], source: { kind: "local_file" } }, maxTurns: 2 });
+  await until(() => w.emit.mock.calls.some(([event, data]) => event === "explore.finished" && (data as { runId: string }).runId === run.runId));
+  const prompt = w.exploreRequest(w.provider.requests)!.systemPrompt!;
+  expect(prompt).toContain("项目规范（来源：仓库根目录 AGENTS.md；本任务的改动必须遵守）：\n# 项目规范\n- 主仓库的规范。");
+  expect(prompt).not.toContain("工作区里的规范");
+});

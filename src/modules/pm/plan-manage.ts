@@ -9,7 +9,7 @@ import { isPromise } from "node:util/types";
 import { Type } from "typebox";
 import type { Static } from "typebox";
 import { Value } from "typebox/value";
-import { approvalDependencyClosure } from "../requirement/approval-manifest.ts";
+import { approvalDependencyClosure, implementGoalUnitIds, manifestAuthorizesImplement } from "../requirement/approval-manifest.ts";
 import type { ApprovalManifest } from "../requirement/approval-manifest.ts";
 import { registeredApprovalManifestIn } from "../requirement/approval-manifest-store.ts";
 import { VerificationPerformance } from "../verification/check-round.ts";
@@ -276,10 +276,8 @@ function deny(code: PlanManageErrorCode, detail: string[] = []): never { throw n
 
 /** 用户批准并授权实施时，实施目标板块下全部已确认的段落都是实施目标，不看解读模型在实施动作里列了哪些段。 */
 export function implementScope(manifest: ApprovalManifest, sections: readonly RequirementDocSection[]): Set<string> {
-  if (!manifest.actions.some((action) => action.action === "implement" && !action.unknown)) return new Set();
-  const goals = sections.filter((section) => section.goal).map((section) => section.id);
-  return new Set(manifest.units.filter((unit) => unit.disposition === "confirmed" &&
-    goals.some((goal) => unit.id === goal || unit.id.startsWith(`${goal}.`))).map((unit) => unit.id));
+  if (!manifestAuthorizesImplement(manifest)) return new Set();
+  return new Set(implementGoalUnitIds(manifest, sections));
 }
 function closureOf(manifest: ApprovalManifest, goalIds: string[], constraintIds: string[]): Array<{ unitId: string; hash: string }> {
   // 当前正文已删掉的段不再参与：算出的依据与原来不同，引用它的任务随之被判为受影响

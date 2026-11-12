@@ -215,5 +215,5 @@ test("主代理规矩第 7 条写明要当依据时先按运行编号取来源�
 });
 
 test("窗口与守护进程之间的通信版本不变", () => {
-  expect(PROTOCOL_VERSION).toBe(8);
+  expect(PROTOCOL_VERSION).toBe(9);
 });

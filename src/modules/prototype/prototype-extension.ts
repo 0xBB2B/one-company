@@ -11,6 +11,8 @@ import { chooseOrWriteWindow, chooseWindow } from "../../core/host/question-wind
 import { optionLetter } from "../requirement/requirement-prototypes.ts";
 import type { PickedOption } from "../requirement/requirement-prototypes.ts";
 import { id, object } from "../requirement/requirement-contracts.ts";
+import { currentLine, currentLineRepos, recordLineAnchor } from "../requirement/line-anchors.ts";
+import { uuidv7 } from "../../core/storage/database.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import { AdvisedError, adviceOf, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 import { leanToolResult } from "../../core/exec/tool-result.ts";
@@ -132,9 +134,13 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     return result;
   };
 
-  async function confirmPrototypeFlow(client: DaemonClient, ctx: ExtensionContext, input: { requirementId: string; name: string }, signal?: AbortSignal): Promise<FlowResult> {
+  const lineOf = (ctx: ExtensionContext, requirementId: string) => currentLine(ctx.sessionManager)[requirementId] ?? [];
+
+  async function confirmPrototypeFlow(client: DaemonClient, ctx: ExtensionContext, input: { repoId: string; requirementId: string; name: string }, signal?: AbortSignal): Promise<FlowResult> {
     if (!ctx.hasUI) return "no_ui";
-    const pending = await client.call("prototypes.pending", input) as unknown as PendingPrototype;
+    const { repoId, ...target } = input;
+    const line = lineOf(ctx, input.requirementId);
+    const pending = await client.call("prototypes.pending", { ...target, line }) as unknown as PendingPrototype;
     const opened = await openFile(pending.path);
     const answer = await chooseOrWriteWindow(ctx, { ...confirmWindowContent(pending, opened), otherMaxLength: OPINION_MAX_LENGTH }, signal);
     if (!answer) return "undecided";
@@ -144,8 +150,10 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     const choice = chosen || label === ACCEPT_LABEL ? "accept" : label === ABANDON_LABEL ? "abandon" : answer.other ? "opinion" : undefined;
     if (!choice) return "undecided";
     const opinion = choice === "opinion" ? answer.other ?? null : null;
+    const anchor = uuidv7();
     try {
-      await client.call("prototypes.decide", { ...input, version: pending.version, hash: pending.hash, choice, opinion, option: chosen?.letter ?? null });
+      await client.call("prototypes.decide", { ...target, line: lineOf(ctx, input.requirementId), anchor, version: pending.version, hash: pending.hash, choice, opinion, option: chosen?.letter ?? null });
+      recordLineAnchor(pi, { repoId, requirementId: input.requirementId, anchor });
     } catch (error) {
       const advice = adviceOf(error);
       const voided = (error as { code?: unknown }).code === "file_changed";
@@ -176,16 +184,39 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     return choice === "abandon" ? "abandoned" : "decided";
   }
 
-  async function removePrototypeFlow(client: DaemonClient, ctx: ExtensionContext, input: { requirementId: string; name: string }, signal?: AbortSignal): Promise<FlowResult> {
+  async function removePrototypeFlow(client: DaemonClient, ctx: ExtensionContext, input: { repoId: string; requirementId: string; name: string }, signal?: AbortSignal): Promise<FlowResult> {
     if (!ctx.hasUI) return "no_ui";
-    const removal = await client.call("prototypes.removal", input) as unknown as PrototypeRemoval;
+    const { repoId, ...target } = input;
+    const line = lineOf(ctx, input.requirementId);
+    const removal = await client.call("prototypes.removal", { ...target, line }) as unknown as PrototypeRemoval;
     if (await chooseWindow(ctx, removeWindowContent(removal), signal) !== REMOVE_LABEL) return "undecided";
-    await client.call("prototypes.remove", { ...input, version: removal.version });
+    const anchor = uuidv7();
+    await client.call("prototypes.remove", { ...target, line: lineOf(ctx, input.requirementId), anchor, version: removal.version });
+    recordLineAnchor(pi, { repoId, requirementId: input.requirementId, anchor });
     record({ kind: "remove", name: removal.name, draftVersion: removal.draftVersion });
     return "decided";
   }
 
   const card = toolCard(PROTOTYPE_CARDS);
+
+  async function confirmAwaitingOnLine(window: WindowContextValue, ctx: ExtensionContext): Promise<void> {
+    const repoOf = currentLineRepos(ctx.sessionManager);
+    for (const [requirementId, line] of Object.entries(currentLine(ctx.sessionManager))) {
+      const repoId = repoOf[requirementId]!, client = window.clients.forRepo(repoId);
+      if (!client) continue;
+      const board = await client.call("prototypes.board", { requirementId, line }) as unknown as { entries: Array<{ name: string; inFlight: { status: string } | null }> };
+      for (const entry of board.entries) {
+        if (entry.inFlight?.status !== "awaiting") continue;
+        await enqueue(() => confirmPrototypeFlow(client, ctx, { repoId, requirementId, name: entry.name }));
+      }
+    }
+  }
+  const confirmAwaitingAfterSwitch = (window: Promise<WindowContextValue>, ctx: ExtensionContext) => {
+    if (!ctx.hasUI) return;
+    void window.then((ready) => confirmAwaitingOnLine(ready, ctx).catch((error: unknown) => ctx.ui.notify(`原型确认窗口没能打开：${reasonOf(error)}`, "warning")),
+      () => undefined);
+  };
+
   pi.registerTool({
     name: TOOL_NAME,
     label: "prototype",
@@ -204,22 +235,24 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
       try {
         switch (request.action) {
           case "designers": { const full = await client!.call("prototypes.designers", {}); return leanToolResult(full, prototypeView("designers", full)); }
-          case "status": { const full = await client!.call("prototypes.board", { requirementId: request.requirementId }); return leanToolResult(full, prototypeView("status", full)); }
+          case "status": { const full = await client!.call("prototypes.board", { requirementId: request.requirementId, line: lineOf(ctx, request.requirementId) }); return leanToolResult(full, prototypeView("status", full)); }
           case "dispatch": {
             if (!ctx.model) fail("model_unavailable", "主会话当前没有选定模型，派出的设计师要沿用主会话的模型", "请用户先选定模型再派");
-            const { action: _action, repoId: _repoId, agent, ...rest } = request;
-            const full = await client!.call("prototypes.dispatch", { ...rest, ...(agent ? { agent } : {}),
+            const { action: _action, repoId, agent, ...rest } = request;
+            const anchor = uuidv7();
+            const full = await client!.call("prototypes.dispatch", { ...rest, ...(agent ? { agent } : {}), line: lineOf(ctx, request.requirementId), anchor,
               model: { provider: ctx.model!.provider, id: ctx.model!.id }, thinking: pi.getThinkingLevel() });
+            recordLineAnchor(pi, { repoId, requirementId: request.requirementId, anchor });
             return leanToolResult(full, full);
           }
           case "confirm": {
-            const outcome = await enqueue(() => confirmPrototypeFlow(client!, ctx, { requirementId: request.requirementId, name: request.name }, signal));
+            const outcome = await enqueue(() => confirmPrototypeFlow(client!, ctx, { repoId: request.repoId, requirementId: request.requirementId, name: request.name }, signal));
             const text = ({ decided: "用户已在窗口里作出决定，结果以程序记录为准", undecided: "用户暂未决定，原型仍等待确认",
               abandoned: "用户按 Esc 放弃了这一版，它不再挡住批准", no_ui: "当前没有界面，用户没看到窗口，没有登记决定", failed: "用户在窗口里作了决定，但没能登记，提示已显示给用户" })[outcome];
             return leanToolResult(text, text);
           }
           case "remove": {
-            const outcome = await enqueue(() => removePrototypeFlow(client!, ctx, { requirementId: request.requirementId, name: request.name }, signal));
+            const outcome = await enqueue(() => removePrototypeFlow(client!, ctx, { repoId: request.repoId, requirementId: request.requirementId, name: request.name }, signal));
             const text = (outcome === "decided" ? "用户确认移除，已从草稿移除" : outcome === "no_ui" ? "当前没有界面，用户没看到窗口，没有移除" : "用户选择保留，没有移除");
             return leanToolResult(text, text);
           }
@@ -228,22 +261,29 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     },
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_tree", (_event, ctx) => {
+    sessionContext = ctx;
+    confirmAwaitingAfterSwitch(resolveWindowReady(), ctx);
+  });
+  pi.on("session_start", async (event, ctx) => {
     const current = ctx.sessionManager.getSessionId();
     for (const unsubscribe of unsubscribes.splice(0)) unsubscribe();
     sessionId = current;
     sessionContext = ctx;
+    if (["startup", "resume", "fork"].includes(event.reason)) confirmAwaitingAfterSwitch(resolveWindowReady(), ctx);
     void resolveWindowReady().then((window) => {
       if (sessionId !== current) return;
       for (const repo of window.workspace.repos) {
         const client = window.clients.forRepo(repo.repoId);
         if (!client) continue;
         unsubscribes.push(client.subscribe("prototype.submitted", (data) => {
-          const event = data as { parentSessionId?: unknown; requirementId?: unknown; name?: unknown };
-          if (event.parentSessionId !== sessionId || typeof event.requirementId !== "string" || typeof event.name !== "string") return;
-          const input = { requirementId: event.requirementId, name: event.name };
-          void enqueue(() => confirmPrototypeFlow(client, sessionContext!, input))
-            .catch((error: unknown) => sessionContext?.ui.notify(`原型确认窗口没能打开：${reasonOf(error)}`, "warning"));
+          const event = data as { requirementId?: unknown; name?: unknown; dispatchAnchor?: unknown };
+          if (typeof event.requirementId !== "string" || typeof event.name !== "string" || typeof event.dispatchAnchor !== "string") return;
+          const { requirementId, name, dispatchAnchor } = event;
+          const ctx = sessionContext;
+          if (!ctx || !lineOf(ctx, requirementId).includes(dispatchAnchor)) return;
+          void enqueue(() => confirmPrototypeFlow(client, ctx, { repoId: repo.repoId, requirementId, name }))
+            .catch((error: unknown) => ctx.ui.notify(`原型确认窗口没能打开：${reasonOf(error)}`, "warning"));
         }));
         unsubscribes.push(client.subscribe("prototype.finished", (data) => {
           const event = data as { parentSessionId?: unknown; name?: unknown; version?: unknown; log?: unknown; reason?: unknown };
