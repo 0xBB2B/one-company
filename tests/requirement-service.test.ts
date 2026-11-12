@@ -105,6 +105,7 @@ catch(error) { console.log(JSON.stringify({ok:false,code:error.code??error.name,
     proc.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
     const closed = new Promise<number | null>((resolve, reject) => { proc.once("close", resolve); proc.once("error", reject); });
     void closed.catch(() => {});
+    cleanups.push(async () => { proc.kill("SIGKILL"); await closed.catch(() => {}); });
     return { proc, closed, stdout: () => stdout, stderr: () => stderr };
   });
   return ready;

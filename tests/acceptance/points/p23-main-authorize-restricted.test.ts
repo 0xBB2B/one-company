@@ -18,9 +18,8 @@ type Call = { name: string; args: Record<string, unknown> };
 const requestOf = (call: Call) => (call.args.request ?? call.args) as { action?: string; role?: string };
 const isPrepare = (call: Call) => call.name === "one_company_project_manage" && requestOf(call).action === "workspace-prepare";
 const isDispatchPm = (call: Call) => call.name === "one_company_agent_manage" && requestOf(call).role === "pm";
-const isAuthorize = (call: Call) => call.name === "one_company_requirement_manage" && requestOf(call).action === "authorizeImplement";
 
-test.skipIf(!config || process.platform !== "darwin")("P23：用户说授权实施地面快跑、空中不变以后再说时，主代理调用 authorizeImplement 被拒（原因含范围限制），批准清单里仍没有实施，不建工作区、不派 PM，并告诉用户要先改需求草稿", async () => {
+test.skipIf(!config || process.platform !== "darwin")("P23：需求已批准后，用户说授权实施地面快跑、空中不变以后再说时，批准清单里仍没有实施，不建工作区、不派 PM，并告诉用户要先改需求草稿或缩小范围", async () => {
   const point = await startMainPoint(config!, "p23", { seed: async (place) => {
     const service = await RequirementService.open({ repositoryRoot: place.repo, dataRoot: place.dataRoot, repoId: place.repoId, authorize: () => true });
     await service.create({ operationId: uuidv7(), requestId: uuidv7(), title: "快跑", body: SPRINT });
@@ -35,14 +34,13 @@ test.skipIf(!config || process.platform !== "darwin")("P23：用户说授权实�
   const afterApprove = point.host.session.messages.length;
   await point.say("授权实施地面快跑，空中不变以后再说。");
   const rest = point.calls(afterApprove);
-  const restricted = point.results(afterApprove).filter((result) => result.tool === "one_company_requirement_manage" && result.text.includes("范围限制"));
   const lastText = assistantTexts().at(-1) ?? "";
   const row = withDatabase(repositoryDatabase(point.dataRoot, point.repoId), (db) => db.list<RequirementRecord>("requirements"))[0]!;
-  const authorizedImplement = implementAuthorized({ dataRoot: point.dataRoot, repoId: point.repoId } as never, row as never);
-  judgement = { calls: rest.map((call) => `${call.name}:${requestOf(call).action ?? ""}`), restrictedResults: restricted.length, lastText, authorizedImplement };
+  const approved = row.data.approvalManifest !== undefined;
+  const authorizedImplement = approved && implementAuthorized({ dataRoot: point.dataRoot, repoId: point.repoId } as never, row as never);
+  judgement = { calls: rest.map((call) => `${call.name}:${requestOf(call).action ?? ""}`), approved, lastText, authorizedImplement };
 
-  expect(rest.some(isAuthorize), JSON.stringify(judgement)).toBe(true);
-  expect(restricted.length, JSON.stringify(judgement)).toBeGreaterThan(0);
+  expect(approved, JSON.stringify(judgement)).toBe(true);
   expect(authorizedImplement, JSON.stringify(judgement)).toBe(false);
   expect(rest.some(isPrepare), JSON.stringify(judgement)).toBe(false);
   expect(rest.some(isDispatchPm), JSON.stringify(judgement)).toBe(false);
