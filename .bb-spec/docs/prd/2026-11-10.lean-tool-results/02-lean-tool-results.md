@@ -51,13 +51,13 @@ pi 的工具结果分两部分：`content` 发给模型，进上下文；`detail
 
 | 工具 · 动作 | 保留 | 移除 |
 |---|---|---|
-| requirement_manage · create、updateDraft | requirementId、version、operationId、revision、status | action、commit、prdHash、archivePath、lifecycle、epoch、approvalScope |
-| requirement_manage · read、diff、next | requirementId、title、version、text、coverage.nextCursor、coverage.blocking（非空时） | source、commit、prdHash、epoch、coverage 的 startByte / endByte / totalBytes / complete、diff 的 from / to 提交号和哈希、historicalEndpoints、approvalScope |
-| requirement_manage · metadata | requirementId、version、revision、savedOperationId、lifecycle、recovery、approvalScope.summary 的 pending 和 blocked | saved、approved、archivePath、epoch、approvalScope 的 reference / confirmed / excluded / status |
-| requirement_manage · confirmUpdate；user_interact · reply | requirementId、version、status、prdActivated、blockedBy、blockedReason | operationId、savedOperationId、epoch、targetRecorded、decisionIds、scopeStatus、approvalScope、commit、prdHash、archivePath、lifecycle、revision |
+| requirement_manage · create、updateDraft | requirementId、version、operationId、revision、status | action、commit、prdHash、archivePath、lifecycle、epoch、anchor、approvalScope |
+| requirement_manage · read、diff、next | requirementId、title（read 才有）、version、text、diff 的 fromRevision / toRevision、restoreFailure（read 才有，出现时）、coverage.nextCursor、coverage.blocking（非空时） | source、commit、prdHash、epoch、coverage 的 startByte / endByte / totalBytes / complete、diff 的 from / to 提交号和哈希、historicalEndpoints、approvalScope |
+| requirement_manage · metadata | requirementId、version、revision、savedOperationId、lifecycle、recovery、restoreFailure（出现时）、approvalScope.summary 的 pending 和 blocked | saved、approved、archivePath、epoch、approvalScope 的 reference / confirmed / excluded / status |
+| requirement_manage · confirmUpdate；user_interact · reply | requirementId、version、prdActivated、blockedBy、blockedReason、implementAuthorization、next | status、action、operationId、savedOperationId、epoch、targetRecorded、decisionIds、scopeStatus、approvalScope、commit、prdHash、archivePath、lifecycle、revision |
 | user_interact · ask、ask-tech | requirementId、version、status、answer | requestId、caption、question、scope、unitIds、actions、authorized、epoch |
-| user_interact · panel-item 的 ask、ask-tech | decision.itemId、decision.itemVersion、status、answer、next | caption、question、version、epoch |
-| user_interact · adjudicate 的 reply | decisionId、status、choice、next、notRecordedNext、notRecorded | maxTurns、taskStatus、itemId、version、epoch |
+| user_interact · panel-item 的 ask、ask-tech | decision.itemId、decision.itemVersion、status、answer、next | requirementId、顶层的 itemId、caption、question、version、epoch |
+| user_interact · adjudicate 的 reply | decisionId、status、choice、next、notRecordedNext、notRecorded | requirementId、maxTurns、taskStatus、itemId、version、epoch |
 | user_interact · pm-intake 的 ask、forward | requestId、understanding、understandingStatus、uncoveredScenarioIds、decisions | binding、submissionRef、submissionHash、sourceDirectory、sourceDirectoryHash、createdAt、operationId、userAuthorizationCreated |
 | agent_manage · dispatch | runId | maxTurns、fence |
 | agent_manage · status | run.state、run.stateReason、run.turns、run.log | run 的其余字段（usage、pausedMs、pausedAt、startedAt、updatedAt、endedAt、parentRunId、requirement、kind、id）、delivery |
@@ -98,7 +98,7 @@ pi 的工具结果分两部分：`content` 发给模型，进上下文；`detail
 
 4. 工具失败时，发给模型的报错文字不变（"X 失败。原因：…建议：…"）。
 5. 子代理交结果工具 result_submit 成功时，发给模型的内容不变。
-6. 分页和大小上限（需求正文每页、知识查询每页和单次结果）的数值不变，计算时只算发给模型的内容。同一份需求正文、同一个知识查询，改后每页发给模型的正文（需求正文的 text、知识查询的 facts 条数）不少于改前。
+6. 分页和大小上限（需求正文每页、需求工具和接手复核的单次结果、知识查询每页和单次结果）的数值不变，计算时只算发给模型的内容。同一份需求正文、同一个知识查询，改后每页发给模型的正文（需求正文的 text、知识查询的 facts 条数）不少于改前。
 7. 程序对工具结果的核对（主代理需求工具和接手复核在结果送达前的核对）照常生效：留存部分或程序内存里的完整结果被改动时，仍然拒绝送达。
 
 ## 验收
