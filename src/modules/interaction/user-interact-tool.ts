@@ -9,6 +9,7 @@ import { HostAuthorizationError } from "../requirement/host-authorization.ts";
 import { MainIntakeInteraction, PM_INTAKE_ASK_PARAMETERS, PM_INTAKE_FORWARD_PARAMETERS, PM_INTAKE_REPLY_PARAMETERS } from "./main-intake-interaction.ts";
 import { requestParameters, shapeIssue, unwrapRequest } from "../../core/exec/tool-request.ts";
 import { adviceOf, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
+import { adjudicateResultView, askResultView, confirmResultView, panelItemResultView } from "./interaction-result-view.ts";
 import { MainRequirementInteraction } from "./main-requirement-interaction.ts";
 import { ApprovalUnitIds } from "../requirement/user-interaction-format.ts";
 import { ASK_CHOICES, ASK_ROOT_CHECK, askQuestionIssues } from "./ask-question.ts";
@@ -146,21 +147,21 @@ export function createUserInteractTool(options: {
       return options.interaction.execute(toolCallId, ctx, p.repoId, { ...p }, async () => {
         signal?.throwIfAborted();
         return options.interaction.askPanelItemTech(ctx, p, signal ?? ctx.signal);
-      }, signal ?? ctx.signal);
+      }, panelItemResultView, signal ?? ctx.signal);
     }
     if (raw.purpose === "panel-item") {
       const p = raw as Static<typeof PANEL_ITEM_ASK_PARAMETERS>;
       return options.interaction.execute(toolCallId, ctx, p.repoId, { ...p }, async () => {
         signal?.throwIfAborted();
         return options.interaction.askPanelItem(ctx, p, signal ?? ctx.signal);
-      }, signal ?? ctx.signal);
+      }, panelItemResultView, signal ?? ctx.signal);
     }
     if (raw.purpose === "adjudicate") {
       const p = raw as { repoId: string; requirementId: string; itemId: string; itemVersion: string };
       return options.interaction.execute(toolCallId, ctx, p.repoId, { ...p }, async () => {
         signal?.throwIfAborted();
         return options.interaction.adjudicate(ctx, { repoId: p.repoId, requirementId: p.requirementId, itemId: p.itemId, itemVersion: p.itemVersion });
-      }, signal ?? ctx.signal);
+      }, adjudicateResultView, signal ?? ctx.signal);
     }
     const normalized = structuredClone(raw) as Record<string, unknown>;
     delete normalized.purpose;
@@ -172,6 +173,6 @@ export function createUserInteractTool(options: {
       if (p.action === "ask-tech") return options.interaction.askTech(ctx, { ...p, technologies: p.technologies!, scope: p.scope!, unitIds: p.unitIds!, actions: p.actions! }, signal ?? ctx.signal);
       return p.action === "ask" ? options.interaction.ask(ctx, { ...p, question: p.question!, rootCheck: p.rootCheck!, choices: p.choices!, scope: p.scope!, unitIds: p.unitIds!, actions: p.actions! }, signal ?? ctx.signal)
         : options.interaction.confirm(ctx, p);
-    }, signal ?? ctx.signal);
+    }, p.action === "reply" ? confirmResultView : askResultView, signal ?? ctx.signal);
   }
 }

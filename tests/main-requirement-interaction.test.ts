@@ -54,6 +54,8 @@ import { readAgentSettings } from "../src/modules/settings/agent-settings.ts";
 import { implementAuthorized } from "../src/modules/pm/pm-intake-runtime.ts";
 import { addDraftFiles, AGENTS_BASE, AGENTS_DRAFT, approvedPrdBytes, DESIGN_BASE, DESIGN_DRAFT, SCENARIO_CHANGES } from "./helpers/approved-files-fixture.ts";
 import { setLocalIdentity, withoutGitIdentity } from "./helpers/git-identity.ts";
+import { expectLean, sentOf } from "./helpers/lean-result.ts";
+import { pagePrdText } from "../src/modules/requirement/prd-view.ts";
 import { WorkspaceManageService, workspaceLocation } from "../src/modules/delivery/workspace-manage.ts";
 
 
@@ -90,11 +92,12 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "m
     resolveHost: () => { if (!reachable) throw new HostAuthorizationError("host_unavailable"); return { windowId, sessionId, repositories: new Map([[repoId, { path: hostPath }]]) }; } });
   cleanup.push(async () => { interaction.dispose(); authorization.shutdown(); await rm(root, { recursive: true, force: true }); });
   const manage = createRequirementManageTool({ interaction }), user = createUserInteractTool({ interaction });
-  const call = async (params: Record<string, unknown>, userTool = false) => {
+  const callRaw = async (params: Record<string, unknown>, userTool = false) => {
     const toolCallId = uuidv7();
     const result = await (userTool ? user : manage).execute(toolCallId, { request: { repoId, ...params } } as never, undefined, undefined, ctx);
-    interaction.assertDelivery(toolCallId, ctx); return result.details!;
+    interaction.assertDelivery(toolCallId, ctx); return result as { content: Array<{ type: string; text: string }>; details: Record<string, unknown> };
   };
+  const call = async (params: Record<string, unknown>, userTool = false) => (await callRaw(params, userTool)).details!;
   const mentioned: string[] = [];
   /** 模拟用户这句话 @ 了已建的需求；mention=false 时原样输入。 */
   const capture = (text = PHONE, source = "interactive", mention = true) =>
@@ -110,7 +113,7 @@ async function world(options: Pick<MainRequirementInteractionOptions, "now" | "m
     ({ input: { requirementId: String(created.requirementId), savedOperationId: String(created.operationId), version: Number(created.version) } });
   const setReachable = (value: boolean) => { reachable = value; };
   const setHostPath = (value: string) => { hostPath = value; };
-  return { branch, appendEntry, root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, capture, create, request, service, notifications, manage, setReachable, setHostPath,
+  return { branch, appendEntry, root, repositoryRoot, dataRoot, repoId, sessionId, authorization, ctx, interaction, provider, call, callRaw, capture, create, request, service, notifications, manage, setReachable, setHostPath,
     windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; }, beforeAnswer: (hook: () => Promise<void>) => { beforeAnswer = hook; } };
 }
 /** 明确fixture语义输出；调用仍经过真实ModelRegistry/provider与生产解释适配器。 */
@@ -818,10 +821,10 @@ describe("主窗口共享控制器的真实服务路径", () => {
     expect(unfinished).toHaveLength(1);
     await expect(w.call({ action: "confirmUpdate", requirementId: input.requirementId, version: current.version, savedOperationId: unfinished[0]!.operationId })).rejects.toThrow();
   });
-  test("分页保留中文、范围与未决标记，封装≤50KiB，翻页用 next，游标只能用一次、跨新输入失效，首次读取不收游标", async () => {
+  test("分页保留中文、范围与未决标记，每页发给模型的内容≤24KiB，翻页用 next，游标只能用一次、跨新输入失效，首次读取不收游标", async () => {
     const w = await world(), created = await w.create("# 说明 {#A}\n" + "中文边界\\\"".repeat(2000)), requirementId = String(created.requirementId);
-    const first = await w.call({ action: "read", requirementId, source: "saved", maxBytes: 1024 });
-    expect(Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: JSON.stringify(first) }], details: first }))).toBeLessThanOrEqual(50 * 1024);
+    const firstRaw = await w.callRaw({ action: "read", requirementId, source: "saved", maxBytes: 1024 }), first = firstRaw.details;
+    expect(Buffer.byteLength(firstRaw.content[0]!.text)).toBeLessThanOrEqual(24_576);
     expect(first.text).not.toContain("�"); expect(first.coverage).toMatchObject({ complete: false, blocking: ["incomplete_prd_read", "global_constraints_and_unresolved_may_be_outside_page"] });
     const cursor = (first.coverage as { nextCursor: string }).nextCursor;
     const second = await w.call({ action: "next", requirementId, cursor });
@@ -2078,12 +2081,12 @@ async function approvedWorld(implement = false, review: typeof phoneReview = (c)
   await state.bindWorkspace({ requirementId: String(created.requirementId), version: Number(created.version), path: worktree, baseCommit, prepareOperationId: uuidv7() });
   const { input } = await w.request(created);
   w.capture(utterance); scriptReview(w.provider, review);
-  const approved = await w.call({ action: "confirmUpdate", ...input });
+  const approvedRaw = await w.callRaw({ action: "confirmUpdate", ...input }), approved = approvedRaw.details;
   const requirementId = input.requirementId;
   const authorize = () => w.call({ action: "authorizeImplement", requirementId });
   const record = () => state.read(requirementId);
   const decisions = () => withDatabase(repositoryDatabase(w.dataRoot, w.repoId), (db) => db.list("short_decisions"));
-  return { w, state, input, approved, requirementId, authorize, record, decisions, worktree, baseCommit };
+  return { w, state, input, approved, approvedRaw, requirementId, authorize, record, decisions, worktree, baseCommit };
 }
 const rejectionOf = async (promise: Promise<unknown>) => (await promise.then(() => { throw new Error("应被拒绝"); }, (error: unknown) => error)) as Error & { code?: string };
 const manifestSummary = (record: { data: { approvalManifest?: unknown } }) => {
@@ -3060,3 +3063,243 @@ describe("批准的文件随批准提交进需求分支", () => {
     });
   });
 });
+
+describe("工具结果分两份：发给模型的精简内容与只存会话记录的完整结果", () => {
+  const SCOPE_SENT = (details: Record<string, any>) => ({ summary: { pending: details.approvalScope.summary.pending, blocked: details.approvalScope.summary.blocked } });
+  const COVERAGE_SENT = (details: Record<string, any>) => ({ nextCursor: details.coverage.nextCursor, ...(details.coverage.blocking.length ? { blocking: details.coverage.blocking } : {}) });
+
+  test("create：content 只有编号、版本、操作编号、修订和状态，其余字段只留在 details", async () => {
+    const w = await world();
+    w.capture(); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    const response = await w.callRaw({ action: "create", summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY });
+    const { content } = expectLean(response, ["requirementId", "version", "operationId", "revision", "status"],
+      ["action", "commit", "prdHash", "archivePath", "lifecycle", "epoch", "anchor"]);
+    expect(content).toMatchObject({ status: "created", version: 2, revision: 0 });
+    expect(response.details).toMatchObject({ action: "create", lifecycle: "draft", epoch: 1 });
+  });
+
+  test("updateDraft（需求已生效）：content 不含 approvalScope 等留存字段，details 完整", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    await approvedSaved(w, id, fresh(created));
+    w.capture("补一句"); scriptReplies(w.provider, [{ type: "text", text: '{"allow":true}' }]);
+    const meta = await w.call({ action: "metadata", requirementId: id });
+    const response = await w.callRaw({ action: "updateDraft", requirementId: id, version: Number(meta.version), summary: "手机号登录，保留邮箱登录", title: "登录", body: BODY + "补充。\n" });
+    expectLean(response, ["requirementId", "version", "operationId", "revision", "status"],
+      ["action", "commit", "prdHash", "archivePath", "lifecycle", "epoch", "anchor", "approvalScope"]);
+  });
+
+  test("read：content 有编号、标题、版本、正文和翻页记号，来源、哈希、字节范围只留在 details；已读完时 coverage 没有 blocking", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    const response = await w.callRaw({ action: "read", requirementId: id, source: "saved" });
+    const { content, details } = expectLean(response, ["requirementId", "title", "version", "text"], ["source", "commit", "prdHash", "epoch"], { coverage: { nextCursor: null } });
+    expect(content.coverage).toEqual({ nextCursor: null });
+    expect(details.coverage).toEqual({ startByte: 0, endByte: Buffer.byteLength(BODY), totalBytes: Buffer.byteLength(BODY), complete: true, nextCursor: null, blocking: [] });
+  });
+
+  test("read 只读到一页时：coverage 的 blocking 非空，随 nextCursor 一起发给模型，字节范围不发", async () => {
+    const w = await world(), created = await w.create("# 说明 {#A}\n" + "中文边界".repeat(2000)), id = String(created.requirementId);
+    const response = await w.callRaw({ action: "read", requirementId: id, source: "saved", maxBytes: 1024 });
+    const details = response.details as Record<string, any>;
+    const { content } = expectLean(response, ["requirementId", "title", "version", "text"], ["source", "commit", "prdHash", "epoch"], { coverage: COVERAGE_SENT(details) });
+    expect(details.coverage.blocking.length).toBeGreaterThan(0);
+    expect(content.coverage.blocking).toEqual(details.coverage.blocking);
+    expect(content.coverage.nextCursor).toMatch(/^[0-9a-f]{64}$/u);
+    expect(Object.keys(details.coverage)).toEqual(expect.arrayContaining(["startByte", "endByte", "totalBytes", "complete"]));
+  });
+
+  test("接着 read 翻页的 next：content 有编号、标题、版本、正文和翻页记号，与 details 的 title 相同；字节范围、来源只留在 details", async () => {
+    const w = await world(), created = await w.create("# 说明 {#A}\n" + "中文边界".repeat(2000)), id = String(created.requirementId);
+    const first = await w.callRaw({ action: "read", requirementId: id, source: "saved", maxBytes: 1024 });
+    const response = await w.callRaw({ action: "next", requirementId: id, cursor: sentOf(first).coverage.nextCursor });
+    const { content } = expectLean(response, ["requirementId", "title", "version", "text"], ["source", "commit", "prdHash", "epoch"], { coverage: COVERAGE_SENT(response.details!) });
+    expect(content.title).toBe(response.details!.title);
+    expect(response.details!.coverage).toMatchObject({ startByte: (first.details.coverage as { endByte: number }).endByte });
+  });
+
+  test("diff：content 有编号、版本、正文、起止修订和翻页记号，提交、哈希、字节范围只留在 details", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    await approvedSaved(w, id, fresh(created));
+    const response = await w.callRaw({ action: "diff", requirementId: id, fromRevision: 1 });
+    const { content, details } = expectLean(response, ["requirementId", "version", "text", "fromRevision", "toRevision"],
+      ["fromCommit", "toCommit", "fromHash", "toHash", "epoch"], { coverage: COVERAGE_SENT(response.details!) });
+    expect(content).not.toHaveProperty("title");
+    expect(details).not.toHaveProperty("historicalEndpoints");
+  });
+
+  test("diff 指定历史 toRevision：historicalEndpoints 与 approvalScope 在 details，不在 content", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    await approvedSaved(w, id, fresh(created));
+    await approvedSaved(w, id, await updatedBody(w, id, BODY + "第二版补充。\n"));
+    const response = await w.callRaw({ action: "diff", requirementId: id, fromRevision: 1, toRevision: 1 });
+    expect(response.details).toMatchObject({ historicalEndpoints: true, approvalScope: { status: "available" } });
+    expectLean(response, ["requirementId", "version", "text", "fromRevision", "toRevision"],
+      ["fromCommit", "toCommit", "fromHash", "toHash", "epoch", "historicalEndpoints", "approvalScope"], { coverage: COVERAGE_SENT(response.details!) });
+  });
+
+  test("metadata（需求已生效）：content 有生命周期、恢复状态、保存操作编号和待确认、被挡住的段落，已保存与已批准的提交、epoch、段落确认明细只留在 details", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    await approvedSaved(w, id, fresh(created));
+    const response = await w.callRaw({ action: "metadata", requirementId: id });
+    const { content, details } = expectLean(response, ["requirementId", "version", "revision", "savedOperationId", "lifecycle", "recovery"],
+      ["saved", "approved", "archivePath", "epoch"], { approvalScope: SCOPE_SENT(response.details!) });
+    expect(content.approvalScope.summary.pending).toEqual(["SMS"]);
+    expect(Object.keys(details.approvalScope)).toEqual(expect.arrayContaining(["status", "summary"]));
+    expect(Object.keys(details.approvalScope.summary)).toEqual(expect.arrayContaining(["reference", "confirmed", "excluded", "pending", "blocked"]));
+  });
+
+  test("metadata 遇关闭中的需求：details 只有编号、生命周期、版本和 epoch，content 去掉 epoch", async () => {
+    const w = await world(), created = await w.create(), requirementId = String(created.requirementId);
+    const state = await RequirementStateStore.open({ dataRoot: w.dataRoot, repositoryRoot: w.repositoryRoot, repoId: w.repoId, authorize: () => true });
+    state.beginClose({ requirementId, version: state.read(requirementId).version, intent: { operationId: uuidv7(), reason: "cancelled", receiptId: uuidv7() } });
+    const response = await w.callRaw({ action: "metadata", requirementId });
+    expect(Object.keys(response.details!).sort()).toEqual(["epoch", "lifecycle", "requirementId", "version"]);
+    expect(sentOf(response)).toEqual({ requirementId, lifecycle: "closing", version: response.details!.version });
+  });
+
+  describe("对话线最后一次保存读不出时的 restoreFailure", () => {
+    const UNKNOWN_ANCHOR = "01900000-0000-7000-8000-000000000000";
+    const brokenTip = async () => {
+      const w = await world(), created = await w.create(), id = String(created.requirementId);
+      w.branch.push({ ...w.branch.at(-1)!, id: uuidv7(), parentId: w.branch.at(-1)!.id, data: { ...w.branch.at(-1)!.data, anchor: UNKNOWN_ANCHOR } });
+      return { w, id };
+    };
+    test("read：restoreFailure 在 content 里，与 details 的值相同", async () => {
+      const { w, id } = await brokenTip();
+      const response = await w.callRaw({ action: "read", requirementId: id, source: "saved" });
+      expect(typeof response.details!.restoreFailure).toBe("string");
+      const { content } = expectLean(response, ["requirementId", "title", "version", "text", "restoreFailure"], ["source", "commit", "prdHash", "epoch"], { coverage: COVERAGE_SENT(response.details!) });
+      expect(content.restoreFailure).toBe(response.details!.restoreFailure);
+    });
+    test("metadata：restoreFailure 在 content 里，与 details 的值相同", async () => {
+      const { w, id } = await brokenTip();
+      const response = await w.callRaw({ action: "metadata", requirementId: id });
+      expect(typeof response.details!.restoreFailure).toBe("string");
+      const details = response.details!, has = (keys: string[]) => keys.filter((key) => key in details);
+      const { content } = expectLean(response, has(["requirementId", "version", "revision", "savedOperationId", "lifecycle", "recovery", "restoreFailure"]), has(["saved", "approved", "archivePath", "epoch"]),
+        "approvalScope" in details ? { approvalScope: SCOPE_SENT(details) } : {});
+      expect(content.restoreFailure).toBe(response.details!.restoreFailure);
+    });
+    test("线上锚点正常时 read 和 metadata 的 content 与 details 都没有 restoreFailure", async () => {
+      const w = await world(), created = await w.create(), id = String(created.requirementId);
+      for (const response of [await w.callRaw({ action: "read", requirementId: id, source: "saved" }), await w.callRaw({ action: "metadata", requirementId: id })]) {
+        expect(response.details).not.toHaveProperty("restoreFailure");
+        expect(sentOf(response)).not.toHaveProperty("restoreFailure");
+      }
+    });
+  });
+
+  test("confirmUpdate 已生效但没授权实施：content 有 prdActivated、implementAuthorization、next，没有 status", async () => {
+    const { approvedRaw } = await approvedWorld(false);
+    const { content } = expectLean(approvedRaw, ["requirementId", "version", "prdActivated", "implementAuthorization", "next"],
+      ["status", "action", "operationId", "savedOperationId", "epoch", "targetRecorded", "decisionIds", "approvalScope", "commit", "prdHash", "archivePath", "lifecycle", "revision"]);
+    expect(content).toMatchObject({ prdActivated: true, implementAuthorization: "没有授权实施" });
+    expect(content).not.toHaveProperty("status");
+    expect(content).not.toHaveProperty("blockedBy");
+  });
+
+  test("confirmUpdate 被挡住：content 有 prdActivated、blockedBy、blockedReason，登记明细只留在 details", async () => {
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    scriptReview(w.provider, modifyReview);
+    const response = await w.callRaw({ action: "confirmUpdate", ...input });
+    const { content } = expectLean(response, ["requirementId", "version", "prdActivated", "blockedBy", "blockedReason"],
+      ["operationId", "savedOperationId", "epoch", "targetRecorded", "decisionIds"]);
+    expect(content).toMatchObject({ prdActivated: false, blockedBy: "candidate_requires_revision_or_clarification" });
+    expect(content).not.toHaveProperty("implementAuthorization");
+  });
+
+  test("user_interact reply（purpose 缺省）：content 与 confirmUpdate 同一套精简字段", async () => {
+    const w = await world(), created = await w.create(), { input } = await w.request(created);
+    scriptReview(w.provider, phoneReview);
+    const response = await w.callRaw({ action: "reply", ...input }, true);
+    const { content } = expectLean(response, ["requirementId", "version", "prdActivated", "implementAuthorization", "next"],
+      ["status", "action", "operationId", "savedOperationId", "epoch", "targetRecorded", "decisionIds", "approvalScope", "commit", "prdHash", "archivePath", "lifecycle", "revision"]);
+    expect(content).toMatchObject({ prdActivated: true });
+  });
+
+  test("user_interact ask：content 有编号、版本、状态和回答，问题记录编号、说明文字、范围、epoch 只留在 details", async () => {
+    const { w, input } = await askedWorld();
+    w.capture(); w.answerWindows("5 分钟");
+    const response = await w.callRaw({ action: "ask", ...input, ...SMS_ASK, unitIds: ["background"] }, true);
+    const { content } = expectLean(response, ["requirementId", "version", "status", "answer"],
+      ["requestId", "caption", "question", "scope", "unitIds", "actions", "authorized", "epoch"]);
+    expect(content).toMatchObject({ status: "answered", answer: { text: "5 分钟\n更安全", choice: 1 } });
+  });
+
+  test("user_interact ask-tech：content 与 ask 同一套精简字段", async () => {
+    const { w, input } = await askedWorld();
+    w.capture(); w.answerWindows("全部同意");
+    const response = await w.callRaw({ action: "ask-tech", ...input, technologies: TECHS, scope: "仅技术选型", unitIds: ["background"], actions: ["analyze"] }, true);
+    const { content } = expectLean(response, ["requirementId", "version", "status", "answer"],
+      ["requestId", "caption", "question", "scope", "unitIds", "actions", "authorized", "epoch"]);
+    expect(content).toMatchObject({ status: "answered", answer: { text: techAgreeText(TECHS), choice: 1 } });
+  });
+
+  test("list：content 就是整份结果的 JSON，与 details 逐字相同", async () => {
+    const w = await world(); await w.create();
+    const response = await w.callRaw({ action: "list" });
+    expect(response.content).toHaveLength(1);
+    expect(response.content[0]!.text).toBe(JSON.stringify(response.details));
+  });
+
+  test("authorizeImplement：content 就是整份结果的 JSON，与 details 逐字相同", async () => {
+    const { w, requirementId } = await approvedWorld();
+    w.capture("授权实施"); scriptImplement(w.provider);
+    const response = await w.callRaw({ action: "authorizeImplement", requirementId });
+    expect(response.details).toMatchObject({ status: "authorized", implementAuthorization: "已授权实施" });
+    expect(response.content[0]!.text).toBe(JSON.stringify(response.details));
+  });
+
+  test("60KB 需求正文分页读：每页 content 不超过 24_576 字节，每页正文字节数不少于改前算法在同一位置放下的字节数，翻完拼回原文", async () => {
+    const body = "# 说明 {#A}\n" + '中文段落，含引号"和换行。\n'.repeat(1_580);
+    expect(Buffer.byteLength(body)).toBeGreaterThan(60_000);
+    const w = await world(), created = await w.create(body), id = String(created.requirementId);
+    const pages = [await w.callRaw({ action: "read", requirementId: id, source: "saved", maxBytes: 16_384 })];
+    while (sentOf(pages.at(-1)!).coverage.nextCursor !== null) pages.push(await w.callRaw({ action: "next", requirementId: id, cursor: sentOf(pages.at(-1)!).coverage.nextCursor }));
+    const total = pages[0]!.details!.coverage as { totalBytes: number };
+    expect(pages.length).toBeGreaterThan(1);
+    expect(pages.map((page) => page.details!.text).join("")).toBe(body);
+    expect(total.totalBytes).toBe(Buffer.byteLength(body));
+    for (const page of pages) {
+      expect(Buffer.byteLength(page.content[0]!.text)).toBeLessThanOrEqual(24_576);
+      const details = page.details as Record<string, any>, offset = details.coverage.startByte as number;
+      expect(Buffer.byteLength(details.text as string)).toBeGreaterThanOrEqual(legacyPageBytes(body, offset, 16_384, details));
+    }
+  });
+
+  test("转义密集的第一页：改前算法必须对半缩，改后发给模型的那份 JSON 放得下更多正文", async () => {
+    const body = "# 说明 {#A}\n" + '"'.repeat(16_372) + "中文说明。".repeat(1_600);
+    const w = await world(), created = await w.create(body), id = String(created.requirementId);
+    const first = await w.callRaw({ action: "read", requirementId: id, source: "saved", maxBytes: 16_384 });
+    const details = first.details as Record<string, any>;
+    const legacy = legacyPageBytes(body, 0, 16_384, details);
+    expect(legacy).toBeLessThan(16_384);
+    expect(Buffer.byteLength(first.content[0]!.text)).toBeLessThanOrEqual(24_576);
+    expect(Buffer.byteLength(details.text as string)).toBeGreaterThan(legacy);
+  });
+
+  test("送达前把 details 里的 version 或 epoch 改掉，送达核对拒绝；不改照常通过", async () => {
+    const w = await world(), created = await w.create(), id = String(created.requirementId);
+    const read = async () => {
+      const toolCallId = uuidv7();
+      const response = await w.manage.execute(toolCallId, { request: { repoId: w.repoId, action: "read", requirementId: id, source: "saved" } } as never, undefined, undefined, w.ctx);
+      return { toolCallId, details: response.details as Record<string, unknown> };
+    };
+    const untouched = await read();
+    expect(() => w.interaction.assertDelivery(untouched.toolCallId, w.ctx)).not.toThrow();
+    for (const field of ["version", "epoch"]) {
+      const tampered = await read();
+      tampered.details[field] = Number(tampered.details[field]) + 1;
+      expect(() => w.interaction.assertDelivery(tampered.toolCallId, w.ctx), field).toThrow();
+    }
+  });
+});
+
+/** 改前的分页算法：完整页面对象 JSON ≤ 24_576 字节，且 {content:[完整对象JSON], details:完整对象} 序列化 ≤ 49_152 字节；正文放不下时对半缩。 */
+function legacyPageBytes(text: string, offset: number, maxBytes: number, template: Record<string, any>): number {
+  let page = pagePrdText(text, offset, maxBytes);
+  const whole = () => ({ ...template, text: page.text, coverage: { startByte: page.startByte, endByte: page.endByte, totalBytes: page.totalBytes, complete: page.complete,
+    nextCursor: page.endByte < page.totalBytes ? "0".repeat(64) : null, blocking: ["incomplete_prd_read", "global_constraints_and_unresolved_may_be_outside_page"] } });
+  while (Buffer.byteLength(JSON.stringify(whole())) > 24_576 || Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: JSON.stringify(whole()) }], details: whole() })) > 49_152)
+    page = pagePrdText(text, offset, Math.max(4, Math.floor(Buffer.byteLength(page.text) / 2)));
+  return Buffer.byteLength(page.text);
+}

@@ -6,6 +6,7 @@ import { Value } from "typebox/value";
 import { uuidv7 } from "../../core/storage/database.ts";
 import { HostAuthorizationError } from "../requirement/host-authorization.ts";
 import { MainRequirementInteraction } from "./main-requirement-interaction.ts";
+import { requirementManageView } from "./interaction-result-view.ts";
 import { PRD_SECTION_ID_PATTERN } from "../requirement/prd-view.ts";
 import { requestParameters, shapeIssue, unwrapRequest } from "../../core/exec/tool-request.ts";
 import { toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
@@ -99,6 +100,6 @@ export function createRequirementManageTool(options: { interaction: MainRequirem
         case "authorizeImplement": return interaction.authorizeImplement(ctx, { repoId: p.repoId, requirementId: p.requirementId! });
         case "metadata": return interaction.metadata(ctx, p.repoId, p.requirementId!);
       }
-    }, signal ?? ctx.signal);
+    }, (result) => requirementManageView(p.action, result), signal ?? ctx.signal);
   }
 }
