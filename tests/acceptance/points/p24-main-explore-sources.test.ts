@@ -43,8 +43,8 @@ function facts(messages: Message[]) {
   return { deliveredRunIds: [...deliveredRunIds], delivered, sources: sources?.index, draft: draft?.index, calls: calls.map((call) => `${call.index}:${call.name}:${actionOf(call.args)}`) };
 }
 
-test.skipIf(!config || process.platform !== "darwin")("P22：explore 的检索结果送达后，主代理要把查到的写进需求草稿前，先用 agent_manage action=sources 按派出时的运行编号取来源核对", async () => {
-  const point = await startMainPoint(config!, "p22", { seed: async ({ repo }) => {
+test.skipIf(!config || process.platform !== "darwin")("P24：explore 的检索结果送达后，主代理要把查到的写进需求草稿前，先用 agent_manage action=sources 按派出时的运行编号取来源核对", async () => {
+  const point = await startMainPoint(config!, "p24", { seed: async ({ repo }) => {
     await mkdir(join(repo, "src"), { recursive: true });
     await writeFile(join(repo, "src", "login.ts"), LOGIN);
     const git = (...args: string[]) => exec("git", ["-c", "user.name=sample", "-c", "user.email=sample@localhost", ...args], { cwd: repo });
