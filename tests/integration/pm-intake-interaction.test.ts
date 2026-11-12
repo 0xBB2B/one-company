@@ -396,11 +396,17 @@ test("真实SDK下一次模型请求只从tool content解析requestId并完成as
     const results = intakeResults(session).slice(-3);
     expect(results).toHaveLength(3);
     expect(results.every((result) => !result.isError)).toBe(true);
-    expect(results.map((result) => result.details)).toEqual([
-      { format: "pm-intake-transport/v1", action: "ask" },
-      { format: "pm-intake-transport/v1", action: "forward" },
-      { format: "pm-intake-transport/v1", action: "reply" },
-    ]);
+    const [asked, forwarded, replied] = results.map((result) => result.details as Record<string, unknown>);
+    expect(asked).toMatchObject({ requestId: modelRequestId, userAuthorizationCreated: false });
+    expect(asked).toHaveProperty("binding");
+    expect(asked).toHaveProperty("submissionHash");
+    expect(asked).toHaveProperty("operationId");
+    expect(forwarded).toMatchObject({ requestId: modelRequestId, userAuthorizationCreated: false });
+    expect(forwarded).toHaveProperty("binding");
+    expect(forwarded).not.toHaveProperty("operationId");
+    expect(replied).toEqual(JSON.parse((results[2]!.content[0] as { text: string }).text));
+    expect(results.some((result) => (result.details as Record<string, unknown>).format !== undefined)).toBe(false);
+    expect(Object.keys(JSON.parse((results[0]!.content[0] as { text: string }).text) as object)).not.toContain("binding");
     expect(results[0]!.content[0]!.type).toBe("text");
     expect((results[0]!.content[0] as { text: string }).text).toContain("实现手机号登录");
     expect(fixture.db((db) => db.list(PM_INTAKE_NAMESPACES.requests))).toHaveLength(1);

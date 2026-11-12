@@ -95,7 +95,7 @@ test("真实Anthropic序列化在onPayload前让content中的中文理解和requ
   const requestId = uuidv7(), marker = "实现手机号登录-模型可见标记";
   const viewText = JSON.stringify({ requestId, understanding: { goals: [{ text: marker }] } });
   const messages = convertToLlm([{ role: "toolResult", toolCallId: "call-visible", toolName: "one_company_user_interact",
-    content: [{ type: "text", text: viewText }], details: { format: "pm-intake-transport/v1", action: "ask", hidden: marker },
+    content: [{ type: "text", text: viewText }], details: { requestId, understanding: { goals: [{ text: marker }] }, binding: { hidden: marker } },
     isError: false, timestamp: Date.now() }]);
   const model: Model<Api> = { id: "payload-probe", name: "payload-probe", api: "anthropic-messages", provider: "payload-probe",
     baseUrl: "https://invalid.example", reasoning: false, input: ["text"], contextWindow: 100_000, maxTokens: 1_000,

@@ -31,6 +31,25 @@ test("tool_result替换content/details/input均拒绝且不能再次交付", asy
   }
 });
 
+test("tool_result里details内部字段或content文字被改一个字节都拒绝送达，不改则照常送达", async () => {
+  const fixture = await world(), { bridge, ctx, signal } = bridgeFor(fixture), input = ask(fixture);
+  const executed = await executeObserved(bridge, ctx, signal, input, "tamper-inner");
+  const detailsEvent = resultEvent(executed.id, input, executed.response) as ToolResultEvent & Record<string, unknown>;
+  const details = structuredClone(detailsEvent.details) as { submissionHash: string };
+  details.submissionHash = "0".repeat(64);
+  detailsEvent.details = details;
+  expect(() => bridge.assertDelivery(detailsEvent, ctx)).toThrow(/delivery_changed/);
+
+  const second = await executeObserved(bridge, ctx, signal, input, "tamper-content");
+  const contentEvent = resultEvent(second.id, input, second.response) as ToolResultEvent & Record<string, unknown>;
+  contentEvent.content = [{ type: "text", text: `${second.response.content[0]!.text} ` }];
+  expect(() => bridge.assertDelivery(contentEvent, ctx)).toThrow(/delivery_changed/);
+
+  const third = await executeObserved(bridge, ctx, signal, input, "untouched");
+  expect(() => bridge.assertDelivery(resultEvent(third.id, input, third.response), ctx)).not.toThrow();
+  bridge.dispose();
+});
+
 test.each(["active-replacement", "aborted-replacement", "missing", "original-aborted"] as const)("tool_result当前signal为%s时拒绝且不重绑", async (mode) => {
   const fixture = await world(), { bridge, ctx, signal, controller } = bridgeFor(fixture), input = ask(fixture);
   const executed = await executeObserved(bridge, ctx, signal, input, `signal-${mode}`);
