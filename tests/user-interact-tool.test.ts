@@ -7,6 +7,9 @@ import { uuidv7 } from "../src/core/storage/database.ts";
 import { checkPmIntakeToolInput, PM_INTAKE_PARAMETERS } from "../src/modules/interaction/main-intake-interaction.ts";
 import { askQuestionIssues } from "../src/modules/interaction/ask-question.ts";
 import { createUserInteractTool, USER_INTERACT_PARAMETERS } from "../src/modules/interaction/user-interact-tool.ts";
+import { noteRequirementTitle } from "../src/core/host/tool-card.ts";
+import { draw, ok, seen } from "./helpers/card-draw.ts";
+import type { CardTool } from "./helpers/card-draw.ts";
 import { TECHS } from "./helpers/tech-sample.ts";
 const base = { action: "reply", repoId: "a".repeat(64), requirementId: uuidv7(), savedOperationId: uuidv7(), version: 2 };
 test("user_interact不接受转述、请求选择、角色或回执", async () => {
@@ -227,14 +230,95 @@ test("M8D-AC9：对话里的提问记录块：登记中显示问题；回答后�
     .toBe("<error>没有登记：问题不符合登记要求：没有标出推荐项</>");
 });
 
-test("M8D-AC9：pm-intake 的各动作不改显示，交给 pi 的默认样式", () => {
-  const tool = createUserInteractTool({ interaction: {} as never });
-  const theme = { ...renderTheme, bg: (_kind: string, text: string) => text };
+const INTAKE_REQ = uuidv7();
+const INTAKE_TITLE = "按住空格时长控制跳跃高度";
+const intakeRequest = (action: string, extra: Record<string, unknown> = {}) => ({ request: { purpose: "pm-intake", action, repoId: base.repoId, requirementId: INTAKE_REQ, ...extra } });
+const intakeTool = createUserInteractTool({ interaction: {} as never }) as unknown as CardTool;
+const understanding = (extra: Record<string, unknown>) => ({ requestId: uuidv7(), understanding: "PM 的理解", understandingStatus: "accepted", uncoveredScenarioIds: [], binding: { token: "binding-only-in-details" }, ...extra });
+const replyDetails = (result: string, shortIssues: string[]) => ({ record: { result, shortIssues }, userAuthorizationCreated: false, operationId: uuidv7() });
+const intakeError = { content: [{ type: "text" as const, text: "one_company_user_interact 的 ask 动作失败。\n原因：需求还没有交给 PM\n建议：先派出 PM" }] };
+
+test("接手复核卡片：标题行粗体接手复核加 muted 需求标题，不含 request= 和 JSON", () => {
+  noteRequirementTitle(INTAKE_REQ, INTAKE_TITLE);
   for (const action of ["ask", "forward", "reply"]) {
-    const request = { ...base, purpose: "pm-intake", action };
-    const context = { args: { request }, state: {}, isError: false, expanded: false, isPartial: false, invalidate: () => {} } as never;
-    expect(() => tool.renderCall!({ request } as never, theme as never, context)).toThrow();
-    expect(() => tool.renderResult!({ content: [], details: {} } as never, { expanded: false, isPartial: false }, theme as never, context)).toThrow();
+    const lines = draw(intakeTool, intakeRequest(action), ok(action === "reply" ? replyDetails("passed", []) : understanding({})));
+    expect(lines[0]).toBe(`<b>接手复核</b>  <muted>${INTAKE_TITLE}</>`);
+    expect(lines.join("\n")).not.toMatch(/request=|[{}]/);
+  }
+});
+
+test("接手复核卡片：还没拿到需求标题时写「需求 前8位」", () => {
+  const other = uuidv7();
+  const args = { request: { ...intakeRequest("ask").request, requirementId: other } };
+  expect(draw(intakeTool, args)[0]).toBe(`<b>接手复核</b>  <muted>需求 ${other.slice(0, 8)}</>`);
+});
+
+test("接手复核卡片：执行中只有标题行", () => {
+  noteRequirementTitle(INTAKE_REQ, INTAKE_TITLE);
+  for (const action of ["ask", "forward", "reply"]) expect(draw(intakeTool, intakeRequest(action))).toEqual([`<b>接手复核</b>  <muted>${INTAKE_TITLE}</>`]);
+});
+
+test("接手复核卡片：ask、forward 的摘要按 understandingStatus 和 decisions 条数写", () => {
+  noteRequirementTitle(INTAKE_REQ, INTAKE_TITLE);
+  for (const action of ["ask", "forward"]) {
+    const args = intakeRequest(action);
+    expect(draw(intakeTool, args, ok(understanding({ decisions: [{}, {}, {}] })))[1]).toBe("PM 理解已覆盖全部场景  <muted>· PM 决定 3 条</>");
+    expect(draw(intakeTool, args, ok(understanding({ decisions: [] })))[1]).toBe("PM 理解已覆盖全部场景");
+    expect(draw(intakeTool, args, ok(understanding({})))[1]).toBe("PM 理解已覆盖全部场景");
+    expect(draw(intakeTool, args, ok(understanding({ understandingStatus: "uncovered", uncoveredScenarioIds: ["S1", "S2"], decisions: [] })))[1]).toBe("还有 2 个场景没覆盖");
+    expect(draw(intakeTool, args, ok(understanding({ understandingStatus: "uncovered", uncoveredScenarioIds: ["S1"], decisions: [{}] })))[1]).toBe("还有 1 个场景没覆盖  <muted>· PM 决定 1 条</>");
+  }
+});
+
+test("接手复核卡片：reply 摘要写已登记和四种结论，有问题时加问题条数，复核通过不用绿色", () => {
+  noteRequirementTitle(INTAKE_REQ, INTAKE_TITLE);
+  const args = intakeRequest("reply");
+  const names = { passed: "复核通过", pm_correction_required: "要 PM 改正", prd_revision_required: "要改需求", clarification_required: "要请用户澄清" };
+  for (const [result, text] of Object.entries(names)) {
+    expect(draw(intakeTool, args, ok(replyDetails(result, [])))).toEqual([`<b>接手复核</b>  <muted>${INTAKE_TITLE}</>`, `已登记  <muted>· ${text}</>`]);
+    expect(draw(intakeTool, args, ok(replyDetails(result, ["问题一", "问题二"])))[1]).toBe(`已登记  <muted>· ${text}</>  <muted>· 问题 2 条</>`);
+  }
+  expect(draw(intakeTool, args, ok(replyDetails("passed", [])))[1]).not.toContain("<success>");
+});
+
+test("接手复核卡片：失败时第二行是错误红「失败：原因」，不含建议", () => {
+  noteRequirementTitle(INTAKE_REQ, INTAKE_TITLE);
+  for (const action of ["ask", "forward", "reply"]) {
+    const lines = draw(intakeTool, intakeRequest(action), intakeError, { isError: true });
+    expect(lines).toEqual([`<b>接手复核</b>  <muted>${INTAKE_TITLE}</>`, "<error>失败：需求还没有交给 PM</>"]);
+  }
+});
+
+test("接手复核卡片：失败展开后有调用参数和完整报错文字", () => {
+  noteRequirementTitle(INTAKE_REQ, INTAKE_TITLE);
+  const text = draw(intakeTool, intakeRequest("ask"), intakeError, { isError: true, expanded: true }).join("\n");
+  expect(text).toContain("<muted>调用参数</>");
+  expect(text).toContain("建议：先派出 PM");
+});
+
+test("接手复核卡片：展开后依次是摘要、调用参数、参数 JSON、完整结果、结果 JSON，完整结果含只在 details 里的 binding", () => {
+  noteRequirementTitle(INTAKE_REQ, INTAKE_TITLE);
+  const lines = draw(intakeTool, intakeRequest("ask"), ok(understanding({ decisions: [{}] })), { expanded: true });
+  const text = lines.join("\n");
+  expect(lines[1]).toBe("PM 理解已覆盖全部场景  <muted>· PM 决定 1 条</>");
+  expect(text.indexOf("<muted>调用参数</>")).toBeGreaterThan(text.indexOf("PM 理解已覆盖全部场景"));
+  expect(text.indexOf('"purpose": "pm-intake"')).toBeGreaterThan(text.indexOf("<muted>调用参数</>"));
+  expect(text.indexOf("<muted>完整结果</>")).toBeGreaterThan(text.indexOf('"purpose": "pm-intake"'));
+  expect(text.indexOf("binding-only-in-details")).toBeGreaterThan(text.indexOf("<muted>完整结果</>"));
+});
+
+test("提问卡片不受影响：purpose 缺省与 user-confirmation 的 ask 仍显示提问标题", () => {
+  for (const purpose of [undefined, "user-confirmation"]) {
+    const request = { ...base, ...(purpose ? { purpose } : {}), action: "ask", question: "起跳时机怎么定？", rootCheck: "根源", choices: CHOICES, scope: "仅起跳", actions: [], unitIds: ["A"] };
+    expect(draw(intakeTool, { request })[0]).toBe("<b>提问</b>  <muted>起跳时机怎么定？</>");
+  }
+});
+
+test("接手复核卡片：本文件所有渲染输出没有 dim，收起的不超过 3 行", () => {
+  expect(seen.length).toBeGreaterThan(20);
+  for (const item of seen) {
+    for (const line of item.lines) expect(line).not.toContain("<dim>");
+    if (item.collapsed) expect(item.lines.length).toBeLessThanOrEqual(3);
   }
 });
 

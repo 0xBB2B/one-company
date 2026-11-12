@@ -59,11 +59,19 @@ function isAskCard(args: unknown): boolean {
 }
 
 const DECISION_LABELS: Record<string, string> = { retry: "再给一次机会", adjust: "调整目标或范围", keep: "保持不拆", terminate: "终止任务", cancel: "取消需求", reject: "拒绝需求", accept: "验收通过", rework: "返工" };
+const PM_INTAKE_RESULT_LABELS: Record<"passed" | "pm_correction_required" | "prd_revision_required" | "clarification_required", string> = { passed: "复核通过", pm_correction_required: "要 PM 改正", prd_revision_required: "要改需求", clarification_required: "要请用户澄清" };
+const intakeUnderstanding: CardSpec["summary"] = (details, theme) => [summaryLine(theme,
+  details.understandingStatus === "accepted" ? "PM 理解已覆盖全部场景" : `还有 ${details.uncoveredScenarioIds.length} 个场景没覆盖`,
+  details.decisions?.length ? `PM 决定 ${details.decisions.length} 条` : undefined)];
 const byRequirement = (title: string, summary: CardSpec["summary"]): CardSpec => ({ title, object: (request) => requirementLabel(request.requirementId), summary });
 const INTERACT_CARDS = {
   actionOf: (args: unknown) => { const request = (args as { request?: { purpose?: string; action?: string } } | undefined)?.request; return `${request?.purpose ?? "user-confirmation"}:${request?.action}`; },
   cards: {
     "user-confirmation:reply": byRequirement("确认更新", (details, theme) => [confirmSummary(details, theme)]),
+    "pm-intake:ask": byRequirement("接手复核", intakeUnderstanding),
+    "pm-intake:forward": byRequirement("接手复核", intakeUnderstanding),
+    "pm-intake:reply": byRequirement("接手复核", (details, theme) => [summaryLine(theme, "已登记", PM_INTAKE_RESULT_LABELS[details.record.result as keyof typeof PM_INTAKE_RESULT_LABELS],
+      details.record.shortIssues.length ? `问题 ${details.record.shortIssues.length} 条` : undefined)]),
     "adjudicate:reply": byRequirement("登记决定", (details, theme) => [details.status === "recorded"
       ? summaryLine(theme, "已登记", DECISION_LABELS[details.choice] ?? details.choice) : summaryLine(theme, "没登记", details.next)]),
   },
