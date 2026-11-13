@@ -14,6 +14,7 @@ import { connectDaemon } from "../../src/core/host/daemon-client.ts";
 import { createClock } from "../../src/core/policy/clock.ts";
 import { repoDataDir } from "../../src/core/storage/identity.ts";
 import type { WindowContextValue } from "../../src/core/host/extension-lifecycle.ts";
+import { knowledgeView } from "../../src/modules/project-index/knowledge-query.ts";
 import type { KnowledgeFactPackage } from "../../src/modules/project-index/knowledge-query.ts";
 import { createDaemonFixture, removeDaemonFixture, resolveSdkDir, spawnDaemonProcess, waitForSocketReady } from "../helpers/daemon-harness.ts";
 import { modelProviderEnv, writeTestModelProviders } from "../helpers/daemon-model-fixture.ts";
@@ -122,8 +123,10 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
       expect(Buffer.byteLength(JSON.stringify({ content: result.content }))).toBeLessThanOrEqual(51200);
       const first = result.content[0]!;
       if (first.type !== "text") throw new Error("not text");
-      const page = JSON.parse(first.text) as KnowledgeFactPackage; pages.push(page); cursor = page.nextCursor ?? undefined;
-      expect(result.details).toEqual({});
+      const details = result.details as KnowledgeFactPackage;
+      expect(details).toMatchObject({ format: "knowledge-facts/v1", baselineHash: expect.stringMatching(/^[0-9a-f]{64}$/u) });
+      expect(JSON.parse(first.text)).toEqual(JSON.parse(JSON.stringify(knowledgeView(details))));
+      const page = details; pages.push(page); cursor = page.nextCursor ?? undefined;
     } while (cursor);
     const notes = pages.flatMap((page) => page.facts).filter((fact) => fact.kind === "source" && fact.source.path.startsWith("说明"));
     expect(new Set(notes.map((fact) => fact.source.path)).size).toBe(12);
@@ -154,7 +157,7 @@ test("真实SDK input→project_manage批准→独立daemon→knowledge.query对
     const evidence = { node: process.execPath, nodeVersion: process.version, daemonPid: child.proc.pid,
       daemonExit: exit.code, forbiddenReads: probe.forbiddenReads,
       approvals, sdkInputEvents: inputs.length, pages: pages.length, generations: pages.map((page) => page.generation),
-      contentBytes: pages.map((page) => Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: JSON.stringify(page) }] }))),
+      contentBytes: pages.map((page) => Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: JSON.stringify(knowledgeView(page)) }] }))),
       model: "query-sdk/controlled (local deterministic fixture, no external model)", daemonProviderCalls: 0 };
     const evidenceDirectory = process.env.M4_QUERY_EVIDENCE_DIRECTORY;
     if (evidenceDirectory) {

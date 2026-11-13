@@ -4,8 +4,8 @@ import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
 import type { Static, TSchema } from "typebox";
 import { repositoryDatabase, withDatabase } from "../../core/storage/database.ts";
 import type { LocalDatabase } from "../../core/storage/database.ts";
-import { checkExploreInput } from "./explore-contracts.ts";
-import type { ExploreInput } from "./explore-contracts.ts";
+import { checkExploreInput, ExploreResultSchema } from "./explore-contracts.ts";
+import type { ExploreInput, ExploreResult } from "./explore-contracts.ts";
 import { checked, counter, hash, id, object, positive } from "../requirement/requirement-contracts.ts";
 import type { PmLease, RequirementRecord } from "../requirement/requirement-contracts.ts";
 import { isTerminalState } from "../agents/run-store.ts";
@@ -122,4 +122,25 @@ export function endRequirementExploreSessionsIn(db: LocalDatabase, repoId: strin
     ended.push(session.runId);
   }
   return ended;
+}
+
+export const EXPLORE_RESEARCH = "explore_research";
+export const ExploreResearchRecord = object({
+  format: Type.Literal("explore-research/v1"),
+  runId: id,
+  requirementId: id,
+  research: ExploreResultSchema,
+});
+export type ExploreResearchRecord = Static<typeof ExploreResearchRecord>;
+
+export function saveExploreResearch(config: ExploreSessionConfig, runId: string, requirementId: string, research: ExploreResult): void {
+  const record = checked(ExploreResearchRecord, { format: "explore-research/v1", runId, requirementId, research });
+  withDatabase(repositoryDatabase(config.dataRoot, config.repoId), (db) => db.create(EXPLORE_RESEARCH, runId, record));
+}
+
+export function readExploreResearch(config: ExploreSessionConfig, runId: string): ExploreResearchRecord | null {
+  return withDatabase(repositoryDatabase(config.dataRoot, config.repoId), (db) => {
+    const row = db.read<ExploreResearchRecord>(EXPLORE_RESEARCH, runId);
+    return row ? checked(ExploreResearchRecord, row.data) : null;
+  });
 }

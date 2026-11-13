@@ -50,32 +50,57 @@ test("严格PM参数只允许ask/forward/reply各自白名单", async () => {
   }
 });
 
-test("原始SDK上下文完成ask、forward、reply，完整理解只在模型可见content且不产生用户授权", async () => {
+const ASK_FORWARD_CONTENT_KEYS = ["requestId", "understanding", "understandingStatus", "uncoveredScenarioIds", "decisions"];
+const HIDDEN_FROM_CONTENT = ["binding", "submissionRef", "submissionHash", "sourceDirectory", "sourceDirectoryHash",
+  "createdAt", "operationId", "userAuthorizationCreated"];
+
+test("原始SDK上下文完成ask、forward、reply：ask、forward的content只含5个字段，完整结果整份在details", async () => {
   const fixture = await world(), { bridge, ctx, signal } = bridgeFor(fixture);
   const askInput = ask(fixture), opened = await executeObserved(bridge, ctx, signal, askInput, "call-ask");
-  const openedView = contentView(opened.response) as IntakeRequestView;
-  expect(openedView).toMatchObject({ understandingStatus: "accepted", userAuthorizationCreated: false });
-  expect(openedView).not.toHaveProperty("executionEnabled");
-  expect(openedView).not.toHaveProperty("scheduling");
-  expect(opened.response.details).toMatchObject({ format: "pm-intake-transport/v1", action: "ask" });
-  expect(operationIdOf(opened.response)).toMatch(UUID_V7_PATTERN);
+  const openedContent = contentView(opened.response) as unknown as Record<string, unknown>;
+  const openedFull = opened.response.details as unknown as IntakeRequestView & { decisions: Array<{ id: string; status: string; unitIds: string[]; conclusion: string }>; operationId: string };
+  expect(Object.keys(openedContent).every((key) => ASK_FORWARD_CONTENT_KEYS.includes(key))).toBe(true);
+  expect(Object.keys(openedContent)).toEqual(expect.arrayContaining(["requestId", "understanding", "understandingStatus", "uncoveredScenarioIds"]));
+  for (const key of HIDDEN_FROM_CONTENT) expect(openedContent).not.toHaveProperty(key);
+  expect(openedFull.decisions.length).toBeGreaterThan(0);
+  expect(openedContent.decisions).toEqual(openedFull.decisions);
+  expect(opened.response.details).not.toHaveProperty("format");
+  expect(openedFull).toMatchObject({ requestId: openedContent.requestId, understandingStatus: "accepted", userAuthorizationCreated: false });
+  expect(openedFull.binding.repoId).toBe(fixture.repoId);
+  expect(openedFull.submissionHash).toMatch(/^[0-9a-f]{64}$/);
+  expect(openedFull.sourceDirectoryHash).toMatch(/^[0-9a-f]{64}$/);
+  expect(openedFull.operationId).toMatch(UUID_V7_PATTERN);
+  expect(openedFull.understanding).toEqual(openedContent.understanding);
+  expect(openedFull).not.toHaveProperty("executionEnabled");
+  expect(openedFull).not.toHaveProperty("scheduling");
   expect(opened.response.content[0]!.text).toContain("实现手机号登录");
-  const notes = (openedView as IntakeRequestView & { decisions: Array<{ id: string; status: string; unitIds: string[]; conclusion: string }> }).decisions;
-  expect(notes.map((note) => note.id)).toEqual(openedView.sourceDirectory.decisionIds);
+  const notes = openedFull.decisions;
+  expect(notes.map((note) => note.id)).toEqual(openedFull.sourceDirectory.decisionIds);
   expect(notes.length > 0 && notes.every((note) => note.status === "confirmed" && note.unitIds.length > 0 && note.conclusion.length > 0)).toBe(true);
-  expect(JSON.stringify(opened.response.details)).not.toContain("实现手机号登录");
   bridge.assertDelivery(resultEvent(opened.id, askInput, opened.response), ctx);
   expect(bridge.ownsDelivery(opened.id)).toBe(true);
 
-  const requestId = openedView.requestId;
+  const requestId = openedFull.requestId;
   const forwardInput = forward(fixture, requestId), read = await executeObserved(bridge, ctx, signal, forwardInput, "call-forward");
-  expect((contentView(read.response) as IntakeRequestView).requestId).toBe(requestId);
+  const readContent = contentView(read.response) as unknown as Record<string, unknown>;
+  const readFull = read.response.details as unknown as IntakeRequestView & { decisions: unknown[] };
+  expect(readContent.requestId).toBe(requestId);
+  expect(Object.keys(readContent).every((key) => ASK_FORWARD_CONTENT_KEYS.includes(key))).toBe(true);
+  for (const key of HIDDEN_FROM_CONTENT) expect(readContent).not.toHaveProperty(key);
+  expect(readFull.decisions.length).toBeGreaterThan(0);
+  expect(readContent.decisions).toEqual(readFull.decisions);
+  expect(readFull).toMatchObject({ requestId, userAuthorizationCreated: false });
+  expect(readFull.binding.repoId).toBe(fixture.repoId);
+  expect(readFull.submissionHash).toBe(openedFull.submissionHash);
+  expect(readFull).not.toHaveProperty("operationId");
+  expect(read.response.details).not.toHaveProperty("format");
   bridge.assertDelivery(resultEvent(read.id, forwardInput, read.response), ctx);
 
   const replyInput = reply(fixture, requestId), reviewed = await executeObserved(bridge, ctx, signal, replyInput, "call-reply");
   expect(contentView(reviewed.response)).toMatchObject({ record: { requestId, result: "passed" },
     userAuthorizationCreated: false });
-  expect(reviewed.response.details).toMatchObject({ format: "pm-intake-transport/v1", action: "reply" });
+  expect(reviewed.response.details).toEqual(JSON.parse(reviewed.response.content[0]!.text));
+  expect(reviewed.response.details).not.toHaveProperty("format");
   expect(operationIdOf(reviewed.response)).toMatch(UUID_V7_PATTERN);
   bridge.assertDelivery(resultEvent(reviewed.id, replyInput, reviewed.response), ctx);
   expect(fixture.db((db) => db.list(PM_INTAKE_NAMESPACES.requests))).toHaveLength(1);

@@ -357,3 +357,9 @@ async function openChangeApplyTool(options: ChangeApplyToolOptions) {
   }
   return { execute, dispose() { disposed = true; } };
 }
+
+export function changeApplyView(result: unknown, params: unknown): unknown {
+  const full = result as { status: string; operationId?: string; files: Array<{ path: string; baseHash: string; status?: string; reason?: string }> };
+  if ((params as { action: ChangeApplyAction }).action === "prepare") return { status: full.status, files: full.files.map(({ path, baseHash }) => ({ path, baseHash })) };
+  return { operationId: full.operationId, status: full.status, files: full.files.map(({ path, status, reason }) => ({ path, status, ...(reason === undefined ? {} : { reason }) })) };
+}

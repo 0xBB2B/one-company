@@ -20,9 +20,9 @@ pi install /absolute/path/to/one-company
 | `pnpm run test:integration` | 集成测试：真实守护进程、临时 SQLite、跨进程 |
 | `pnpm run test:integration:installed` | 同上，但先打包安装，守护进程从安装产物启动 |
 | `pnpm run test:installation` | 按真实 pi 安装方式装好再测；没有 Docker 时跳过 Docker 安装测试 |
-| `pnpm run test:acceptance:parallel` | 真实模型验收：23 个单点，单点每条 1～6 分钟，同时跑全部单点约 20 分钟，加两条完整流程约 35 分钟 |
+| `pnpm run test:acceptance:parallel` | 真实模型验收：24 个单点，单点每条 1～6 分钟，同时跑全部单点约 20 分钟，加两条完整流程约 35 分钟 |
 
-合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P23）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`src/modules/requirement/requirement-state.ts`、`src/modules/requirement/requirement-service.ts`、`src/modules/pm/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
+合并前，类型检查、单元、集成、安装这四项纯代码测试必须全过。改了产品代码或提示词，再跑全部单点（P1–P24）和零自定义完整流程（M9-AC12）；改动碰到 `role-rules/pm.md`、`rules/*.md`，或新版本送到 PM、PM 复核计划的流程（`src/modules/requirement/requirement-state.ts`、`src/modules/requirement/requirement-service.ts`、`src/modules/pm/plan-manage.ts` 里待复核版本的部分），还要加跑渐进需求完整流程（M9-AC2/AC3/AC11），拿不准就跑。
 
 ### 测试注意事项
 
@@ -74,6 +74,7 @@ pnpm run test:acceptance:parallel [--only <编号…>]
 | P21 | 样例项目已有顶栏导航"工作台、订单、客户、设置"、主色 `#0f766e` 和带"账号安全""通知"两块的设置页，要在设置页加"每日提醒时间" | 交稿被收下，页面里有 4 个导航文字、主色值和设置页原有的两块标题；DESIGN.md 明亮一节的主色是 `#0f766e` |
 | P22 | 用户只说"批准这一版"，之后说"授权实施" | 批准后主代理不建工作区、不派 PM，告诉用户还没授权实施；用户说"授权实施"后主代理用 authorizeImplement 补授权成功，再建工作区、派出 PM |
 | P23 | 需求已批准、还没授权实施，用户说"授权实施地面快跑，空中不变以后再说" | 批准清单里仍没有实施，不建工作区、不派 PM，并告诉用户要先改需求草稿或缩小范围 |
+| P24 | 用户让主代理派 explore 在本地查清验证码多久过期、在哪定义，并把查到的写进需求草稿 | 检索结果送达后，主代理先用 agent_manage action=sources 按派出时的运行编号取来源，然后才 create 或 updateDraft 写草稿 |
 
 完整流程（2 条）：在临时目录真实安装本包、建样例项目，由真实模型扮演主代理和各角色，从提需求走到完成关闭。
 

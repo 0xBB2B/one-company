@@ -25,7 +25,7 @@ afterEach(async () => {
   for (const dir of cleanups.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
-type Tool = { execute(id: string, params: unknown, signal: undefined, update: undefined, ctx: unknown): Promise<{ content: Array<{ text: string }> }> };
+type Tool = { execute(id: string, params: unknown, signal: undefined, update: undefined, ctx: unknown): Promise<{ content: Array<{ text: string }>; details: unknown }> };
 type Handler = (event: unknown, ctx: unknown) => void | Promise<void>;
 const gitDeliverySettings = (value: unknown) => JSON.stringify({ "one-company": { "git-delivery": value } });
 const oneCompanySettings = (value: Record<string, unknown>) => JSON.stringify({ "one-company": value });
@@ -56,6 +56,7 @@ async function world(status: Record<string, unknown> = { status: "closed", reaso
   const ctx = { cwd, hasUI: true, ui: { ...answeringUi(() => true), notify: () => {} } };
   const start = async () => { await handlers.get("session_start")!({ type: "session_start", reason: "startup" }, ctx); };
   const run = async (params: unknown) => JSON.parse((await tools.get(GIT_DELIVER_TOOL)!.execute("t", params, undefined, undefined, ctx)).content[0]!.text) as Record<string, unknown>;
+  const runRaw = (params: unknown) => tools.get(GIT_DELIVER_TOOL)!.execute("t", params, undefined, undefined, ctx);
   const mainRepo = join(root, "main"), worktree = join(root, "req");
   const git = (dir: string, ...args: string[]) => execFileSync("git", args, { cwd: dir, encoding: "utf8" });
   const makeDeliverable = async () => {
@@ -67,7 +68,7 @@ async function world(status: Record<string, unknown> = { status: "closed", reaso
       archive: { path: "docs/prd/a.md", archiveHash: "h", status: "archived", prototypes: [] }, delivery: { worktree, branch: "refs/heads/req/login", codeHead: "c", repositoryRoot: mainRepo } });
   };
   return {
-    pi, root, status, active: () => active, commands, mainRoot: mainRepo, start, run, calls, makeDeliverable,
+    pi, root, status, active: () => active, commands, mainRoot: mainRepo, start, run, runRaw, calls, makeDeliverable,
     userPath: userSettingsPath(agentDir), projectPath: projectSettingsPath(cwd), mainProjectPath: projectSettingsPath(mainRepo),
   };
 }
@@ -258,7 +259,69 @@ test("交付工具用守护进程给的 repositoryRoot 查信任、读项目层�
   expect(localMock.mock.calls[0]![2]).toEqual({ repositoryRoot: given, mergeMethods: ["rebase"] });
 });
 
+async function deliverWith(result: unknown) {
+  const deliverMock = vi.mocked(gitDelivery.deliverRequirement);
+  const w = await world();
+  await w.makeDeliverable();
+  await writeSettings(w.mainProjectPath, oneCompanySettings({ "git-delivery": "remote" }));
+  await w.start();
+  deliverMock.mockResolvedValueOnce(result as never);
+  const raw = await w.runRaw(PARAMS);
+  return { content: JSON.parse(raw.content[0]!.text) as Record<string, unknown>, details: raw.details };
+}
+
+test("远程交付成功时 content 正好是 status、url、merge.state，details 是完整返回", async () => {
+  const full = { status: "delivered", head: "h1", provider: "github", url: "https://example.test/pr/1", reused: false, rebasedAfterAcceptance: true,
+    merge: { method: "squash", state: "merged" } };
+  const { content, details } = await deliverWith(full);
+  expect(content).toEqual({ status: "delivered", url: "https://example.test/pr/1", merge: { state: "merged" } });
+  expect(details).toEqual(full);
+});
+
+test("合并失败时 content 的 merge 里还有 reason、next，method 不在 content", async () => {
+  const full = { status: "delivered", head: "h1", provider: "gitlab", url: "https://example.test/mr/2", reused: true, rebasedAfterAcceptance: false,
+    merge: { method: "merge", state: "failed", reason: "审批未通过", next: "等审批后手动合并" } };
+  const { content, details } = await deliverWith(full);
+  expect(content).toEqual({ status: "delivered", url: "https://example.test/mr/2", merge: { state: "failed", reason: "审批未通过", next: "等审批后手动合并" } });
+  expect(details).toEqual(full);
+});
+
+test("交付被拒绝时 content 正好是 status、reason、next，details 是完整返回", async () => {
+  const full = { status: "rejected", reason: "归档不在需求分支里", next: "先完成归档" };
+  const { content, details } = await deliverWith(full);
+  expect(content).toEqual(full);
+  expect(details).toEqual(full);
+});
+
+test("交付遇到冲突时 content 正好是 status、target、reason、next", async () => {
+  const full = { status: "conflict", target: "refs/heads/main", reason: "变基冲突", next: "手动解决冲突" };
+  const { content, details } = await deliverWith(full);
+  expect(content).toEqual(full);
+  expect(details).toEqual(full);
+});
+
+test("用户取消时 content 只有 status，head 只在 details", async () => {
+  const full = { status: "cancelled", head: "h1" };
+  const { content, details } = await deliverWith(full);
+  expect(content).toEqual({ status: "cancelled" });
+  expect(details).toEqual(full);
+});
+
+test("仅本地交付合并成功时 content 只有 status、target，method、head、rebasedAfterAcceptance 只在 details", async () => {
+  const localDelivery = await import("../src/modules/delivery/local-delivery.ts");
+  const full = { status: "merged-locally", method: "squash", target: "refs/heads/main", head: "h2", rebasedAfterAcceptance: false };
+  const w = await world();
+  await w.makeDeliverable();
+  await writeSettings(w.userPath, gitDeliverySettings("local"));
+  await w.start();
+  vi.mocked(localDelivery.deliverLocally).mockResolvedValueOnce(full as never);
+  const raw = await w.runRaw(PARAMS);
+  expect(JSON.parse(raw.content[0]!.text)).toEqual({ status: "merged-locally", target: "refs/heads/main" });
+  expect(raw.details).toEqual(full);
+});
+
 test("授信记录读不了时交付失败，写明读不了授信记录和原因，建议改好文件后再交付，仓库与交付函数都没有动", async () => {
+  vi.mocked(gitDelivery.deliverRequirement).mockClear();
   const w = await world();
   await w.makeDeliverable();
   await w.start();

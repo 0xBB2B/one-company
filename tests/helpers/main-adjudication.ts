@@ -28,6 +28,7 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
     resolveHost: () => ({ windowId, sessionId, repositories: new Map([[w.fixture.repoId, { path: w.fixture.repositoryRoot }]]) }) });
   cleanups.push(() => { interaction.dispose(); authorization.shutdown(); });
   const tool = createUserInteractTool({ interaction });
+  let last: Awaited<ReturnType<typeof tool.execute>> | undefined;
   const entry = (references: string[], patch: Record<string, unknown> = {}) => ({ kind: "adjudication", basis: "explicit", resolution: "direct", candidateId: null,
     requestId: null, actions: [], conclusion: "用户的裁决", scope: "待裁决事项", references, supersedes: [], ...patch });
   /** 模拟用户在面板里打开事项后作答；opened=false 时不打开。 */
@@ -39,6 +40,7 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
     const result = await tool.execute(toolCallId, { request: { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId, requirementId: w.fixture.requirementId,
       itemId, itemVersion } } as never, undefined, undefined, ctx);
     interaction.assertDelivery(toolCallId, ctx);
+    last = result;
     return result.details as Record<string, unknown>;
   }
   /** 主代理针对面板事项提问：窗口按 answerWindows 设定作答，回答成为当前输入。 */
@@ -47,6 +49,7 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
     const result = await tool.execute(toolCallId, { request: { purpose: "panel-item", action: "ask", repoId: w.fixture.repoId, requirementId: w.fixture.requirementId,
       ...request } } as never, undefined, undefined, ctx);
     interaction.assertDelivery(toolCallId, ctx);
+    last = result;
     return result.details as Record<string, unknown>;
   }
   /** 主代理针对面板事项弹技术清单窗口：窗口按 answerWindows 设定作答，回答成为当前输入。 */
@@ -55,6 +58,7 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
     const result = await tool.execute(toolCallId, { request: { purpose: "panel-item", action: "ask-tech", repoId: w.fixture.repoId, requirementId: w.fixture.requirementId,
       ...request } } as never, undefined, undefined, ctx);
     interaction.assertDelivery(toolCallId, ctx);
+    last = result;
     return result.details as Record<string, unknown>;
   }
   /** 不截获新原话，直接以当前输入（例如窗口里的回答）登记裁决。 */
@@ -64,8 +68,9 @@ export function mainAdjudication(w: PmRunWorld, cleanups: Array<() => unknown | 
     const result = await tool.execute(toolCallId, { request: { purpose: "adjudicate", action: "reply", repoId: w.fixture.repoId, requirementId: w.fixture.requirementId,
       itemId, itemVersion } } as never, undefined, undefined, ctx);
     interaction.assertDelivery(toolCallId, ctx);
+    last = result;
     return result.details as Record<string, unknown>;
   }
-  return { entry, adjudicate, panelAsk, panelAskTech, register, interaction, ctx, windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; },
+  return { entry, adjudicate, panelAsk, panelAskTech, register, lastResponse: () => last!, interaction, ctx, windows, answerWindows: (answer: WindowDecision) => { windowAnswer = answer; },
     beforeAnswer: (hook: () => Promise<void> | void) => { beforeAnswer = hook; } };
 }

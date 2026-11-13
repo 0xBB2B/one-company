@@ -722,3 +722,18 @@ async function openPlanManageTool(options: PlanManageToolOptions) {
   }
   return { execute, dispose() { disposed = true; } };
 }
+
+export function planManageView(result: unknown): unknown {
+  const full = result as { plan: PlanRecord | null; tasks?: TaskRecord[]; chances?: string[] };
+  if (!full.plan) return full;
+  const tasks = (full.tasks ?? []).map((task) => {
+    const { path: _path, hash: _hash, ...detail } = (task.detail ?? {}) as Record<string, unknown>;
+    return { taskId: task.taskId, version: task.version, key: task.key, status: task.status, role: task.role, goalUnitIds: task.goalUnitIds, constraintUnitIds: task.constraintUnitIds,
+      dependsOn: task.dependsOn, writePaths: task.writePaths, blockedByQuestionIds: task.blockedByQuestionIds, maxTurns: task.maxTurns, agent: task.agent, agentReason: task.agentReason,
+      reviewers: task.reviewers, attempts: task.attempts.map(({ runId, outcome, turnsUsed }) => ({ runId, outcome, turnsUsed })),
+      reviews: task.reviews.map(({ runId, outcome, turnsUsed, agent }) => ({ runId, outcome, turnsUsed, agent })), sizeHold: task.sizeHold, holdNote: task.holdNote,
+      userDecision: task.userDecision && { choice: task.userDecision.choice, maxTurns: task.userDecision.maxTurns },
+      detail: Object.keys(detail).length ? detail : undefined };
+  });
+  return { plan: { planVersion: full.plan.planVersion, confirmedVersion: full.plan.confirmedVersion }, tasks, ...(full.chances ? { chances: full.chances } : {}) };
+}

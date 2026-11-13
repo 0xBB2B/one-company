@@ -2,7 +2,6 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { ExtensionContext, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { uuidv7 } from "../src/core/storage/database.ts";
 import { HostAuthorizationManager } from "../src/modules/requirement/host-authorization.ts";
-import { checkPmUnderstanding } from "../src/modules/pm/pm-intake-contracts.ts";
 import type { PmUnderstanding } from "../src/modules/pm/pm-intake-contracts.ts";
 import { createPmIntakeToolResponse, MainIntakeInteraction } from "../src/modules/interaction/main-intake-interaction.ts";
 import type { PmIntakeToolInput } from "../src/modules/interaction/main-intake-interaction.ts";
@@ -124,7 +123,7 @@ test.each(["request", "review"] as const)("PM 接手复核没有时间期限：�
   } finally { vi.useRealTimers(); clock.mockRestore(); current.bridge.dispose(); }
 });
 
-test("32KiB understanding预算先独立拒绝，不冒充51,200字节transport验证", async () => {
+test("32KiB understanding预算超出时服务层报resource_limit，不写入请求", async () => {
   const fixture = await world(), { bridge, ctx, signal } = bridgeFor(fixture), input = ask(fixture);
   fixture.submissionProvider.mutate = (value) => {
     const item = value.goals[0]!;
@@ -139,7 +138,7 @@ test("32KiB understanding预算先独立拒绝，不冒充51,200字节transport�
   bridge.dispose();
 });
 
-test("合法view含Unicode与转义时transport精确接受51,200字节并拒绝51,201字节", () => {
+function sampleAskView(): IntakeRequestView {
   const binding = { repoId: "a".repeat(64), requirementId: uuidv7(), approvedPrdCommit: "b".repeat(40),
     approvedRevision: 1, approvedPrdHash: "c".repeat(64), approvalManifestHash: "d".repeat(64),
     approvalScopeVersion: `intake-approval-scope/v1:${"e".repeat(64)}`,
@@ -151,30 +150,48 @@ test("合法view含Unicode与转义时transport精确接受51,200字节并拒绝
     { text: "实现手机号登录", sourceRefs: [{ kind: "prd-unit", id: "goal.login" }] }], nonGoals: [], constraints: [],
     allowedActions: [], unresolved: [], scenarioCoverage: [{ scenarioId: "scenario.failure", status: "covered",
       summary: "失败时显示错误", sourceRefs: [{ kind: "prd-scenario", id: "scenario.failure" }] }] };
-  const view: IntakeRequestView = { requestId: uuidv7(), binding, submissionRef: "pm/submission/current",
+  return { requestId: uuidv7(), binding, submissionRef: "pm/submission/current",
     submissionHash: "2".repeat(64), sourceDirectoryHash: "3".repeat(64), sourceDirectory, understanding,
     understandingStatus: "accepted", uncoveredScenarioIds: [], createdAt: Date.now(), userAuthorizationCreated: false };
-  const template = structuredClone(view.understanding.goals[0]!);
-  const slots = 31 * 4;
-  const candidate = (slashes: number, ascii: number): PmUnderstanding => {
-    const texts = Array.from({ length: slots }, () => "中");
-    for (let index = 0; index < slashes; index++) texts[index % slots] += "\\";
-    for (let index = 0; index < ascii; index++) texts[index % slots] += "a";
-    const group = (offset: number) => Array.from({ length: 31 }, (_, index) => ({ ...structuredClone(template), text: texts[offset + index]! }));
-    return { ...structuredClone(view.understanding), goals: group(0), nonGoals: group(31),
-      constraints: group(62), allowedActions: group(93) };
+}
+
+function askContentBytes(view: IntakeRequestView): number {
+  const { requestId, understanding, understandingStatus, uncoveredScenarioIds } = view;
+  return Buffer.byteLength(JSON.stringify({ requestId, understanding, understandingStatus, uncoveredScenarioIds }), "utf8");
+}
+
+test("上限只算content：ask的content恰好49,152字节成功，多1字节报response_budget_exceeded，details不计入", () => {
+  const view = sampleAskView();
+  view.understanding.goals[0]!.text += "a".repeat(49_152 - askContentBytes(view));
+  expect(askContentBytes(view)).toBe(49_152);
+  const accepted = createPmIntakeToolResponse("ask", view).response;
+  expect(Buffer.byteLength(accepted.content[0].text, "utf8")).toBe(49_152);
+  expect(Buffer.byteLength(JSON.stringify(accepted.details), "utf8")).toBeGreaterThan(49_152);
+  view.understanding.goals[0]!.text += "a";
+  expect(() => createPmIntakeToolResponse("ask", view)).toThrow(/response_budget_exceeded/);
+});
+
+test("content加details合计超过50KiB但content未超上限时照常成功", () => {
+  const view = sampleAskView();
+  view.understanding.goals[0]!.text += "a".repeat(30_000);
+  const { response } = createPmIntakeToolResponse("ask", view);
+  const total = Buffer.byteLength(JSON.stringify({ content: response.content, details: response.details }), "utf8");
+  expect(total).toBeGreaterThan(50 * 1024);
+});
+
+test("约30KB的接手理解经ask成功送达，details带完整理解", async () => {
+  const fixture = await world(), { bridge, ctx, signal } = bridgeFor(fixture), input = ask(fixture);
+  fixture.submissionProvider.mutate = (value) => {
+    const item = value.goals[0]!;
+    value.goals = Array.from({ length: 24 }, (_, index) => ({ ...structuredClone(item), text: `${index}${"中".repeat(380)}` }));
   };
-  const baseUnderstanding = candidate(0, 0), baseView = { ...view, understanding: baseUnderstanding };
-  const baseSize = Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: JSON.stringify(baseView) }],
-    details: { format: "pm-intake-transport/v1", action: "ask" } }), "utf8");
-  const remaining = 51_200 - baseSize;
-  expect(remaining).toBeGreaterThan(0);
-  const exact = candidate(Math.floor(remaining / 4), remaining % 4);
-  expect(() => checkPmUnderstanding(exact, view.sourceDirectory)).not.toThrow();
-  const acceptedView = { ...view, understanding: exact };
-  expect(Buffer.byteLength(createPmIntakeToolResponse("ask", acceptedView).responseBytes, "utf8")).toBe(51_200);
-  const over = structuredClone(acceptedView);
-  over.understanding.goals[0]!.text += "a";
-  expect(() => checkPmUnderstanding(over.understanding, over.sourceDirectory)).not.toThrow();
-  expect(() => createPmIntakeToolResponse("ask", over)).toThrow(/response_budget_exceeded/);
+  const executed = await executeObserved(bridge, ctx, signal, input, "thirty-kb");
+  const size = Buffer.byteLength(executed.response.content[0]!.text, "utf8");
+  expect(size).toBeGreaterThan(29_000);
+  expect(size).toBeLessThan(49_152);
+  const content = contentView(executed.response) as unknown as { understanding: { goals: unknown[] } };
+  expect(content.understanding.goals).toHaveLength(24);
+  expect(executed.response.details).toMatchObject({ binding: { repoId: fixture.repoId }, userAuthorizationCreated: false });
+  expect(() => bridge.assertDelivery(resultEvent(executed.id, input, executed.response), ctx)).not.toThrow();
+  bridge.dispose();
 });

@@ -75,7 +75,6 @@ const PM_SCHEMAS: Readonly<Record<PmIntakeToolInput["action"], TSchema>> = Objec
   forward: PM_INTAKE_FORWARD_PARAMETERS,
   reply: PM_INTAKE_REPLY_PARAMETERS,
 });
-const RESPONSE_BYTES = 50 * 1024;
 const INNER_BYTES = 49_152;
 const MAX_PENDING = 32;
 const signalAborted = Object.getOwnPropertyDescriptor(AbortSignal.prototype, "aborted")!.get!;
@@ -154,24 +153,28 @@ function json(value: unknown): string {
   return serialized;
 }
 
+function pmIntakeRequestView(full: Record<string, unknown>): Record<string, unknown> {
+  const { requestId, understanding, understandingStatus, uncoveredScenarioIds, decisions } = full;
+  return { requestId, understanding, understandingStatus, uncoveredScenarioIds, ...(decisions ? { decisions } : {}) };
+}
+
 export function createPmIntakeToolResponse(
   action: PmIntakeToolInput["action"],
   view: IntakeRequestView | IntakeReviewView,
   decisions?: PmDecisionNote[],
   operationId?: string,
 ): {
-  response: { content: [{ type: "text"; text: string }]; details: { format: "pm-intake-transport/v1"; action: PmIntakeToolInput["action"] } };
+  response: { content: [{ type: "text"; text: string }]; details: Record<string, unknown> };
   responseBytes: string;
 } {
-  const viewText = json({ ...view, ...(decisions ? { decisions } : {}), ...(operationId ? { operationId } : {}) });
-  if (Buffer.byteLength(viewText, "utf8") > INNER_BYTES) deny("response_budget_exceeded");
+  const full = { ...view, ...(decisions ? { decisions } : {}), ...(operationId ? { operationId } : {}) };
+  const text = json(action === "reply" ? full : pmIntakeRequestView(full));
+  if (Buffer.byteLength(text, "utf8") > INNER_BYTES) deny("response_budget_exceeded");
   const response = {
-    content: [{ type: "text" as const, text: viewText }] as [{ type: "text"; text: string }],
-    details: { format: "pm-intake-transport/v1" as const, action },
+    content: [{ type: "text" as const, text }] as [{ type: "text"; text: string }],
+    details: full,
   };
-  const responseBytes = json(response);
-  if (Buffer.byteLength(responseBytes, "utf8") > RESPONSE_BYTES) deny("response_budget_exceeded");
-  return { response, responseBytes };
+  return { response, responseBytes: json(response) };
 }
 
 function repositories(host: RequirementManageHostContext): Array<readonly [string, string]> {

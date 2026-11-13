@@ -16,6 +16,8 @@ import { mainAdjudication } from "./helpers/main-adjudication.ts";
 import { notePlanRejection } from "../src/modules/pm/pm-attention.ts";
 import { createPmRunWorld, until } from "./helpers/run-manager-fixture.ts";
 import { TECHS } from "./helpers/tech-sample.ts";
+import { expectLean } from "./helpers/lean-result.ts";
+import type { ToolResponse } from "./helpers/lean-result.ts";
 
 vi.setConfig({ testTimeout: 90_000, hookTimeout: 60_000 });
 const cleanups: Array<() => unknown | Promise<unknown>> = [];
@@ -58,7 +60,7 @@ async function world() {
     main.adjudicate(text, entries, target, itemVersion ?? (target === itemId ? version() : `${target}:${w.fixture.state.read(w.fixture.requirementId).version}`), opened);
   const { interaction, ctx } = main;
   const decisions = () => w.db((db) => db.list("short_decisions")).length;
-  return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx, windows: main.windows, answerWindows: main.answerWindows, panelAsk: main.panelAsk, panelAskTech: main.panelAskTech, register: main.register, beforeAnswer: main.beforeAnswer };
+  return { ...w, task, login, itemId, version, entry, adjudicate, decisions, interaction, ctx, windows: main.windows, answerWindows: main.answerWindows, panelAsk: main.panelAsk, panelAskTech: main.panelAskTech, register: main.register, lastResponse: main.lastResponse, beforeAnswer: main.beforeAnswer };
 }
 
 test("M7-AC35：用户原话选择再给一次机会时登记用户决定，任务回到可派出，事项从概览消失，PM 收到固定告知，按用户上限派出且不能带 retry", async () => {
@@ -2382,5 +2384,82 @@ describe("ask-tech 面板事项用法", () => {
       expect(error!.message, key).toContain("用 ask");
     }
     expect(main.windows).toHaveLength(0);
+  });
+});
+
+describe("工具结果分两份：发给模型的精简内容与只存会话记录的完整结果", () => {
+  const ADJUDICATE_SENT = ["decisionId", "status", "choice", "next", "notRecordedNext", "notRecorded"];
+  const ADJUDICATE_KEPT = ["requirementId", "maxTurns", "taskStatus", "itemId", "version", "epoch"];
+  const PANEL_SENT = ["status", "answer", "next"];
+  const PANEL_KEPT = ["requirementId", "itemId", "caption", "question", "version", "epoch"];
+  const present = (details: Record<string, unknown> | undefined, keys: string[]) => keys.filter((key) => key in details!);
+  const decisionSent = (details: Record<string, any>) => details.decision === null ? null : { itemId: details.decision.itemId, itemVersion: details.decision.itemVersion };
+
+  test("adjudicate 任务分支：content 有决定编号、状态、选择和 next，maxTurns、taskStatus、事项编号、版本、epoch 只留在 details", async () => {
+    const w = await world();
+    await w.adjudicate("再给它一次机会，这次给 3 轮", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"])]);
+    const response = w.lastResponse() as ToolResponse, details = response.details!;
+    expect(details).toMatchObject({ status: "recorded", choice: "retry", maxTurns: 3, taskStatus: "pending" });
+    const { content } = expectLean(response, present(details, ADJUDICATE_SENT), ["requirementId", "maxTurns", "taskStatus", "itemId", "version", "epoch"]);
+    expect(content).toMatchObject({ status: "recorded", choice: "retry", decisionId: expect.any(String) });
+  });
+
+  test("adjudicate 夹带其他条目：notRecorded、notRecordedNext 发给模型，maxTurns 等仍只留在 details", async () => {
+    const w = await world();
+    await w.adjudicate("再给一次 3 轮，另外登录也要支持微信", [w.entry([`item:${w.itemId}`, `version:${w.version()}`, "choice:retry", "max-turns:3"]),
+      { ...w.entry([]), kind: "target", conclusion: "支持微信登录", references: [] }]);
+    const response = w.lastResponse() as ToolResponse, details = response.details!;
+    const { content } = expectLean(response, present(details, ADJUDICATE_SENT), ["requirementId", "maxTurns", "taskStatus", "itemId", "version", "epoch"]);
+    expect(content).toMatchObject({ notRecorded: ["支持微信登录"], notRecordedNext: expect.stringContaining("改草稿") });
+  });
+
+  test("adjudicate unclear 分支：content 只含发给模型的字段，不含 requirementId、事项编号、版本、epoch", async () => {
+    const w = await world();
+    await w.adjudicate("嗯我再想想", [{ ...w.entry([]), kind: "unresolved", basis: "uncertain", references: [] }]);
+    const response = w.lastResponse() as ToolResponse, details = response.details!;
+    expect(details).toMatchObject({ status: "unclear" });
+    const { content } = expectLean(response, ["status", "next"], ["requirementId", "itemId", "version", "epoch"]);
+    expect(content).toMatchObject({ status: "unclear" });
+  });
+
+  test("panel-item ask：content 有 decision 的事项编号与版本、状态、回答和 next，requirementId、顶层 itemId、说明文字、版本、epoch 只留在 details", async () => {
+    const w = await world();
+    w.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId: w.itemId });
+    w.answerWindows("再给一次机会，轮数上限 3");
+    await w.panelAsk({ itemId: w.itemId, itemVersion: w.version(), question: "任务 login 2 次未完成，怎么裁决？", rootCheck: "两次都是轮数用完",
+      choices: ["再给一次机会，轮数上限 3", "调整目标或范围", "终止这个任务"].map((label, index) => choice(label, index === 0)) });
+    const response = w.lastResponse() as ToolResponse, details = response.details!;
+    expect(details).toMatchObject({ status: "answered", decision: { itemId: w.itemId, itemVersion: w.version() } });
+    const { content } = expectLean(response, present(details, PANEL_SENT), PANEL_KEPT, { decision: decisionSent(details) });
+    expect(content.decision).toEqual({ itemId: w.itemId, itemVersion: w.version() });
+    expect(content).toHaveProperty("next");
+  });
+
+  test("panel-item ask 的 decision 为 null：content 里 decision 也是 null", async () => {
+    const w = await world();
+    for (const reason of ["原因一", "原因二"]) notePlanRejection({ dataRoot: w.fixture.dataRoot, repoId: w.fixture.repoId }, w.fixture.requirementId, w.pm.runId, { action: "propose", reason, detail: "", at: Date.now() });
+    const planItem = `plan:${w.fixture.requirementId}`;
+    w.answerWindows("告诉 PM 改用约束");
+    await w.panelAsk({ itemId: planItem, itemVersion: `${planItem}:2`, question: "PM 两次提交计划都被拒，怎么处理？", rootCheck: "约束被写成了目标",
+      choices: [choice("告诉 PM 改用约束", true), choice("调整需求")] });
+    const response = w.lastResponse() as ToolResponse, details = response.details!;
+    expect(details).toMatchObject({ status: "answered", decision: null });
+    const { content } = expectLean(response, present(details, PANEL_SENT), PANEL_KEPT, { decision: null });
+    expect(content.decision).toBeNull();
+  });
+
+  test("panel-item ask-tech：content 与 panel-item ask 同一套精简字段", async () => {
+    const w = await pendingWorld();
+    const failure = w.task("failure").taskId, itemId = `task:${failure}`;
+    await w.escalate(failure, "设置页引入新技术才能做");
+    const main = mainAdjudication(w, cleanups);
+    const version = `task:${failure}:${w.db((db) => db.read<TaskRecord>(TASKS, failure)!.version)}`;
+    main.interaction.noteOpenedItem({ repoId: w.fixture.repoId, requirementId: w.fixture.requirementId, itemId });
+    main.answerWindows("全部同意");
+    await main.panelAskTech({ itemId, itemVersion: version, technologies: TECHS });
+    const response = main.lastResponse() as ToolResponse, details = response.details!;
+    expect(details).toMatchObject({ status: "answered", decision: { itemId, itemVersion: version } });
+    const { content } = expectLean(response, present(details, PANEL_SENT), PANEL_KEPT, { decision: decisionSent(details) });
+    expect(content).toHaveProperty("next");
   });
 });

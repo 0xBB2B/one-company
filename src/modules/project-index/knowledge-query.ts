@@ -82,6 +82,39 @@ export interface KnowledgeFactPackage {
   nextCursor: string | null;
 }
 
+const DROPPED_DATA: Record<KnowledgeFact["kind"], readonly string[]> = {
+  symbol: ["startColumn", "endColumn", "startOffset", "endOffset"], file: ["hash", "parserVersion"],
+  code_relation: ["startColumn", "endColumn", "evidence"], source: [],
+};
+const without = (value: object, keys: readonly string[]) => Object.fromEntries(Object.entries(value).filter(([key]) => !keys.includes(key)));
+
+function knowledgeFactView(fact: KnowledgeFact) {
+  const { path, startLine, endLine } = fact.source;
+  const data = fact.data && typeof fact.data === "object" ? without(fact.data, DROPPED_DATA[fact.kind]) : fact.data;
+  return { kind: fact.kind, id: fact.id, source: { path, startLine, endLine }, data, complete: fact.complete };
+}
+
+export function knowledgeView(page: KnowledgeFactPackage) {
+  const { limitations: l, coverage: c } = page;
+  return {
+    trust: page.trust, generation: page.generation, indexStatus: page.indexStatus,
+    limitations: {
+      ...(Object.keys(l.diagnosticCounts).length ? { diagnosticCounts: l.diagnosticCounts, diagnostics: l.diagnostics } : {}),
+      ...(l.diagnosticDetailsOmitted ? { diagnosticDetailsOmitted: l.diagnosticDetailsOmitted } : {}),
+      unknownCodeRelations: l.unknownCodeRelations,
+      ...(l.unindexedFiles !== 0 ? { unindexedFiles: l.unindexedFiles } : {}),
+      performanceImprovement: l.performanceImprovement, formalVerification: l.formalVerification,
+    },
+    coverage: {
+      complete: c.complete,
+      ...(c.remaining ? { remaining: c.remaining } : {}),
+      ...(c.omitted ? { omitted: c.omitted } : {}),
+      ...(c.sourceExcerptsTruncated ? { sourceExcerptsTruncated: c.sourceExcerptsTruncated } : {}),
+    },
+    facts: page.facts.map(knowledgeFactView), nextCursor: page.nextCursor,
+  };
+}
+
 type Header = Omit<KnowledgeFactPackage, "facts" | "nextCursor" | "coverage">;
 interface Entry {
   query: KnowledgeFirstPageQuery;
@@ -180,11 +213,11 @@ export class KnowledgeQuerySession {
         facts, nextCursor });
       const pendingCursor = randomBytes(32).toString("base64url");
       // 强制诊断/限制在每页保留；正文预算不足时整项省略规则，绝不截断规则后称完整。
-      if (bytes(makePage(pendingCursor)) > query.maxBytes!) fail("resource_limit");
+      if (bytes(knowledgeView(makePage(pendingCursor))) > query.maxBytes!) fail("resource_limit");
       while (offset < entry.items.length && facts.length < query.pageSize!) {
         const item = entry.items[offset]!;
         facts.push(item); offset++;
-        if (bytes(makePage(pendingCursor)) > query.maxBytes!) {
+        if (bytes(knowledgeView(makePage(pendingCursor))) > query.maxBytes!) {
           facts.pop(); offset--;
           if (facts.length) break;
           offset++; omitted++;
@@ -195,7 +228,8 @@ export class KnowledgeQuerySession {
       if (this.#closed) fail("stale");
       const next = offset < entry.items.length ? pendingCursor : null;
       const result = makePage(next);
-      if (bytes(result) > query.maxBytes! || bytes(result) > LIMIT.pageBytes) fail("resource_limit");
+      const resultBytes = bytes(knowledgeView(result));
+      if (resultBytes > query.maxBytes! || resultBytes > LIMIT.pageBytes) fail("resource_limit");
       if (cursor) this.#entries.delete(cursor);
       if (next) {
         entry.offset = offset; entry.returned += facts.length; entry.omitted = omitted;
@@ -268,7 +302,7 @@ export class KnowledgeQuerySession {
     const add = (item: KnowledgeFact) => {
       matched++;
       const size = bytes(item);
-      if (size > LIMIT.itemBytes || items.length >= LIMIT.cachedItems || cost + size > LIMIT.cacheBytes / 2) { omitted++; return; }
+      if (bytes(knowledgeFactView(item)) > LIMIT.itemBytes || items.length >= LIMIT.cachedItems || cost + size > LIMIT.cacheBytes / 2) { omitted++; return; }
       cost += size; items.push(item);
     };
     const text = query.action === "exact" ? "" : query.text ?? "";

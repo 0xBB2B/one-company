@@ -100,6 +100,11 @@ function outputTail(file: string): OutputTail {
     return { text: buffer.toString("utf8").replace(/^\uFFFD+/, ""), truncated: start > 0 };
   } finally { closeSync(fd); }
 }
+export function verificationRunView(result: unknown): unknown {
+  const { baseline: _baseline, performance: _performance, outputRoot: _outputRoot, startedAt: _startedAt, finishedAt: _finishedAt, ...kept } = result as VerificationView;
+  return kept;
+}
+
 function viewOf(run: VerificationRun): VerificationView {
   const outputs = join(run.outputRoot, "outputs");
   return freeze({ verificationId: run.verificationId, kind: run.kind, status: run.status, checkRoundId: run.checkRoundId, exitCode: run.exitCode, signal: run.signal,

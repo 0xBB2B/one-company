@@ -20,7 +20,7 @@ function expectFailure(message: string, why: string, next: string) {
   expect(message.split("\n原因：")[1]!.split("\n建议：")[0]).toContain(why);
   expect(message.split("\n建议：")[1]).toContain(next);
 }
-type Tool = { execute(id: string, params: unknown): Promise<{ content: Array<{ text: string }> }> };
+type Tool = { execute(id: string, params: unknown): Promise<{ content: Array<{ text: string }>; details: unknown }> };
 
 /** 主仓库在 main 上，需求 worktree 在 req 分支；withOrigin 时主仓库克隆自一个裸远端。 */
 async function world(withOrigin = false) {
@@ -199,4 +199,31 @@ test("仅本地档位下主仓库是 detached HEAD：同步失败，原因写主
   w.git(w.main, "checkout", "-q", "--detach");
   const tool = createPmSyncTool({ ...w.options, ...alive }) as unknown as Tool;
   expectFailure(await failureOf(tool.execute("s", {})), "主仓库当前没有检出分支", "请用户在主仓库检出要合进去的分支后再继续");
+});
+
+test("git_sync 发给模型的内容没有 head，其余字段照有；完整结果（含 head）放进 details", async () => {
+  const w = await world();
+  const tool = createPmSyncTool({ ...w.options, ...alive }) as unknown as Tool;
+  await w.commit(w.worktree, "b.ts", "b\n", "task-1");
+  const upToDate = await tool.execute("s", {});
+  const head = w.git(w.worktree, "rev-parse", "HEAD");
+  expect(JSON.parse(upToDate.content[0]!.text)).toStrictEqual({ status: "up_to_date", target: "refs/heads/main" });
+  expect(upToDate.details).toEqual({ status: "up_to_date", target: "refs/heads/main", head });
+
+  await w.commit(w.main, "c.ts", "c\n", "main 前进");
+  const rebased = await tool.execute("s", {});
+  expect(JSON.parse(rebased.content[0]!.text)).toStrictEqual({ status: "rebased", target: "refs/heads/main", previousHead: head });
+  expect(rebased.details).toEqual({ status: "rebased", target: "refs/heads/main", previousHead: head, head: w.git(w.worktree, "rev-parse", "HEAD") });
+});
+
+test("git_sync 冲突时发给模型的内容有 previousHead、changed、conflicted，没有 head，details 有 head", async () => {
+  const w = await world();
+  const tool = createPmSyncTool({ ...w.options, ...alive }) as unknown as Tool;
+  await w.commit(w.worktree, "a.ts", "需求分支改 a\n", "task-1");
+  await w.commit(w.main, "a.ts", "目标分支改 a\n", "main 改 a");
+  const previousHead = w.git(w.worktree, "rev-parse", "HEAD");
+  const conflicts = await tool.execute("s", {});
+  const sent = JSON.parse(conflicts.content[0]!.text);
+  expect(sent).toStrictEqual({ status: "conflicts", target: "refs/heads/main", previousHead, changed: ["a.ts"], conflicted: ["a.ts"] });
+  expect(conflicts.details).toEqual({ ...sent, head: w.git(w.main, "rev-parse", "HEAD") });
 });

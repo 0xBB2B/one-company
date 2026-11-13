@@ -87,7 +87,7 @@ test("action 级上限收窄：分支工作区只归 main，PM/reviewer/QA 只�
   for (const role of CORE_ROLES) if (role !== "main" && role !== "pm") expect(authorizeToolAction(role, "agent_manage", "dispatch")).toBe(false);
   expect(authorizeToolAction("main", "agent_manage", "message")).toBe(true);
   for (const role of CORE_ROLES) if (role !== "main") expect(authorizeToolAction(role, "agent_manage", "message")).toBe(false);
-  expect(granted("main", "agent_manage")).toEqual(["dispatch", "status", "pause", "resume", "stop", "message"]);
+  expect(granted("main", "agent_manage")).toEqual(["dispatch", "status", "pause", "resume", "stop", "message", "sources"]);
   expect(granted("pm", "user_interact")).toEqual(["ask"]);
 });
 

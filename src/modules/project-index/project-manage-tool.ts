@@ -14,9 +14,12 @@ import { DEFAULT_INDEX_LIMITS } from "./project-index-policy.ts";
 import { readGit } from "../../core/exec/git-read.ts";
 import { WorkspaceManageError, WorkspaceManageService } from "../delivery/workspace-manage.ts";
 import { backup, ProjectMaintenanceError, recoveryCheck, restore } from "./project-maintenance.ts";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { requestParameters, shapeIssue, unwrapRequest } from "../../core/exec/tool-request.ts";
 import { adviceOf, commandOutputTail, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
 import type { FailureAdvice } from "../../core/exec/tool-failure.ts";
+import { repoLabel, requirementLabel, summaryLine, toolCard } from "../../core/host/tool-card.ts";
+import type { CardRow, CardSpec, CardTheme } from "../../core/host/tool-card.ts";
 import { CONVENTIONS_FILE, MAX_CONVENTIONS_BYTES, ProjectConventionsError, readOptional, updateConventions } from "../verification/project-conventions.ts";
 import { createLineAnchorIn, currentLine, draftLineViewIn, recordLineAnchor } from "../requirement/line-anchors.ts";
 import { claimRequirementWriteIn, releaseDeadRequirementWriteIn, releaseRequirementWriteIn } from "../requirement/requirement-coordination.ts";
@@ -735,8 +738,53 @@ function sanitizeResult(value: unknown): Record<string, unknown> {
   return fallback;
 }
 
-function textResult(value: Record<string, unknown>) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(value) }], details: value };
+function projectManageView(value: Record<string, unknown>): Record<string, unknown> {
+  const keep = (keys: string[]) => Object.fromEntries(keys.filter((key) => value[key] !== undefined).map((key) => [key, value[key]]));
+  if (value.action === "workspace-prepare" || value.action === "workspace-recycle") return keep(["status", "version", "branch", "path", "reason", "next"]);
+  if (value.action !== "init" && value.action !== "refresh") return value;
+  return keep(["status", "partial", "files", "truncation", "skippedCount", "diagnosticCount"]);
+}
+
+// 结果里的清单会被截到条数上限，数量要在截断前数
+function indexCounts(full: Record<string, unknown>) {
+  if (full.action !== "init" && full.action !== "refresh") return undefined;
+  const count = (list: unknown) => Array.isArray(list) ? list.length : 0;
+  return { skippedCount: count(full.skipped), diagnosticCount: count(full.diagnostics) };
+}
+
+const repoObject = (request: CardRow) => repoLabel(request.repoId);
+const requirementObject = (request: CardRow) => requirementLabel(request.requirementId);
+const projectCard = (title: string, object: CardSpec["object"], summary: (details: CardRow, theme: CardTheme) => string[]): CardSpec => ({ title, object,
+  summary: (details, theme) => details.status === "blocked" ? [summaryLine(theme, "没办成", details.reason)] : summary(details, theme) });
+const INDEX_TEXT: Record<string, string> = { ready: "完成", partial: "完成", invalid: "索引无效", cancelled: "已取消" };
+const INDEX_STATE_TEXT: Record<string, string> = { ready: "就绪", building: "建立中", partial: "部分完成", invalid: "无效", cancelled: "已取消", interrupted: "中断了" };
+const indexRun = (title: string) => projectCard(title, repoObject, (details, theme) => [summaryLine(theme, INDEX_TEXT[details.status] ?? details.status,
+  `${details.files} 个文件`, `跳过 ${details.skippedCount} 个`)]);
+const maintenance = (title: string) => projectCard(title, repoObject, (details) => [details.status === "needs_review" ? "已恢复，待核对" : "完成"]);
+const CONVENTIONS_TEXT: Record<string, string> = { written: "已写入", unchanged: "内容没变", cancelled: "没写入", revise: "你要修改" };
+
+const PROJECT_CARDS = {
+  actionOf: (args: unknown) => { const request = unwrapRequest(args) as { action?: string; preview?: boolean } | undefined; return request?.action === "init" && request.preview ? "preview" : request?.action; },
+  cards: {
+    init: indexRun("初始化项目索引"),
+    refresh: indexRun("刷新项目索引"),
+    preview: projectCard("预览项目索引", repoObject, (details, theme) => [summaryLine(theme, "预览", `${details.files.length} 个文件`, `跳过 ${details.skipped.length} 个`)]),
+    status: projectCard("项目索引状态", repoObject, (details) => [details.initialized ? INDEX_STATE_TEXT[details.index.status] ?? details.index.status : "还没初始化"]),
+    "workspace-prepare": projectCard("准备需求工作区", requirementObject, (details, theme) => [
+      summaryLine(theme, details.status === "ready" ? "就绪" : details.status, `分支 ${String(details.branch).replace(/^refs\/heads\//u, "")}`),
+      theme.fg("muted", details.path)]),
+    "workspace-recycle": projectCard("回收需求工作区", requirementObject, (details) => [details.status === "recycled" ? "已回收" : details.status]),
+    "recovery-check": maintenance("恢复核对"),
+    backup: maintenance("备份"),
+    restore: maintenance("恢复"),
+    "conventions-update": projectCard("更新项目规范", repoObject, (details) => [CONVENTIONS_TEXT[details.status] ?? details.status]),
+  },
+} satisfies { actionOf: (args: unknown) => string | undefined; cards: Record<string, CardSpec> };
+
+function textResult(value: Record<string, unknown>, full: Record<string, unknown> = value) {
+  const counts = indexCounts(full);
+  const details = counts ? { ...value, ...counts } : value;
+  return { ...leanToolResult(details, projectManageView(details)), details };
 }
 
 function isCancellation(error: unknown, signal: AbortSignal): boolean {
@@ -766,6 +814,7 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
     await Promise.allSettled(current.map((operation) => operation.completion));
   };
 
+  const card = toolCard(PROJECT_CARDS);
   const tool: ToolDefinition<typeof publicParameters, Record<string, unknown>> = {
     name: "one_company_project_manage",
     label: "管理项目（索引、工作区、规范）",
@@ -773,6 +822,8 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
     promptSnippet: "预览、初始化、查看或刷新当前项目索引；为需求建立或回收独立工作区；更新项目规范 AGENTS.md",
     parameters: publicParameters,
     executionMode: "sequential",
+    renderCall: (args, theme, context) => card.renderCall(args, theme, context),
+    renderResult: (result, options, theme, context) => card.renderResult(result, options, theme, context),
     async execute(_toolCallId, rawParams, externalSignal, _onUpdate, ctx) {
       const operation = beginOperation(externalSignal);
       operations.add(operation);
@@ -967,7 +1018,8 @@ export function createProjectManageTool(options: CreateProjectManageToolOptions)
         if (!sameHost(host, finalHost) || !currentHostMatches(options, activeHost, finalHost, ctx) || !rootStillMatches(options.dataRoot, root)) {
           throw new ProjectManageToolError("repository_changed", "项目索引操作期间宿主或仓库身份已变化");
         }
-        return textResult(sanitizeResult(shapeServiceResult(serviceAction, rawResult)));
+        const shaped = shapeServiceResult(serviceAction, rawResult);
+        return textResult(sanitizeResult(shaped), shaped);
       } catch (error) {
         if (isCancellation(error, operation.signal)) {
           throw toolFailure(toolStep("one_company_project_manage", rawParams), new ProjectManageToolError("cancelled", "项目索引操作已取消"));

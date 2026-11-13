@@ -258,16 +258,16 @@ describe("旧命令与旧页面已清除", () => {
 });
 
 describe("验收单点数量", () => {
-  test("AGENTS.md 和 CONTRIBUTING.md 里搜不到旧的单点数量，CONTRIBUTING.md 的编号表有 P23", async () => {
+  test("AGENTS.md 和 CONTRIBUTING.md 里搜不到旧的单点数量，CONTRIBUTING.md 的编号表有 P24", async () => {
     const agents = await readText(join(PACKAGE_ROOT, "AGENTS.md"));
     const contributing = await readText(CONTRIBUTING);
     for (const text of [agents, contributing]) {
-      expect(text).not.toContain("P1–P21");
-      expect(text).not.toContain("21 个单点");
+      expect(text).not.toContain("P1–P23");
+      expect(text).not.toContain("23 个单点");
     }
-    expect(contributing).toMatch(/^\| P23 \|/m);
-    expect(contributing).toContain("23 个单点");
-    expect(contributing).toContain("P1–P23");
+    expect(contributing).toMatch(/^\| P24 \|/m);
+    expect(contributing).toContain("24 个单点");
+    expect(contributing).toContain("P1–P24");
   });
 });
 

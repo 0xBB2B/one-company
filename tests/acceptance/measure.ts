@@ -7,7 +7,7 @@ const root = process.argv[2];
 if (!root || !existsSync(root)) throw new Error("须给出验收输出目录");
 
 type Usage = { input?: number; output?: number; cacheRead?: number; cacheWrite?: number };
-type Message = { role: string; content?: unknown; sections?: unknown; toolName?: string; toolCallId?: string; isError?: boolean; usage?: Usage; customType?: string; timestamp?: number };
+type Message = { role: string; content?: unknown; sections?: unknown; toolName?: string; toolCallId?: string; isError?: boolean; usage?: Usage; customType?: string; details?: unknown; timestamp?: number };
 type Block = { type?: string; text?: string; name?: string; id?: string; arguments?: Record<string, unknown> };
 type Run = { id: string; kind?: string; role?: string; agentName?: string; agentSource?: string; agentSkills?: string[]; usage?: Usage; turns?: number; state?: string };
 
@@ -58,7 +58,7 @@ for (const dir of evidences) {
   const reported = new Set<string>();
   for (const { parent, messages } of parents) {
     messages.forEach((message, index) => {
-      const card = message.customType === "one-company.explore-result" ? textOf(message) : message.role === "user" && textOf(message).includes("\"kind\":\"explore-report\"") ? textOf(message) : null;
+      const card = message.customType === "one-company.explore-result" ? (message.details ? JSON.stringify(message.details) : textOf(message)) : message.role === "user" && textOf(message).includes("\"kind\":\"explore-report\"") ? textOf(message) : null;
       if (!card) return;
       const report = JSON.parse(card.slice(card.indexOf("{"))) as { runId: string; outcome: string; research?: { sources?: Array<{ path?: string }>; truncation?: { truncated?: boolean }; failures?: unknown[]; notFound?: unknown[] } };
       if (reported.has(report.runId)) return;

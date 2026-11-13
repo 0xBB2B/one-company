@@ -22,6 +22,8 @@ export interface FakePi {
   handlerCount(event: string): number;
   handlersFor(event: string): FakeEventHandler[];
   registeredTools(): { name: string }[];
+  messageRenderer(type: string): ((message: unknown, options: unknown, theme: unknown) => { render(width: number): string[] }) | undefined;
+  messageRendererTypes(): string[];
   registeredCommands(): FakeRegisteredCommand[];
 }
 
@@ -29,6 +31,7 @@ export function createFakePi(): FakePi {
   const handlers = new Map<string, FakeEventHandler[]>();
   const tools: { name: string }[] = [];
   const commands: FakeRegisteredCommand[] = [];
+  const messageRenderers = new Map<string, never>();
   return {
     pi: {
       on(event: string, handler: FakeEventHandler) {
@@ -42,7 +45,9 @@ export function createFakePi(): FakePi {
       registerCommand(name: string, options: { description: string; handler: FakeCommandHandler }) {
         commands.push({ name, description: options.description, handler: options.handler });
       },
-      registerMessageRenderer() {},
+      registerMessageRenderer(type: string, renderer: unknown) {
+        messageRenderers.set(type, renderer as never);
+      },
       registerEntryRenderer() {},
       registerFlag() {},
     },
@@ -62,6 +67,12 @@ export function createFakePi(): FakePi {
     },
     registeredTools(): { name: string }[] {
       return tools.slice();
+    },
+    messageRenderer(type: string) {
+      return messageRenderers.get(type);
+    },
+    messageRendererTypes(): string[] {
+      return [...messageRenderers.keys()];
     },
     registeredCommands(): FakeRegisteredCommand[] {
       return commands.slice();

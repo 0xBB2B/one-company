@@ -15,9 +15,12 @@ import { currentLine, currentLineRepos, recordLineAnchor } from "../requirement/
 import { uuidv7 } from "../../core/storage/database.ts";
 import { sanitizeText } from "../../core/policy/text-sanitize.ts";
 import { AdvisedError, adviceOf, toolFailure, toolStep } from "../../core/exec/tool-failure.ts";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
 import { requestParameters } from "../../core/exec/tool-request.ts";
 import { revokeCapturedInput, windowReady as defaultWindowReady } from "../../core/host/extension-lifecycle.ts";
 import type { WindowContextValue } from "../../core/host/extension-lifecycle.ts";
+import { mutedItem, requirementLabel, shortId, summaryLine, toolCard } from "../../core/host/tool-card.ts";
+import type { CardRow, CardSegment, CardSpec } from "../../core/host/tool-card.ts";
 
 const TOOL_NAME = "one_company_prototype";
 const ENTRY_TYPE = "one-company.prototype-record";
@@ -33,6 +36,37 @@ const PARAMETERS = requestParameters([
   object({ action: Type.Literal("confirm"), repoId, requirementId: id, name }),
   object({ action: Type.Literal("remove"), repoId, requirementId: id, name }),
 ]);
+
+function prototypeLine(entry: CardRow): CardSegment[] {
+  const { inFlight, draft, approved, lastEnded } = entry;
+  const status = inFlight ? `第 ${inFlight.version} 版${inFlight.status === "awaiting" ? "等你确认" : "设计中"}`
+    : entry.removed ? "已从草稿移除"
+    : draft ? `第 ${draft.version} 版已通过`
+    : approved ? `第 ${approved.version} 版已随需求批准`
+    : lastEnded ? `第 ${lastEnded.version} 版没交稿：${lastEnded.reason}`
+    : "还没交稿";
+  return [{ text: entry.name, shrink: true }, { text: "：" }, { text: status, shrink: true }];
+}
+
+const said: CardSpec["summary"] = (details) => [details as unknown as string];
+const PROTOTYPE_CARDS = {
+  actionOf: (args: unknown) => (args as { request?: { action?: string } } | undefined)?.request?.action,
+  cards: {
+    designers: { title: "列出原型设计师", object: () => undefined, summary: (details) => [`${details.items.length} 位设计师`] },
+    dispatch: { title: "派出原型设计", object: (request) => request.name,
+      summary: (details, theme) => [summaryLine(theme, "已派出", `第 ${details.version} 版`, `编号 ${shortId(details.runId)}`)] },
+    status: { title: "原型状态", object: (request) => requirementLabel(request.requirementId),
+      summary: (details, theme) => {
+        const entries = details.entries as CardRow[];
+        if (entries.length === 0) return ["还没有原型"];
+        const lines = entries.slice(0, 2).map(prototypeLine);
+        if (entries.length > 2) lines[1] = [...lines[1]!, mutedItem(theme, `还有 ${entries.length - 2} 个原型`)];
+        return lines;
+      } },
+    confirm: { title: "确认原型", object: (request) => request.name, summary: said },
+    remove: { title: "删除原型", object: (request) => request.name, summary: said },
+  },
+} satisfies { actionOf: (args: unknown) => string | undefined; cards: Record<string, CardSpec> };
 
 export interface PrototypeDeps {
   windowReady?: () => Promise<WindowContextValue>;
@@ -55,7 +89,29 @@ function reasonOf(error: unknown): string {
 type FlowResult = "decided" | "abandoned" | "undecided" | "no_ui" | "failed";
 const OPINION_MAX_LENGTH = 4000;
 
-const textResult = (value: unknown) => ({ content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value) }], details: {} });
+const keep = (source: unknown, keys: string[]): Record<string, unknown> => {
+  const from = (source ?? {}) as Record<string, unknown>;
+  return Object.fromEntries(keys.filter((key) => from[key] !== undefined).map((key) => [key, from[key]]));
+};
+const NOTE_KEYS = ["note", "options", "picked"];
+
+function prototypeEntryView(entry: Record<string, unknown>): Record<string, unknown> {
+  const version = (file: unknown) => file === null || file === undefined ? file : keep(file, ["version", ...NOTE_KEYS]);
+  const view = keep(entry, ["name", "lastVersion", "removed", "lastOpinion"]);
+  if (entry.lastEnded !== undefined) view.lastEnded = entry.lastEnded === null ? null : keep(entry.lastEnded, ["reason"]);
+  if (entry.draft !== undefined) view.draft = version(entry.draft);
+  if (entry.approved !== undefined) view.approved = version(entry.approved);
+  const inFlight = entry.inFlight as Record<string, unknown> | null | undefined;
+  if (inFlight !== undefined) view.inFlight = inFlight === null ? null : { ...keep(inFlight, ["version", "status"]), ...keep(inFlight.file, NOTE_KEYS) };
+  return view;
+}
+
+function prototypeView(action: string, value: unknown): unknown {
+  const full = value as Record<string, unknown>;
+  if (action === "designers") return { items: (full.items as Array<Record<string, unknown>>).map((item) => keep(item, ["name", "description"])) };
+  if (action === "status") return { entries: (full.entries as Array<Record<string, unknown>>).map(prototypeEntryView) };
+  return value;
+}
 
 export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps = {}): void {
   const resolveWindowReady = deps.windowReady ?? defaultWindowReady;
@@ -141,6 +197,8 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     return "decided";
   }
 
+  const card = toolCard(PROTOTYPE_CARDS);
+
   async function confirmAwaitingOnLine(window: WindowContextValue, ctx: ExtensionContext): Promise<void> {
     const repoOf = currentLineRepos(ctx.sessionManager);
     for (const [requirementId, line] of Object.entries(currentLine(ctx.sessionManager))) {
@@ -165,6 +223,8 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
     description: "澄清阶段为有界面的需求出原型。designers 列出可用的原型设计师；dispatch 派一个设计师（名称、要画什么、轮数上限，可点名设计师定义），立即返回；交稿后程序自动打开文件并弹窗请用户确认，用户的决定只认窗口；status 查看该需求的原型看板；confirm 让程序重开某份待确认原型的确认窗口；remove 弹出窗口请用户确认把某份原型从草稿移除。",
     parameters: PARAMETERS,
     executionMode: "sequential",
+    renderCall: (args, theme, context) => card.renderCall(args, theme, context),
+    renderResult: (result, options, theme, context) => card.renderResult(result, options, theme, context),
     async execute(_toolCallId, rawParams, signal, _onUpdate, ctx) {
       const step = toolStep(TOOL_NAME, rawParams);
       const fail = (code: string, why: string, next: string): never => { throw toolFailure(step, new AdvisedError(code, { why, next })); };
@@ -174,25 +234,27 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
       if (!client) fail("foreign_repo", "repoId 不是当前窗口工作区里的仓库", "改用当前工作区列出的仓库编号");
       try {
         switch (request.action) {
-          case "designers": return textResult(await client!.call("prototypes.designers", {}));
-          case "status": return textResult(await client!.call("prototypes.board", { requirementId: request.requirementId, line: lineOf(ctx, request.requirementId) }));
+          case "designers": { const full = await client!.call("prototypes.designers", {}); return leanToolResult(full, prototypeView("designers", full)); }
+          case "status": { const full = await client!.call("prototypes.board", { requirementId: request.requirementId, line: lineOf(ctx, request.requirementId) }); return leanToolResult(full, prototypeView("status", full)); }
           case "dispatch": {
             if (!ctx.model) fail("model_unavailable", "主会话当前没有选定模型，派出的设计师要沿用主会话的模型", "请用户先选定模型再派");
             const { action: _action, repoId, agent, ...rest } = request;
             const anchor = uuidv7();
-            const dispatched = await client!.call("prototypes.dispatch", { ...rest, ...(agent ? { agent } : {}), line: lineOf(ctx, request.requirementId), anchor,
+            const full = await client!.call("prototypes.dispatch", { ...rest, ...(agent ? { agent } : {}), line: lineOf(ctx, request.requirementId), anchor,
               model: { provider: ctx.model!.provider, id: ctx.model!.id }, thinking: pi.getThinkingLevel() });
             recordLineAnchor(pi, { repoId, requirementId: request.requirementId, anchor });
-            return textResult(dispatched);
+            return leanToolResult(full, full);
           }
           case "confirm": {
             const outcome = await enqueue(() => confirmPrototypeFlow(client!, ctx, { repoId: request.repoId, requirementId: request.requirementId, name: request.name }, signal));
-            return textResult({ decided: "用户已在窗口里作出决定，结果以程序记录为准", undecided: "用户暂未决定，原型仍等待确认",
-              abandoned: "用户按 Esc 放弃了这一版，它不再挡住批准", no_ui: "当前没有界面，用户没看到窗口，没有登记决定", failed: "用户在窗口里作了决定，但没能登记，提示已显示给用户" }[outcome]);
+            const text = ({ decided: "用户已在窗口里作出决定，结果以程序记录为准", undecided: "用户暂未决定，原型仍等待确认",
+              abandoned: "用户按 Esc 放弃了这一版，它不再挡住批准", no_ui: "当前没有界面，用户没看到窗口，没有登记决定", failed: "用户在窗口里作了决定，但没能登记，提示已显示给用户" })[outcome];
+            return leanToolResult(text, text);
           }
           case "remove": {
             const outcome = await enqueue(() => removePrototypeFlow(client!, ctx, { repoId: request.repoId, requirementId: request.requirementId, name: request.name }, signal));
-            return textResult(outcome === "decided" ? "用户确认移除，已从草稿移除" : outcome === "no_ui" ? "当前没有界面，用户没看到窗口，没有移除" : "用户选择保留，没有移除");
+            const text = (outcome === "decided" ? "用户确认移除，已从草稿移除" : outcome === "no_ui" ? "当前没有界面，用户没看到窗口，没有移除" : "用户选择保留，没有移除");
+            return leanToolResult(text, text);
           }
         }
       } catch (error) { throw toolFailure(step, error); }

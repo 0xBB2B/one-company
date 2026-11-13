@@ -46,7 +46,9 @@ import type { IntakeSourceDirectory } from "../../modules/pm/pm-intake-contracts
 import { exploreContext, exploreInput, sourceHashesMatch } from "../../modules/explore/explore-dispatch.ts";
 import type { ExploreRequest, MainExploreOverview } from "../../modules/explore/explore-dispatch.ts";
 import type { ExploreInput, ExploreResult } from "../../modules/explore/explore-contracts.ts";
-import { endExploreSession, registerExploreSession } from "../../modules/explore/explore-session.ts";
+import { exploreReportView } from "../../modules/explore/explore-report.ts";
+import type { ExploreReport } from "../../modules/explore/explore-report.ts";
+import { endExploreSession, registerExploreSession, saveExploreResearch } from "../../modules/explore/explore-session.ts";
 import { approvedPrototypeListLines, prototypeContext, requirementPrototypeLines } from "../../modules/prototype/prototype-dispatch.ts";
 import type { MainPrototypeOverview, PrototypeDispatchInput } from "../../modules/prototype/prototype-dispatch.ts";
 import { prototypesAtRevision } from "../../modules/requirement/requirement-prototype-revisions.ts";
@@ -64,6 +66,8 @@ import { defaultPageGetter, defaultWebDeps, webFetch, webSearch } from "../../mo
 import type { PageGetter, WebDeps } from "../../modules/explore/web-access.ts";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { KnowledgeTransportQuerySchema } from "../../modules/project-index/knowledge-query-tool.ts";
+import { knowledgeView } from "../../modules/project-index/knowledge-query.ts";
+import type { KnowledgeFactPackage } from "../../modules/project-index/knowledge-query.ts";
 import { createPmCommitTool } from "../../modules/pm/pm-commit.ts";
 import { createPmSyncTool } from "../../modules/pm/pm-sync.ts";
 import { AgentResolveError, definitionHash, loadSkills, resolveAgent, resolveModelChoice } from "../../modules/agents/agent-resolve.ts";
@@ -101,7 +105,7 @@ interface SessionEntry { kind: RunKind; handle: AgentSessionHandle; pm?: { lease
   subagent?: { parentRunId: string; taskId: string; review: boolean; dispose(): void };
   explore?: { parentRunId: string; dispose(): void; result(): ExploreResult | null } }
 /** main 派出的 explore 只属于派出它的主窗口会话，不写运行记录；窗口关闭即停止并作废结果。 */
-interface MainExplore { handle: AgentSessionHandle; sessionId: string; connectionId: string; dispose(): void; result(): ExploreResult | null; report: Record<string, unknown> | null;
+interface MainExplore { handle: AgentSessionHandle; sessionId: string; connectionId: string; dispose(): void; result(): ExploreResult | null; report: ExploreReport | null;
   question: string; source: MainExploreOverview["source"]; maxTurns: number; startedAt: number }
 /** 原型设计师只属于派出它的主窗口连接；交稿结果写在原型看板里，这里只管运行本身。 */
 interface MainPrototype { handle: AgentSessionHandle; sessionId: string; connectionId: string; requirementId: string; name: string; version: number; agent: string; dispatchAnchor: string;
@@ -251,7 +255,7 @@ function outcomeReason(outcome: SessionOutcome, failure?: string): string {
     case "superseded": return "这次运行因计划变更或用户终止被作废，不计执行次数";
   }
 }
-function exploreReport(runId: string, outcome: SessionOutcome, research: ExploreResult | null, turnsUsed: number, log: string, failure?: string): Record<string, unknown> {
+function exploreReport(runId: string, outcome: SessionOutcome, research: ExploreResult | null, turnsUsed: number, log: string, failure?: string): ExploreReport {
   return { kind: "explore-report", runId, outcome, turnsUsed, research,
     ...(research ? { note: "research 不是 PASS：使用前核对来源、当前性与截断，必要时回读关键全文" }
       : { reason: `未提交 research，没有可用结果：${outcomeReason(outcome, failure)}`,
@@ -1173,7 +1177,7 @@ export class RunManager {
     if (!index) return [];
     return [toPiTool("knowledge_query", "查询主仓库索引中的当前代码（不含 PRD）。query.action：exact（by 为 path/id/symbol）、search（文字检索）或 facts；每页最多 20 项，结果标注索引代次与来源。",
       Type.Object({ query: KnowledgeTransportQuerySchema }, { additionalProperties: false }),
-      { execute: (input) => index.query(`run:${caller}`, (input as { query: unknown }).query), dispose: () => index.endCaller(`run:${caller}`) })];
+      { execute: (input) => index.query(`run:${caller}`, (input as { query: unknown }).query), view: (page) => knowledgeView(page as KnowledgeFactPackage), dispose: () => index.endCaller(`run:${caller}`) })];
   }
 
   /** explore 的联网工具：搜索与抓取均不限查询词和网址（含内网）；网页内容只是数据。 */
@@ -1222,12 +1226,17 @@ export class RunManager {
     entry.explore.dispose();
     delete entry.explore;
     const current = await this.runStore.get(runId);
+    const runRequirement = current.ok ? current.run.requirement : "";
     if (current.ok && !isTerminalState(current.run.state)) {
       await this.runStore.update(runId, { state: outcome === "completed" ? "completed" : outcome === "stopped" ? "stopped" : "failed", stateReason: outcomeReason(outcome, failure) });
     }
     const parent = this.sessions.get(parentRunId);
     if (outcome !== "stopped" && parent?.pm && ["running", "paused"].includes(parent.handle.state())) {
-      parent.handle.prompt(JSON.stringify(exploreReport(runId, outcome, result, entry.handle.turnsUsed(), this.runLog(runId), failure)));
+      const report = exploreReport(runId, outcome, result, entry.handle.turnsUsed(), this.runLog(runId), failure);
+      let view: unknown = exploreReportView(report, "pm");
+      // 存不进库时 PM 之后取不到来源，就把完整报告直接给它
+      if (result) try { saveExploreResearch({ dataRoot: this.options.dataRoot, repoId: this.repoId }, runId, runRequirement, result); } catch { view = report; }
+      parent.handle.prompt(JSON.stringify(view));
     }
   }
 
@@ -1237,7 +1246,7 @@ export class RunManager {
   }
 
   /** 主窗口取回自己派出的 explore 结果；只交给派出它的那条连接，取走即删除。 */
-  takeMainExploreReport(runId: string, connectionId: string | undefined): Record<string, unknown> {
+  takeMainExploreReport(runId: string, connectionId: string | undefined): ExploreReport {
     const main = this.mainExplores.get(runId);
     if (!main || connectionId === undefined || main.connectionId !== connectionId || !main.report) throw protocolError("not_found", "没有可取回的 explore 结果");
     this.mainExplores.delete(runId);
@@ -1796,7 +1805,7 @@ export function registerProtocolHandlers(input: { server: DaemonServer; manager:
   register("explore.list", async (_params, client) => ({ items: manager.mainExploreList(client.connectionId) }));
   register("explore.result", async (params, client) => {
     if (typeof params.runId !== "string") throw protocolError("invalid_params", "explore 结果参数无效");
-    return manager.takeMainExploreReport(params.runId, client.connectionId);
+    return { ...manager.takeMainExploreReport(params.runId, client.connectionId) };
   });
   const previousDisconnect = server.onDisconnect;
   server.onDisconnect = async (client) => {

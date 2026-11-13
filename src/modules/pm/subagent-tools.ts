@@ -1,16 +1,16 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { CHANGE_APPLY_PARAMETERS, createChangeApplyTool } from "../verification/change-apply.ts";
+import { CHANGE_APPLY_PARAMETERS, changeApplyView, createChangeApplyTool } from "../verification/change-apply.ts";
 import { repositoryDatabase, uuidv7, withDatabase } from "../../core/storage/database.ts";
 import { listChangedPaths } from "../../core/exec/git-snapshot.ts";
-import { createPlanManageTool, PLAN_MANAGE_PARAMETERS, readPlanIn } from "./plan-manage.ts";
+import { createPlanManageTool, PLAN_MANAGE_PARAMETERS, planManageView, readPlanIn } from "./plan-manage.ts";
 import type { TaskRecord } from "./plan-manage.ts";
 import type { PmLease, WorkspaceBinding } from "../requirement/requirement-contracts.ts";
-import { createRequirementReadTool, REQUIREMENT_READ_PARAMETERS } from "./requirement-read-tool.ts";
+import { createRequirementReadTool, REQUIREMENT_READ_PARAMETERS, requirementReadView } from "./requirement-read-tool.ts";
 import { overlaps } from "../../core/policy/ranges.ts";
 import { createResultSubmitTool, VERDICT_SUBMIT_PARAMETERS } from "./result-submit.ts";
 import { toPiTool } from "../agents/role-tools.ts";
 import type { CoreToolRuntime } from "../agents/role-tools.ts";
-import { createVerificationRunTool, VERIFICATION_RUN_PARAMETERS } from "./verification-run.ts";
+import { createVerificationRunTool, VERIFICATION_RUN_PARAMETERS, verificationRunView } from "./verification-run.ts";
 
 export interface SubagentToolsInput {
   repositoryRoot: string;
@@ -43,18 +43,18 @@ export async function createSubagentTools(input: SubagentToolsInput): Promise<{ 
       ...(input.review ? { reviewedAttemptRunIds: input.task.attempts.map((attempt) => attempt.runId) } : {}) }));
     tools.push(toPiTool("verification_run", role === "worker" ? "在绑定工作区的受控沙箱里运行调试命令（debug），或查询、停止运行。"
       : role === "reviewer" ? "在绑定工作区的只读沙箱里运行被审任务范围的测试（debug），或查询、停止运行；status 也能查看被审任务各次 worker 尝试提交里引用的验证记录（含先红后绿的记录）。"
-        : "在检查阶段运行正式检查（formal），或查询、停止运行。", VERIFICATION_RUN_PARAMETERS, verification));
+        : "在检查阶段运行正式检查（formal），或查询、停止运行。", VERIFICATION_RUN_PARAMETERS, { ...verification, view: verificationRunView }));
     if (role === "worker") {
       const change = track(await createChangeApplyTool({ ...shared, authorize, grant: { ...identity, role, epoch: input.epoch, writePaths: input.task.writePaths } }));
-      tools.push(toPiTool("change_apply", `只在授权范围 ${input.task.writePaths.join("、")} 内预检、写入或导入代码与测试。prepare 可省略 baseHash，结果会给出各文件当前的 baseHash；apply 可省略 baseHash，自动用本会话对该文件最近一次 prepare 的值，也可照填；新建文件未 prepare 时填 absent。结果显示没写完（applying 或 partial_failure）或写入中途报错时，带同样的文件再调一次就会接着写完。status 填要查的那次写入的 operationId。`, CHANGE_APPLY_PARAMETERS, change));
+      tools.push(toPiTool("change_apply", `只在授权范围 ${input.task.writePaths.join("、")} 内预检、写入或导入代码与测试。prepare 可省略 baseHash，结果会给出各文件当前的 baseHash；apply 可省略 baseHash，自动用本会话对该文件最近一次 prepare 的值，也可照填；新建文件未 prepare 时填 absent。结果显示没写完（applying 或 partial_failure）或写入中途报错时，带同样的文件再调一次就会接着写完。status 填要查的那次写入的 operationId。`, CHANGE_APPLY_PARAMETERS, { ...change, view: changeApplyView }));
     } else {
       const read = track(await createRequirementReadTool({ ...shared, authorize, binding: { ...identity, role, lease: input.pmLease } }));
       tools.push(toPiTool("requirement_manage", `${role === "qa" ? "读取已批准的需求正文、章节或差异（黑盒验收基线）。" : "读取已批准的需求正文、章节或差异。"}结果的 coverage.nextCursor 不为空时用 next 带上它读下一页。`,
-        REQUIREMENT_READ_PARAMETERS, read));
+        REQUIREMENT_READ_PARAMETERS, { ...read, view: requirementReadView }));
     }
     if (role === "reviewer") {
       const plan = track(await createPlanManageTool({ ...shared, authorize, grant: { role, callerId: identity.callerId, runId: input.runId, ...scope } }));
-      tools.push(toPiTool("plan_manage", "只读当前计划与任务说明。", PLAN_MANAGE_PARAMETERS, plan));
+      tools.push(toPiTool("plan_manage", "只读当前计划与任务说明。", PLAN_MANAGE_PARAMETERS, { ...plan, view: planManageView }));
     }
     const result = createResultSubmitTool({ authorize, grant: { role, callerId: identity.callerId, runId: input.runId, parentRunId: input.pmLease.runId },
       ...(role === "worker" ? { outOfScopeChanges: async () => {

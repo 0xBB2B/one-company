@@ -18,6 +18,8 @@ import { RequirementOperations } from "../requirement/requirement-operations.ts"
 import type { RequirementServiceOptions } from "../requirement/requirement-service.ts";
 import type { ConfirmationContext, CreateRequirementInput, UpdateDraftInput, LoadConfirmationInput, ServiceAuthorizationRequest } from "../requirement/requirement-manage-contracts.ts";
 import { requirementIntentHash } from "../requirement/requirement-manage-contracts.ts";
+import { leanToolResult } from "../../core/exec/tool-result.ts";
+import { readResultView } from "./interaction-result-view.ts";
 import { UserInteractionCore } from "./user-interaction.ts";
 import { partitionPrdDocument, prdSectionsProblem } from "../requirement/prd-view.ts";
 import { RequirementDocError, resolveRepositoryRequirementDoc } from "../requirement/requirement-doc.ts";
@@ -128,7 +130,7 @@ function recordUnexplained(dataRoot: string, repoId: string, action: unknown, er
     writeFileSync(path, `${[...previous, line].slice(-UNEXPLAINED_LOG_LIMIT).join("\n")}\n`, { mode: 0o600 });
   } catch { /* 日志写不进去不能盖住原来的失败 */ }
 }
-// 预留2KiB给SDK的toolResult来源/调用ID封装；正文与details重复传输也计入。
+// 只量发给模型的 content；预留2KiB给SDK的toolResult来源/调用ID封装。
 const TRANSPORT_BYTES = 49_152;
 
 /** 两个主代理工具共享的窗口组件。输入、能力及游标只在有界内存，不恢复历史授权。 */
@@ -1043,8 +1045,7 @@ export class MainRequirementInteraction {
     const wrap = () => ({ ...metadata, text: page.text, coverage: { startByte: page.startByte, endByte: page.endByte, totalBytes: page.totalBytes,
       complete: page.complete, nextCursor: page.endByte < page.totalBytes ? next : null,
       blocking: page.complete && !request.sectionId ? [] : ["incomplete_prd_read", "global_constraints_and_unresolved_may_be_outside_page"] } });
-    while (Buffer.byteLength(JSON.stringify(wrap())) > 24_576 ||
-      Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: JSON.stringify(wrap()) }], details: wrap() })) > TRANSPORT_BYTES) {
+    while (Buffer.byteLength(JSON.stringify(readResultView(wrap()))) > 24_576) {
       if (Buffer.byteLength(page.text) <= 4) denied("response_limit");
       page = pagePrdText(text, cursor?.offset ?? 0, Math.max(4, Math.floor(Buffer.byteLength(page.text) / 2)));
     }
@@ -1063,7 +1064,7 @@ export class MainRequirementInteraction {
     return this.#prove(ctx, request.repoId, wrapped);
   }
   /** SDK execute与tool_result之间只保留来源元数据，最终交付仍读实际DB。 */
-  async execute(toolCallId: string, ctx: ExtensionContext, repoId: string, params: Record<string, unknown>, run: () => Promise<unknown>, signal?: AbortSignal) {
+  async execute(toolCallId: string, ctx: ExtensionContext, repoId: string, params: Record<string, unknown>, run: () => Promise<unknown>, view: (result: Record<string, any>) => unknown, signal?: AbortSignal) {
     if (this.#busy) return denied("interaction_busy");
     this.#busy = true; this.#ctx = ctx;
     this.#savingDraft = params.action === "create" || params.action === "updateDraft";
@@ -1078,8 +1079,8 @@ export class MainRequirementInteraction {
       const result = value as Record<string, unknown>, requirementId = String(result.requirementId);
       const current = this.#snapshot(host, repoId, requirementId, params.action !== "metadata");
       if (current.version !== result.version || current.data.epoch !== result.epoch) denied("stale_result");
-      const content = [{ type: "text" as const, text: JSON.stringify(result) }], response = { content, details: result };
-      if (Buffer.byteLength(JSON.stringify(response)) > TRANSPORT_BYTES) denied("response_limit");
+      const response = { ...leanToolResult(result, view(result)), details: result };
+      if (Buffer.byteLength(response.content[0]!.text) > TRANSPORT_BYTES) denied("response_limit");
       while (this.#deliveries.size >= 32) this.#deliveries.delete(this.#deliveries.keys().next().value!);
       this.#deliveries.set(toolCallId, { sessionId: host.sessionId, windowId: host.windowId, generation, repoId, requirementId,
         result });

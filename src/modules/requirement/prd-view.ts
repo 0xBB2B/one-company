@@ -179,9 +179,10 @@ export interface PrdStructurePage extends PrdStructure {
   complete: boolean;
 }
 
-/** 整包JSON计入转义及所有元数据；先分正文，再以余量分结构，两种偏移均需由可信游标绑定。 */
+/** 发给模型的视图JSON计入转义及所有元数据；先分正文，再以余量分结构，两种偏移均需由可信游标绑定。 */
 export function pagePrdResponse<T>(options: {
   text: string; startByte: number; maxBytes: number; structure?: PrdStructure; startSection: number;
+  view: (response: T) => unknown;
   response: (page: PrdTextPage, structure: PrdStructurePage | undefined, hasMore: boolean) => T;
 }): { response: T; page: PrdTextPage; endSection: number; hasMore: boolean } {
   const { text, startByte, maxBytes, structure, startSection } = options;
@@ -194,7 +195,7 @@ export function pagePrdResponse<T>(options: {
     const hasMore = page.endByte < page.totalBytes || endSection < totalSections;
     return { response: options.response(page, structurePage, hasMore), page, endSection, hasMore };
   }
-  const fits = (result: { response: T }) => Buffer.byteLength(JSON.stringify(result.response)) <= PRD_RESPONSE_MAX_BYTES;
+  const fits = (result: { response: T }) => Buffer.byteLength(JSON.stringify(options.view(result.response))) <= PRD_RESPONSE_MAX_BYTES;
   let page = pagePrdText(text, startByte, maxBytes);
   if (!fits(candidate(page, startSection))) {
     // 至少可送一个Unicode码点；固定来源/覆盖包不能容纳最小正文时安全失败。
