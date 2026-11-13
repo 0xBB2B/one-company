@@ -44,7 +44,7 @@ function designLines(design: DesignState): WindowLine[] {
   switch (design.state) {
     case "same": return [];
     case "created": return [{ text: "批准需求后随需求分支新建 DESIGN.md，之后这个需求的原型、实现和审查都照它做。" }];
-    case "conflict": return [{ text: "设计师交稿后，仓库根目录的 DESIGN.md 被改过。要通过，请在「其他」里写意见，让主代理按最新的 DESIGN.md 重派一版。" }];
+    case "conflict": return [{ text: "设计师交稿后 DESIGN.md 被改过，这一版不能通过。想继续，请在「其他（自己输入）」里写意见，主代理会按最新的 DESIGN.md 重派一版，新的一版还要再确认一次。" }];
     case "changed": {
       const head = "批准需求后随需求分支更新 DESIGN.md：";
       if (design.changes.length === 1 && design.changes[0]!.letter === null) return [{ text: `${head}${changedText(design.changes[0]!.chapters)}。` }];

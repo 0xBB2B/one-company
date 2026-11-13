@@ -1433,7 +1433,7 @@ test("打开窗口后通过前根目录 DESIGN.md 被改，通过被退回：码
   const error = await failure(() => decidePrototype(ref, { repositoryRoot, requirementId, name: "登录页", version, hash, choice: "accept", option: null, opinion: null }));
   expect(error.code).toBe("design_changed");
   expect(error.advice.why).toBe("DESIGN.md 在你确认时被改过，这一版没有通过");
-  expect(error.advice.next).toBe("在窗口里选「其他」写意见，让主代理按最新的 DESIGN.md 重派一版");
+  expect(error.advice.next).toBe("在窗口里选「其他（自己输入）」写意见，主代理会按最新的 DESIGN.md 重派一版，新的一版还要再确认一次");
 });
 
 test("通过被 design_changed 退回后，原型仍在等确认、DESIGN.md 保持被改后的内容、没有登记草稿", async () => {
