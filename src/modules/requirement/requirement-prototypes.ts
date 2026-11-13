@@ -534,7 +534,7 @@ export async function decidePrototype(ref: Ref, input: { repositoryRoot: string;
       const chosen = candidates.length === 1 ? candidates[0] : candidates.find((candidate) => candidate.letter === input.option);
       // 候选和这条线上现有的 DESIGN.md 一样时没有东西会被覆盖，开工后线上被改过也不算冲突
       if (designFingerprint(currentDesign) !== current.designBase && chosen?.text !== currentDesign) {
-        deny("design_changed", "DESIGN.md 在你确认时被改过，这一版没有通过", "在窗口里选「其他」写意见，让主代理按最新的 DESIGN.md 重派一版");
+        deny("design_changed", "DESIGN.md 在你确认时被改过，这一版没有通过", "在窗口里选「其他（自己输入）」写意见，主代理会按最新的 DESIGN.md 重派一版，新的一版还要再确认一次");
       }
       const design = chosen && (currentDesign === null || changedChapters(currentDesign, chosen.text).length > 0) ? chosen.text : null;
       const previous = (entry.draft ?? entry.approved)?.version;

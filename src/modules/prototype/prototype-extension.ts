@@ -159,7 +159,7 @@ export default function prototypeExtension(pi: ExtensionAPI, deps: PrototypeDeps
       const voided = (error as { code?: unknown }).code === "file_changed";
       if ((error as { code?: unknown }).code === "design_changed") {
         ctx.ui.notify(advice?.why ?? reasonOf(error), "warning");
-        tell("one-company.prototype-design-changed", `原型「${pending.name}」第 ${pending.version} 版没有通过：DESIGN.md 在你确认时被改过。在窗口里选「其他」写意见，让主代理按最新的 DESIGN.md 重派一版；可以用 one_company_prototype confirm 重开确认窗口。`);
+        tell("one-company.prototype-design-changed", `原型「${pending.name}」第 ${pending.version} 版没有通过：DESIGN.md 在你确认时被改过。在窗口里选「其他（自己输入）」写意见，主代理会按最新的 DESIGN.md 重派一版，新的一版还要再确认一次；可以用 one_company_prototype confirm 重开确认窗口。`);
         return "failed";
       }
       ctx.ui.notify(voided ? "文件在交稿后被改过，这一版已作废，决定没有登记" : `决定没有登记：${advice ? `${advice.why}。${advice.next}` : reasonOf(error)}`, "warning");

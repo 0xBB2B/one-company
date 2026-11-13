@@ -777,7 +777,7 @@ test("design 是 same 时不加行，行数和 design 之外的内容与加之�
 
 test("design 是 conflict 时加一行被改过的提示，通过选项带 disabled 原因", () => {
   const content = confirmWindowContent(withDesign({ state: "conflict" }), true);
-  expect(designLines(withDesign({ state: "conflict" }))).toEqual([{ text: "设计师交稿后，仓库根目录的 DESIGN.md 被改过。要通过，请在「其他」里写意见，让主代理按最新的 DESIGN.md 重派一版。" }]);
+  expect(designLines(withDesign({ state: "conflict" }))).toEqual([{ text: "设计师交稿后 DESIGN.md 被改过，这一版不能通过。想继续，请在「其他（自己输入）」里写意见，主代理会按最新的 DESIGN.md 重派一版，新的一版还要再确认一次。" }]);
   expect(content.choices).toEqual([{ label: "通过（写进需求草稿）", disabled: DESIGN_DISABLED }]);
   expect(content.escapeChoice).toBe("放弃这一版");
 });
@@ -828,7 +828,7 @@ test("design 是 conflict 时窗口打开光标就在其他：直接输入意见
 });
 
 const designChanged = () => Object.assign(new Error("design_changed：DESIGN.md 在你确认时被改过，这一版没有通过"),
-  { code: "design_changed", data: { advice: { why: "DESIGN.md 在你确认时被改过，这一版没有通过", next: "在窗口里选「其他」写意见，让主代理按最新的 DESIGN.md 重派一版" } } });
+  { code: "design_changed", data: { advice: { why: "DESIGN.md 在你确认时被改过，这一版没有通过", next: "在窗口里选「其他（自己输入）」写意见，主代理会按最新的 DESIGN.md 重派一版，新的一版还要再确认一次" } } });
 
 test("通过时守护进程返回 design_changed：提示用户这一版没有通过，并发对话消息让主代理知道", async () => {
   const h = await harness({ responses: { "prototypes.pending": () => pendingV2, "prototypes.decide": () => { throw designChanged(); } } });
@@ -840,7 +840,7 @@ test("通过时守护进程返回 design_changed：提示用户这一版没有�
   await vi.waitFor(() => expect(h.sendMessage).toHaveBeenCalledTimes(1));
   const [message, options] = h.sendMessage.mock.calls[0]!;
   expect(message.customType).toBe("one-company.prototype-design-changed");
-  expect(message.content).toBe("原型「设置页」第 2 版没有通过：DESIGN.md 在你确认时被改过。在窗口里选「其他」写意见，让主代理按最新的 DESIGN.md 重派一版；可以用 one_company_prototype confirm 重开确认窗口。");
+  expect(message.content).toBe("原型「设置页」第 2 版没有通过：DESIGN.md 在你确认时被改过。在窗口里选「其他（自己输入）」写意见，主代理会按最新的 DESIGN.md 重派一版，新的一版还要再确认一次；可以用 one_company_prototype confirm 重开确认窗口。");
   expect(options).toEqual({ triggerTurn: true });
   expect(h.appendEntry).not.toHaveBeenCalled();
 });
