@@ -162,3 +162,15 @@ describe("并行验收脚本缺证据目录", () => {
     expect(result.stderr).not.toContain("ONE_COMPANY_ACCEPTANCE_MODEL");
   });
 });
+
+describe("并行验收脚本列出的测试", () => {
+  test("只列 tests/acceptance/ 目录里的测试，不收名字以 acceptance 开头的单元测试文件", () => {
+    const evidence = mkdtempSync(join(temporaryRoot(), "list-"));
+    const env = { ...process.env, ONE_COMPANY_ACCEPTANCE_OUTPUT: evidence, ONE_COMPANY_ACCEPTANCE_MODEL: "p/m" };
+    const result = spawnSync(process.execPath, ["tests/acceptance/run-parallel.ts", "--only", "不存在的编号"], { cwd: ROOT, env, encoding: "utf8", timeout: 120_000 });
+    expect(result.stderr).toContain("没有这些编号的验收：不存在的编号");
+    const files = (JSON.parse(readFileSync(join(evidence, "tests.json"), "utf8")) as Array<{ file: string }>).map((test) => test.file);
+    expect(files.length).toBeGreaterThan(0);
+    expect(files.filter((file) => !file.startsWith(join(ROOT, "tests", "acceptance") + "/"))).toEqual([]);
+  }, 150_000);
+});
