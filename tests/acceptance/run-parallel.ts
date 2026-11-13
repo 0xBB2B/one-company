@@ -18,7 +18,7 @@ const model = resolveAcceptanceModel();
 mkdirSync(output, { recursive: true });
 
 const listFile = join(output, "tests.json");
-execFileSync(vitest, ["list", "tests/acceptance", `--json=${listFile}`], { stdio: "ignore" });
+execFileSync(vitest, ["list", "tests/acceptance/", `--json=${listFile}`], { stdio: "ignore" });
 // 用例名冒号前是编号，如“M9-AC2/AC3/AC11”；--only M9-AC2 只认第一个编号，不会误配 M9-AC12
 const idOf = (name: string) => name.split("：")[0]!;
 const all = (JSON.parse(readFileSync(listFile, "utf8")) as Array<{ name: string }>).map((test) => test.name);
@@ -55,7 +55,7 @@ function launch(name: string, n: number): Promise<boolean> {
   const run: Run = { id, n, dir, started: Date.now(), done: false };
   runs.push(run);
   const out = openSync(`${dir}.log`, "w");
-  const child = spawn(vitest, ["run", "tests/acceptance", "-t", `^${escape(name)}$`], { env: {
+  const child = spawn(vitest, ["run", "tests/acceptance/", "-t", `^${escape(name)}$`], { env: {
     ...process.env, ONE_COMPANY_ACCEPTANCE_OUTPUT: dir,
     ONE_COMPANY_ACCEPTANCE_MODEL: `${model.provider}/${model.modelId}`, ONE_COMPANY_ACCEPTANCE_THINKING: model.thinking,
   }, stdio: ["ignore", out, out] });
