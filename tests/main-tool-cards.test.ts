@@ -108,6 +108,8 @@ const entry = (extra: Record<string, unknown>, name = PROTO) => ({ name, lastVer
 
 test("prototype status：按先后取第一条符合的状态", () => {
   const cases: Array<[Record<string, unknown>, string]> = [
+    [{ removed: true, inFlight: { version: 2, status: "designing" } }, "第 2 版设计中"],
+    [{ removed: true, inFlight: { version: 2, status: "awaiting" } }, "第 2 版等你确认"],
     [{ removed: true, draft: { version: 1 } }, "已从草稿移除"],
     [{ inFlight: { version: 3, status: "awaiting" }, draft: { version: 2 } }, "第 3 版等你确认"],
     [{ inFlight: { version: 3, status: "designing" } }, "第 3 版设计中"],

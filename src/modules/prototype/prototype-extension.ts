@@ -39,8 +39,8 @@ const PARAMETERS = requestParameters([
 
 function prototypeLine(entry: CardRow): CardSegment[] {
   const { inFlight, draft, approved, lastEnded } = entry;
-  const status = entry.removed ? "已从草稿移除"
-    : inFlight ? `第 ${inFlight.version} 版${inFlight.status === "awaiting" ? "等你确认" : "设计中"}`
+  const status = inFlight ? `第 ${inFlight.version} 版${inFlight.status === "awaiting" ? "等你确认" : "设计中"}`
+    : entry.removed ? "已从草稿移除"
     : draft ? `第 ${draft.version} 版已通过`
     : approved ? `第 ${approved.version} 版已随需求批准`
     : lastEnded ? `第 ${lastEnded.version} 版没交稿：${lastEnded.reason}`
